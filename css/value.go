@@ -44,6 +44,8 @@ const (
 	// DisplayTableRowGroup is a thead/tbody/tfoot grouping box (transparent to
 	// the table's row collection).
 	DisplayTableRowGroup
+	// DisplayGrid is a block-level CSS grid container.
+	DisplayGrid
 )
 
 // Float is the subset of the float property the engine understands.
@@ -149,7 +151,9 @@ const (
 	JustifySpaceEvenly
 )
 
-// AlignItems is the cross-axis alignment (align-items).
+// AlignItems is the cross-axis alignment (align-items). In a grid container it
+// is also reused for the block-axis (align-items) and, via JustifyItems, the
+// inline-axis (justify-items) alignment of items within their cells.
 type AlignItems uint8
 
 const (
@@ -162,6 +166,73 @@ const (
 	// AlignCenterItems centres items on the cross axis.
 	AlignCenterItems
 )
+
+// FlexWrap controls whether flex items wrap onto multiple lines.
+type FlexWrap uint8
+
+const (
+	// FlexNoWrap keeps all items on a single line (initial value).
+	FlexNoWrap FlexWrap = iota
+	// FlexWrapOn wraps items onto new lines toward the cross-end.
+	FlexWrapOn
+	// FlexWrapReverse wraps items with the cross axis reversed.
+	FlexWrapReverse
+)
+
+// AlignContent distributes flex lines (or grid tracks) along the cross axis
+// when there is spare cross-axis space (multi-line flex / align-content).
+type AlignContent uint8
+
+const (
+	// AlignContentStretch stretches lines to fill the cross axis (initial).
+	AlignContentStretch AlignContent = iota
+	// AlignContentStart packs lines at the cross-start edge.
+	AlignContentStart
+	// AlignContentEnd packs lines at the cross-end edge.
+	AlignContentEnd
+	// AlignContentCenter centres the lines as a group.
+	AlignContentCenter
+	// AlignContentSpaceBetween spreads lines with the ends flush.
+	AlignContentSpaceBetween
+	// AlignContentSpaceAround spreads lines with half-gaps at the ends.
+	AlignContentSpaceAround
+	// AlignContentSpaceEvenly spreads lines with equal gaps incl. the ends.
+	AlignContentSpaceEvenly
+)
+
+// AlignSelf overrides a single item's cross-axis alignment. Auto (the initial
+// value) defers to the container's align-items.
+type AlignSelf uint8
+
+const (
+	// AlignSelfAuto uses the container's align-items value (initial).
+	AlignSelfAuto AlignSelf = iota
+	// AlignSelfStretch stretches this item on the cross axis.
+	AlignSelfStretch
+	// AlignSelfStart aligns this item at the cross-start edge.
+	AlignSelfStart
+	// AlignSelfEnd aligns this item at the cross-end edge.
+	AlignSelfEnd
+	// AlignSelfCenter centres this item on the cross axis.
+	AlignSelfCenter
+)
+
+// resolve returns the effective AlignItems for an item, falling back to the
+// container's align-items when the item's align-self is auto.
+func (a AlignSelf) Resolve(container AlignItems) AlignItems {
+	switch a {
+	case AlignSelfStretch:
+		return AlignStretch
+	case AlignSelfStart:
+		return AlignFlexStart
+	case AlignSelfEnd:
+		return AlignFlexEnd
+	case AlignSelfCenter:
+		return AlignCenterItems
+	default:
+		return container
+	}
+}
 
 // FontFamily is the generic font family a run is rendered with.
 type FontFamily uint8
@@ -232,6 +303,8 @@ type Style struct {
 	MinWidth   Length // Auto (== none) by default
 	MaxWidth   Length // Auto (== none) by default
 	Height     Length // Auto by default
+	MinHeight  Length // Auto (== none) by default
+	MaxHeight  Length // Auto (== none) by default
 	BoxSizing  BoxSizing
 	TextAlign  TextAlign
 	WhiteSpace WhiteSpace
@@ -248,13 +321,39 @@ type Style struct {
 
 	// Flex container properties (meaningful when Display == DisplayFlex).
 	FlexDirection  FlexDirection
+	FlexWrap       FlexWrap
 	JustifyContent Justify
 	AlignItems     AlignItems
+	AlignContent   AlignContent
 
-	// Flex item properties (meaningful for a child of a flex container).
+	// Gaps between flex lines/items and between grid tracks. RowGap is the
+	// cross-line / block-axis gap; ColumnGap is the main-axis / inline-axis gap.
+	RowGap    Length
+	ColumnGap Length
+
+	// Flex/grid item properties (meaningful for a child of a flex/grid container).
 	FlexGrow   float64
 	FlexShrink float64
 	FlexBasis  Length // Auto == "auto" (use the item's width/content)
+	Order      int    // reorders items within a line (ascending)
+	AlignSelf  AlignSelf
+
+	// Grid container properties (meaningful when Display == DisplayGrid).
+	GridTemplateColumns []TrackSize
+	GridTemplateRows    []TrackSize
+	GridAutoRows        TrackSize
+	GridAutoColumns     TrackSize
+	GridAutoFlow        GridFlow
+	GridTemplateAreas   [][]string // row-major grid of area names ("" == empty)
+	JustifyItems        AlignItems // inline-axis alignment of items in their cell
+
+	// Grid item placement (meaningful for a child of a grid container).
+	GridColumnStart GridLine
+	GridColumnEnd   GridLine
+	GridRowStart    GridLine
+	GridRowEnd      GridLine
+	GridArea        string // named area this item is placed into (via grid-area)
+	JustifySelf     AlignSelf
 
 	// CustomProps holds the element's resolved CSS custom properties (--name ->
 	// raw value). It is inherited from the parent and overridden by matched
@@ -287,10 +386,17 @@ func initialStyle() Style {
 		MinWidth:   Length{Auto: true},
 		MaxWidth:   Length{Auto: true},
 		Height:     Length{Auto: true},
+		MinHeight:  Length{Auto: true},
+		MaxHeight:  Length{Auto: true},
 		FlexBasis:  Length{Auto: true},
 		FlexShrink: 1, // CSS initial flex-shrink is 1
 		TextAlign:  AlignLeft,
 		LineHeight: LineHeight{Normal: true},
+
+		GridColumnStart: GridLine{Auto: true},
+		GridColumnEnd:   GridLine{Auto: true},
+		GridRowStart:    GridLine{Auto: true},
+		GridRowEnd:      GridLine{Auto: true},
 	}
 }
 
@@ -310,12 +416,19 @@ func inheritFrom(parent Style) Style {
 		MinWidth:    Length{Auto: true},
 		MaxWidth:    Length{Auto: true},
 		Height:      Length{Auto: true},
+		MinHeight:   Length{Auto: true},
+		MaxHeight:   Length{Auto: true},
 		FlexBasis:   Length{Auto: true},
 		FlexShrink:  1,
 		TextAlign:   parent.TextAlign,   // inherited
 		WhiteSpace:  parent.WhiteSpace,  // inherited
 		LineHeight:  parent.LineHeight,  // inherited
 		CustomProps: parent.CustomProps, // inherited (shared until copy-on-write)
+
+		GridColumnStart: GridLine{Auto: true},
+		GridColumnEnd:   GridLine{Auto: true},
+		GridRowStart:    GridLine{Auto: true},
+		GridRowEnd:      GridLine{Auto: true},
 	}
 }
 

@@ -14,7 +14,8 @@ func applyOn(s *Style, prop, val string, em float64) { s.apply(Declaration{prop,
 
 func TestApplyDisplayValues(t *testing.T) {
 	cases := map[string]Display{
-		"block": DisplayBlock, "flow-root": DisplayBlock, "grid": DisplayBlock,
+		"block": DisplayBlock, "flow-root": DisplayBlock, "list-item": DisplayBlock,
+		"grid": DisplayGrid, "inline-grid": DisplayGrid,
 		"flex": DisplayFlex, "inline-flex": DisplayFlex,
 		"table": DisplayTable, "inline-table": DisplayTable,
 		"table-row": DisplayTableRow, "table-cell": DisplayTableCell,
