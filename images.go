@@ -90,6 +90,63 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 	return sizes, bitmaps
 }
 
+// loadBackgroundImages fetches and decodes every distinct CSS
+// `background-image: url(...)` referenced by a styled element (best-effort),
+// returning intrinsic bitmaps keyed by their raw url() token (the same key the
+// paint layer stores). Gradient layers need no bitmap. Failures (fetch/decode)
+// are skipped; the count is bounded by MaxImages, and each distinct URL is
+// fetched at most once.
+func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css.StyleMap) map[string]image.Image {
+	// Collect distinct raw url() tokens in document order.
+	seen := map[string]bool{}
+	var urls []string
+	var walk func(n *dom.Node)
+	walk = func(n *dom.Node) {
+		if n.Type == dom.Element {
+			if st := sm[n]; st != nil {
+				for _, layer := range st.BackgroundImages {
+					if layer.Kind == css.BgURL && layer.URL != "" && !seen[layer.URL] {
+						seen[layer.URL] = true
+						urls = append(urls, layer.URL)
+					}
+				}
+			}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(doc.Root)
+	if len(urls) == 0 {
+		return nil
+	}
+
+	out := map[string]image.Image{}
+	count := 0
+	for _, raw := range urls {
+		if count >= e.MaxImages {
+			break
+		}
+		data, ok := e.fetchImageBytes(ctx, doc.URL, raw)
+		if !ok {
+			continue
+		}
+		img, err := goimages.Decode(bytes.NewReader(data))
+		if err != nil {
+			continue
+		}
+		if img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
+			continue
+		}
+		out[raw] = img
+		count++
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // cssImageSize resolves the used pixel dimensions of an image given its style
 // and intrinsic size (iw×ih). A definite (non-auto, non-percentage) CSS width
 // and/or height override the intrinsic size; when only one axis is definite the

@@ -410,6 +410,31 @@ type Style struct {
 	// rules; var() references consult it at computed-value time. Nil until an
 	// element (or an ancestor) defines a custom property.
 	CustomProps map[string]string
+
+	// Background image layers (gradients and url() bitmaps) and their paint
+	// parameters. Each list is indexed per layer (first-listed paints on top);
+	// a shorter size/position/repeat list repeats its last value. All nil == no
+	// background image (only the solid Background colour paints).
+	BackgroundImages   []BgImage
+	BackgroundSize     []BgSize
+	BackgroundPosition []BgPosition
+	BackgroundRepeat   []BgRepeat
+
+	// BoxShadows are the element's box-shadow layers (first-listed paints on top).
+	BoxShadows []BoxShadow
+
+	// Opacity is the element's group opacity in [0,1]; HasOpacity distinguishes a
+	// genuine opacity from the zero value (an unset Style is fully opaque).
+	Opacity    float64
+	HasOpacity bool
+}
+
+// BoxShadow is one box-shadow layer.
+type BoxShadow struct {
+	OffsetX, OffsetY float64
+	Blur, Spread     float64
+	Color            Color
+	Inset            bool
 }
 
 // LineHeight is a resolved line-height. Normal means "use the font's own line

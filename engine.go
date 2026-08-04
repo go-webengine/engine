@@ -162,6 +162,7 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 	sheets := e.fetchExternalSheets(ctx, doc, float64(vpW))
 	sm := css.CascadeVW(doc.Root, float64(vpW), sheets)
 	imgSize, imgs := e.loadImages(ctx, doc, sm, vpW)
+	bgImgs := e.loadBackgroundImages(ctx, doc, sm)
 
 	box, height := layout.LayoutDocument(doc.Root, sm, float64(vpW), fonts, imgSize)
 
@@ -179,7 +180,7 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 	if bg, ok := pageBackground(doc.Root, sm); ok {
 		fillColor(img, bg)
 	}
-	paint.Paint(img, box, fonts, imgs)
+	paint.PaintFull(img, box, fonts, imgs, bgImgs)
 
 	return img, &RenderInfo{
 		Title:         doc.Title,

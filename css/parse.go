@@ -144,7 +144,7 @@ func matchBrace(s string, open int) (int, bool) {
 // declarations, lowercasing property names and trimming values.
 func ParseDeclarations(body string) []Declaration {
 	var out []Declaration
-	for _, chunk := range strings.Split(body, ";") {
+	for _, chunk := range splitDeclChunks(body) {
 		chunk = strings.TrimSpace(chunk)
 		if chunk == "" {
 			continue
@@ -169,6 +169,39 @@ func ParseDeclarations(body string) []Declaration {
 		}
 		out = append(out, Declaration{Property: prop, Value: val})
 	}
+	return out
+}
+
+// splitDeclChunks splits a declaration block on top-level semicolons, ignoring
+// semicolons nested inside parentheses (e.g. a `url(data:…;base64,…)` value) or
+// inside single/double quotes. This keeps a data-URI or function argument that
+// contains ';' from being torn across two declarations.
+func splitDeclChunks(body string) []string {
+	var out []string
+	depth := 0
+	var quote byte
+	start := 0
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		switch {
+		case quote != 0:
+			if c == quote {
+				quote = 0
+			}
+		case c == '"' || c == '\'':
+			quote = c
+		case c == '(':
+			depth++
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+		case c == ';' && depth == 0:
+			out = append(out, body[start:i])
+			start = i + 1
+		}
+	}
+	out = append(out, body[start:])
 	return out
 }
 
@@ -217,6 +250,42 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		// colour token, which may be a function with internal spaces.
 		if c, ok := parseColor(backgroundColorToken(v)); ok {
 			s.Background = c
+		}
+		// Also pick up gradient / url() image layers from the shorthand so a
+		// `background: linear-gradient(...)` (no separate background-image) paints.
+		if imgs, ok := parseBackgroundImage(v, emRef); ok {
+			s.BackgroundImages = imgs
+		}
+	case "background-image":
+		if imgs, ok := parseBackgroundImage(v, emRef); ok {
+			s.BackgroundImages = imgs
+		} else if strings.EqualFold(lv, "none") {
+			s.BackgroundImages = nil
+		}
+	case "background-size":
+		if sz, ok := parseBackgroundSizeList(v, emRef); ok {
+			s.BackgroundSize = sz
+		}
+	case "background-position":
+		if p, ok := parseBackgroundPositionList(v, emRef); ok {
+			s.BackgroundPosition = p
+		}
+	case "background-repeat":
+		if r, ok := parseBackgroundRepeat(v); ok {
+			s.BackgroundRepeat = []BgRepeat{r}
+		}
+	case "box-shadow":
+		if sh, ok := parseBoxShadow(v, emRef); ok {
+			s.BoxShadows = sh
+		}
+	case "opacity":
+		if f, err := strconv.ParseFloat(lv, 64); err == nil {
+			if f < 0 {
+				f = 0
+			} else if f > 1 {
+				f = 1
+			}
+			s.Opacity, s.HasOpacity = f, true
 		}
 	case "font-size":
 		if l, ok := parseLength(v, emRef); ok && !l.Auto {
