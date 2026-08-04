@@ -112,6 +112,11 @@ func (l *layouter) gridItems(node *dom.Node) []*gridItem {
 		if cs == nil || cs.Display == css.DisplayNone {
 			continue
 		}
+		if cs.Position.OutOfFlow() {
+			// Not a grid item; placed later against its containing block.
+			l.outOfFlow = append(l.outOfFlow, outOfFlowItem{node: c})
+			continue
+		}
 		bw := cs.Border.Widths()
 		out = append(out, &gridItem{
 			node:    c,

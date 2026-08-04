@@ -48,6 +48,36 @@ const (
 	DisplayGrid
 )
 
+// Position is the subset of the position property the engine understands.
+type Position uint8
+
+const (
+	// PositionStatic is the initial value: the box is in normal flow with no
+	// top/right/bottom/left offset applied.
+	PositionStatic Position = iota
+	// PositionRelative keeps the box in normal flow (it still reserves space) but
+	// paints it shifted by its top/left/right/bottom offset.
+	PositionRelative
+	// PositionAbsolute removes the box from normal flow and positions it against
+	// the padding box of the nearest positioned ancestor (else the initial
+	// containing block).
+	PositionAbsolute
+	// PositionFixed removes the box from normal flow and positions it against the
+	// initial containing block (the viewport). For a full-page static render it is
+	// resolved to document coordinates so it paints once at its place.
+	PositionFixed
+	// PositionSticky is approximated as relative for a full-page static shot.
+	PositionSticky
+)
+
+// OutOfFlow reports whether a position value takes the box out of normal flow
+// (so it reserves no space in its parent's block/inline formatting context).
+func (p Position) OutOfFlow() bool { return p == PositionAbsolute || p == PositionFixed }
+
+// Positioned reports whether a position value makes the box a containing block
+// for absolutely-positioned descendants (anything other than static).
+func (p Position) Positioned() bool { return p != PositionStatic }
+
 // Float is the subset of the float property the engine understands.
 type Float uint8
 
@@ -319,6 +349,17 @@ type Style struct {
 	Float Float
 	Clear Clear
 
+	// CSS position and the box-offset properties. Top/Right/Bottom/Left are Auto
+	// by default (the initial value of each offset). ZIndex is meaningful only
+	// when ZIndexAuto is false; the initial value is auto (paint in tree order).
+	Position   Position
+	Top        Length // Auto by default
+	Right      Length // Auto by default
+	Bottom     Length // Auto by default
+	Left       Length // Auto by default
+	ZIndex     int
+	ZIndexAuto bool // true == "auto" (the initial value)
+
 	// Flex container properties (meaningful when Display == DisplayFlex).
 	FlexDirection  FlexDirection
 	FlexWrap       FlexWrap
@@ -393,6 +434,12 @@ func initialStyle() Style {
 		TextAlign:  AlignLeft,
 		LineHeight: LineHeight{Normal: true},
 
+		Top:        Length{Auto: true},
+		Right:      Length{Auto: true},
+		Bottom:     Length{Auto: true},
+		Left:       Length{Auto: true},
+		ZIndexAuto: true,
+
 		GridColumnStart: GridLine{Auto: true},
 		GridColumnEnd:   GridLine{Auto: true},
 		GridRowStart:    GridLine{Auto: true},
@@ -424,6 +471,13 @@ func inheritFrom(parent Style) Style {
 		WhiteSpace:  parent.WhiteSpace,  // inherited
 		LineHeight:  parent.LineHeight,  // inherited
 		CustomProps: parent.CustomProps, // inherited (shared until copy-on-write)
+
+		// position and the offsets are not inherited: reset to static / auto.
+		Top:        Length{Auto: true},
+		Right:      Length{Auto: true},
+		Bottom:     Length{Auto: true},
+		Left:       Length{Auto: true},
+		ZIndexAuto: true,
 
 		GridColumnStart: GridLine{Auto: true},
 		GridColumnEnd:   GridLine{Auto: true},

@@ -311,6 +311,41 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		case "none":
 			s.Clear = ClearNone
 		}
+	case "position":
+		switch lv {
+		case "static":
+			s.Position = PositionStatic
+		case "relative":
+			s.Position = PositionRelative
+		case "absolute":
+			s.Position = PositionAbsolute
+		case "fixed":
+			s.Position = PositionFixed
+		case "sticky":
+			s.Position = PositionSticky
+		}
+	case "top":
+		if l, ok := parseLength(v, emRef); ok {
+			s.Top = l
+		}
+	case "right":
+		if l, ok := parseLength(v, emRef); ok {
+			s.Right = l
+		}
+	case "bottom":
+		if l, ok := parseLength(v, emRef); ok {
+			s.Bottom = l
+		}
+	case "left":
+		if l, ok := parseLength(v, emRef); ok {
+			s.Left = l
+		}
+	case "z-index":
+		if lv == "auto" {
+			s.ZIndexAuto = true
+		} else if n, err := strconv.Atoi(lv); err == nil {
+			s.ZIndex, s.ZIndexAuto = n, false
+		}
 	case "flex-direction":
 		switch lv {
 		case "row", "row-reverse":
