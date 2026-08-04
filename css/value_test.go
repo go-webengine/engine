@@ -1,0 +1,140 @@
+// Copyright (c) the go-webengine/engine authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+package css
+
+import "testing"
+
+func TestParseColor(t *testing.T) {
+	cases := []struct {
+		in   string
+		want Color
+		ok   bool
+	}{
+		{"red", Color{255, 0, 0, 255}, true},
+		{"  White ", Color{255, 255, 255, 255}, true},
+		{"transparent", Transparent, true},
+		{"#0f0", Color{0, 255, 0, 255}, true},
+		{"#0000ee", Color{0, 0, 238, 255}, true},
+		{"rgb(1,2,3)", Color{1, 2, 3, 255}, true},
+		{"rgba(255, 0, 0, 0.5)", Color{255, 0, 0, 128}, true},
+		{"rgb(300, -5, 10)", Color{255, 0, 10, 255}, true},
+		{"#12", Color{}, false},
+		{"#gggggg", Color{}, false},
+		{"#gg0", Color{}, false},
+		{"rgb(1,2)", Color{}, false},
+		{"rgb(a,b,c)", Color{}, false},
+		{"rgb(1,2,x)", Color{}, false},
+		{"rgba(1,2,3,z)", Color{}, false},
+		{"rgb 1 2 3", Color{}, false},
+		{"nosuchcolor", Color{}, false},
+	}
+	for _, c := range cases {
+		got, ok := parseColor(c.in)
+		if ok != c.ok || got != c.want {
+			t.Errorf("parseColor(%q) = %v,%v want %v,%v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestParseLength(t *testing.T) {
+	cases := []struct {
+		in    string
+		emRef float64
+		want  Length
+		ok    bool
+	}{
+		{"auto", 16, Length{Auto: true}, true},
+		{"0", 16, Length{Px: 0}, true},
+		{"12px", 16, Length{Px: 12}, true},
+		{"2em", 16, Length{Px: 32}, true},
+		{"50%", 16, Length{Percent: 0.5, IsPercent: true}, true},
+		{"10", 16, Length{}, false},
+		{"xpx", 16, Length{}, false},
+		{"xem", 16, Length{}, false},
+		{"x%", 16, Length{}, false},
+	}
+	for _, c := range cases {
+		got, ok := parseLength(c.in, c.emRef)
+		if ok != c.ok || got != c.want {
+			t.Errorf("parseLength(%q,%v) = %v,%v want %v,%v", c.in, c.emRef, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestLengthResolve(t *testing.T) {
+	if got := (Length{Px: 20}).Resolve(100); got != 20 {
+		t.Errorf("px resolve = %v", got)
+	}
+	if got := (Length{Percent: 0.25, IsPercent: true}).Resolve(400); got != 100 {
+		t.Errorf("percent resolve = %v", got)
+	}
+}
+
+func TestParseEdges(t *testing.T) {
+	cases := []struct {
+		in   string
+		want Edges
+		ok   bool
+	}{
+		{"5px", Edges{5, 5, 5, 5}, true},
+		{"1px 2px", Edges{1, 2, 1, 2}, true},
+		{"1px 2px 3px", Edges{1, 2, 3, 2}, true},
+		{"1px 2px 3px 4px", Edges{1, 2, 3, 4}, true},
+		{"auto 4px", Edges{0, 4, 0, 4}, true},   // auto collapses to 0
+		{"5% 4px", Edges{0, 4, 0, 4}, true},     // percent collapses to 0
+		{"1px 2px 3px 4px 5px", Edges{}, false}, // too many
+		{"nope", Edges{}, false},
+	}
+	for _, c := range cases {
+		got, ok := parseEdges(c.in, 16)
+		if ok != c.ok || got != c.want {
+			t.Errorf("parseEdges(%q) = %v,%v want %v,%v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+func TestParseFontFamily(t *testing.T) {
+	cases := map[string]FontFamily{
+		"monospace":                    Mono,
+		`"Courier New", monospace`:     Mono,
+		"serif":                        Serif,
+		"Georgia, 'Times New Roman'":   Serif,
+		"sans-serif":                   Sans,
+		"Arial, Helvetica, sans-serif": Sans,
+		"Inter, system-ui, sans-serif": Sans,
+		"cursive":                      Sans, // unknown generic → Sans fallback
+	}
+	for in, want := range cases {
+		if got := parseFontFamily(in); got != want {
+			t.Errorf("parseFontFamily(%q) = %v want %v", in, got, want)
+		}
+	}
+}
+
+func TestStyleBoldAndFirstToken(t *testing.T) {
+	if (&Style{FontWeight: 700}).Bold() != true {
+		t.Error("700 should be bold")
+	}
+	if (&Style{FontWeight: 400}).Bold() != false {
+		t.Error("400 should not be bold")
+	}
+	if firstToken("  red 1px ") != "red" {
+		t.Error("firstToken")
+	}
+	if firstToken("   ") != "" {
+		t.Error("firstToken empty")
+	}
+}
+
+func TestAtoiClamp(t *testing.T) {
+	if n, ok := atoiClamp("700"); !ok || n != 700 {
+		t.Errorf("atoiClamp 700 = %v,%v", n, ok)
+	}
+	if _, ok := atoiClamp("7a"); ok {
+		t.Error("7a should fail")
+	}
+	if _, ok := atoiClamp(""); ok {
+		t.Error("empty should fail")
+	}
+}
