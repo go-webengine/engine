@@ -172,6 +172,30 @@ func hasUnit(f string) bool {
 		strings.HasSuffix(f, "%") || f == "auto"
 }
 
+// parseBorderRadius parses a border-radius value into a single uniform radius.
+// It takes the first horizontal radius: the elliptical `h / v` form keeps the
+// horizontal component, and a multi-corner list (`8px 4px …`) keeps the first
+// value. px/em lengths and percentages are accepted; auto and unparseable
+// values are rejected. A negative radius is clamped to zero.
+func parseBorderRadius(v string, emRef float64) (Length, bool) {
+	// Drop any vertical-radius component after a slash (elliptical corners).
+	if i := strings.IndexByte(v, '/'); i >= 0 {
+		v = v[:i]
+	}
+	fields := strings.Fields(strings.TrimSpace(v))
+	if len(fields) == 0 {
+		return Length{}, false
+	}
+	l, ok := parseLength(fields[0], emRef)
+	if !ok || l.Auto {
+		return Length{}, false
+	}
+	if !l.IsPercent && l.Px < 0 {
+		l.Px = 0
+	}
+	return l, true
+}
+
 // borderKeywordWidth maps the thin/medium/thick keywords to pixel widths.
 func borderKeywordWidth(tok string) (float64, bool) {
 	switch tok {
@@ -197,13 +221,48 @@ func borderStyleKeyword(tok string) (BorderStyle, bool) {
 	return BorderNone, false
 }
 
+// tokenizeKeepingParens splits v on whitespace but keeps a functional token and
+// its parenthesised argument list together (so `rgb(230 120 40 / 1)` — the
+// modern space-separated colour syntax — survives as one token rather than being
+// shredded into "rgb(230", "120", …). Nested parens are balanced.
+func tokenizeKeepingParens(v string) []string {
+	var toks []string
+	var cur strings.Builder
+	depth := 0
+	flush := func() {
+		if cur.Len() > 0 {
+			toks = append(toks, cur.String())
+			cur.Reset()
+		}
+	}
+	for i := 0; i < len(v); i++ {
+		ch := v[i]
+		switch {
+		case ch == '(':
+			depth++
+			cur.WriteByte(ch)
+		case ch == ')':
+			if depth > 0 {
+				depth--
+			}
+			cur.WriteByte(ch)
+		case (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == '\f') && depth == 0:
+			flush()
+		default:
+			cur.WriteByte(ch)
+		}
+	}
+	flush()
+	return toks
+}
+
 // applyBorderSideShorthand parses "<width> <style> <color>" (any order) into one
 // side. Missing colour defaults to the element's current colour.
 func applyBorderSideShorthand(side *BorderSide, v string, emRef float64, cur Color) {
 	var out BorderSide
 	out.Color = cur
 	sawColor := false
-	for _, tok := range strings.Fields(strings.ToLower(v)) {
+	for _, tok := range tokenizeKeepingParens(strings.ToLower(v)) {
 		if w, ok := borderKeywordWidth(tok); ok {
 			out.Width = w
 			continue
@@ -280,7 +339,7 @@ func applyBorderStyle(b *Borders, v string) {
 }
 
 func applyBorderColor(b *Borders, v string) {
-	fields := strings.Fields(v)
+	fields := tokenizeKeepingParens(v)
 	cols := make([]Color, 0, len(fields))
 	for _, f := range fields {
 		c, ok := parseColor(f)

@@ -206,9 +206,16 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		if c, ok := parseColor(v); ok {
 			s.Color = c
 		}
-	case "background-color", "background":
-		// For "background" we only pick up a bare colour token.
-		if c, ok := parseColor(firstToken(v)); ok {
+	case "background-color":
+		// The whole value is the colour (may itself contain spaces, e.g. the
+		// modern `rgb(22 24 29 / 1)` syntax), so parse it directly.
+		if c, ok := parseColor(v); ok {
+			s.Background = c
+		}
+	case "background":
+		// The shorthand may carry image/position/repeat layers; pick up a leading
+		// colour token, which may be a function with internal spaces.
+		if c, ok := parseColor(backgroundColorToken(v)); ok {
 			s.Background = c
 		}
 	case "font-size":
@@ -459,6 +466,16 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		s.GridRowEnd = parseGridLine(v)
 	case "grid-area":
 		applyGridArea(s, v)
+	case "border-radius":
+		if l, ok := parseBorderRadius(v, emRef); ok {
+			s.BorderRadius = l
+		}
+	case "border-top-left-radius", "border-top-right-radius",
+		"border-bottom-left-radius", "border-bottom-right-radius":
+		// Per-corner radii collapse to the single uniform radius (last wins).
+		if l, ok := parseBorderRadius(v, emRef); ok {
+			s.BorderRadius = l
+		}
 	case "border":
 		applyBorderShorthand(&s.Border, v, emRef, s.Color)
 	case "border-top":
@@ -562,6 +579,25 @@ func parseFontFamily(lv string) FontFamily {
 		}
 	}
 	return Sans
+}
+
+// backgroundColorToken extracts a leading colour token from a `background`
+// shorthand value. A functional colour (rgb()/rgba()/hsl()/hsla()) is returned
+// whole (including internal spaces and its parenthesised argument list);
+// otherwise the first whitespace-delimited token is returned. Gradient and
+// url() image layers are left for the (unimplemented) background-image path and
+// simply fail to parse as a colour.
+func backgroundColorToken(v string) string {
+	v = strings.TrimSpace(v)
+	lv := strings.ToLower(v)
+	for _, fn := range []string{"rgb(", "rgba(", "hsl(", "hsla("} {
+		if strings.HasPrefix(lv, fn) {
+			if close := strings.IndexByte(v, ')'); close >= 0 {
+				return v[:close+1]
+			}
+		}
+	}
+	return firstToken(v)
 }
 
 func firstToken(v string) string {

@@ -5,6 +5,7 @@ package paint
 
 import (
 	"image"
+	"math"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
@@ -25,10 +26,12 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 		return
 	}
 	if box.Style != nil && box.Style.Background.A > 0 && box.W > 0 && box.H > 0 {
-		pp.FillRect(
-			painter.Rect{X: int(box.X), Y: int(box.Y), W: int(box.W), H: int(box.H)},
-			toPainter(box.Style.Background),
-		)
+		r := painter.Rect{X: int(box.X), Y: int(box.Y), W: int(box.W), H: int(box.H)}
+		if rad := boxRadius(box); rad > 0 {
+			pp.FillRoundRect(r, rad, toPainter(box.Style.Background))
+		} else {
+			pp.FillRect(r, toPainter(box.Style.Background))
+		}
 	}
 	// Borders paint on real element boxes only (anonymous boxes carry the
 	// parent's style but no border of their own).
@@ -45,11 +48,42 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	}
 }
 
-// paintBorders draws the four border edges of a box as solid rectangles.
+// boxRadius returns the used corner radius (in pixels) for a box, resolving a
+// percentage against the box's smaller side. The painter clamps it to half the
+// smaller side, so pill/circle radii (large px or 50%) render correctly.
+func boxRadius(box *layout.Box) int {
+	if box.Style == nil {
+		return 0
+	}
+	l := box.Style.BorderRadius
+	if l.Auto {
+		return 0
+	}
+	var r float64
+	if l.IsPercent {
+		r = l.Percent * math.Min(box.W, box.H)
+	} else {
+		r = l.Px
+	}
+	if r <= 0 {
+		return 0
+	}
+	return int(r + 0.5)
+}
+
+// paintBorders draws the four border edges of a box. When the box has a corner
+// radius and a single uniform visible border (same width/style/colour on all
+// four sides), it is stroked as one rounded rectangle; otherwise each edge is
+// drawn as a straight solid rectangle.
 func paintBorders(pp *painter.PixelPainter, box *layout.Box) {
 	bd := box.Style.Border
 	x, y := int(box.X), int(box.Y)
 	w, h := int(box.W), int(box.H)
+	if rad := boxRadius(box); rad > 0 && uniformBorder(bd) && paintsSide(bd.Top) {
+		pp.StrokeRoundRect(painter.Rect{X: x, Y: y, W: w, H: h}, rad,
+			toPainter(bd.Top.Color), iround(bd.Top.Width))
+		return
+	}
 	fill := func(rx, ry, rw, rh int, c css.Color) {
 		if rw <= 0 || rh <= 0 || c.A == 0 {
 			return
@@ -74,6 +108,12 @@ func paintBorders(pp *painter.PixelPainter, box *layout.Box) {
 
 func paintsSide(s css.BorderSide) bool {
 	return s.Width > 0 && s.Style != css.BorderNone && s.Color.A > 0
+}
+
+// uniformBorder reports whether all four edges are identical (width, style and
+// colour), so a rounded box can be stroked as a single rounded rectangle.
+func uniformBorder(b css.Borders) bool {
+	return b.Top == b.Right && b.Right == b.Bottom && b.Bottom == b.Left
 }
 
 func iround(f float64) int { return int(f + 0.5) }

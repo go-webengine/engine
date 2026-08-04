@@ -9,6 +9,7 @@ import (
 
 	"github.com/dop251/goja"
 
+	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 )
 
@@ -230,9 +231,40 @@ func (b *binder) newPerformance() goja.Value {
 	return o
 }
 
+// mediaQueryMatches evaluates a window.matchMedia() query. It mirrors the CSS
+// cascade so scripts and stylesheets agree on the environment:
+//   - prefers-color-scheme: dark → true (the CSS cascade already applies dark
+//     @media blocks optimistically, and the reference headless Chromium follows
+//     the host's dark appearance); light → false.
+//   - prefers-reduced-motion / prefers-contrast → the no-preference default
+//     (false), matching a default browser.
+//   - min-width / max-width → evaluated against the real viewport width.
+//   - anything else → true (optimistic), matching the CSS media evaluation.
+//
+// This is what lets a class-strategy dark-theme site (react.dev calls
+// matchMedia('(prefers-color-scheme: dark)') and adds `dark` to <html>) resolve
+// to the same theme the Chrome reference renders.
+func (b *binder) mediaQueryMatches(q string) bool {
+	lq := strings.ToLower(q)
+	if strings.Contains(lq, "prefers-color-scheme") {
+		if strings.Contains(lq, "dark") {
+			return true
+		}
+		if strings.Contains(lq, "light") {
+			return false
+		}
+	}
+	if strings.Contains(lq, "prefers-reduced-motion") ||
+		strings.Contains(lq, "prefers-contrast") ||
+		strings.Contains(lq, "prefers-reduced-data") {
+		return strings.Contains(lq, "no-preference")
+	}
+	return css.MediaApplies(q, float64(b.opt.ViewportWidth))
+}
+
 func (b *binder) newMediaQueryList(q string) goja.Value {
 	o := b.vm.NewObject()
-	o.Set("matches", false)
+	o.Set("matches", b.mediaQueryMatches(q))
 	o.Set("media", q)
 	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
 	for _, name := range []string{"addListener", "removeListener", "addEventListener", "removeEventListener", "dispatchEvent"} {

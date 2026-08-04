@@ -176,6 +176,137 @@ func TestPaintBorders(t *testing.T) {
 	}
 }
 
+// TestPaintRoundedBackground asserts exact corner geometry: a rounded-rect
+// background leaves the extreme corner pixel uncovered (still white) while the
+// centre and mid-edge are fully filled.
+func TestPaintRoundedBackground(t *testing.T) {
+	f := NewFonts()
+	dst := white(40, 40)
+	box := &layout.Box{
+		Node:  &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{Background: css.Color{R: 10, G: 20, B: 30, A: 255}, BorderRadius: css.Length{Px: 10}},
+		X:     0, Y: 0, W: 40, H: 40,
+	}
+	Paint(dst, box, f, nil)
+	// Extreme top-left corner (0,0) is outside the rounded shape → stays white.
+	if c := dst.RGBAAt(0, 0); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("corner (0,0) = %+v, want white (outside radius)", c)
+	}
+	// The other three extreme corners too.
+	for _, p := range [][2]int{{39, 0}, {0, 39}, {39, 39}} {
+		if c := dst.RGBAAt(p[0], p[1]); c.R != 255 {
+			t.Errorf("corner %v = %+v, want white", p, c)
+		}
+	}
+	// Centre is fully filled with the background colour.
+	if c := dst.RGBAAt(20, 20); c.R != 10 || c.G != 20 || c.B != 30 {
+		t.Errorf("centre = %+v, want {10 20 30}", c)
+	}
+	// Mid top edge (well inside the straight run) is filled.
+	if c := dst.RGBAAt(20, 0); c.R != 10 {
+		t.Errorf("mid top edge = %+v, want filled", c)
+	}
+}
+
+// TestPaintRoundedBackgroundPercent resolves a 50% radius against the smaller
+// side (a square → a disc): the corner is empty, the centre filled.
+func TestPaintRoundedBackgroundPercent(t *testing.T) {
+	f := NewFonts()
+	dst := white(30, 30)
+	box := &layout.Box{
+		Node:  &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{Background: css.Color{R: 0, G: 0, B: 0, A: 255}, BorderRadius: css.Length{Percent: 0.5, IsPercent: true}},
+		X:     0, Y: 0, W: 30, H: 30,
+	}
+	Paint(dst, box, f, nil)
+	if c := dst.RGBAAt(1, 1); c.R != 255 {
+		t.Errorf("disc corner = %+v, want white", c)
+	}
+	if c := dst.RGBAAt(15, 15); c.R != 0 || c.A>>0 == 0 {
+		t.Errorf("disc centre = %+v, want black", c)
+	}
+}
+
+// TestBoxRadius exercises the radius resolution helper directly, including the
+// no-radius, auto, and zero-size fallbacks.
+func TestBoxRadius(t *testing.T) {
+	mk := func(l css.Length, w, h float64) *layout.Box {
+		return &layout.Box{Style: &css.Style{BorderRadius: l}, W: w, H: h}
+	}
+	if got := boxRadius(mk(css.Length{Px: 8}, 40, 40)); got != 8 {
+		t.Errorf("px radius = %d want 8", got)
+	}
+	if got := boxRadius(mk(css.Length{Percent: 0.25, IsPercent: true}, 40, 80)); got != 10 {
+		t.Errorf("percent radius = %d want 10 (25%% of min side 40)", got)
+	}
+	if got := boxRadius(mk(css.Length{}, 40, 40)); got != 0 {
+		t.Errorf("zero radius = %d want 0", got)
+	}
+	if got := boxRadius(mk(css.Length{Auto: true}, 40, 40)); got != 0 {
+		t.Errorf("auto radius = %d want 0", got)
+	}
+	if got := boxRadius(&layout.Box{Style: nil, W: 10, H: 10}); got != 0 {
+		t.Errorf("nil style radius = %d want 0", got)
+	}
+}
+
+// TestPaintRoundedBorderUniform strokes a uniform bordered rounded box: the
+// extreme corner is not painted (rounded away) but a mid-edge border pixel is.
+func TestPaintRoundedBorderUniform(t *testing.T) {
+	f := NewFonts()
+	dst := white(40, 40)
+	side := css.BorderSide{Width: 1, Style: css.BorderSolid, Color: css.Color{R: 200, A: 255}}
+	box := &layout.Box{
+		Node:  &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{Border: css.Borders{Top: side, Right: side, Bottom: side, Left: side}, BorderRadius: css.Length{Px: 8}},
+		X:     0, Y: 0, W: 40, H: 40,
+	}
+	Paint(dst, box, f, nil)
+	// Extreme corner not stroked (rounded away) → white.
+	if c := dst.RGBAAt(0, 0); c.R != 255 {
+		t.Errorf("rounded border corner (0,0) = %+v, want white", c)
+	}
+	// Mid top edge has the border ink.
+	if c := dst.RGBAAt(20, 0); c.R != 200 {
+		t.Errorf("mid top border = %+v, want reddish ink", c)
+	}
+}
+
+// TestUniformBorder covers the helper's true/false branches.
+func TestUniformBorder(t *testing.T) {
+	s := css.BorderSide{Width: 1, Style: css.BorderSolid, Color: css.Color{A: 255}}
+	if !uniformBorder(css.Borders{Top: s, Right: s, Bottom: s, Left: s}) {
+		t.Error("identical sides should be uniform")
+	}
+	diff := s
+	diff.Width = 2
+	if uniformBorder(css.Borders{Top: s, Right: diff, Bottom: s, Left: s}) {
+		t.Error("differing sides should not be uniform")
+	}
+}
+
+// TestPaintRoundedNonUniformBorderFallsBack: a rounded box whose borders differ
+// per side falls back to straight per-edge fills (each edge still drawn).
+func TestPaintRoundedNonUniformBorderFallsBack(t *testing.T) {
+	f := NewFonts()
+	dst := white(40, 40)
+	box := &layout.Box{
+		Node: &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{BorderRadius: css.Length{Px: 8}, Border: css.Borders{
+			Top:  css.BorderSide{Width: 2, Style: css.BorderSolid, Color: css.Color{R: 255, A: 255}},
+			Left: css.BorderSide{Width: 2, Style: css.BorderSolid, Color: css.Color{B: 255, A: 255}},
+		}},
+		X: 0, Y: 0, W: 40, H: 40,
+	}
+	Paint(dst, box, f, nil)
+	if c := dst.RGBAAt(20, 0); c.R != 255 {
+		t.Errorf("non-uniform top edge = %+v, want red straight fill", c)
+	}
+	if c := dst.RGBAAt(0, 20); c.B != 255 {
+		t.Errorf("non-uniform left edge = %+v, want blue straight fill", c)
+	}
+}
+
 func TestPaintBorderStyleNoneNotDrawn(t *testing.T) {
 	f := NewFonts()
 	dst := white(10, 10)

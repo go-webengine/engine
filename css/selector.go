@@ -180,15 +180,132 @@ func prevElementSibling(n *dom.Node) *dom.Node {
 }
 
 // ParseSelectorList parses a comma-separated selector list, skipping empty and
-// unparseable entries.
+// unparseable entries. Commas inside functional pseudo-classes (`:is(a, b)`) are
+// respected (not treated as list separators), and `:is()` / `:where()` /
+// `:matches()` wrappers are expanded into plain selectors — the form modern
+// Tailwind emits for its dark-mode and variant rules
+// (`:is(.dark .dark\:bg-wash-dark)`).
 func ParseSelectorList(s string) []Selector {
 	var out []Selector
-	for _, part := range strings.Split(s, ",") {
-		if sel, ok := parseComplex(part); ok {
-			out = append(out, sel)
+	for _, part := range splitSelectorCommas(s) {
+		for _, expanded := range expandFunctionalPseudos(part) {
+			if sel, ok := parseComplex(expanded); ok {
+				out = append(out, sel)
+			}
 		}
 	}
 	return out
+}
+
+// splitTopLevelComma splits a selector list on commas that are not nested inside
+// parentheses or square brackets.
+func splitSelectorCommas(s string) []string {
+	var parts []string
+	depth := 0
+	start := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++ // skip escaped char
+		case '(', '[':
+			depth++
+		case ')', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				parts = append(parts, s[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(parts, s[start:])
+}
+
+// expandFunctionalPseudos rewrites a single complex selector so that the first
+// `:is(...)` / `:where(...)` / `:matches(...)` it contains is spliced out: each
+// alternative inside the parentheses is substituted in place, and the result is
+// expanded again (so nested/multiple wrappers resolve). Splicing works whether
+// the wrapper is a compound part (`h1:is(.a,.b)` → `h1.a`, `h1.b`) or sits in a
+// descendant chain (`:is(.dark .foo)` → `.dark .foo`). Specificity of `:where`
+// is approximated as its argument's (a minor over-count that does not affect
+// these pages). Selectors with no such wrapper are returned unchanged.
+func expandFunctionalPseudos(sel string) []string {
+	open, argOpen := findFunctionalPseudo(sel)
+	if open < 0 {
+		return []string{sel}
+	}
+	close, ok := matchParenAt(sel, argOpen)
+	if !ok {
+		return []string{sel} // malformed; leave as-is (will likely fail to parse)
+	}
+	prefix := sel[:open]
+	suffix := sel[close+1:]
+	inner := sel[argOpen+1 : close]
+	var out []string
+	for _, alt := range splitSelectorCommas(inner) {
+		alt = strings.TrimSpace(alt)
+		if alt == "" {
+			continue
+		}
+		out = append(out, expandFunctionalPseudos(prefix+alt+suffix)...)
+	}
+	if len(out) == 0 {
+		// An empty :is()/:where() matches nothing; drop the wrapper's effect by
+		// keeping the surrounding selector.
+		return expandFunctionalPseudos(prefix + suffix)
+	}
+	return out
+}
+
+// findFunctionalPseudo returns the index of the ':' starting the first
+// :is(/:where(/:matches( pseudo (unescaped), and the index of its '('. It
+// returns (-1,-1) when none is present.
+func findFunctionalPseudo(s string) (colon, paren int) {
+	ls := strings.ToLower(s)
+	for _, name := range []string{":is(", ":where(", ":matches("} {
+		if i := indexUnescaped(ls, name); i >= 0 {
+			return i, i + len(name) - 1
+		}
+	}
+	return -1, -1
+}
+
+// indexUnescaped returns the index of the first occurrence of sub in s that is
+// not immediately preceded by a backslash.
+func indexUnescaped(s, sub string) int {
+	from := 0
+	for {
+		i := strings.Index(s[from:], sub)
+		if i < 0 {
+			return -1
+		}
+		abs := from + i
+		if abs == 0 || s[abs-1] != '\\' {
+			return abs
+		}
+		from = abs + 1
+	}
+}
+
+// matchParenAt returns the index of the ')' matching the '(' at open.
+func matchParenAt(s string, open int) (int, bool) {
+	depth := 0
+	for i := open; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // parseComplex parses one complex selector into a compound chain, keeping the
@@ -279,15 +396,19 @@ func tokenizeSelector(s string) []selToken {
 }
 
 // parseSimple parses a single compound with no combinators, e.g. "a.foo#bar".
+// It respects CSS identifier escapes: a backslash escapes the next character, so
+// a class token like `.dark\:bg-wash-dark` (Tailwind's `dark:`, `sm:`, `lg:`
+// variant syntax) is parsed as the single class `dark:bg-wash-dark` rather than
+// being truncated at the colon. Without this, no Tailwind variant class matches.
 func parseSimple(s string) (compound, bool) {
 	var c compound
-	// Handle pseudo-classes/elements. ":root" is honoured (it selects the
-	// document root, where custom properties are typically declared); the dynamic
-	// interaction pseudo-classes mark the compound so it never matches in a static
-	// render; every other pseudo (":nth-child", "::before", …) is dropped as
-	// unmodelled.
-	if i := strings.IndexByte(s, ':'); i >= 0 {
-		for _, p := range strings.Split(strings.ToLower(s[i:]), ":") {
+	// Handle pseudo-classes/elements at the first UNescaped ':'. ":root" is
+	// honoured (it selects the document root, where custom properties are
+	// typically declared); the dynamic interaction pseudo-classes mark the
+	// compound so it never matches in a static render; every other pseudo
+	// (":nth-child", "::before", …) is dropped as unmodelled.
+	if base, pseudo, ok := splitUnescaped(s, ':'); ok {
+		for _, p := range strings.Split(strings.ToLower(pseudo), ":") {
 			if p == "root" {
 				c.Root = true
 			}
@@ -295,37 +416,27 @@ func parseSimple(s string) (compound, bool) {
 				c.Dynamic = true
 			}
 		}
-		s = s[:i]
+		s = base
 	}
 	// Drop attribute selectors ("[type=text]"): the constraint is not modelled,
 	// so the compound reduces to its tag/class/id prefix.
-	if i := strings.IndexByte(s, '['); i >= 0 {
-		s = s[:i]
+	if base, _, ok := splitUnescaped(s, '['); ok {
+		s = base
 	}
 	if s == "*" {
 		return compound{Univ: true, Root: c.Root, Dynamic: c.Dynamic}, true
 	}
-	i := 0
-	for i < len(s) && s[i] != '.' && s[i] != '#' {
-		i++
-	}
-	c.Tag = strings.ToLower(s[:i])
-	for i < len(s) {
-		kind := s[i]
-		i++
-		start := i
-		for i < len(s) && s[i] != '.' && s[i] != '#' {
-			i++
-		}
-		name := s[start:i]
-		if name == "" {
+	tag, parts := scanCompound(s)
+	c.Tag = strings.ToLower(tag)
+	for _, p := range parts {
+		if p.name == "" {
 			continue
 		}
-		switch kind {
+		switch p.kind {
 		case '.':
-			c.Classes = append(c.Classes, name)
+			c.Classes = append(c.Classes, p.name)
 		case '#':
-			c.ID = name
+			c.ID = p.name
 		}
 	}
 	// A compound with no tag/class/id/:root and no universal reduces to nothing —
@@ -336,6 +447,60 @@ func parseSimple(s string) (compound, bool) {
 		return compound{}, false
 	}
 	return c, true
+}
+
+// splitUnescaped splits s at the first occurrence of sep that is not preceded by
+// a backslash escape, returning the text before it, the text from sep onward,
+// and whether a separator was found.
+func splitUnescaped(s string, sep byte) (before, after string, found bool) {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' {
+			i++ // skip the escaped character
+			continue
+		}
+		if s[i] == sep {
+			return s[:i], s[i:], true
+		}
+	}
+	return s, "", false
+}
+
+type compoundPart struct {
+	kind byte // '.' for class, '#' for id
+	name string
+}
+
+// scanCompound splits a compound base (no pseudo, no attribute) into its leading
+// tag and its class/id parts, unescaping backslash escapes in each identifier.
+// An unescaped '.' or '#' starts a new class/id; an escaped one is a literal
+// character of the current identifier.
+func scanCompound(s string) (tag string, parts []compoundPart) {
+	var cur strings.Builder
+	kind := byte(0) // 0 == the leading tag
+	flush := func() {
+		if kind == 0 {
+			tag = cur.String()
+		} else {
+			parts = append(parts, compoundPart{kind: kind, name: cur.String()})
+		}
+		cur.Reset()
+	}
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\\' && i+1 < len(s) {
+			cur.WriteByte(s[i+1]) // literal escaped character
+			i++
+			continue
+		}
+		if ch == '.' || ch == '#' {
+			flush()
+			kind = ch
+			continue
+		}
+		cur.WriteByte(ch)
+	}
+	flush()
+	return tag, parts
 }
 
 // isDynamicPseudo reports whether a pseudo token (already lower-cased, with any
