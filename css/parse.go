@@ -153,7 +153,12 @@ func ParseDeclarations(body string) []Declaration {
 		if colon < 0 {
 			continue
 		}
-		prop := strings.ToLower(strings.TrimSpace(chunk[:colon]))
+		prop := strings.TrimSpace(chunk[:colon])
+		// Custom-property names (--foo) are case-sensitive; normal property names
+		// are case-insensitive and canonicalised to lower case.
+		if !isCustomProperty(prop) {
+			prop = strings.ToLower(prop)
+		}
 		val := strings.TrimSpace(chunk[colon+1:])
 		// Strip a trailing !important marker (its precedence is not modelled).
 		if idx := strings.LastIndex(strings.ToLower(val), "!important"); idx >= 0 {
