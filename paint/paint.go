@@ -30,6 +30,11 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 			toPainter(box.Style.Background),
 		)
 	}
+	// Borders paint on real element boxes only (anonymous boxes carry the
+	// parent's style but no border of their own).
+	if box.Style != nil && !box.Anonymous && box.W > 0 && box.H > 0 {
+		paintBorders(pp, box)
+	}
 	for _, line := range box.Lines {
 		for _, it := range line.Items {
 			paintItem(dst, it, f, imgs)
@@ -39,6 +44,39 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 		paintBox(dst, pp, ch, f, imgs)
 	}
 }
+
+// paintBorders draws the four border edges of a box as solid rectangles.
+func paintBorders(pp *painter.PixelPainter, box *layout.Box) {
+	bd := box.Style.Border
+	x, y := int(box.X), int(box.Y)
+	w, h := int(box.W), int(box.H)
+	fill := func(rx, ry, rw, rh int, c css.Color) {
+		if rw <= 0 || rh <= 0 || c.A == 0 {
+			return
+		}
+		pp.FillRect(painter.Rect{X: rx, Y: ry, W: rw, H: rh}, toPainter(c))
+	}
+	if paintsSide(bd.Top) {
+		fill(x, y, w, iround(bd.Top.Width), bd.Top.Color)
+	}
+	if paintsSide(bd.Bottom) {
+		bw := iround(bd.Bottom.Width)
+		fill(x, y+h-bw, w, bw, bd.Bottom.Color)
+	}
+	if paintsSide(bd.Left) {
+		fill(x, y, iround(bd.Left.Width), h, bd.Left.Color)
+	}
+	if paintsSide(bd.Right) {
+		bw := iround(bd.Right.Width)
+		fill(x+w-bw, y, bw, h, bd.Right.Color)
+	}
+}
+
+func paintsSide(s css.BorderSide) bool {
+	return s.Width > 0 && s.Style != css.BorderNone && s.Color.A > 0
+}
+
+func iround(f float64) int { return int(f + 0.5) }
 
 func paintItem(dst *image.RGBA, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image) {
 	if it.Image != nil {

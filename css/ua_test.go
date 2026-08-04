@@ -9,14 +9,38 @@ import "testing"
 // stylesheet switch so its defaults are all covered and sane.
 func TestUADeclarationsAllBranches(t *testing.T) {
 	blockish := []string{"html", "body", "div", "section", "article", "header",
-		"footer", "nav", "main", "aside", "figure", "table", "tr", "form", "hr",
+		"footer", "nav", "main", "aside", "figure", "form", "hr",
 		"blockquote", "pre", "address", "fieldset", "figcaption", "p",
-		"h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "dd", "dt"}
+		"h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "dd", "dt", "dl",
+		"caption"}
 	for _, tag := range blockish {
 		decls := uaDeclarations(tag)
 		if !hasDisplay(decls, "block") {
 			t.Errorf("%s: expected display:block, got %v", tag, decls)
 		}
+	}
+	// Table-family default displays.
+	tableDisplays := map[string]string{
+		"table": "table", "tr": "table-row", "td": "table-cell",
+		"th": "table-cell", "thead": "table-row-group", "tbody": "table-row-group",
+		"tfoot": "table-row-group",
+	}
+	for tag, want := range tableDisplays {
+		if !hasDisplay(uaDeclarations(tag), want) {
+			t.Errorf("%s: expected display:%s", tag, want)
+		}
+	}
+	if !hasDecl(uaDeclarations("th"), "font-weight", "bold") {
+		t.Error("th should be bold")
+	}
+	if !hasDecl(uaDeclarations("td"), "padding", "1px") {
+		t.Error("td padding")
+	}
+	if !hasDecl(uaDeclarations("dd"), "margin-left", "40px") {
+		t.Error("dd margin-left")
+	}
+	if !hasDecl(uaDeclarations("figure"), "margin", "16px 40px") {
+		t.Error("figure margin")
 	}
 	inlineish := []string{"span", "label", "abbr", "sup", "sub", "mark", "u", "s",
 		"del", "ins", "time", "q", "img", "button", "input", "select", "textarea"}

@@ -1,0 +1,414 @@
+// Copyright (c) the go-webengine/engine authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+package layout
+
+import (
+	"testing"
+
+	"github.com/go-webengine/engine/css"
+	"github.com/go-webengine/engine/dom"
+)
+
+// ---- box model: margin:auto, max/min-width, box-sizing, borders ------------
+
+func TestMarginAutoCentering(t *testing.T) {
+	// width 600, margin:0 auto in a 1024 viewport (body margin 0).
+	src := `<html><body style="margin:0"><div style="width:600px;margin:0 auto">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	assertF(t, "centred.X", div.X, 212) // (1024-600)/2
+	assertF(t, "centred.W", div.W, 600)
+	assertF(t, "centred.ContentW", div.ContentW, 600)
+}
+
+func TestMarginLeftAutoPushesRight(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:200px;margin-left:auto">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 500), "div")
+	assertF(t, "pushed.X", div.X, 300) // 500-200
+}
+
+func TestMaxWidthClampAndCentre(t *testing.T) {
+	// width auto but max-width 600 with margin auto → clamps then centres.
+	src := `<html><body style="margin:0"><div style="max-width:600px;margin:0 auto">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1000), "div")
+	assertF(t, "maxw.ContentW", div.ContentW, 600)
+	assertF(t, "maxw.X", div.X, 200) // (1000-600)/2
+}
+
+func TestMinWidthClamp(t *testing.T) {
+	// width 50 but min-width 120 → clamps up to 120.
+	src := `<html><body style="margin:0"><div style="width:50px;min-width:120px">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 500), "div")
+	assertF(t, "minw.ContentW", div.ContentW, 120)
+}
+
+func TestBoxSizingBorderBox(t *testing.T) {
+	// border-box: width 200 includes 10px padding each side and 5px border each
+	// side → content width 200 - 20 - 10 = 170; border box width stays 200.
+	src := `<html><body style="margin:0"><div style="box-sizing:border-box;width:200px;padding:10px;border:5px solid black">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 500), "div")
+	assertF(t, "bb.ContentW", div.ContentW, 170)
+	assertF(t, "bb.W", div.W, 200)
+}
+
+func TestBordersAddToBoxWidthHeight(t *testing.T) {
+	// content-box: width 100 + padding 10 + border 4 on each side.
+	src := `<html><body style="margin:0"><div style="width:100px;padding:10px;border:4px solid red">hi</div></body></html>`
+	div := findBox(layoutHTML(t, src, 500), "div")
+	assertF(t, "bx.W", div.W, 128)        // 4+10+100+10+4
+	assertF(t, "bx.ContentX", div.ContentX, 14) // border 4 + padding 10
+	// height: border 4 + padding 10 + one 20px line + padding 10 + border 4.
+	assertF(t, "bx.H", div.H, 48)
+	assertF(t, "bx.ContentY", div.ContentY, 14)
+}
+
+func TestBorderStyleNoneNoWidth(t *testing.T) {
+	// border-style:none means the border reserves no space even with a width.
+	src := `<html><body style="margin:0"><div style="width:100px;border-width:10px;border-style:none">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 500), "div")
+	assertF(t, "nonborder.W", div.W, 100)
+}
+
+// ---- margin collapsing -----------------------------------------------------
+
+func TestAdjacentSiblingMarginsCollapse(t *testing.T) {
+	// Two blocks with 20px bottom / 30px top margins collapse to max(20,30)=30.
+	src := `<html><body style="margin:0;padding:0">` +
+		`<div style="margin:0 0 20px 0;padding:0">a</div>` +
+		`<div style="margin:30px 0 0 0;padding:0">b</div></body></html>`
+	body := findBox(layoutHTML(t, src, 500), "body")
+	a, b := body.Children[0], body.Children[1]
+	assertF(t, "a.Y", a.Y, 0)
+	assertF(t, "a.H", a.H, 20)
+	// gap = max(20,30) = 30, so b.Y = 20 + 30 = 50.
+	assertF(t, "b.Y", b.Y, 50)
+}
+
+func TestParentFirstChildMarginCollapse(t *testing.T) {
+	// body margin 0 padding 0; first child p margin-top 40 collapses through the
+	// parent, so the p (and the body) start at y=40.
+	src := `<html><body style="margin:0;padding:0">` +
+		`<p style="margin:40px 0 0 0">hi</p></body></html>`
+	root := layoutHTML(t, src, 500)
+	body := findBox(root, "body")
+	p := findBox(root, "p")
+	assertF(t, "collapse.p.Y", p.Y, 40)
+	assertF(t, "collapse.body.Y", body.Y, 40) // border-top follows first child
+}
+
+func TestPaddingBlocksParentChildCollapse(t *testing.T) {
+	// With padding-top on the parent, the child's top margin does NOT collapse
+	// through: parent border-top at 0, content at 10, child at 10+40 = 50.
+	src := `<html><body style="margin:0;padding:10px 0 0 0">` +
+		`<p style="margin:40px 0 0 0">hi</p></body></html>`
+	root := layoutHTML(t, src, 500)
+	body := findBox(root, "body")
+	p := findBox(root, "p")
+	assertF(t, "noc.body.Y", body.Y, 0)
+	assertF(t, "noc.p.Y", p.Y, 50)
+}
+
+func TestNegativeMarginCollapse(t *testing.T) {
+	// collapse(20, -8) = 20 + (-8) = 12.
+	if got := collapse(20, -8); got != 12 {
+		t.Errorf("collapse(20,-8) = %v want 12", got)
+	}
+	if got := collapse(-5, -8); got != -8 {
+		t.Errorf("collapse(-5,-8) = %v want -8", got)
+	}
+	if got := collapse(0, 0); got != 0 {
+		t.Errorf("collapse(0,0) = %v", got)
+	}
+}
+
+// ---- floats ----------------------------------------------------------------
+
+func TestFloatRightTextFlowsLeft(t *testing.T) {
+	src := `<html><body style="margin:0">` +
+		`<div style="float:right;width:100px;height:50px">F</div>` +
+		`<p style="margin:0">a b c d e f g h i j</p></body></html>`
+	root := layoutHTML(t, src, 300)
+	p := findBox(root, "p")
+	// The paragraph block is full width, but its first line shrinks to avoid the
+	// 100px-wide right float: available width 300 - 100 = 200, starting at x=0.
+	assertF(t, "float.p.ContentW", p.ContentW, 300)
+	assertF(t, "float.line0.W", p.Lines[0].W, 200)
+	assertF(t, "float.line0.X", p.Lines[0].X, 0)
+}
+
+func TestFloatLeftPlacementAndTextOffset(t *testing.T) {
+	src := `<html><body style="margin:0">` +
+		`<div style="float:left;width:80px;height:40px">F</div>` +
+		`<p style="margin:0">a b c d e</p></body></html>`
+	root := layoutHTML(t, src, 400)
+	f := findFloatBox(root)
+	assertF(t, "floatL.X", f.X, 0)
+	assertF(t, "floatL.Y", f.Y, 0)
+	p := findBox(root, "p")
+	// First line begins to the right of the 80px float.
+	assertF(t, "floatL.line0.X", p.Lines[0].X, 80)
+}
+
+func findFloatBox(b *Box) *Box {
+	if b == nil {
+		return nil
+	}
+	if b.Float != css.FloatNone {
+		return b
+	}
+	for _, c := range b.Children {
+		if got := findFloatBox(c); got != nil {
+			return got
+		}
+	}
+	return nil
+}
+
+func TestFloatClear(t *testing.T) {
+	// A cleared block drops below a preceding float.
+	src := `<html><body style="margin:0">` +
+		`<div style="float:left;width:50px;height:60px">F</div>` +
+		`<div style="clear:left;margin:0;padding:0">x</div></body></html>`
+	root := layoutHTML(t, src, 300)
+	cleared := findBoxWithText(root, "x")
+	assertF(t, "clear.Y", cleared.Y, 60) // below the 60px-tall float
+}
+
+func findBoxWithText(b *Box, want string) *Box {
+	if b == nil {
+		return nil
+	}
+	for _, line := range b.Lines {
+		for _, it := range line.Items {
+			if it.Text == want {
+				return b
+			}
+		}
+	}
+	for _, c := range b.Children {
+		if got := findBoxWithText(c, want); got != nil {
+			return got
+		}
+	}
+	return nil
+}
+
+func TestFloatStacksWhenNoRoom(t *testing.T) {
+	// Two left floats each 200 wide in a 300 region: the second drops below the
+	// first (no room beside it).
+	src := `<html><body style="margin:0">` +
+		`<div style="float:left;width:200px;height:30px" id="f1">A</div>` +
+		`<div style="float:left;width:200px;height:30px" id="f2">B</div>` +
+		`<p style="margin:0">t</p></body></html>`
+	root := layoutHTML(t, src, 300)
+	f1 := findBoxByID(root, "f1")
+	f2 := findBoxByID(root, "f2")
+	assertF(t, "f1.Y", f1.Y, 0)
+	assertF(t, "f2.Y", f2.Y, 30) // dropped below f1
+	assertF(t, "f2.X", f2.X, 0)
+}
+
+func findBoxByID(b *Box, id string) *Box {
+	if b == nil {
+		return nil
+	}
+	if b.Node != nil && b.Node.Type == dom.Element && b.Node.ID() == id {
+		return b
+	}
+	for _, c := range b.Children {
+		if got := findBoxByID(c, id); got != nil {
+			return got
+		}
+	}
+	return nil
+}
+
+// ---- flexbox ---------------------------------------------------------------
+
+func TestFlexRowBasic(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex">` +
+		`<div style="width:100px">A</div><div style="width:100px">B</div></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	if len(outer.Children) != 2 {
+		t.Fatalf("flex children = %d", len(outer.Children))
+	}
+	assertF(t, "flexA.X", outer.Children[0].X, 0)
+	assertF(t, "flexB.X", outer.Children[1].X, 100)
+	assertF(t, "flexA.Y", outer.Children[0].Y, 0)
+	assertF(t, "flexB.Y", outer.Children[1].Y, 0)
+}
+
+func TestFlexJustifyContentSpaceBetween(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex;justify-content:space-between">` +
+		`<div style="width:100px">A</div><div style="width:100px">B</div></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	// leftover = 300 - 200 = 100 between two items → gap 100.
+	assertF(t, "sb.A.X", outer.Children[0].X, 0)
+	assertF(t, "sb.B.X", outer.Children[1].X, 200)
+}
+
+func TestFlexJustifyCenter(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex;justify-content:center">` +
+		`<div style="width:100px">A</div></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	assertF(t, "center.A.X", outer.Children[0].X, 100) // (300-100)/2
+}
+
+func TestFlexGrow(t *testing.T) {
+	// One item with flex-grow:1 absorbs all free space.
+	src := `<html><body style="margin:0"><div style="display:flex">` +
+		`<div style="width:100px">A</div>` +
+		`<div style="width:100px;flex-grow:1">B</div></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	a, b := outer.Children[0], outer.Children[1]
+	assertF(t, "grow.A.W", a.W, 100)
+	assertF(t, "grow.B.W", b.W, 200) // 100 base + 100 free
+	assertF(t, "grow.B.X", b.X, 100)
+}
+
+func TestFlexShrink(t *testing.T) {
+	// Two 200px items in a 300px container both with shrink 1 shrink equally.
+	src := `<html><body style="margin:0"><div style="display:flex">` +
+		`<div style="width:200px">A</div><div style="width:200px">B</div></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	// free = 300 - 400 = -100, split by shrink equally → each 200 - 50 = 150.
+	assertF(t, "shrink.A.W", outer.Children[0].W, 150)
+	assertF(t, "shrink.B.W", outer.Children[1].W, 150)
+	assertF(t, "shrink.B.X", outer.Children[1].X, 150)
+}
+
+func TestFlexAlignItemsCenter(t *testing.T) {
+	// Items of different heights, align-items:center on the cross axis.
+	src := `<html><body style="margin:0"><div style="display:flex;align-items:center">` +
+		`<div style="width:50px;height:20px">A</div>` +
+		`<div style="width:50px;height:60px">B</div></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	a := outer.Children[0]
+	// container cross = 60; A (20 tall) centred → offset (60-20)/2 = 20.
+	assertF(t, "aic.A.Y", a.Y, 20)
+	assertF(t, "aic.B.Y", outer.Children[1].Y, 0)
+}
+
+func TestFlexColumn(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex;flex-direction:column">` +
+		`<div style="height:30px">A</div><div style="height:40px">B</div></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	assertF(t, "col.A.Y", outer.Children[0].Y, 0)
+	assertF(t, "col.B.Y", outer.Children[1].Y, 30)
+}
+
+func TestFlexEmpty(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex"></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	if len(outer.Children) != 0 {
+		t.Errorf("empty flex children = %d", len(outer.Children))
+	}
+}
+
+// ---- tables ----------------------------------------------------------------
+
+func TestTableTwoCells(t *testing.T) {
+	src := `<html><body style="margin:0"><table style="width:200px"><tr>` +
+		`<td style="padding:0">A</td><td style="padding:0">B</td></tr></table></body></html>`
+	tbl := findBox(layoutHTML(t, src, 300), "table")
+	if len(tbl.Children) != 1 {
+		t.Fatalf("rows = %d", len(tbl.Children))
+	}
+	row := tbl.Children[0]
+	if len(row.Children) != 2 {
+		t.Fatalf("cells = %d", len(row.Children))
+	}
+	c0, c1 := row.Children[0], row.Children[1]
+	// Equal natural widths → each column 100 of the 200 table width.
+	assertF(t, "cell0.X", c0.X, 0)
+	assertF(t, "cell0.W", c0.W, 100)
+	assertF(t, "cell1.X", c1.X, 100)
+	assertF(t, "cell1.W", c1.W, 100)
+	assertF(t, "row.H", row.H, 20) // one 20px line tall
+}
+
+func TestTableColumnWidthsFromContent(t *testing.T) {
+	// Cell A has one word (10px), cell B has "xx xx" content. Column widths
+	// scale from natural max-content widths.
+	src := `<html><body style="margin:0"><table style="width:300px"><tr>` +
+		`<td style="padding:0">x</td><td style="padding:0">xxxxx</td></tr></table></body></html>`
+	tbl := findBox(layoutHTML(t, src, 400), "table")
+	row := tbl.Children[0]
+	c0, c1 := row.Children[0], row.Children[1]
+	// natural: col0 = 10, col1 = 50; sum 60; scale 300/60 = 5 → 50 and 250.
+	assertF(t, "tc.c0.W", c0.W, 50)
+	assertF(t, "tc.c1.W", c1.W, 250)
+	assertF(t, "tc.c1.X", c1.X, 50)
+}
+
+func TestTableRowGroup(t *testing.T) {
+	src := `<html><body style="margin:0"><table style="width:200px"><tbody>` +
+		`<tr><td style="padding:0">A</td></tr>` +
+		`<tr><td style="padding:0">B</td></tr></tbody></table></body></html>`
+	tbl := findBox(layoutHTML(t, src, 300), "table")
+	if len(tbl.Children) != 2 {
+		t.Fatalf("tbody rows = %d", len(tbl.Children))
+	}
+	assertF(t, "rg.row0.Y", tbl.Children[0].Y, 0)
+	assertF(t, "rg.row1.Y", tbl.Children[1].Y, 20)
+}
+
+func TestTableEmpty(t *testing.T) {
+	// A table with no rows lays out to nothing (no panic).
+	src := `<html><body style="margin:0"><table style="width:100px"></table></body></html>`
+	tbl := findBox(layoutHTML(t, src, 300), "table")
+	if len(tbl.Children) != 0 {
+		t.Errorf("empty table children = %d", len(tbl.Children))
+	}
+}
+
+// ---- line-height -----------------------------------------------------------
+
+func TestLineHeightExplicit(t *testing.T) {
+	// line-height 40 makes each line 40px tall (fake font natural height 20).
+	src := `<html><body style="margin:0"><div style="line-height:40px;width:35px">a b c d</div></body></html>`
+	div := findBox(layoutHTML(t, src, 300), "div")
+	if len(div.Lines) != 2 {
+		t.Fatalf("lines = %d", len(div.Lines))
+	}
+	assertF(t, "lh.line0.H", div.Lines[0].H, 40)
+	assertF(t, "lh.div.H", div.H, 80)
+}
+
+func TestLineHeightUnitlessMultiplier(t *testing.T) {
+	// line-height 2 with font-size 16 → 32px lines (fake metrics ignore size but
+	// the multiplier resolves against the em, giving 32).
+	src := `<html><body style="margin:0"><div style="font-size:16px;line-height:2">hi</div></body></html>`
+	div := findBox(layoutHTML(t, src, 300), "div")
+	assertF(t, "lhm.line0.H", div.Lines[0].H, 32)
+}
+
+// ---- inline-block and display fallbacks ------------------------------------
+
+func TestInlineBlockTreatedInline(t *testing.T) {
+	// inline-block participates in the inline run (does not break the line).
+	src := `<html><body style="margin:0"><div style="margin:0;padding:0">` +
+		`x<span style="display:inline-block">y</span>z</div></body></html>`
+	items := firstLineItems(findBox(layoutHTML(t, src, 300), "div"))
+	if len(items) != 3 {
+		t.Fatalf("inline-block items = %v", texts(items))
+	}
+}
+
+func TestFlexContainerHeight(t *testing.T) {
+	// The flex container's height reflects its tallest item (cross size).
+	src := `<html><body style="margin:0"><div style="display:flex;margin:0;padding:0">` +
+		`<div style="width:50px;height:60px">A</div>` +
+		`<div style="width:50px;height:30px">B</div></div></body></html>`
+	outer := findBox(layoutHTML(t, src, 300), "div")
+	assertF(t, "flexh.H", outer.H, 60)
+}
+
+func TestTableContainerHeight(t *testing.T) {
+	// The table box height is the sum of its row heights.
+	src := `<html><body style="margin:0"><table style="width:200px;margin:0;padding:0"><tbody>` +
+		`<tr><td style="padding:0">A</td></tr>` +
+		`<tr><td style="padding:0">B</td></tr></tbody></table></body></html>`
+	tbl := findBox(layoutHTML(t, src, 300), "table")
+	assertF(t, "tableh.H", tbl.H, 40) // two 20px rows
+}

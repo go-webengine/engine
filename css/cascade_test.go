@@ -129,3 +129,40 @@ func TestCascadeSkipsNonElements(t *testing.T) {
 		t.Error("expected some element styles (html/body auto-inserted)")
 	}
 }
+
+func TestCascadeVWExternalSheetsAndMedia(t *testing.T) {
+	root, err := dom.Parse(`<html><body><div class="box"><p class="lead">hi</p></div></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := []string{`.box { background-color: #eee } .lead { color: red }`}
+	sm := CascadeVW(root, 1024, external)
+	div := dom.Find(root, "div")
+	if sm[div].Background != (Color{0xee, 0xee, 0xee, 255}) {
+		t.Errorf("external .box background = %+v", sm[div].Background)
+	}
+	p := dom.Find(root, "p")
+	if sm[p].Color != (Color{255, 0, 0, 255}) {
+		t.Errorf("external .lead color = %+v", sm[p].Color)
+	}
+}
+
+func TestCascadeVWMediaWidth(t *testing.T) {
+	src := `<html><head><style>
+	@media (min-width: 640px) { .side { float: right; width: 200px } }
+	@media (max-width: 639px) { .side { float: none } }
+	</style></head><body><div class="side">x</div></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	div := dom.Find(root, "div")
+	// Desktop width: the min-width rule floats it right.
+	if st := CascadeVW(root, 1024, nil)[div]; st.Float != FloatRight || st.Width.Px != 200 {
+		t.Errorf("desktop side = float %v width %+v", st.Float, st.Width)
+	}
+	// Narrow width: the mobile rule wins (float none).
+	if st := CascadeVW(root, 480, nil)[div]; st.Float != FloatNone {
+		t.Errorf("mobile side float = %v want none", st.Float)
+	}
+}

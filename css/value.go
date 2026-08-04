@@ -20,7 +20,7 @@ type Color struct{ R, G, B, A uint8 }
 // Transparent is the fully-transparent colour (the initial background-color).
 var Transparent = Color{}
 
-// Display is the subset of the display property Phase 0 understands.
+// Display is the subset of the display property the engine understands.
 type Display uint8
 
 const (
@@ -30,6 +30,137 @@ const (
 	DisplayBlock
 	// DisplayNone removes the element (and subtree) from layout.
 	DisplayNone
+	// DisplayInlineBlock is an atomic inline-level block (laid out as a block
+	// but participating inline; Phase 1 treats it as block for simplicity).
+	DisplayInlineBlock
+	// DisplayFlex is a block-level flex container.
+	DisplayFlex
+	// DisplayTable is a block-level table box.
+	DisplayTable
+	// DisplayTableRow is a table row box.
+	DisplayTableRow
+	// DisplayTableCell is a table cell box.
+	DisplayTableCell
+	// DisplayTableRowGroup is a thead/tbody/tfoot grouping box (transparent to
+	// the table's row collection).
+	DisplayTableRowGroup
+)
+
+// Float is the subset of the float property the engine understands.
+type Float uint8
+
+const (
+	// FloatNone is the initial value (no float).
+	FloatNone Float = iota
+	// FloatLeft floats the box to the left of its container.
+	FloatLeft
+	// FloatRight floats the box to the right of its container.
+	FloatRight
+)
+
+// Clear is the subset of the clear property the engine understands.
+type Clear uint8
+
+const (
+	// ClearNone is the initial value.
+	ClearNone Clear = iota
+	// ClearLeft clears past left floats.
+	ClearLeft
+	// ClearRight clears past right floats.
+	ClearRight
+	// ClearBoth clears past floats on both sides.
+	ClearBoth
+)
+
+// BoxSizing selects whether width/height apply to the content box or the
+// border box.
+type BoxSizing uint8
+
+const (
+	// ContentBox is the initial value: width is the content width.
+	ContentBox BoxSizing = iota
+	// BorderBox: width includes padding and border.
+	BorderBox
+)
+
+// BorderStyle is the subset of border-style the engine paints. Any non-none,
+// non-hidden line style renders as a solid line (dashed/dotted/etc. collapse to
+// solid at this fidelity).
+type BorderStyle uint8
+
+const (
+	// BorderNone is the initial value: no border line (even if width > 0).
+	BorderNone BorderStyle = iota
+	// BorderSolid renders a solid line of the border colour.
+	BorderSolid
+)
+
+// BorderSide is one edge's border: its width, line style and colour.
+type BorderSide struct {
+	Width float64
+	Style BorderStyle
+	Color Color
+}
+
+// paints reports whether the side draws a visible line.
+func (b BorderSide) paints() bool { return b.Width > 0 && b.Style != BorderNone && b.Color.A > 0 }
+
+// Borders is the four border edges of a box.
+type Borders struct{ Top, Right, Bottom, Left BorderSide }
+
+// Widths returns the four border widths as Edges (0 when the style is none, so
+// layout only reserves space for painted borders — matching a border-style:none
+// edge contributing no width even if border-width is set).
+func (b Borders) Widths() Edges {
+	w := func(s BorderSide) float64 {
+		if s.Style == BorderNone {
+			return 0
+		}
+		return s.Width
+	}
+	return Edges{Top: w(b.Top), Right: w(b.Right), Bottom: w(b.Bottom), Left: w(b.Left)}
+}
+
+// FlexDirection is the main-axis direction of a flex container.
+type FlexDirection uint8
+
+const (
+	// FlexRow lays items along the inline (horizontal) axis.
+	FlexRow FlexDirection = iota
+	// FlexColumn lays items along the block (vertical) axis.
+	FlexColumn
+)
+
+// Justify is the main-axis distribution (justify-content).
+type Justify uint8
+
+const (
+	// JustifyStart packs items at the main-start edge (initial value).
+	JustifyStart Justify = iota
+	// JustifyEnd packs items at the main-end edge.
+	JustifyEnd
+	// JustifyCenter centres items on the main axis.
+	JustifyCenter
+	// JustifySpaceBetween distributes free space between items.
+	JustifySpaceBetween
+	// JustifySpaceAround distributes free space around items.
+	JustifySpaceAround
+	// JustifySpaceEvenly distributes free space evenly incl. the ends.
+	JustifySpaceEvenly
+)
+
+// AlignItems is the cross-axis alignment (align-items).
+type AlignItems uint8
+
+const (
+	// AlignStretch stretches items to fill the cross axis (initial value).
+	AlignStretch AlignItems = iota
+	// AlignFlexStart aligns items at the cross-start edge.
+	AlignFlexStart
+	// AlignFlexEnd aligns items at the cross-end edge.
+	AlignFlexEnd
+	// AlignCenterItems centres items on the cross axis.
+	AlignCenterItems
 )
 
 // FontFamily is the generic font family a run is rendered with.
@@ -96,9 +227,41 @@ type Style struct {
 	FontFamily FontFamily
 	Margin     Edges
 	Padding    Edges
+	Border     Borders
 	Width      Length // Auto by default
+	MinWidth   Length // Auto (== none) by default
+	MaxWidth   Length // Auto (== none) by default
+	Height     Length // Auto by default
+	BoxSizing  BoxSizing
 	TextAlign  TextAlign
 	WhiteSpace WhiteSpace
+	LineHeight LineHeight
+
+	// Auto-margin flags: a margin explicitly set to `auto` centres or pushes the
+	// box; distinct from a 0 margin.
+	MarginLeftAuto  bool
+	MarginRightAuto bool
+
+	// Positioning that affects normal flow.
+	Float Float
+	Clear Clear
+
+	// Flex container properties (meaningful when Display == DisplayFlex).
+	FlexDirection  FlexDirection
+	JustifyContent Justify
+	AlignItems     AlignItems
+
+	// Flex item properties (meaningful for a child of a flex container).
+	FlexGrow   float64
+	FlexShrink float64
+	FlexBasis  Length // Auto == "auto" (use the item's width/content)
+}
+
+// LineHeight is a resolved line-height. Normal means "use the font's own line
+// height"; otherwise Px is the resolved height in pixels.
+type LineHeight struct {
+	Px     float64
+	Normal bool
 }
 
 // Bold reports whether the weight renders as bold.
@@ -115,7 +278,13 @@ func initialStyle() Style {
 		FontWeight: 400,
 		FontFamily: Serif, // UA default document font is serif
 		Width:      Length{Auto: true},
+		MinWidth:   Length{Auto: true},
+		MaxWidth:   Length{Auto: true},
+		Height:     Length{Auto: true},
+		FlexBasis:  Length{Auto: true},
+		FlexShrink: 1, // CSS initial flex-shrink is 1
 		TextAlign:  AlignLeft,
+		LineHeight: LineHeight{Normal: true},
 	}
 }
 
@@ -132,8 +301,14 @@ func inheritFrom(parent Style) Style {
 		FontWeight: parent.FontWeight,
 		FontFamily: parent.FontFamily,
 		Width:      Length{Auto: true}, // reset
-		TextAlign:  parent.TextAlign,
-		WhiteSpace: parent.WhiteSpace, // white-space is inherited
+		MinWidth:   Length{Auto: true},
+		MaxWidth:   Length{Auto: true},
+		Height:     Length{Auto: true},
+		FlexBasis:  Length{Auto: true},
+		FlexShrink: 1,
+		TextAlign:  parent.TextAlign,  // inherited
+		WhiteSpace: parent.WhiteSpace, // inherited
+		LineHeight: parent.LineHeight, // inherited
 	}
 }
 
@@ -258,6 +433,14 @@ func parseLength(s string, emRef float64) (Length, bool) {
 			return Length{}, false
 		}
 		return Length{Px: f}, true
+	case strings.HasSuffix(s, "rem"):
+		// rem is relative to the root font-size; approximated as 16px (the
+		// Phase-0 root size, matching most pages). Checked before "em".
+		f, err := strconv.ParseFloat(strings.TrimSpace(s[:len(s)-3]), 64)
+		if err != nil {
+			return Length{}, false
+		}
+		return Length{Px: f * 16}, true
 	case strings.HasSuffix(s, "em"):
 		f, err := strconv.ParseFloat(strings.TrimSpace(s[:len(s)-2]), 64)
 		if err != nil {
@@ -266,6 +449,15 @@ func parseLength(s string, emRef float64) (Length, bool) {
 		return Length{Px: f * emRef}, true
 	case strings.HasSuffix(s, "%"):
 		f, err := strconv.ParseFloat(strings.TrimSpace(s[:len(s)-1]), 64)
+		if err != nil {
+			return Length{}, false
+		}
+		return Length{Percent: f / 100, IsPercent: true}, true
+	case strings.HasSuffix(s, "vw"), strings.HasSuffix(s, "vh"):
+		// Viewport units are approximated as a percentage of the containing
+		// block width. For the root/body (whose containing block is the viewport)
+		// vw is exact; vh and nested vw are best-effort at this fidelity.
+		f, err := strconv.ParseFloat(strings.TrimSpace(s[:len(s)-2]), 64)
 		if err != nil {
 			return Length{}, false
 		}

@@ -34,7 +34,6 @@ func TestParseDeclarations(t *testing.T) {
 func TestParseStylesheet(t *testing.T) {
 	css := `
 	/* a comment */
-	@media screen { p { color: red } }
 	h1, .big { font-size: 30px; color: blue }
 	@font-face { src: url(x) }
 	broken {
@@ -49,6 +48,77 @@ func TestParseStylesheet(t *testing.T) {
 	}
 	if len(r.Declarations) != 2 {
 		t.Errorf("declarations = %v", r.Declarations)
+	}
+}
+
+func TestParseStylesheetMediaQueries(t *testing.T) {
+	css := `
+	@media (min-width: 640px) { .infobox { float: right; width: 22em } }
+	@media (max-width: 639px) { .infobox { float: none } }
+	@media print { p { color: red } }
+	@media screen { a { color: blue } }
+	@supports (display:grid) { div { display: grid } }
+	`
+	// At vw=1024: min-width:640 matches, max-width:639 does not, print never,
+	// screen matches, @supports skipped.
+	rules := ParseStylesheetVW(css, 1024)
+	got := map[string]string{}
+	for _, r := range rules {
+		for _, d := range r.Declarations {
+			got[d.Property] = d.Value
+		}
+	}
+	if got["float"] != "right" {
+		t.Errorf("min-width infobox float should apply, rules=%+v", rules)
+	}
+	if got["color"] != "blue" {
+		t.Error("screen media rule should apply")
+	}
+	if _, ok := got["display"]; ok {
+		t.Error("@supports should be skipped")
+	}
+	// The max-width:639 (mobile) and print rules must be excluded: exactly the
+	// two matching blocks (infobox + a) remain.
+	if len(rules) != 2 {
+		t.Errorf("expected 2 matching media rules, got %d: %+v", len(rules), rules)
+	}
+
+	// At a narrow viewport the mobile rule wins instead.
+	mobile := ParseStylesheetVW(css, 480)
+	var floatVal string
+	for _, r := range mobile {
+		for _, d := range r.Declarations {
+			if d.Property == "float" {
+				floatVal = d.Value
+			}
+		}
+	}
+	if floatVal != "none" {
+		t.Errorf("at 480px the mobile float:none should apply, got %q", floatVal)
+	}
+}
+
+func TestMediaMatches(t *testing.T) {
+	if mediaMatches("print", 1024) {
+		t.Error("print should not match")
+	}
+	if !mediaMatches("screen and (min-width: 640px)", 1024) {
+		t.Error("min-width 640 should match at 1024")
+	}
+	if mediaMatches("(min-width: 1200px)", 1024) {
+		t.Error("min-width 1200 should not match at 1024")
+	}
+	if !mediaMatches("(max-width: 1200px)", 1024) {
+		t.Error("max-width 1200 should match at 1024")
+	}
+	if mediaMatches("(max-width: 800px)", 1024) {
+		t.Error("max-width 800 should not match at 1024")
+	}
+	if !mediaMatches("all", 1024) {
+		t.Error("all should match")
+	}
+	if !mediaMatches("(min-width: abc)", 1024) {
+		t.Error("unparseable width feature is ignored (matches)")
 	}
 }
 
@@ -73,13 +143,18 @@ func TestApplyProperties(t *testing.T) {
 		t.Error("display none")
 	}
 	apply("display", "flex", 16)
-	if s.Display != DisplayBlock {
-		t.Error("flex→block")
+	if s.Display != DisplayFlex {
+		t.Error("display flex")
 	}
 	apply("display", "inline-block", 16)
-	if s.Display != DisplayInline {
-		t.Error("inline-block→inline")
+	if s.Display != DisplayInlineBlock {
+		t.Error("display inline-block")
 	}
+	apply("display", "table", 16)
+	if s.Display != DisplayTable {
+		t.Error("display table")
+	}
+	apply("display", "block", 16)
 	apply("background", "  #fff other", 16)
 	if s.Background != (Color{255, 255, 255, 255}) {
 		t.Errorf("background = %v", s.Background)

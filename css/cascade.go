@@ -27,11 +27,24 @@ type candidate struct {
 	order       int
 }
 
-// Cascade computes a style for every element in the tree rooted at root,
-// applying the user-agent stylesheet, author rules from every <style> element,
-// and inline style="" attributes, with proper specificity and inheritance.
+// Cascade computes styles at the default viewport width. See CascadeVW.
 func Cascade(root *dom.Node) StyleMap {
-	rules := collectAuthorRules(root)
+	return CascadeVW(root, DefaultViewportWidth, nil)
+}
+
+// CascadeVW computes a style for every element in the tree rooted at root,
+// applying the user-agent stylesheet, author rules from every <style> element
+// plus any externalSheets (already-fetched CSS text, e.g. <link> stylesheets),
+// and inline style="" attributes, with proper specificity and inheritance.
+// @media width queries are evaluated against viewport width vw.
+func CascadeVW(root *dom.Node, vw float64, externalSheets []string) StyleMap {
+	// External <link> stylesheets precede in-document <style> rules (they load in
+	// the head), so they take lower precedence at equal specificity.
+	var rules []Rule
+	for _, sheet := range externalSheets {
+		rules = append(rules, ParseStylesheetVW(sheet, vw)...)
+	}
+	rules = append(rules, collectAuthorRules(root, vw)...)
 	sm := StyleMap{}
 	var counter int
 	var walk func(n *dom.Node, parent Style)
@@ -114,8 +127,9 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style
 	return st
 }
 
-// collectAuthorRules parses every <style> element's text into rules.
-func collectAuthorRules(root *dom.Node) []Rule {
+// collectAuthorRules parses every <style> element's text into rules, evaluating
+// @media width queries against viewport width vw.
+func collectAuthorRules(root *dom.Node, vw float64) []Rule {
 	var sb strings.Builder
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
@@ -132,5 +146,5 @@ func collectAuthorRules(root *dom.Node) []Rule {
 		}
 	}
 	walk(root)
-	return ParseStylesheet(sb.String())
+	return ParseStylesheetVW(sb.String(), vw)
 }

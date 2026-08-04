@@ -29,3 +29,34 @@ func TestRunUnreachable(t *testing.T) {
 		t.Skipf("expected render failure (code 1), got %d (resolver may have answered)", code)
 	}
 }
+
+func TestRunFileOffline(t *testing.T) {
+	dir := t.TempDir()
+	htmlPath := filepath.Join(dir, "in.html")
+	if err := os.WriteFile(htmlPath, []byte(
+		`<html><head><title>T</title></head><body><div style="display:flex">`+
+			`<div style="width:40px">A</div><div style="width:40px">B</div></div></body></html>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "o.png")
+	if code := run([]string{"-file", htmlPath, "-out", out, "-w", "200", "-h", "100"}, os.Stderr); code != 0 {
+		t.Fatalf("run -file: code = %d, want 0", code)
+	}
+	if fi, err := os.Stat(out); err != nil || fi.Size() == 0 {
+		t.Fatalf("output png = %v %v", fi, err)
+	}
+}
+
+func TestRunFileMissing(t *testing.T) {
+	code := run([]string{"-file", filepath.Join(t.TempDir(), "nope.html"), "-out",
+		filepath.Join(t.TempDir(), "o.png")}, os.Stderr)
+	if code != 1 {
+		t.Errorf("missing file: code = %d, want 1", code)
+	}
+}
+
+func TestRunNeitherURLNorFile(t *testing.T) {
+	if code := run([]string{"-w", "100"}, os.Stderr); code != 2 {
+		t.Errorf("no url/file: code = %d, want 2", code)
+	}
+}
