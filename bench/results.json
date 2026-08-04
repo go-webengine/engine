@@ -1,0 +1,67 @@
+[
+  {
+    "url": "https://example.com/",
+    "webengine_ms": 284.077,
+    "chrome_ms": 2936.286,
+    "speed_ratio": 10.336232781957005,
+    "ssim": 0.9541768019122175,
+    "pixdiff_pct": 1.520538330078125,
+    "region_w": 1024,
+    "region_h": 768,
+    "montage": "out/example.com.png",
+    "webengine_ok": true,
+    "chrome_ok": true
+  },
+  {
+    "url": "https://en.wikipedia.org/wiki/Go_(programming_language)",
+    "webengine_ms": 1963.82,
+    "chrome_ms": 4944.226,
+    "speed_ratio": 2.517657422778055,
+    "ssim": 0.5961918549792579,
+    "pixdiff_pct": 15.566640625,
+    "region_w": 1024,
+    "region_h": 2500,
+    "montage": "out/en.wikipedia.org_wiki_Go_programming_language.png",
+    "webengine_ok": true,
+    "chrome_ok": true
+  },
+  {
+    "url": "https://pkg.go.dev/net/http",
+    "webengine_ms": 12394.032,
+    "chrome_ms": 5582.985,
+    "speed_ratio": 0.4504575266547642,
+    "ssim": 0.2671131137837329,
+    "pixdiff_pct": 98.7967578125,
+    "region_w": 1024,
+    "region_h": 2500,
+    "montage": "out/pkg.go.dev_net_http.png",
+    "webengine_ok": true,
+    "chrome_ok": true
+  },
+  {
+    "url": "https://go.dev/blog/",
+    "webengine_ms": 4897.581,
+    "chrome_ms": 3897.788,
+    "speed_ratio": 0.7958598336607399,
+    "ssim": 0.2328145499209656,
+    "pixdiff_pct": 98.2969990079365,
+    "region_w": 1024,
+    "region_h": 1575,
+    "montage": "out/go.dev_blog.png",
+    "webengine_ok": true,
+    "chrome_ok": true
+  },
+  {
+    "url": "https://react.dev/",
+    "webengine_ms": 4065.893,
+    "chrome_ms": 3532.056,
+    "speed_ratio": 0.8687036279606964,
+    "ssim": 0.2485046308211308,
+    "pixdiff_pct": 90.670859375,
+    "region_w": 1024,
+    "region_h": 2500,
+    "montage": "out/react.dev.png",
+    "webengine_ok": true,
+    "chrome_ok": true
+  }
+]

@@ -1,0 +1,17 @@
+# Baseline comparison set for webengine vs headless Chromium.
+# One URL per line; blank lines and #-comments are ignored.
+
+# 1. Minimal static page (centred column, tiny CSS).
+https://example.com/
+
+# 2. Text-heavy encyclopaedia article with a floated infobox and sidebar.
+https://en.wikipedia.org/wiki/Go_(programming_language)
+
+# 3. Plain spec/docs page (mostly static HTML, monospace prose).
+https://pkg.go.dev/net/http
+
+# 4. Simple blog / news article.
+https://go.dev/blog/
+
+# 5. Deliberately JS-heavy SPA (shows the current no-JavaScript gap).
+https://react.dev/
