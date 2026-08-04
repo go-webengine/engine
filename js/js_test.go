@@ -348,11 +348,15 @@ func TestWindowStubs(t *testing.T) {
 		mm.addListener(function(){}); mm.removeListener(function(){});
 		mm.addEventListener('x',function(){}); mm.removeEventListener('x',function(){}); mm.dispatchEvent({});
 		console.log('mm='+mm.matches+' '+mm.media);
+		console.log('dark='+matchMedia('(prefers-color-scheme: dark)').matches+' light='+matchMedia('(prefers-color-scheme: light)').matches+' narrow='+matchMedia('(min-width: 5000px)').matches);
+		console.log('motion='+matchMedia('(prefers-reduced-motion: reduce)').matches+' nopref='+matchMedia('(prefers-reduced-motion: no-preference)').matches);
 		console.log('aliases='+(window===self)+(window===globalThis)+(window===top)+(window===parent)+(window===frames));
 		console.log('dims='+window.innerWidth+','+window.innerHeight+','+window.outerWidth+','+window.outerHeight+','+window.devicePixelRatio+','+window.scrollX+','+window.length+','+window.closed+',['+window.name+']');
 	`))
 	mustHave(t, logs, "confirm=false prompt=null open=null alert=undefined",
-		"sel=null", "sc=7", "fetch=function", "mm=false (min-width: 100px)",
+		"sel=null", "sc=7", "fetch=function", "mm=true (min-width: 100px)",
+		"dark=true light=false narrow=false",
+		"motion=false nopref=true",
 		"aliases=truetruetruetruetrue", "dims=1024,768,1024,768,1,0,0,false,[]")
 }
 

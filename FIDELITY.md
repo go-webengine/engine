@@ -13,6 +13,97 @@ is absent, and that is stated below, not hidden.
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom.
 
+## Phase 1.9 — CSS breadth: modern colour syntax, Tailwind variants, border-radius
+
+**Date: 2026-08-05.** The engine is strong on layout; the remaining gaps on
+styled pages were **CSS breadth**. This phase was **measure-first**: for each
+bench page I (a) fetched the page's real HTML + external CSS and tallied every
+declaration, flagging the properties/constructs the cascade dropped; and (b)
+**sampled the Chrome reference montage's own pixels** to see what actually
+diverged, rather than trusting a description. That second step corrected a wrong
+assumption and reshaped the ranking.
+
+### The diagnosis (what actually drives the divergence — measured)
+
+**Ground-truth correction found by pixel-sampling the montages:** this
+machine runs macOS in **Dark** appearance and the reference headless Chromium
+**follows it**, so Chrome renders pkg.go.dev `rgb(32,34,36)`, go.dev
+`rgb(32,34,36)` and react.dev `rgb(35,39,47)` — all **dark**. example.com (no
+dark theme) stays light. So the engine's job on these pages is to render **dark
+too**, and the pre-existing optimistic `@media (prefers-color-scheme: dark)`
+matching was already doing the right thing for pkg/go.dev (they matched Chrome).
+The one page that did **not** match was react.dev — and that turned out to be the
+single biggest, cleanest win, for a reason none of the initial "likely suspects"
+named:
+
+| Rank | Gap (measured) | Evidence | Fixed |
+|-----:|----------------|----------|:-----:|
+| **1** | **Modern space-separated `rgb()/hsl()` colour syntax** — `rgb(R G B / A)`. The cascade only parsed the legacy comma form, so **every** Tailwind colour dropped. | react.css: **192/192** `rgb()` use the space form, **0** comma. `background-color` was doubly broken (it split the value at the first space). Dark react sections rendered **white**. | ✅ |
+| **2** | **Tailwind variant classes don't match**: `dark:bg-…`, `sm:…`, `lg:…` compile to escaped-colon class names inside **`:is(.dark …)`** wrappers. The selector parser broke at the first `:` and on the space inside `:is()`. | react.css: **110** `.dark ` rules, **87** `:is(` wrappers. The dark page backdrop is `body.dark\:bg-wash-dark` under `:is(.dark …)`. | ✅ |
+| **3** | **`matchMedia()` always returned `false`**, so react.dev's theme script never added `<html class="dark">` → engine stayed light while Chrome (OS-dark) was dark. | react's inline theme script calls `matchMedia('(prefers-color-scheme: dark)')`. | ✅ |
+| **4** | **`border-radius` not painted** — rounded cards/buttons/code panels render square. | 34–60 `border-radius` decls **per page** (all five). | ✅ |
+| 5 | `box-shadow`, `transform`, `opacity`, `object-fit`, `text-transform`, `letter-spacing`, `::before/::after content`, gradient/`url()` backgrounds | present but lower measured pixel ROI on these five pages (gradients 1–5/page; `::before` mostly decorative/icon-mask on Wikipedia). | ⏳ next |
+
+**Following the data, not the guesses.** The task's prior expected the top win to
+be `::before/::after` pseudo-elements or gradients. Measurement said otherwise:
+the dominant react.dev divergence was a **whole-page dark/light inversion** whose
+root causes were (1) the modern `rgb()` syntax, (2) Tailwind `:is()`/escaped
+variant selectors, and (3) `matchMedia` — a chain that, once closed, flips
+react.dev to the dark theme Chrome renders. `border-radius` is the broad,
+every-page polish item and was implemented too.
+
+### What Phase 1.9 implements (each measured, tested, 6-arch clean)
+
+- **Modern colour syntax** (`css/value.go`): `rgb()/rgba()/hsl()/hsla()` in both
+  the legacy comma form **and** the modern space-separated `R G B / A` form
+  (numbers or percentages; `/`-alpha as number or percent), plus `#rgba` and
+  `#rrggbbaa` hex. `background-color` now parses the whole value; the `background`
+  shorthand extracts a leading functional colour; the `border` shorthand and
+  `border-color` keep functional tokens intact (a paren-aware tokenizer).
+- **Tailwind variant selectors** (`css/selector.go`): backslash escapes in
+  identifiers are honoured, so `.dark\:bg-wash-dark` parses as the class
+  `dark:bg-wash-dark`; `:is()` / `:where()` / `:matches()` wrappers are expanded
+  (paren-aware comma splitting, then splicing each alternative in place), so
+  `:is(.dark .dark\:bg-wash-dark)` becomes the descendant selector it means.
+- **`matchMedia()`** (`js/window.go`): evaluates the query instead of returning a
+  constant — `prefers-color-scheme: dark` → `true` (consistent with the CSS
+  cascade's optimistic dark and the dark Chrome reference), width features against
+  the real viewport — which lets react.dev's theme script add `<html class="dark">`.
+- **`border-radius`** (`css/…`, `paint/paint.go`): rounded-rect background fills
+  and rounded **uniform** borders via `go-widgets/painter`'s anti-aliased
+  `FillRoundRect`/`StrokeRoundRect`; `%` radii resolve against the box's smaller
+  side (so a square + `50%` is a disc, a large px is a pill).
+
+### Before → after vs headless Chromium (this machine, OS-dark)
+
+| URL | SSIM before | SSIM after | pixdiff before | pixdiff after | Verdict |
+|-----|-----------:|-----------:|---------------:|--------------:|:-------|
+| example.com/ | 0.954 | 0.954 | 1.5% | 1.5% | held (no dark theme / Tailwind) |
+| en.wikipedia.org/wiki/Go | 0.423 | 0.423 | 22.9% | 22.9% | held (JS `mw.loader` confound, unchanged) |
+| pkg.go.dev/net/http | 0.628 | _see REPORT_ | 36.5% | _see REPORT_ | ~flat (hex-colour theme; residual is layout) |
+| go.dev/blog/ | 0.666 | _see REPORT_ | 33.2% | _see REPORT_ | ~flat (already dark-matched) |
+| react.dev/ | 0.263 | **0.710** | 90.5% | **33.4%** | **major win** (dark theme recovered) |
+
+The numeric table in `bench/REPORT.md` is the authoritative, regenerated record.
+react.dev's **+0.45 SSIM / pixdiff 90.5%→33.4%** is the headline: with the four
+fixes, its dark backdrop, white text, teal rounded controls and dark code panels
+now line up with Chrome (see the montage). No page regressed.
+
+### Deliberate simplifications (documented, not faked)
+
+- **`border-radius` is a single uniform radius.** Tailwind `rounded-*`, pills and
+  circles set all four corners equal (the real common case); differing per-corner
+  radii collapse to the last-applied value, and the elliptical `h / v` form keeps
+  the horizontal radius. Rounded borders are stroked only when all four edges are
+  identical; otherwise straight per-edge fills are used.
+- **`:where()` specificity** is approximated as its argument's (should be 0); a
+  minor over-count that does not affect these pages.
+- **`matchMedia` dark** is a fixed signal consistent with the optimistic CSS
+  cascade and the dark reference; it is not derived from a live OS-appearance
+  probe.
+- Gradients, `background-image:url()`, `box-shadow`, `transform`, `opacity` and
+  `::before/::after content` remain **unimplemented** (rank 5) — the next phase.
+
 ## Phase 1.8 — CSS `position` + dynamic-pseudo suppression
 
 The bench pinned the go.dev/blog regression to two missing features that let a
@@ -232,7 +323,12 @@ go run ./cmd/render -file testdata/grid_demo.html -out testdata/renders/grid_dem
 go run ./cmd/render -file testdata/tailwind_hero_demo.html -out testdata/renders/tailwind_hero_demo.png -w 1024 -h 620
 go run ./cmd/render -file testdata/position_demo.html -out testdata/renders/position_demo.png -w 400 -h 600
 go run ./cmd/render -file testdata/dropdown_hover_demo.html -out testdata/renders/dropdown_hover_demo.png -w 400 -h 300
+go run ./cmd/render -file testdata/modern_css_demo.html -out testdata/renders/modern_css_demo.png -w 400 -h 300
 ```
+
+The Phase-1.9 golden test (`go test -run TestModernCSSDemoGolden`, regenerate
+with `UPDATE_GOLDEN=1`) pins the modern-colour / border-radius / dark-variant
+pixels of `testdata/modern_css_demo.html` against `testdata/golden/`.
 
 The three live URLs were reachable from this environment; no offline substitution
 was needed. The two demo fixtures render fully offline via `-file`.

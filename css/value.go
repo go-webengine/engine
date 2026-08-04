@@ -340,6 +340,15 @@ type Style struct {
 	WhiteSpace WhiteSpace
 	LineHeight LineHeight
 
+	// BorderRadius is the corner radius applied to the border box when painting
+	// the background and border. It is a single (uniform) radius: the common real
+	// case (Tailwind `rounded-*`, pills, circles) sets all four corners equal.
+	// Differing per-corner radii are approximated by the last-applied value
+	// (documented in FIDELITY.md). A px length is used as-is; a percentage
+	// resolves against the box's smaller side at paint time. Zero (the initial
+	// value) means square corners.
+	BorderRadius Length
+
 	// Auto-margin flags: a margin explicitly set to `auto` centres or pushes the
 	// box; distinct from a 0 margin.
 	MarginLeftAuto  bool
@@ -486,8 +495,11 @@ func inheritFrom(parent Style) Style {
 	}
 }
 
-// parseColor parses a colour value: named colours, #rgb, #rrggbb, rgb()/rgba().
-// It returns the colour and whether parsing succeeded.
+// parseColor parses a colour value: named colours, #rgb / #rgba / #rrggbb /
+// #rrggbbaa, and the rgb()/rgba()/hsl()/hsla() functional notations in BOTH the
+// legacy comma syntax and the modern space-separated `R G B / A` syntax (the
+// form modern Tailwind and most current design systems emit). It returns the
+// colour and whether parsing succeeded.
 func parseColor(s string) (Color, bool) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "transparent" {
@@ -499,8 +511,8 @@ func parseColor(s string) (Color, bool) {
 	if strings.HasPrefix(s, "#") {
 		return parseHexColor(s[1:])
 	}
-	if strings.HasPrefix(s, "rgb") {
-		return parseRGBFunc(s)
+	if strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") {
+		return parseColorFunc(s)
 	}
 	return Color{}, false
 }
@@ -514,12 +526,28 @@ func parseHexColor(h string) (Color, bool) {
 		if ok1 && ok2 && ok3 {
 			return Color{r, g, b, 255}, true
 		}
+	case 4: // #rgba
+		r, ok1 := hexNibblePair(h[0], h[0])
+		g, ok2 := hexNibblePair(h[1], h[1])
+		b, ok3 := hexNibblePair(h[2], h[2])
+		a, ok4 := hexNibblePair(h[3], h[3])
+		if ok1 && ok2 && ok3 && ok4 {
+			return Color{r, g, b, a}, true
+		}
 	case 6: // #rrggbb
 		r, ok1 := hexNibblePair(h[0], h[1])
 		g, ok2 := hexNibblePair(h[2], h[3])
 		b, ok3 := hexNibblePair(h[4], h[5])
 		if ok1 && ok2 && ok3 {
 			return Color{r, g, b, 255}, true
+		}
+	case 8: // #rrggbbaa
+		r, ok1 := hexNibblePair(h[0], h[1])
+		g, ok2 := hexNibblePair(h[2], h[3])
+		b, ok3 := hexNibblePair(h[4], h[5])
+		a, ok4 := hexNibblePair(h[6], h[7])
+		if ok1 && ok2 && ok3 && ok4 {
+			return Color{r, g, b, a}, true
 		}
 	}
 	return Color{}, false
@@ -546,38 +574,158 @@ func hexNibble(c byte) (uint8, bool) {
 	return 0, false
 }
 
-func parseRGBFunc(s string) (Color, bool) {
+// parseColorFunc parses rgb()/rgba()/hsl()/hsla() in either the legacy
+// comma-separated syntax (`rgb(1, 2, 3, .5)`) or the modern space-separated
+// syntax with an optional slash alpha (`rgb(1 2 3 / .5)`). Channel values may be
+// numbers or percentages; the alpha may be a number 0..1 or a percentage.
+func parseColorFunc(s string) (Color, bool) {
+	isHSL := strings.HasPrefix(s, "hsl")
 	open := strings.IndexByte(s, '(')
-	close := strings.IndexByte(s, ')')
+	close := strings.LastIndexByte(s, ')')
 	if open < 0 || close < open {
 		return Color{}, false
 	}
-	parts := strings.Split(s[open+1:close], ",")
-	if len(parts) != 3 && len(parts) != 4 {
+	inside := s[open+1 : close]
+	// Separate an explicit slash alpha (modern syntax) from the channels.
+	alphaStr := ""
+	haveAlpha := false
+	if i := strings.IndexByte(inside, '/'); i >= 0 {
+		alphaStr = strings.TrimSpace(inside[i+1:])
+		inside = inside[:i]
+		haveAlpha = true
+	}
+	// Channels are separated by commas and/or whitespace (both are accepted).
+	fields := strings.FieldsFunc(inside, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	if len(fields) < 3 {
 		return Color{}, false
 	}
-	chan8 := func(p string) (uint8, bool) {
-		f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
-		if err != nil {
-			return 0, false
-		}
-		return clampByte(f), true
+	// A legacy 4th comma field is the alpha when no slash form was used.
+	if !haveAlpha && len(fields) >= 4 {
+		alphaStr, haveAlpha = fields[3], true
 	}
-	r, ok1 := chan8(parts[0])
-	g, ok2 := chan8(parts[1])
-	b, ok3 := chan8(parts[2])
+
+	a := uint8(255)
+	if haveAlpha {
+		av, ok := parseAlpha(alphaStr)
+		if !ok {
+			return Color{}, false
+		}
+		a = av
+	}
+	if isHSL {
+		return parseHSLChannels(fields[0], fields[1], fields[2], a)
+	}
+	r, ok1 := parseRGBChannel(fields[0])
+	g, ok2 := parseRGBChannel(fields[1])
+	b, ok3 := parseRGBChannel(fields[2])
 	if !ok1 || !ok2 || !ok3 {
 		return Color{}, false
 	}
-	a := uint8(255)
-	if len(parts) == 4 {
-		f, err := strconv.ParseFloat(strings.TrimSpace(parts[3]), 64)
-		if err != nil {
-			return Color{}, false
-		}
-		a = clampByte(f * 255)
-	}
 	return Color{r, g, b, a}, true
+}
+
+// parseRGBChannel parses one rgb() channel: a 0..255 number or a percentage.
+func parseRGBChannel(p string) (uint8, bool) {
+	p = strings.TrimSpace(p)
+	if strings.HasSuffix(p, "%") {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p[:len(p)-1]), 64)
+		if err != nil {
+			return 0, false
+		}
+		return clampByte(f / 100 * 255), true
+	}
+	f, err := strconv.ParseFloat(p, 64)
+	if err != nil {
+		return 0, false
+	}
+	return clampByte(f), true
+}
+
+// parseAlpha parses an alpha value: a number in 0..1 or a percentage.
+func parseAlpha(p string) (uint8, bool) {
+	p = strings.TrimSpace(p)
+	if strings.HasSuffix(p, "%") {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p[:len(p)-1]), 64)
+		if err != nil {
+			return 0, false
+		}
+		return clampByte(f / 100 * 255), true
+	}
+	f, err := strconv.ParseFloat(p, 64)
+	if err != nil {
+		return 0, false
+	}
+	return clampByte(f * 255), true
+}
+
+// parseHSLChannels converts hue/saturation/lightness (h in degrees, s and l as
+// percentages) plus an 8-bit alpha into an RGBA colour.
+func parseHSLChannels(hs, ss, ls string, a uint8) (Color, bool) {
+	h, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(hs, "deg")), 64)
+	if err != nil {
+		return Color{}, false
+	}
+	sPerc, ok1 := parsePercentUnit(ss)
+	lPerc, ok2 := parsePercentUnit(ls)
+	if !ok1 || !ok2 {
+		return Color{}, false
+	}
+	r, g, b := hslToRGB(h, sPerc, lPerc)
+	return Color{r, g, b, a}, true
+}
+
+// parsePercentUnit parses a "50%" (or bare "0.5"→treated as fraction*100 not
+// applied; here we require the percent form used by hsl()).
+func parsePercentUnit(p string) (float64, bool) {
+	p = strings.TrimSpace(p)
+	p = strings.TrimSuffix(p, "%")
+	f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+	if err != nil {
+		return 0, false
+	}
+	return f / 100, true
+}
+
+// hslToRGB converts HSL (h degrees, s and l in 0..1) to 8-bit RGB.
+func hslToRGB(h, s, l float64) (uint8, uint8, uint8) {
+	h = h - 360*mathFloor(h/360) // normalise into [0,360)
+	c := (1 - absF(2*l-1)) * s
+	hp := h / 60
+	x := c * (1 - absF(hp-2*mathFloor(hp/2)-1))
+	var r1, g1, b1 float64
+	switch {
+	case hp < 1:
+		r1, g1, b1 = c, x, 0
+	case hp < 2:
+		r1, g1, b1 = x, c, 0
+	case hp < 3:
+		r1, g1, b1 = 0, c, x
+	case hp < 4:
+		r1, g1, b1 = 0, x, c
+	case hp < 5:
+		r1, g1, b1 = x, 0, c
+	default:
+		r1, g1, b1 = c, 0, x
+	}
+	m := l - c/2
+	return clampByte((r1 + m) * 255), clampByte((g1 + m) * 255), clampByte((b1 + m) * 255)
+}
+
+func absF(f float64) float64 {
+	if f < 0 {
+		return -f
+	}
+	return f
+}
+
+func mathFloor(f float64) float64 {
+	i := float64(int64(f))
+	if f < 0 && i != f {
+		i--
+	}
+	return i
 }
 
 func clampByte(f float64) uint8 {
