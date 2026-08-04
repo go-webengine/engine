@@ -343,7 +343,7 @@ func TestWindowStubs(t *testing.T) {
 		console.log('confirm='+window.confirm('?')+' prompt='+window.prompt('?')+' open='+window.open('u')+' alert='+window.alert('!'));
 		console.log('sel='+window.getSelection());
 		console.log('sc='+window.structuredClone({a:7}).a);
-		var p=fetch('/x'); console.log('fetch='+(typeof p.then));
+		console.log('fetch='+(typeof fetch));
 		var mm=matchMedia('(min-width: 100px)');
 		mm.addListener(function(){}); mm.removeListener(function(){});
 		mm.addEventListener('x',function(){}); mm.removeEventListener('x',function(){}); mm.dispatchEvent({});
@@ -421,15 +421,14 @@ func TestConstructors(t *testing.T) {
 		var u2=new URL('https://a.com/x'); console.log('url2='+u2.href);
 		var u3=new URL(String.fromCharCode(0)); console.log('url3='+(u3.href===''));
 		var u4=new URL(String.fromCharCode(0),'https://h.com'); console.log('url4='+(u4.href===''));
-		var xhr=new XMLHttpRequest(); xhr.open('GET','/x'); xhr.send(); xhr.setRequestHeader('a','b'); xhr.abort(); xhr.getResponseHeader('a'); xhr.getAllResponseHeaders(); xhr.overrideMimeType('t');
-		console.log('xhr='+xhr.readyState+xhr.status+xhr.statusText);
+		console.log('xhrtype='+(typeof XMLHttpRequest)+' fetchtype='+(typeof fetch));
 		var img=new Image();
 		console.log('node='+Node.ELEMENT_NODE+Node.TEXT_NODE+Node.DOCUMENT_NODE);
 	`))
 	mustHave(t, logs, "ev=xtruetrue", "dp=true", "cp=0 ts=0 it=false", "ce=5", "ce2=null",
 		"noinit=false", "mo=0",
 		"url=/p|h.com:8080|https:|?q=1|https://h.com:8080|8080|",
-		"url2=https://a.com/x", "url3=true", "url4=true", "xhr=00", "node=139")
+		"url2=https://a.com/x", "url3=true", "url4=true", "xhrtype=function fetchtype=function", "node=139")
 }
 
 func TestLocationFields(t *testing.T) {

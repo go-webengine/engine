@@ -48,6 +48,7 @@ func (b *binder) install() {
 	b.installEventTargets(g)
 	b.installStubs(g)
 	b.installConstructors(g)
+	b.installNet(g)
 }
 
 // installTimers wires setTimeout/setInterval/rAF etc. onto g, all of which queue
@@ -111,12 +112,8 @@ func (b *binder) installStubs(g *goja.Object) {
 		return b.newMediaQueryList(call.Argument(0).String())
 	})
 	g.Set("getSelection", func(goja.FunctionCall) goja.Value { return goja.Null() })
-	// fetch resolves to a never-settling promise: we neither have the resource nor
-	// want an unhandled rejection to surface as a script error.
-	g.Set("fetch", func(goja.FunctionCall) goja.Value {
-		p, _, _ := b.vm.NewPromise()
-		return b.vm.ToValue(p)
-	})
+	// fetch and XMLHttpRequest are the real, e.Client-backed implementations
+	// installed by installNet (see net.go).
 	b.installClasslessStorageAPIs(g)
 }
 

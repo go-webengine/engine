@@ -84,11 +84,12 @@ type binder struct {
 	docNode    *dom.Node // sentinel node keying document-level listeners
 	listeners  map[*dom.Node]map[string][]goja.Value
 
-	jobs    []timerJob
-	nextID  int64
-	deadman time.Time
-	cookie  string
-	storage map[string]*storageArea
+	jobs     []timerJob
+	nextID   int64
+	deadman  time.Time
+	cookie   string
+	storage  map[string]*storageArea
+	reqCount int // JS-initiated HTTP requests this render (bounded by maxRequests)
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled

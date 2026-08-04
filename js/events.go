@@ -150,9 +150,6 @@ func (b *binder) installConstructors(g *goja.Object) {
 	g.Set("URL", func(call goja.ConstructorCall) *goja.Object {
 		return b.buildURL(call.Argument(0).String(), call.Argument(1))
 	})
-	g.Set("XMLHttpRequest", func(call goja.ConstructorCall) *goja.Object {
-		return b.newXHR()
-	})
 	g.Set("Image", func(call goja.ConstructorCall) *goja.Object {
 		return b.vm.NewObject()
 	})
@@ -209,22 +206,6 @@ func (b *binder) buildURL(ref string, baseV goja.Value) *goja.Object {
 	o.Set("hash", withPrefix("#", u.Fragment))
 	o.Set("origin", origin(u))
 	o.Set("toString", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(u.String()) })
-	return o
-}
-
-// newXHR returns an inert XMLHttpRequest: constructing and driving it never
-// throws, but no request is ever made.
-func (b *binder) newXHR() *goja.Object {
-	o := b.vm.NewObject()
-	o.Set("readyState", 0)
-	o.Set("status", 0)
-	o.Set("statusText", "")
-	o.Set("responseText", "")
-	o.Set("response", goja.Null())
-	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
-	for _, name := range []string{"open", "send", "abort", "setRequestHeader", "getResponseHeader", "getAllResponseHeaders", "overrideMimeType", "addEventListener", "removeEventListener"} {
-		o.Set(name, noop)
-	}
 	return o
 }
 
