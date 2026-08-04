@@ -1,6 +1,6 @@
 # Fidelity Report
 
-**Date: 2026-08-04**
+**Date: 2026-08-05**
 
 Honest assessment of the renderer on five pages. Phase 0 shipped a static
 HTML→CSS→block/inline→paint→PNG pipeline that **linearised every page to one
@@ -12,6 +12,106 @@ is absent, and that is stated below, not hidden.
 
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom.
+
+## Phase 2.0 — CSS gradients, `background-image: url()`, box-shadow, opacity
+
+**Date: 2026-08-05.** Phase 1.9 closed the dark/colour gap and left one ranked
+backlog item (rank 5): the paint-only decorations — **gradients**,
+**`background-image: url()`**, **box-shadow** and **opacity**. This phase
+implements them, confirming the ranking first by pixel-sampling the Chrome
+reference montages.
+
+### Ranking confirmation (measured, before implementing)
+
+Re-running the pre-change engine on this machine reproduced the committed numbers
+exactly (react.dev **0.710**, go.dev/blog 0.666, pkg.go.dev 0.628, Wikipedia
+0.423, example.com 0.954), and the react.dev montage shows the remaining
+divergences precisely where the task predicted: the right-hand demo panels render
+**flat grey** where Chrome paints **teal→blue→green gradients**, and the
+rounded controls sit **shadowless**. Counting the real CSS confirmed the target:
+react.dev's stylesheet has **4 `linear-gradient` + 1 `radial-gradient`**, **39
+`box-shadow`** and **2 `background-image:url()`** declarations. So gradients +
+`url()` backgrounds were implemented first, then box-shadow and opacity. (The
+big centre React atom is an **inline `<svg>`** — SVG rasterisation stays out of
+scope, documented below — and the hero demo panels' *corner* shading is
+`conic-gradient`, also deferred; the panel **fills** are linear/radial and now
+paint.)
+
+### Before → after vs headless Chromium (this machine, OS-dark)
+
+| URL | SSIM before | SSIM after | pixdiff before | pixdiff after | Verdict |
+|-----|-----------:|-----------:|---------------:|--------------:|:-------|
+| example.com/ | 0.954 | 0.954 | 1.5% | 1.5% | held (no gradients/images) |
+| en.wikipedia.org/wiki/Go | 0.423 | 0.413 | 22.9% | 23.0% | ~flat (−0.010; box-shadows now paint on its chrome; JS-`mw.loader`-confounded) |
+| pkg.go.dev/net/http | 0.628 | 0.628 | 36.5% | 36.5% | held exactly |
+| go.dev/blog/ | 0.666 | 0.666 | 33.2% | 33.2% | held exactly |
+| react.dev/ | 0.710 | **0.719** | 33.4% | **30.2%** | **improved** (gradient panels paint) |
+
+**react.dev is the target and moves the right way: +0.009 SSIM, pixdiff
+33.4%→30.2% (−3.2pp).** The right-hand demo panels that rendered flat grey now
+show the navy→teal→green linear gradient Chrome paints, and the teal pill buttons
+gain their gradient/rounded fill (see the montage). The residual gap is the
+inline-`<svg>` React atom (out of scope) and the larger-centred hero typography
+(a font/layout gap, not a paint gap). example.com, pkg.go.dev and go.dev/blog hold
+to three decimals; Wikipedia's −0.010 is a marginal, measured move — its Vector
+chrome box-shadows now paint, nudging pixels on a page whose SSIM has always swung
+on the un-run `mw.loader` sidebar. The authoritative regenerated numbers live in
+`bench/REPORT.md`.
+
+### What Phase 2.0 implements (each measured, tested, 6-arch clean)
+
+- **CSS gradients** (`css/background.go`, `css/gradient_sample.go`): `linear-gradient`
+  (explicit angles in deg/grad/rad/turn, `to <side>` and the box-dependent
+  `to <corner>` "magic corners", multi-stop with px/%/unpositioned stops
+  normalised per spec, hex/`rgb()`/`hsl()`/named/transparent colours,
+  premultiplied-alpha interpolation so transparent stops don't bleed) and
+  `radial-gradient` (circle/ellipse, `closest/farthest-side/corner` + explicit
+  radii, `at <position>`). Painted into the element's background box and **clipped
+  to the `border-radius` rounded rect**. Multiple layers are stacked
+  first-on-top; vendor-prefixed and `repeating-` names parse.
+- **`background-image: url(...)`** (`images.go`, `paint/paint.go`): resolved
+  against the document base and fetched through `e.Client` (bounded, deduped,
+  data-URI aware), decoded via **go-images**, painted honouring `background-size`
+  (`auto`/`cover`/`contain`/px/%, one-axis `auto` keeps the aspect ratio),
+  `background-position` (keywords + px/%) and `background-repeat`
+  (`no-repeat`/`repeat`/`repeat-x`/`repeat-y`), clipped to the rounded box.
+- **`box-shadow`** (`css/shadow.go`, `paint/paint.go`): comma-separated drop and
+  `inset` layers with offset, blur, spread and colour. The blur is an **exact
+  Gaussian-blurred box** via the error function (`erf`), so the soft extent is
+  offset+spread+blur and is unit-test-checkable; a drop shadow paints behind the
+  box, an inset shadow as a soft inner band clipped to the box.
+- **`opacity`** (`paint/paint.go`): true **group opacity** — an element with
+  `0 < opacity < 1` and its whole subtree render into an offscreen buffer that is
+  then alpha-composited, so overlapping descendants fade as one group (not
+  double-blended); `opacity: 0` skips the subtree.
+
+### Deliberate simplifications (documented, not faked)
+
+- **`conic-gradient` is not modelled** — the layer is dropped and the element
+  falls back to its background colour (react's demo-panel corner shading uses it).
+- **SVG `<img>`/inline `<svg>` are not rasterised** — go-images decodes PNG/JPEG;
+  the go.dev logo and the react.dev hero atom are SVG and stay blank. PNG/JPEG
+  bitmaps (react's `uwu.png`, the conf-2021 JPGs) do render.
+- **Gradient border-radius clip is a hard rounded-rect test** (no corner AA);
+  the painter's own `FillRoundRect` still AA-clips solid-colour rounded fills.
+- **box-shadow blur ignores the corner radius** (a soft rectangle) and its extent
+  is an `erf` box, not a per-corner rounded blur — visually indistinguishable at
+  these blur radii.
+- **`background-size`/`position`/`repeat` from the `background` shorthand** are
+  not parsed (only the colour and the image layer are); the longhand properties
+  are honoured. Gradient layers always fill the box (auto size).
+
+### Reproduce (offline)
+
+```
+go run ./cmd/render -file testdata/gradients_demo.html   -out /tmp/gradients_demo.png   -w 740 -h 380
+go run ./cmd/render -file testdata/gradients_golden.html -out /tmp/gradients_golden.png -w 200 -h 260
+```
+
+`testdata/gradients_golden.html` is the byte-golden fixture behind
+`TestGradientsGolden` (exact sampled colours at each gradient's start/mid/end, a
+box-shadow halo, a border-radius-clipped background and a `url()` data-URI
+bitmap). `testdata/gradients_demo.html` is the labelled visual montage.
 
 ## Phase 1.9 — CSS breadth: modern colour syntax, Tailwind variants, border-radius
 
