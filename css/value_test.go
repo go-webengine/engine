@@ -138,3 +138,37 @@ func TestAtoiClamp(t *testing.T) {
 		t.Error("empty should fail")
 	}
 }
+
+func TestParseLengthViewportAndRem(t *testing.T) {
+	cases := []struct {
+		in        string
+		wantPx    float64
+		wantPct   float64
+		isPercent bool
+	}{
+		{"60vw", 0, 0.6, true},
+		{"15vh", 0, 0.15, true},
+		{"2rem", 32, 0, false},
+		{"1.5em", 24, 0, false}, // em unaffected by rem case (emRef 16)
+	}
+	for _, c := range cases {
+		l, ok := parseLength(c.in, 16)
+		if !ok {
+			t.Errorf("parseLength(%q) failed", c.in)
+			continue
+		}
+		if c.isPercent {
+			if !l.IsPercent || l.Percent != c.wantPct {
+				t.Errorf("%q = %+v want pct %v", c.in, l, c.wantPct)
+			}
+		} else if l.Px != c.wantPx {
+			t.Errorf("%q = %+v want px %v", c.in, l, c.wantPx)
+		}
+	}
+	if _, ok := parseLength("xvw", 16); ok {
+		t.Error("xvw should fail")
+	}
+	if _, ok := parseLength("xrem", 16); ok {
+		t.Error("xrem should fail")
+	}
+}

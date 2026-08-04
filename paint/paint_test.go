@@ -140,6 +140,77 @@ func TestPaintEndToEnd(t *testing.T) {
 	}
 }
 
+func TestPaintBorders(t *testing.T) {
+	f := NewFonts()
+	dst := white(20, 20)
+	box := &layout.Box{
+		Node: &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{Border: css.Borders{
+			Top:    css.BorderSide{Width: 2, Style: css.BorderSolid, Color: css.Color{R: 255, A: 255}},
+			Right:  css.BorderSide{Width: 2, Style: css.BorderSolid, Color: css.Color{G: 255, A: 255}},
+			Bottom: css.BorderSide{Width: 2, Style: css.BorderSolid, Color: css.Color{B: 255, A: 255}},
+			Left:   css.BorderSide{Width: 2, Style: css.BorderSolid, Color: css.Color{R: 255, G: 255, A: 255}},
+		}},
+		X: 2, Y: 2, W: 16, H: 16,
+	}
+	Paint(dst, box, f, nil)
+	// Top edge red.
+	if c := dst.RGBAAt(9, 2); c.R != 255 || c.B != 0 {
+		t.Errorf("top border pixel = %+v want red", c)
+	}
+	// Left edge yellow.
+	if c := dst.RGBAAt(2, 9); c.R != 255 || c.G != 255 || c.B != 0 {
+		t.Errorf("left border pixel = %+v want yellow", c)
+	}
+	// Right edge green (x = 2+16-1 = 17).
+	if c := dst.RGBAAt(17, 9); c.G != 255 || c.R != 0 {
+		t.Errorf("right border pixel = %+v want green", c)
+	}
+	// Bottom edge blue (y = 2+16-1 = 17).
+	if c := dst.RGBAAt(9, 17); c.B != 255 || c.R != 0 {
+		t.Errorf("bottom border pixel = %+v want blue", c)
+	}
+	// Interior stays white.
+	if c := dst.RGBAAt(9, 9); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("interior pixel = %+v want white", c)
+	}
+}
+
+func TestPaintBorderStyleNoneNotDrawn(t *testing.T) {
+	f := NewFonts()
+	dst := white(10, 10)
+	// Width set but style none, and a zero-alpha colour: neither draws.
+	box := &layout.Box{
+		Node: &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{Border: css.Borders{
+			Top:  css.BorderSide{Width: 3, Style: css.BorderNone, Color: css.Color{R: 255, A: 255}},
+			Left: css.BorderSide{Width: 3, Style: css.BorderSolid, Color: css.Color{}}, // A==0
+		}},
+		X: 0, Y: 0, W: 10, H: 10,
+	}
+	Paint(dst, box, f, nil)
+	if c := dst.RGBAAt(5, 1); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("none-style border drew: %+v", c)
+	}
+}
+
+func TestPaintAnonymousSkipsBorder(t *testing.T) {
+	f := NewFonts()
+	dst := white(10, 10)
+	// An anonymous box carries a style with a border but must not paint it.
+	box := &layout.Box{
+		Anonymous: true,
+		Style: &css.Style{Border: css.Borders{
+			Top: css.BorderSide{Width: 3, Style: css.BorderSolid, Color: css.Color{R: 255, A: 255}},
+		}},
+		X: 0, Y: 0, W: 10, H: 10,
+	}
+	Paint(dst, box, f, nil)
+	if c := dst.RGBAAt(5, 1); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("anonymous box painted a border: %+v", c)
+	}
+}
+
 func TestPaintNilAndEmpty(t *testing.T) {
 	f := NewFonts()
 	dst := white(4, 4)
@@ -166,4 +237,56 @@ func hasDarkInk(img *image.RGBA, r image.Rectangle) bool {
 		}
 	}
 	return false
+}
+
+func TestPaintNestedChildBoxes(t *testing.T) {
+	// A parent box with a child box exercises the recursive child descent.
+	f := NewFonts()
+	dst := white(30, 30)
+	parent := &layout.Box{
+		Node:  &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{Background: css.Color{R: 240, G: 240, B: 240, A: 255}},
+		X:     0, Y: 0, W: 30, H: 30,
+		Children: []*layout.Box{{
+			Node:  &dom.Node{Type: dom.Element, Tag: "div"},
+			Style: &css.Style{Background: css.Color{R: 10, G: 120, B: 200, A: 255}},
+			X:     5, Y: 5, W: 10, H: 10,
+		}},
+	}
+	Paint(dst, parent, f, nil)
+	// The child's blue fill is present at its centre.
+	if c := dst.RGBAAt(9, 9); c.B < 150 || c.R > 60 {
+		t.Errorf("nested child fill = %+v want blue", c)
+	}
+	// The parent's grey shows outside the child.
+	if c := dst.RGBAAt(20, 20); c.R != 240 {
+		t.Errorf("parent fill = %+v want grey", c)
+	}
+}
+
+func TestPaintSubPixelBorderNotDrawn(t *testing.T) {
+	// A sub-pixel border width rounds to 0 px; the zero-size fill guard skips it
+	// without panicking or painting.
+	f := NewFonts()
+	dst := white(10, 10)
+	box := &layout.Box{
+		Node: &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{Border: css.Borders{
+			Top: css.BorderSide{Width: 0.3, Style: css.BorderSolid, Color: css.Color{R: 255, A: 255}},
+		}},
+		X: 0, Y: 0, W: 10, H: 10,
+	}
+	Paint(dst, box, f, nil)
+	if c := dst.RGBAAt(5, 0); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("sub-pixel border drew: %+v", c)
+	}
+}
+
+func TestMustParseFontPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("mustParseFont should panic on invalid font bytes")
+		}
+	}()
+	mustParseFont([]byte("not a font"))
 }

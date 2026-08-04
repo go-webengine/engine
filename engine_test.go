@@ -264,3 +264,28 @@ func TestPackageWrappersBadURL(t *testing.T) {
 		t.Error("expected error for bad url")
 	}
 }
+
+func TestRenderHTMLOffline(t *testing.T) {
+	e := New()
+	src := `<html><head><title>Offline</title></head><body style="margin:0">` +
+		`<div style="display:flex"><div style="width:100px">A</div>` +
+		`<div style="width:100px">B</div></div></body></html>`
+	img, info, err := e.RenderHTML(context.Background(), src, "https://demo.test/", image.Rect(0, 0, 400, 200))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Title != "Offline" {
+		t.Errorf("title = %q", info.Title)
+	}
+	if img.Rect.Dx() != 400 {
+		t.Errorf("width = %d", img.Rect.Dx())
+	}
+}
+
+func TestRenderHTMLParseError(t *testing.T) {
+	// html.Parse tolerates almost anything, so verify a normal string succeeds
+	// and the entry point is exercised end-to-end without a network fetch.
+	if _, _, err := New().RenderHTML(context.Background(), "<p>hi</p>", "", image.Rect(0, 0, 50, 50)); err != nil {
+		t.Fatalf("RenderHTML minimal doc: %v", err)
+	}
+}

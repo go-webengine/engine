@@ -10,20 +10,37 @@ package css
 func uaDeclarations(tag string) []Declaration {
 	switch tag {
 	case "html", "body", "div", "section", "article", "header", "footer",
-		"nav", "main", "aside", "figure", "table", "tr", "form", "hr",
-		"blockquote", "pre", "address", "fieldset", "figcaption":
+		"nav", "main", "aside", "figure", "form", "hr",
+		"blockquote", "pre", "address", "fieldset", "figcaption",
+		"dl", "dd", "dt":
 		d := []Declaration{{"display", "block"}}
 		if tag == "body" {
 			d = append(d, Declaration{"margin", "8px"})
 		}
-		if tag == "blockquote" {
+		if tag == "blockquote" || tag == "figure" {
 			d = append(d, Declaration{"margin", "16px 40px"})
+		}
+		if tag == "dd" {
+			d = append(d, Declaration{"margin-left", "40px"})
 		}
 		if tag == "pre" {
 			d = append(d, Declaration{"font-family", "monospace"},
 				Declaration{"white-space", "pre"}, Declaration{"margin", "13px 0"})
 		}
 		return d
+	case "table":
+		return []Declaration{{"display", "table"}, {"border-color", "gray"}}
+	case "thead", "tbody", "tfoot":
+		return []Declaration{{"display", "table-row-group"}}
+	case "tr":
+		return []Declaration{{"display", "table-row"}}
+	case "td":
+		return []Declaration{{"display", "table-cell"}, {"padding", "1px"}}
+	case "th":
+		return []Declaration{{"display", "table-cell"}, {"padding", "1px"},
+			{"font-weight", "bold"}, {"text-align", "center"}}
+	case "caption":
+		return []Declaration{{"display", "block"}, {"text-align", "center"}}
 	case "p":
 		return []Declaration{{"display", "block"}, {"margin", "16px 0"}}
 	case "h1":
@@ -40,7 +57,7 @@ func uaDeclarations(tag string) []Declaration {
 		return []Declaration{{"display", "block"}, {"font-size", "11px"}, {"font-weight", "bold"}, {"margin", "24px 0"}}
 	case "ul", "ol":
 		return []Declaration{{"display", "block"}, {"margin", "16px 0"}, {"padding-left", "40px"}}
-	case "li", "dd", "dt":
+	case "li":
 		return []Declaration{{"display", "block"}}
 	case "a":
 		return []Declaration{{"color", "#0000ee"}}

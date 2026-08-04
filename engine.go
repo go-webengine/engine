@@ -130,13 +130,14 @@ func (e *Engine) Render(ctx context.Context, rawurl string, viewport image.Recta
 // point used by fixtures and tests (image sub-resources are still fetched from
 // the network if their src is absolute/resolvable).
 func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport image.Rectangle) (*image.RGBA, *RenderInfo, error) {
-	sm := css.Cascade(doc.Root)
 	fonts := paint.NewFonts()
 
 	vpW := viewport.Dx()
 	if vpW <= 0 {
 		vpW = 1024
 	}
+	// Cascade at the render width so @media width queries resolve correctly.
+	sm := css.CascadeVW(doc.Root, float64(vpW), nil)
 	imgSize, imgs := e.loadImages(ctx, doc, sm, vpW)
 
 	box, height := layout.LayoutDocument(doc.Root, sm, float64(vpW), fonts, imgSize)
@@ -162,6 +163,19 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 		URL:           doc.URL,
 		ContentHeight: int(height),
 	}, nil
+}
+
+// RenderHTML renders an HTML string (with baseURL used to resolve relative
+// image sources) into an image at the given viewport. It is the offline entry
+// point for local fixtures and demos, running the same cascade/layout/paint
+// pipeline as Render but without fetching the page itself.
+func (e *Engine) RenderHTML(ctx context.Context, htmlSrc, baseURL string, viewport image.Rectangle) (*image.RGBA, *RenderInfo, error) {
+	root, err := dom.Parse(htmlSrc)
+	if err != nil {
+		return nil, nil, err
+	}
+	doc := &Document{URL: baseURL, Title: dom.Title(root), Root: root, HTML: htmlSrc}
+	return e.RenderDocument(ctx, doc, viewport)
 }
 
 // Screenshot renders url and encodes the result as PNG.

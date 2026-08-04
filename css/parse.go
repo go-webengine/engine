@@ -3,7 +3,14 @@
 
 package css
 
-import "strings"
+import (
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// mediaWidthRe captures min-width/max-width pixel features in a media query.
+var mediaWidthRe = regexp.MustCompile(`(min|max)-width\s*:\s*([0-9.]+)px`)
 
 // Declaration is a single property: value pair.
 type Declaration struct {
@@ -36,30 +43,50 @@ func stripComments(s string) string {
 	return b.String()
 }
 
-// ParseStylesheet parses a full stylesheet into rules. At-rules (@media,
-// @font-face, ...) are skipped wholesale — their nested block is consumed and
-// ignored. Malformed rules are skipped defensively.
+// DefaultViewportWidth is the viewport width (CSS px) used to evaluate @media
+// width queries when no explicit width is supplied. It matches a desktop render.
+const DefaultViewportWidth = 1024
+
+// ParseStylesheet parses a full stylesheet into rules at the default viewport
+// width. See ParseStylesheetVW to control @media evaluation.
 func ParseStylesheet(src string) []Rule {
-	src = stripComments(src)
+	return ParseStylesheetVW(src, DefaultViewportWidth)
+}
+
+// ParseStylesheetVW parses a full stylesheet into rules, evaluating @media
+// blocks against viewport width vw: a matching @media block's inner rules are
+// included, a non-matching one is skipped. Other at-rules (@font-face,
+// @keyframes, @supports, @import, ...) are skipped wholesale. Malformed rules
+// are skipped defensively.
+func ParseStylesheetVW(src string, vw float64) []Rule {
+	return parseRules(stripComments(src), vw)
+}
+
+func parseRules(src string, vw float64) []Rule {
 	var rules []Rule
 	i := 0
 	for i < len(src) {
-		// Find the next block opener.
 		brace := strings.IndexByte(src[i:], '{')
 		if brace < 0 {
 			break
 		}
 		prelude := strings.TrimSpace(src[i : i+brace])
-		// Consume the balanced block starting at the brace.
 		blockStart := i + brace
 		blockEnd, ok := matchBrace(src, blockStart)
 		if !ok {
 			break
 		}
 		body := src[blockStart+1 : blockEnd]
+		i = blockEnd + 1
+
 		if strings.HasPrefix(prelude, "@") {
-			// Skip at-rules entirely (Phase 0 does not honour them).
-			i = blockEnd + 1
+			// Honour @media blocks whose width query matches the viewport; the
+			// inner body is itself a list of rules. Skip all other at-rules.
+			if lower := strings.ToLower(prelude); strings.HasPrefix(lower, "@media") {
+				if mediaMatches(lower[len("@media"):], vw) {
+					rules = append(rules, parseRules(body, vw)...)
+				}
+			}
 			continue
 		}
 		sels := ParseSelectorList(prelude)
@@ -69,9 +96,31 @@ func ParseStylesheet(src string) []Rule {
 				rules = append(rules, Rule{Selectors: sels, Declarations: decls})
 			}
 		}
-		i = blockEnd + 1
 	}
 	return rules
+}
+
+// mediaMatches evaluates a simplified @media condition against viewport width
+// vw. print media never matches; min-width/max-width pixel features are honoured
+// (all must hold); anything else (screen/all/unknown features) matches
+// optimistically so desktop layout rules are applied.
+func mediaMatches(cond string, vw float64) bool {
+	if strings.Contains(cond, "print") {
+		return false
+	}
+	for _, m := range mediaWidthRe.FindAllStringSubmatch(cond, -1) {
+		n, err := strconv.ParseFloat(m[2], 64)
+		if err != nil {
+			continue
+		}
+		if m[1] == "min" && vw < n {
+			return false
+		}
+		if m[1] == "max" && vw > n {
+			return false
+		}
+	}
+	return true
 }
 
 // matchBrace returns the index of the '}' matching the '{' at open.
@@ -127,9 +176,21 @@ func (s *Style) apply(d Declaration, emRef float64) {
 	switch d.Property {
 	case "display":
 		switch lv {
-		case "block", "list-item", "flex", "grid":
-			s.Display = DisplayBlock // flex/grid degrade to block flow
-		case "inline", "inline-block":
+		case "block", "list-item", "grid", "flow-root":
+			s.Display = DisplayBlock // grid degrades to block flow
+		case "flex", "inline-flex":
+			s.Display = DisplayFlex
+		case "table", "inline-table":
+			s.Display = DisplayTable
+		case "table-row":
+			s.Display = DisplayTableRow
+		case "table-cell":
+			s.Display = DisplayTableCell
+		case "table-row-group", "table-header-group", "table-footer-group":
+			s.Display = DisplayTableRowGroup
+		case "inline-block":
+			s.Display = DisplayInlineBlock
+		case "inline":
 			s.Display = DisplayInline
 		case "none":
 			s.Display = DisplayNone
@@ -184,18 +245,118 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		if l, ok := parseLength(v, emRef); ok {
 			s.Width = l
 		}
-	case "margin":
-		if e, ok := parseEdges(v, emRef); ok {
-			s.Margin = e
+	case "min-width":
+		if l, ok := parseLength(v, emRef); ok {
+			s.MinWidth = l
+		} else if lv == "none" {
+			s.MinWidth = Length{Auto: true}
 		}
+	case "max-width":
+		if l, ok := parseLength(v, emRef); ok {
+			s.MaxWidth = l
+		} else if lv == "none" {
+			s.MaxWidth = Length{Auto: true}
+		}
+	case "height":
+		if l, ok := parseLength(v, emRef); ok {
+			s.Height = l
+		}
+	case "box-sizing":
+		switch lv {
+		case "border-box":
+			s.BoxSizing = BorderBox
+		case "content-box":
+			s.BoxSizing = ContentBox
+		}
+	case "line-height":
+		if lh, ok := parseLineHeight(v, emRef); ok {
+			s.LineHeight = lh
+		}
+	case "float":
+		switch lv {
+		case "left":
+			s.Float = FloatLeft
+		case "right":
+			s.Float = FloatRight
+		case "none":
+			s.Float = FloatNone
+		}
+	case "clear":
+		switch lv {
+		case "left":
+			s.Clear = ClearLeft
+		case "right":
+			s.Clear = ClearRight
+		case "both":
+			s.Clear = ClearBoth
+		case "none":
+			s.Clear = ClearNone
+		}
+	case "flex-direction":
+		switch lv {
+		case "row", "row-reverse":
+			s.FlexDirection = FlexRow
+		case "column", "column-reverse":
+			s.FlexDirection = FlexColumn
+		}
+	case "justify-content":
+		if j, ok := parseJustify(lv); ok {
+			s.JustifyContent = j
+		}
+	case "align-items":
+		if a, ok := parseAlignItems(lv); ok {
+			s.AlignItems = a
+		}
+	case "flex-grow":
+		if f, err := strconv.ParseFloat(lv, 64); err == nil && f >= 0 {
+			s.FlexGrow = f
+		}
+	case "flex-shrink":
+		if f, err := strconv.ParseFloat(lv, 64); err == nil && f >= 0 {
+			s.FlexShrink = f
+		}
+	case "flex-basis":
+		if l, ok := parseLength(v, emRef); ok {
+			s.FlexBasis = l
+		} else if lv == "content" {
+			s.FlexBasis = Length{Auto: true}
+		}
+	case "flex":
+		applyFlexShorthand(s, v, emRef)
+	case "border":
+		applyBorderShorthand(&s.Border, v, emRef, s.Color)
+	case "border-top":
+		applyBorderSideShorthand(&s.Border.Top, v, emRef, s.Color)
+	case "border-right":
+		applyBorderSideShorthand(&s.Border.Right, v, emRef, s.Color)
+	case "border-bottom":
+		applyBorderSideShorthand(&s.Border.Bottom, v, emRef, s.Color)
+	case "border-left":
+		applyBorderSideShorthand(&s.Border.Left, v, emRef, s.Color)
+	case "border-width":
+		applyBorderWidth(&s.Border, v, emRef)
+	case "border-style":
+		applyBorderStyle(&s.Border, v)
+	case "border-color":
+		applyBorderColor(&s.Border, v)
+	case "border-top-width":
+		applyBorderEdgeWidth(&s.Border.Top, v, emRef)
+	case "border-right-width":
+		applyBorderEdgeWidth(&s.Border.Right, v, emRef)
+	case "border-bottom-width":
+		applyBorderEdgeWidth(&s.Border.Bottom, v, emRef)
+	case "border-left-width":
+		applyBorderEdgeWidth(&s.Border.Left, v, emRef)
+	case "margin":
+		applyMarginShorthand(s, v, emRef)
 	case "margin-top":
 		applyEdge(&s.Margin.Top, v, emRef)
 	case "margin-right":
-		applyEdge(&s.Margin.Right, v, emRef)
+		applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, v, emRef)
 	case "margin-bottom":
 		applyEdge(&s.Margin.Bottom, v, emRef)
 	case "margin-left":
-		applyEdge(&s.Margin.Left, v, emRef)
+		applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, v, emRef)
 	case "padding":
 		if e, ok := parseEdges(v, emRef); ok {
 			s.Padding = e

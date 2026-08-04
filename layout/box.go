@@ -34,11 +34,15 @@ type Box struct {
 	Style      *css.Style
 	X, Y, W, H float64
 
-	ContentX, ContentY, ContentW float64
+	ContentX, ContentY, ContentW, ContentH float64
 
 	Children  []*Box
 	Lines     []*LineBox
 	Anonymous bool
+
+	// Float marks a box taken out of normal flow (float:left/right). Floated
+	// boxes are painted like blocks but positioned by the float algorithm.
+	Float css.Float
 }
 
 // InlineItem is one atom of inline content: a word, an image, or a forced line
