@@ -201,8 +201,8 @@ func TestFlexShorthand(t *testing.T) {
 	check("none", 0, 0, true, 0)
 	check("auto", 1, 1, true, 0)
 	check("initial", 0, 1, true, 0)
-	check("1", 1, 1, false, 0)          // 1 → 1 1 0
-	check("2 3", 2, 3, false, 0)        // grow shrink
+	check("1", 1, 1, false, 0)           // 1 → 1 1 0
+	check("2 3", 2, 3, false, 0)         // grow shrink
 	check("1 0 200px", 1, 0, false, 200) // grow shrink basis
 	check("0 0 auto", 0, 0, true, 0)
 }

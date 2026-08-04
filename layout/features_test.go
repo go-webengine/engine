@@ -55,7 +55,7 @@ func TestBordersAddToBoxWidthHeight(t *testing.T) {
 	// content-box: width 100 + padding 10 + border 4 on each side.
 	src := `<html><body style="margin:0"><div style="width:100px;padding:10px;border:4px solid red">hi</div></body></html>`
 	div := findBox(layoutHTML(t, src, 500), "div")
-	assertF(t, "bx.W", div.W, 128)        // 4+10+100+10+4
+	assertF(t, "bx.W", div.W, 128)              // 4+10+100+10+4
 	assertF(t, "bx.ContentX", div.ContentX, 14) // border 4 + padding 10
 	// height: border 4 + padding 10 + one 20px line + padding 10 + border 4.
 	assertF(t, "bx.H", div.H, 48)

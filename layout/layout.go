@@ -58,9 +58,6 @@ func LayoutDocument(root *dom.Node, sm css.StyleMap, viewportW float64, m Measur
 	if fb := l.floats.bottom(); fb > total {
 		total = fb
 	}
-	if box == nil {
-		return &Box{}, 0
-	}
 	return box, total
 }
 
@@ -136,10 +133,9 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 	box.X = boxLeft
 	box.Y = borderTopY
 	box.W = bw.Left + st.Padding.Left + contentW + st.Padding.Right + bw.Right
+	// borderBottomY >= borderTopY always (sep boxes grow downward; non-sep boxes
+	// are clamped above), so the height is non-negative.
 	box.H = borderBottomY - borderTopY
-	if box.H < 0 {
-		box.H = 0
-	}
 	box.ContentX = contentX
 	box.ContentY = contentTopY
 	box.ContentW = contentW

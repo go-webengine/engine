@@ -205,7 +205,7 @@ func TestFloatBorderBoxWidth(t *testing.T) {
 		`<p style="margin:0">a</p></body></html>`
 	root := layoutHTML(t, src, 300)
 	f := findBoxByID(root, "f")
-	assertF(t, "fbb.W", f.W, 100)          // border box width stays 100
+	assertF(t, "fbb.W", f.W, 100)              // border box width stays 100
 	assertF(t, "fbb.ContentW", f.ContentW, 80) // content shrinks by padding
 }
 

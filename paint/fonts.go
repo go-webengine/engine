@@ -31,21 +31,24 @@ type faceKey struct {
 // mono=Go Mono). It panics only if a bundled font fails to parse, which would
 // be a build-time defect in the fonts module, not a runtime condition.
 func NewFonts() *Fonts {
-	must := func(b []byte) *opentype.Font {
-		f, err := opentype.Parse(b)
-		if err != nil {
-			panic("paint: bundled font failed to parse: " + err.Error())
-		}
-		return f
-	}
 	return &Fonts{
 		fonts: map[css.FontFamily]*opentype.Font{
-			css.Sans:  must(inter.TTF),
-			css.Serif: must(lora.TTF),
-			css.Mono:  must(gomono.TTF),
+			css.Sans:  mustParseFont(inter.TTF),
+			css.Serif: mustParseFont(lora.TTF),
+			css.Mono:  mustParseFont(gomono.TTF),
 		},
 		faces: map[faceKey]*opentype.Face{},
 	}
+}
+
+// mustParseFont parses a bundled font, panicking on failure — which would be a
+// build-time defect in the fonts module, not a runtime condition.
+func mustParseFont(b []byte) *opentype.Font {
+	f, err := opentype.Parse(b)
+	if err != nil {
+		panic("paint: bundled font failed to parse: " + err.Error())
+	}
+	return f
 }
 
 // face returns a cached Face for a family at an integer pixel size (>=1).
