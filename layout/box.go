@@ -51,6 +51,14 @@ type InlineItem struct {
 	Text  string
 	Style *css.Style
 
+	// Node is the element that directly produced this item — the immediate
+	// parent element of a text run, or the <img> element of an image item. It
+	// lets a consumer walk up the DOM (e.g. to the nearest <a href> ancestor)
+	// without re-deriving document structure from geometry. It is nil only for
+	// synthetic items with no originating element (a forced <br> carries its
+	// own element; anonymous runs never occur here).
+	Node *dom.Node
+
 	Width       float64 // advance of the word / width of the image
 	SpaceBefore float64 // width of a space in this item's font
 	Ascent      float64
