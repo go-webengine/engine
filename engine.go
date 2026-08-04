@@ -136,8 +136,11 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 	if vpW <= 0 {
 		vpW = 1024
 	}
-	// Cascade at the render width so @media width queries resolve correctly.
-	sm := css.CascadeVW(doc.Root, float64(vpW), nil)
+	// Fetch <link rel="stylesheet"> sheets (the dominant fidelity factor for
+	// real sites) and cascade at the render width so @media width queries and
+	// external theme/layout rules resolve correctly.
+	sheets := e.fetchExternalSheets(ctx, doc, float64(vpW))
+	sm := css.CascadeVW(doc.Root, float64(vpW), sheets)
 	imgSize, imgs := e.loadImages(ctx, doc, sm, vpW)
 
 	box, height := layout.LayoutDocument(doc.Root, sm, float64(vpW), fonts, imgSize)
@@ -225,6 +228,91 @@ func pageBackground(root *dom.Node, sm css.StyleMap) (css.Color, bool) {
 		}
 	}
 	return css.Color{}, false
+}
+
+// External-stylesheet fetch limits (safety: bounded work per page).
+const (
+	maxExternalSheets    = 20
+	maxSheetBytes        = 4 << 20 // 4 MB per sheet
+	maxImportDepth       = 2       // @import nesting levels honoured
+	externalSheetTimeout = 10 * time.Second
+)
+
+// fetchExternalSheets resolves and fetches every applicable
+// <link rel="stylesheet"> for doc, plus their leading @import chains, returning
+// the sheet texts in cascade order (imports before importer, links in document
+// order). Only http/https absolute URLs are fetched; failures degrade
+// gracefully (that sheet is skipped, the page still renders). vw is used to
+// drop media-query-excluded links (e.g. print-only).
+func (e *Engine) fetchExternalSheets(ctx context.Context, doc *Document, vw float64) []string {
+	links := css.StylesheetLinks(doc.Root)
+	if len(links) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, externalSheetTimeout)
+	defer cancel()
+
+	seen := map[string]bool{}
+	var out []string
+	for _, ln := range links {
+		if len(out) >= maxExternalSheets {
+			break
+		}
+		if !css.MediaApplies(ln.Media, vw) {
+			continue
+		}
+		abs, ok := resolveURL(doc.URL, ln.Href)
+		if !ok {
+			continue
+		}
+		out = e.appendSheet(ctx, abs, vw, seen, out, 0)
+	}
+	return out
+}
+
+// appendSheet fetches the sheet at absURL (if not already seen and within
+// limits), recursively prepends its leading @import targets, then appends the
+// sheet's own text. It returns the possibly-extended out slice.
+func (e *Engine) appendSheet(ctx context.Context, absURL string, vw float64, seen map[string]bool, out []string, depth int) []string {
+	if depth > maxImportDepth || len(out) >= maxExternalSheets || seen[absURL] {
+		return out
+	}
+	seen[absURL] = true
+	text, ok := e.fetchSheet(ctx, absURL)
+	if !ok {
+		return out
+	}
+	// @imports load (and thus cascade) before the importing sheet's own rules.
+	imports, medias := css.ImportURLs(text)
+	for i, imp := range imports {
+		if !css.MediaApplies(medias[i], vw) {
+			continue
+		}
+		if abs, ok := resolveURL(absURL, imp); ok {
+			out = e.appendSheet(ctx, abs, vw, seen, out, depth+1)
+		}
+	}
+	return append(out, text)
+}
+
+// fetchSheet retrieves a single stylesheet as UTF-8 text, bounded by
+// maxSheetBytes. Non-2xx or oversized/undecodable responses report false.
+func (e *Engine) fetchSheet(ctx context.Context, absURL string) (string, bool) {
+	if !strings.HasPrefix(absURL, "http://") && !strings.HasPrefix(absURL, "https://") {
+		return "", false
+	}
+	body, _, ctype, err := e.get(ctx, absURL)
+	if err != nil {
+		return "", false
+	}
+	if len(body) > maxSheetBytes {
+		body = body[:maxSheetBytes]
+	}
+	utf8, err := decodeCharset(body, ctype)
+	if err != nil {
+		utf8 = body
+	}
+	return string(utf8), true
 }
 
 // resolveURL resolves ref against the document base URL.
