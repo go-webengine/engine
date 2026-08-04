@@ -21,8 +21,8 @@ set -euo pipefail
 PKGS=(css layout paint dom)
 declare -A FLOOR=(
   [css]=99.5
-  [layout]=98.4
-  [paint]=97.7
+  [layout]=100.0
+  [paint]=100.0
   [dom]=97.4
 )
 

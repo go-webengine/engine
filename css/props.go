@@ -53,7 +53,7 @@ func parseAlignItems(lv string) (AlignItems, bool) {
 	switch lv {
 	case "stretch", "normal":
 		return AlignStretch, true
-	case "flex-start", "start", "self-start":
+	case "flex-start", "start", "self-start", "baseline":
 		return AlignFlexStart, true
 	case "flex-end", "end", "self-end":
 		return AlignFlexEnd, true
@@ -61,6 +61,71 @@ func parseAlignItems(lv string) (AlignItems, bool) {
 		return AlignCenterItems, true
 	}
 	return 0, false
+}
+
+func parseFlexWrap(lv string) (FlexWrap, bool) {
+	switch lv {
+	case "nowrap":
+		return FlexNoWrap, true
+	case "wrap":
+		return FlexWrapOn, true
+	case "wrap-reverse":
+		return FlexWrapReverse, true
+	}
+	return 0, false
+}
+
+func parseAlignContent(lv string) (AlignContent, bool) {
+	switch lv {
+	case "stretch", "normal":
+		return AlignContentStretch, true
+	case "flex-start", "start":
+		return AlignContentStart, true
+	case "flex-end", "end":
+		return AlignContentEnd, true
+	case "center":
+		return AlignContentCenter, true
+	case "space-between":
+		return AlignContentSpaceBetween, true
+	case "space-around":
+		return AlignContentSpaceAround, true
+	case "space-evenly":
+		return AlignContentSpaceEvenly, true
+	}
+	return 0, false
+}
+
+func parseAlignSelf(lv string) (AlignSelf, bool) {
+	switch lv {
+	case "auto":
+		return AlignSelfAuto, true
+	case "stretch", "normal":
+		return AlignSelfStretch, true
+	case "flex-start", "start", "self-start", "baseline":
+		return AlignSelfStart, true
+	case "flex-end", "end", "self-end":
+		return AlignSelfEnd, true
+	case "center":
+		return AlignSelfCenter, true
+	}
+	return 0, false
+}
+
+// applyFlexFlow parses the flex-flow shorthand (flex-direction and/or
+// flex-wrap, in any order).
+func applyFlexFlow(s *Style, v string) {
+	for _, f := range strings.Fields(strings.ToLower(v)) {
+		switch f {
+		case "row", "row-reverse":
+			s.FlexDirection = FlexRow
+		case "column", "column-reverse":
+			s.FlexDirection = FlexColumn
+		default:
+			if w, ok := parseFlexWrap(f); ok {
+				s.FlexWrap = w
+			}
+		}
+	}
 }
 
 // applyFlexShorthand parses the flex shorthand. It supports the common forms:

@@ -60,6 +60,18 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 		if w <= 0 || h <= 0 {
 			continue
 		}
+		// Apply a single-axis CSS width/height as a browser does: the specified
+		// axis is used and the other is scaled by the intrinsic aspect ratio (so
+		// e.g. a wide logo constrained to height:1.5rem is ~72px wide, not its
+		// full intrinsic width). Both axes set uses both; neither keeps intrinsic.
+		if cw, ch, ok := cssImageSize(sm[n], w, h); ok {
+			if cw != w || ch != h {
+				if scaled, err := goimages.Resize(src0, cw, ch, goimages.Bilinear); err == nil {
+					src0 = scaled
+					w, h = cw, ch
+				}
+			}
+		}
 		// Scale down to fit the viewport width, preserving aspect ratio.
 		if w > viewportW && viewportW > 0 {
 			nh := int(float64(h) * float64(viewportW) / float64(w))
@@ -76,6 +88,44 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 		count++
 	}
 	return sizes, bitmaps
+}
+
+// cssImageSize resolves the used pixel dimensions of an image given its style
+// and intrinsic size (iw×ih). A definite (non-auto, non-percentage) CSS width
+// and/or height override the intrinsic size; when only one axis is definite the
+// other is derived from the intrinsic aspect ratio. It reports false when the
+// style is nil or specifies neither axis definitely (keep the intrinsic size).
+func cssImageSize(st *css.Style, iw, ih int) (w, h int, ok bool) {
+	if st == nil || iw <= 0 || ih <= 0 {
+		return 0, 0, false
+	}
+	definite := func(l css.Length) (float64, bool) {
+		if l.Auto || l.IsPercent || l.Px <= 0 {
+			return 0, false
+		}
+		return l.Px, true
+	}
+	cw, hasW := definite(st.Width)
+	ch, hasH := definite(st.Height)
+	switch {
+	case hasW && hasH:
+		return iround(cw), iround(ch), true
+	case hasW:
+		return iround(cw), iround(cw * float64(ih) / float64(iw)), true
+	case hasH:
+		return iround(ch * float64(iw) / float64(ih)), iround(ch), true
+	default:
+		return 0, 0, false
+	}
+}
+
+// iround rounds a non-negative float to the nearest int (>= 1).
+func iround(f float64) int {
+	n := int(f + 0.5)
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 // fetchImageBytes returns the raw bytes for an image src, handling data: URIs

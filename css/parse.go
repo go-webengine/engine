@@ -181,8 +181,10 @@ func (s *Style) apply(d Declaration, emRef float64) {
 	switch d.Property {
 	case "display":
 		switch lv {
-		case "block", "list-item", "grid", "flow-root":
-			s.Display = DisplayBlock // grid degrades to block flow
+		case "block", "list-item", "flow-root":
+			s.Display = DisplayBlock
+		case "grid", "inline-grid":
+			s.Display = DisplayGrid
 		case "flex", "inline-flex":
 			s.Display = DisplayFlex
 		case "table", "inline-table":
@@ -266,6 +268,18 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		if l, ok := parseLength(v, emRef); ok {
 			s.Height = l
 		}
+	case "min-height":
+		if l, ok := parseLength(v, emRef); ok {
+			s.MinHeight = l
+		} else if lv == "none" {
+			s.MinHeight = Length{Auto: true}
+		}
+	case "max-height":
+		if l, ok := parseLength(v, emRef); ok {
+			s.MaxHeight = l
+		} else if lv == "none" {
+			s.MaxHeight = Length{Auto: true}
+		}
 	case "box-sizing":
 		switch lv {
 		case "border-box":
@@ -328,6 +342,88 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		}
 	case "flex":
 		applyFlexShorthand(s, v, emRef)
+	case "flex-wrap":
+		if w, ok := parseFlexWrap(lv); ok {
+			s.FlexWrap = w
+		}
+	case "flex-flow":
+		applyFlexFlow(s, v)
+	case "align-content":
+		if a, ok := parseAlignContent(lv); ok {
+			s.AlignContent = a
+		}
+	case "align-self":
+		if a, ok := parseAlignSelf(lv); ok {
+			s.AlignSelf = a
+		}
+	case "justify-self":
+		if a, ok := parseAlignSelf(lv); ok {
+			s.JustifySelf = a
+		}
+	case "justify-items":
+		if a, ok := parseAlignItems(lv); ok {
+			s.JustifyItems = a
+		}
+	case "order":
+		if n, err := strconv.Atoi(lv); err == nil {
+			s.Order = n
+		}
+	case "gap", "grid-gap":
+		applyGap(s, v, emRef)
+	case "row-gap", "grid-row-gap":
+		if l, ok := parseLength(v, emRef); ok && !l.Auto {
+			s.RowGap = l
+		}
+	case "column-gap", "grid-column-gap":
+		if l, ok := parseLength(v, emRef); ok && !l.Auto {
+			s.ColumnGap = l
+		}
+	case "place-items":
+		applyPlaceItems(s, v)
+	case "place-content":
+		applyPlaceContent(s, lv)
+	case "place-self":
+		applyPlaceSelf(s, v)
+	case "grid-template-columns":
+		if t, ok := parseTrackList(v, emRef); ok {
+			s.GridTemplateColumns = t
+		}
+	case "grid-template-rows":
+		if t, ok := parseTrackList(v, emRef); ok {
+			s.GridTemplateRows = t
+		}
+	case "grid-auto-columns":
+		if t, ok := parseTrackSize(v, emRef); ok {
+			s.GridAutoColumns = t
+		}
+	case "grid-auto-rows":
+		if t, ok := parseTrackSize(v, emRef); ok {
+			s.GridAutoRows = t
+		}
+	case "grid-auto-flow":
+		if strings.Contains(lv, "column") {
+			s.GridAutoFlow = GridFlowColumn
+		} else if strings.Contains(lv, "row") {
+			s.GridAutoFlow = GridFlowRow
+		}
+	case "grid-template-areas":
+		if a, ok := parseGridTemplateAreas(v); ok {
+			s.GridTemplateAreas = a
+		}
+	case "grid-column":
+		s.GridColumnStart, s.GridColumnEnd = parseGridPlacement(v)
+	case "grid-row":
+		s.GridRowStart, s.GridRowEnd = parseGridPlacement(v)
+	case "grid-column-start":
+		s.GridColumnStart = parseGridLine(v)
+	case "grid-column-end":
+		s.GridColumnEnd = parseGridLine(v)
+	case "grid-row-start":
+		s.GridRowStart = parseGridLine(v)
+	case "grid-row-end":
+		s.GridRowEnd = parseGridLine(v)
+	case "grid-area":
+		applyGridArea(s, v)
 	case "border":
 		applyBorderShorthand(&s.Border, v, emRef, s.Color)
 	case "border-top":

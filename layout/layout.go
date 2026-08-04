@@ -94,7 +94,8 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 
 	topSep := bw.Top + st.Padding.Top
 	botSep := bw.Bottom + st.Padding.Bottom
-	establishes := st.Display == css.DisplayFlex || st.Display == css.DisplayTable
+	establishes := st.Display == css.DisplayFlex || st.Display == css.DisplayTable ||
+		st.Display == css.DisplayGrid
 
 	var borderTopY, contentTopY float64
 	sep := topSep > 0 || establishes
@@ -168,6 +169,10 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 	case css.DisplayFlex:
 		bottom := l.flex(box, node, st, cx, cw, top, b)
 		b.y = bottom // flex is out-of-band; advance the block cursor to its bottom
+		return bottom
+	case css.DisplayGrid:
+		bottom := l.grid(box, node, st, cx, cw, top, b)
+		b.y = bottom
 		return bottom
 	case css.DisplayTable:
 		bottom := l.table(box, node, st, cx, cw, top, b)
@@ -265,7 +270,7 @@ func (l *layouter) handleClear(st *css.Style, b *bfc) {
 // the parent's flow (breaking the line).
 func isBlockLevel(d css.Display) bool {
 	switch d {
-	case css.DisplayBlock, css.DisplayFlex, css.DisplayTable,
+	case css.DisplayBlock, css.DisplayFlex, css.DisplayGrid, css.DisplayTable,
 		css.DisplayTableRowGroup, css.DisplayTableRow, css.DisplayTableCell:
 		return true
 	}

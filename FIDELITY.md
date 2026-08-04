@@ -13,6 +13,59 @@ is absent, and that is stated below, not hidden.
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom.
 
+## Phase 1.7 — flexbox completeness + CSS grid
+
+The bench harness identified CSS **flex/grid layout** (not JavaScript) as the
+dominant remaining fidelity gap on modern Tailwind-driven pages. Phase 1.7
+closes most of it. All of the following land with **exact-geometry unit tests**
+(`layout` and `paint` stay at **100%** statement coverage; `css` at 99.7%).
+
+### Flexbox — now complete enough for real Tailwind layouts
+- **`flex-wrap`** (`wrap` / `wrap-reverse`) breaking items into multiple flex
+  lines; **`flex-flow`** shorthand.
+- **`gap` / `row-gap` / `column-gap`** between items (main axis) and lines
+  (cross axis), including the two-value `gap` shorthand.
+- **`align-content`** (start / end / center / space-between / around / evenly)
+  distributing lines across a definite cross size.
+- **`align-self`** overriding `align-items` per item; **`order`** reordering
+  items within the container.
+- **`min/max-width`** and **`min/max-height`** resolved within flex (clamping
+  grow/shrink on the main axis and stretch on the cross axis).
+- Nested flex containers, percentage bases against the container, `flex:1` /
+  `flex:0 0 200px` shorthands.
+
+### CSS grid (`display:grid`) — new
+- **`grid-template-columns` / `grid-template-rows`** with `px`, `%`, **`fr`**,
+  `auto`, **`repeat(n, …)`** and **`minmax(min, max)`** (incl. `minmax(_, 1fr)`).
+- **`gap` / `row-gap` / `column-gap`** between tracks.
+- **Explicit placement**: `grid-column` / `grid-row` with line numbers
+  (positive and negative), `/`-ranges and **`span N`**; `grid-area` line form.
+- **Auto-placement**: row-major flow for items without explicit placement, plus
+  fixed-column-auto-row and fixed-row-auto-column items.
+- **`grid-template-areas`** with `grid-area: <name>` placement.
+- **`justify-items` / `align-items` / `place-items`** and per-item
+  **`justify-self` / `align-self` / `place-self`** (stretch fills the cell,
+  otherwise the item keeps its size and is positioned within the cell);
+  **`justify-content`** distributes/centres the whole track band.
+- `grid-auto-rows` / `grid-auto-columns` for implicit tracks; a lone `auto`
+  column stretches to fill the container (matching browsers).
+
+### Deliberately out of scope this phase (→ Phase 1.8, not faked)
+- `repeat(auto-fill / auto-fit, …)`, `fit-content()`, `subgrid`, named grid
+  **lines** (named **areas** *are* supported), and `masonry` — parsed values
+  that reference these leave the property unset rather than guessing.
+- `grid-auto-flow: dense` and `column` flow are parsed but auto-placement is
+  always sparse **row-major** at this fidelity.
+- Intrinsic (`auto`/`min/max-content`) track sizing only counts items that lie
+  **within a single track**; a multi-track spanner does not grow the tracks it
+  crosses (fixed/`fr`/`%` tracks and explicit sizes are exact).
+- `fr` **rows** distribute space only when the container has a **definite
+  height**; otherwise they behave as `auto` (content-sized).
+- Cross-axis `min/max-height` and grid `min/max` bounds are treated as
+  **border-box** limits (box-sizing is not distinguished on that axis).
+- Baseline alignment, and `justify-content` spacing distribution on grid columns
+  when `auto` tracks are present (auto tracks stretch instead).
+
 ## What Phase 1 added (all with exact-geometry unit tests)
 
 - **Box model**: `max-width`/`min-width` clamping, `width:auto` + `margin:auto`
@@ -104,10 +157,11 @@ columns.
   top nav/sidebar collapse) are therefore not honoured, so that chrome
   linearises. In-document `@media` rules *are* now applied. (`css.CascadeVW`
   already accepts external sheets; wiring the fetch is a Phase-2 follow-up.)
-- **No CSS grid, absolute/fixed/sticky positioning, `overflow`, transforms,
+- **No absolute/fixed/sticky positioning, `overflow`, transforms,
   `border-radius`, `box-shadow`, gradients, web fonts.** Percentage and viewport
   heights, and `vh`, are approximated. Table `colspan`/`rowspan` and
-  `border-collapse` are not modelled.
+  `border-collapse` are not modelled. CSS grid is now supported (Phase 1.7); its
+  deliberately-unsupported sub-features are listed in the Phase 1.7 section above.
 - **Fonts**: only bundled Inter/Lora/Go-Mono (regular); bold is faux-bold and
   italic is not rendered.
 
@@ -119,6 +173,9 @@ go run ./cmd/render -url "https://en.wikipedia.org/wiki/Go_(programming_language
 go run ./cmd/render -url "https://www.rfc-editor.org/rfc/rfc1866.html" -out testdata/renders/rfc1866.png -w 1024 -h 768 -timeout 90s
 go run ./cmd/render -file testdata/floats_demo.html -out testdata/renders/floats_demo.png -w 900 -h 700
 go run ./cmd/render -file testdata/flex_table_demo.html -out testdata/renders/flex_table_demo.png -w 1000 -h 700
+go run ./cmd/render -file testdata/flex_wrap_demo.html -out testdata/renders/flex_wrap_demo.png -w 900 -h 700
+go run ./cmd/render -file testdata/grid_demo.html -out testdata/renders/grid_demo.png -w 1000 -h 950
+go run ./cmd/render -file testdata/tailwind_hero_demo.html -out testdata/renders/tailwind_hero_demo.png -w 1024 -h 620
 ```
 
 The three live URLs were reachable from this environment; no offline substitution
