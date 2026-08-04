@@ -1,0 +1,384 @@
+// Copyright (c) the go-webengine/engine authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+package js
+
+import (
+	"net/url"
+	"strings"
+
+	"github.com/dop251/goja"
+
+	"github.com/go-webengine/engine/dom"
+)
+
+// install wires the whole DOM/BOM surface onto the goja global scope.
+func (b *binder) install() {
+	g := b.vm.GlobalObject()
+	doc := b.installDocument()
+	g.Set("document", doc)
+
+	// window/self/globalThis/top/parent/frames all alias the global object.
+	for _, name := range []string{"window", "self", "globalThis", "top", "parent", "frames"} {
+		g.Set(name, g)
+	}
+	b.accessor(g, "length", func() goja.Value { return b.vm.ToValue(0) }, nil)
+	b.accessor(g, "closed", func() goja.Value { return b.vm.ToValue(false) }, nil)
+	b.accessor(g, "name", func() goja.Value { return b.vm.ToValue("") }, nil)
+	g.Set("innerWidth", b.opt.ViewportWidth)
+	g.Set("innerHeight", b.opt.ViewportHeight)
+	g.Set("outerWidth", b.opt.ViewportWidth)
+	g.Set("outerHeight", b.opt.ViewportHeight)
+	g.Set("devicePixelRatio", 1)
+	g.Set("scrollX", 0)
+	g.Set("scrollY", 0)
+	g.Set("pageXOffset", 0)
+	g.Set("pageYOffset", 0)
+
+	g.Set("location", b.newLocation())
+	g.Set("navigator", b.newNavigator())
+	g.Set("console", b.newConsole())
+	g.Set("history", b.newHistory())
+	g.Set("screen", b.newScreen())
+	g.Set("performance", b.newPerformance())
+	g.Set("localStorage", b.newStorage("local"))
+	g.Set("sessionStorage", b.newStorage("session"))
+
+	b.installTimers(g)
+	b.installEventTargets(g)
+	b.installStubs(g)
+	b.installConstructors(g)
+}
+
+// installTimers wires setTimeout/setInterval/rAF etc. onto g, all of which queue
+// their callback for the bounded drain pass.
+func (b *binder) installTimers(g *goja.Object) {
+	queue := func(v goja.Value) goja.Value {
+		if fn, ok := goja.AssertFunction(v); ok {
+			b.jobs = append(b.jobs, timerJob{fn: fn, self: goja.Undefined()})
+		}
+		b.nextID++
+		return b.vm.ToValue(b.nextID)
+	}
+	g.Set("setTimeout", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
+	// setInterval runs its callback once (never loops) to stay bounded.
+	g.Set("setInterval", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
+	g.Set("requestAnimationFrame", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
+	g.Set("requestIdleCallback", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
+	g.Set("queueMicrotask", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
+	g.Set("setImmediate", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	for _, name := range []string{"clearTimeout", "clearInterval", "cancelAnimationFrame", "cancelIdleCallback"} {
+		g.Set(name, noop)
+	}
+}
+
+// installEventTargets wires window-level event methods onto g.
+func (b *binder) installEventTargets(g *goja.Object) {
+	g.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
+		b.addListener(b.windowNode, call.Argument(0).String(), call.Argument(1))
+		return goja.Undefined()
+	})
+	g.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
+		b.removeListener(b.windowNode, call.Argument(0).String(), call.Argument(1))
+		return goja.Undefined()
+	})
+	g.Set("dispatchEvent", func(call goja.FunctionCall) goja.Value {
+		b.dispatch(b.windowNode, eventType(call.Argument(0)), call.Argument(0))
+		return b.vm.ToValue(true)
+	})
+}
+
+// installStubs wires the harmless no-op / best-effort surface that hydration code
+// probes: scrolling, dialogs, fetch, media queries, computed style, storage-less
+// APIs. Present-but-inert beats absent-and-throwing.
+func (b *binder) installStubs(g *goja.Object) {
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	for _, name := range []string{"scrollTo", "scroll", "scrollBy", "focus", "blur", "moveTo", "resizeTo", "print", "close", "stop"} {
+		g.Set(name, noop)
+	}
+	g.Set("alert", noop)
+	g.Set("confirm", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
+	g.Set("prompt", func(goja.FunctionCall) goja.Value { return goja.Null() })
+	g.Set("open", func(goja.FunctionCall) goja.Value { return goja.Null() })
+	g.Set("getComputedStyle", func(call goja.FunctionCall) goja.Value {
+		if n := b.node(call.Argument(0)); n != nil {
+			return b.vm.NewDynamicObject(&styleDynObj{b: b, n: n})
+		}
+		return b.vm.NewObject()
+	})
+	g.Set("matchMedia", func(call goja.FunctionCall) goja.Value {
+		return b.newMediaQueryList(call.Argument(0).String())
+	})
+	g.Set("getSelection", func(goja.FunctionCall) goja.Value { return goja.Null() })
+	// fetch resolves to a never-settling promise: we neither have the resource nor
+	// want an unhandled rejection to surface as a script error.
+	g.Set("fetch", func(goja.FunctionCall) goja.Value {
+		p, _, _ := b.vm.NewPromise()
+		return b.vm.ToValue(p)
+	})
+	b.installClasslessStorageAPIs(g)
+}
+
+// installClasslessStorageAPIs wires atob/btoa and structuredClone.
+func (b *binder) installClasslessStorageAPIs(g *goja.Object) {
+	g.Set("structuredClone", func(call goja.FunctionCall) goja.Value { return call.Argument(0) })
+}
+
+// newLocation builds window.location from the page URL.
+func (b *binder) newLocation() goja.Value {
+	u, err := url.Parse(b.opt.PageURL)
+	if err != nil || u == nil {
+		u = &url.URL{}
+	}
+	o := b.vm.NewObject()
+	set := func(name, val string) { o.Set(name, val) }
+	set("href", b.opt.PageURL)
+	set("protocol", withColon(u.Scheme))
+	set("host", u.Host)
+	set("hostname", u.Hostname())
+	set("port", u.Port())
+	set("pathname", pathOr(u.Path))
+	set("search", withPrefix("?", u.RawQuery))
+	set("hash", withPrefix("#", u.Fragment))
+	set("origin", origin(u))
+	o.Set("assign", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	o.Set("replace", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	o.Set("reload", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	o.Set("toString", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(b.opt.PageURL) })
+	return o
+}
+
+func (b *binder) newNavigator() goja.Value {
+	o := b.vm.NewObject()
+	ua := b.opt.UserAgent
+	o.Set("userAgent", ua)
+	o.Set("appVersion", ua)
+	o.Set("appName", "Netscape")
+	o.Set("appCodeName", "Mozilla")
+	o.Set("platform", "")
+	o.Set("vendor", "")
+	o.Set("product", "Gecko")
+	o.Set("language", "en-US")
+	o.Set("languages", b.vm.NewArray("en-US", "en"))
+	o.Set("onLine", true)
+	o.Set("cookieEnabled", true)
+	o.Set("doNotTrack", goja.Null())
+	o.Set("hardwareConcurrency", 1)
+	o.Set("maxTouchPoints", 0)
+	o.Set("javaEnabled", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
+	o.Set("sendBeacon", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
+	return o
+}
+
+func (b *binder) newConsole() goja.Value {
+	o := b.vm.NewObject()
+	mk := func(level string) func(goja.FunctionCall) goja.Value {
+		return func(call goja.FunctionCall) goja.Value {
+			if b.opt.Log != nil {
+				parts := make([]string, len(call.Arguments))
+				for i, a := range call.Arguments {
+					parts[i] = a.String()
+				}
+				b.opt.Log(level + ": " + strings.Join(parts, " "))
+			}
+			return goja.Undefined()
+		}
+	}
+	for _, level := range []string{"log", "warn", "error", "info", "debug", "trace"} {
+		o.Set(level, mk(level))
+	}
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	for _, name := range []string{"group", "groupEnd", "groupCollapsed", "table", "dir", "assert", "count", "time", "timeEnd", "clear"} {
+		o.Set(name, noop)
+	}
+	return o
+}
+
+func (b *binder) newHistory() goja.Value {
+	o := b.vm.NewObject()
+	o.Set("length", 1)
+	o.Set("state", goja.Null())
+	o.Set("scrollRestoration", "auto")
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	for _, name := range []string{"pushState", "replaceState", "back", "forward", "go"} {
+		o.Set(name, noop)
+	}
+	return o
+}
+
+func (b *binder) newScreen() goja.Value {
+	o := b.vm.NewObject()
+	o.Set("width", b.opt.ViewportWidth)
+	o.Set("height", b.opt.ViewportHeight)
+	o.Set("availWidth", b.opt.ViewportWidth)
+	o.Set("availHeight", b.opt.ViewportHeight)
+	o.Set("colorDepth", 24)
+	o.Set("pixelDepth", 24)
+	o.Set("orientation", b.vm.NewObject())
+	return o
+}
+
+func (b *binder) newPerformance() goja.Value {
+	o := b.vm.NewObject()
+	o.Set("now", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(0) })
+	o.Set("timeOrigin", 0)
+	o.Set("getEntriesByType", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
+	o.Set("getEntriesByName", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
+	o.Set("getEntries", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	for _, name := range []string{"mark", "measure", "clearMarks", "clearMeasures"} {
+		o.Set(name, noop)
+	}
+	return o
+}
+
+func (b *binder) newMediaQueryList(q string) goja.Value {
+	o := b.vm.NewObject()
+	o.Set("matches", false)
+	o.Set("media", q)
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	for _, name := range []string{"addListener", "removeListener", "addEventListener", "removeEventListener", "dispatchEvent"} {
+		o.Set(name, noop)
+	}
+	return o
+}
+
+// storageArea is a single Web Storage backing map.
+type storageArea struct {
+	data  map[string]string
+	order []string
+}
+
+// newStorage builds a localStorage/sessionStorage object over a backing area.
+func (b *binder) newStorage(kind string) goja.Value {
+	area := b.storage[kind]
+	if area == nil {
+		area = &storageArea{data: map[string]string{}}
+		b.storage[kind] = area
+	}
+	o := b.vm.NewObject()
+	o.Set("getItem", func(call goja.FunctionCall) goja.Value {
+		if v, ok := area.data[call.Argument(0).String()]; ok {
+			return b.vm.ToValue(v)
+		}
+		return goja.Null()
+	})
+	o.Set("setItem", func(call goja.FunctionCall) goja.Value {
+		k := call.Argument(0).String()
+		if _, ok := area.data[k]; !ok {
+			area.order = append(area.order, k)
+		}
+		area.data[k] = call.Argument(1).String()
+		return goja.Undefined()
+	})
+	o.Set("removeItem", func(call goja.FunctionCall) goja.Value {
+		k := call.Argument(0).String()
+		delete(area.data, k)
+		for i, o := range area.order {
+			if o == k {
+				area.order = append(area.order[:i], area.order[i+1:]...)
+				break
+			}
+		}
+		return goja.Undefined()
+	})
+	o.Set("clear", func(goja.FunctionCall) goja.Value {
+		area.data = map[string]string{}
+		area.order = nil
+		return goja.Undefined()
+	})
+	o.Set("key", func(call goja.FunctionCall) goja.Value {
+		i := int(call.Argument(0).ToInteger())
+		if i < 0 || i >= len(area.order) {
+			return goja.Null()
+		}
+		return b.vm.ToValue(area.order[i])
+	})
+	b.accessor(o, "length", func() goja.Value { return b.vm.ToValue(len(area.order)) }, nil)
+	return o
+}
+
+// datasetDynObj implements element.dataset over data-* attributes.
+type datasetDynObj struct {
+	b *binder
+	n *dom.Node
+}
+
+func (d *datasetDynObj) Get(key string) goja.Value {
+	if v, ok := d.n.Attribute("data-" + camelToKebab(key)); ok {
+		return d.b.vm.ToValue(v)
+	}
+	return goja.Undefined()
+}
+
+func (d *datasetDynObj) Set(key string, val goja.Value) bool {
+	d.b.setAttr(d.n, "data-"+camelToKebab(key), val.String())
+	return true
+}
+
+func (d *datasetDynObj) Has(key string) bool {
+	_, ok := d.n.Attribute("data-" + camelToKebab(key))
+	return ok
+}
+
+func (d *datasetDynObj) Delete(key string) bool {
+	d.b.removeAttr(d.n, "data-"+camelToKebab(key))
+	return true
+}
+
+func (d *datasetDynObj) Keys() []string {
+	var out []string
+	for k := range d.n.Attr {
+		if strings.HasPrefix(k, "data-") {
+			out = append(out, k[len("data-"):])
+		}
+	}
+	return out
+}
+
+// --- small URL helpers -------------------------------------------------------
+
+func withColon(scheme string) string {
+	if scheme == "" {
+		return ""
+	}
+	return scheme + ":"
+}
+
+func withPrefix(prefix, s string) string {
+	if s == "" {
+		return ""
+	}
+	return prefix + s
+}
+
+func pathOr(p string) string {
+	if p == "" {
+		return "/"
+	}
+	return p
+}
+
+func origin(u *url.URL) string {
+	if u.Scheme == "" || u.Host == "" {
+		return "null"
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// mergeCookie appends a "name=value" set-cookie assignment to the cookie string.
+func mergeCookie(existing, assignment string) string {
+	pair := assignment
+	if i := strings.IndexByte(assignment, ';'); i >= 0 {
+		pair = assignment[:i]
+	}
+	pair = strings.TrimSpace(pair)
+	if pair == "" {
+		return existing
+	}
+	if existing == "" {
+		return pair
+	}
+	return existing + "; " + pair
+}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
+	"github.com/go-webengine/engine/js"
 	"github.com/go-webengine/engine/layout"
 	"github.com/go-webengine/engine/paint"
 )
@@ -48,6 +49,16 @@ type Engine struct {
 	Client    *http.Client
 	UserAgent string
 	MaxImages int
+
+	// DisableJS turns off the JavaScript pass. Offline fixture tests that must
+	// stay byte-deterministic set this; the default (false) runs page scripts.
+	DisableJS bool
+	// JSTimeout bounds the total script + timer budget per render. Zero selects
+	// js.DefaultTimeout.
+	JSTimeout time.Duration
+	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
+	// pass (used for debugging; nil discards them).
+	JSLog func(string)
 }
 
 // New returns an Engine with a browser-like HTTP client (Chrome TLS
@@ -136,6 +147,15 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 	if vpW <= 0 {
 		vpW = 1024
 	}
+	vpH := viewport.Dy()
+	if vpH <= 0 {
+		vpH = 768
+	}
+	// Run the page's scripts against a minimal DOM binding BEFORE the cascade so
+	// progressive-enhancement mutations (the client-js class swap, nav collapse,
+	// injected style/markup) are reflected in what we style and lay out. A script
+	// error never aborts the render; the pass is bounded by a wall-clock budget.
+	e.runScripts(ctx, doc, vpW, vpH)
 	// Fetch <link rel="stylesheet"> sheets (the dominant fidelity factor for
 	// real sites) and cascade at the render width so @media width queries and
 	// external theme/layout rules resolve correctly.
@@ -166,6 +186,25 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 		URL:           doc.URL,
 		ContentHeight: int(height),
 	}, nil
+}
+
+// runScripts executes the document's JavaScript against a minimal DOM binding,
+// mutating doc.Root in place. It is a no-op when DisableJS is set. Errors are
+// swallowed (logged via JSLog if set); the render always proceeds.
+func (e *Engine) runScripts(ctx context.Context, doc *Document, vpW, vpH int) {
+	if e.DisableJS {
+		return
+	}
+	js.Run(doc.Root, js.Options{
+		PageURL:        doc.URL,
+		UserAgent:      e.UserAgent,
+		Client:         e.Client,
+		Ctx:            ctx,
+		Timeout:        e.JSTimeout,
+		ViewportWidth:  vpW,
+		ViewportHeight: vpH,
+		Log:            e.JSLog,
+	})
 }
 
 // RenderHTML renders an HTML string (with baseURL used to resolve relative
