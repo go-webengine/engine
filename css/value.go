@@ -255,6 +255,12 @@ type Style struct {
 	FlexGrow   float64
 	FlexShrink float64
 	FlexBasis  Length // Auto == "auto" (use the item's width/content)
+
+	// CustomProps holds the element's resolved CSS custom properties (--name ->
+	// raw value). It is inherited from the parent and overridden by matched
+	// rules; var() references consult it at computed-value time. Nil until an
+	// element (or an ancestor) defines a custom property.
+	CustomProps map[string]string
 }
 
 // LineHeight is a resolved line-height. Normal means "use the font's own line
@@ -294,21 +300,22 @@ func initialStyle() Style {
 // font-family, text-align.
 func inheritFrom(parent Style) Style {
 	return Style{
-		Display:    DisplayInline, // reset (non-inherited)
-		Color:      parent.Color,
-		Background: Transparent, // reset
-		FontSize:   parent.FontSize,
-		FontWeight: parent.FontWeight,
-		FontFamily: parent.FontFamily,
-		Width:      Length{Auto: true}, // reset
-		MinWidth:   Length{Auto: true},
-		MaxWidth:   Length{Auto: true},
-		Height:     Length{Auto: true},
-		FlexBasis:  Length{Auto: true},
-		FlexShrink: 1,
-		TextAlign:  parent.TextAlign,  // inherited
-		WhiteSpace: parent.WhiteSpace, // inherited
-		LineHeight: parent.LineHeight, // inherited
+		Display:     DisplayInline, // reset (non-inherited)
+		Color:       parent.Color,
+		Background:  Transparent, // reset
+		FontSize:    parent.FontSize,
+		FontWeight:  parent.FontWeight,
+		FontFamily:  parent.FontFamily,
+		Width:       Length{Auto: true}, // reset
+		MinWidth:    Length{Auto: true},
+		MaxWidth:    Length{Auto: true},
+		Height:      Length{Auto: true},
+		FlexBasis:   Length{Auto: true},
+		FlexShrink:  1,
+		TextAlign:   parent.TextAlign,   // inherited
+		WhiteSpace:  parent.WhiteSpace,  // inherited
+		LineHeight:  parent.LineHeight,  // inherited
+		CustomProps: parent.CustomProps, // inherited (shared until copy-on-write)
 	}
 }
 

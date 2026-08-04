@@ -26,11 +26,18 @@ type compound struct {
 	Classes []string
 	ID      string
 	Univ    bool // explicit "*" (matches any element)
+	Root    bool // ":root" pseudo-class (matches the document root element)
 }
 
 // matches reports whether the compound matches an element node.
 func (c compound) matches(n *dom.Node) bool {
 	if n.Type != dom.Element {
+		return false
+	}
+	// ":root" matches only the document root element (an element with no element
+	// ancestor, i.e. <html>). This is where stylesheets define most custom
+	// properties, so honouring it is essential for var() to resolve.
+	if c.Root && elementParent(n) != nil {
 		return false
 	}
 	if c.Tag != "" && c.Tag != n.Tag {
@@ -58,6 +65,9 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 		idCount = 1
 	}
 	classCount = len(c.Classes)
+	if c.Root {
+		classCount++ // a pseudo-class contributes class-level specificity
+	}
 	if c.Tag != "" {
 		tagCount = 1
 	}
@@ -258,8 +268,15 @@ func tokenizeSelector(s string) []selToken {
 // parseSimple parses a single compound with no combinators, e.g. "a.foo#bar".
 func parseSimple(s string) (compound, bool) {
 	var c compound
-	// Drop pseudo-classes/elements (":hover", "::before").
+	// Handle pseudo-classes/elements. ":root" is honoured (it selects the
+	// document root, where custom properties are typically declared); every
+	// other pseudo (":hover", "::before", …) is dropped as unmodelled.
 	if i := strings.IndexByte(s, ':'); i >= 0 {
+		for _, p := range strings.Split(strings.ToLower(s[i:]), ":") {
+			if p == "root" {
+				c.Root = true
+			}
+		}
 		s = s[:i]
 	}
 	// Drop attribute selectors ("[type=text]"): the constraint is not modelled,
@@ -267,11 +284,8 @@ func parseSimple(s string) (compound, bool) {
 	if i := strings.IndexByte(s, '['); i >= 0 {
 		s = s[:i]
 	}
-	if s == "" {
-		return compound{}, false
-	}
 	if s == "*" {
-		return compound{Univ: true}, true
+		return compound{Univ: true, Root: c.Root}, true
 	}
 	i := 0
 	for i < len(s) && s[i] != '.' && s[i] != '#' {
@@ -296,7 +310,7 @@ func parseSimple(s string) (compound, bool) {
 			c.ID = name
 		}
 	}
-	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 {
+	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 && !c.Root {
 		return compound{}, false
 	}
 	return c, true

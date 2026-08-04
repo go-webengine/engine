@@ -70,6 +70,9 @@ func CascadeVW(root *dom.Node, vw float64, externalSheets []string) StyleMap {
 // computeElement resolves the style of a single element.
 func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style {
 	st := inheritFrom(parent)
+	// ownProps tracks whether st.CustomProps is this element's own (already
+	// cloned) map versus the parent's shared one, so we clone at most once.
+	ownProps := false
 
 	var cands []candidate
 	add := func(decls []Declaration, prec, spec int) {
@@ -112,19 +115,57 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style
 		return a.order < b.order
 	})
 
+	// Pass 0: resolve custom properties into the element's map (in cascade order,
+	// last wins). They inherit from the parent (copied on first write so the
+	// parent's shared map is never mutated) and are consulted by var().
+	for _, c := range cands {
+		if isCustomProperty(c.decl.Property) {
+			if st.CustomProps == nil {
+				st.CustomProps = map[string]string{}
+			} else if !ownProps {
+				st.CustomProps = cloneProps(st.CustomProps)
+				ownProps = true
+			}
+			st.CustomProps[c.decl.Property] = c.decl.Value
+		}
+	}
+
+	// applyResolved substitutes var() in a declaration's value before applying
+	// it; a var() that cannot resolve (and has no fallback) drops the whole
+	// declaration, leaving the inherited/initial value in place.
+	applyResolved := func(d Declaration, emRef float64) {
+		v, ok := resolveDeclValue(d.Value, st.CustomProps)
+		if !ok {
+			return
+		}
+		d.Value = v
+		st.apply(d, emRef)
+	}
+
 	// Pass 1: resolve font-size first (its em is relative to the parent).
 	for _, c := range cands {
 		if c.decl.Property == "font-size" {
-			st.apply(c.decl, parent.FontSize)
+			applyResolved(c.decl, parent.FontSize)
 		}
 	}
 	// Pass 2: everything else, with em relative to the element's own size.
 	for _, c := range cands {
-		if c.decl.Property != "font-size" {
-			st.apply(c.decl, st.FontSize)
+		if c.decl.Property != "font-size" && !isCustomProperty(c.decl.Property) {
+			applyResolved(c.decl, st.FontSize)
 		}
 	}
 	return st
+}
+
+// cloneProps returns a shallow copy of a custom-property map, used for
+// copy-on-write so an element's overrides never mutate the parent's inherited
+// map.
+func cloneProps(m map[string]string) map[string]string {
+	c := make(map[string]string, len(m))
+	for k, v := range m {
+		c[k] = v
+	}
+	return c
 }
 
 // collectAuthorRules parses every <style> element's text into rules, evaluating
