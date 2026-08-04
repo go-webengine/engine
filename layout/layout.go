@@ -392,7 +392,7 @@ func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool)
 	var items []*InlineItem
 	for _, n := range nodes {
 		if n.Type == dom.Text {
-			l.appendWords(n.Text, st, &items, pre)
+			l.appendWords(n.Text, st, &items, pre, n.Parent)
 		} else {
 			cs := l.sm[n]
 			if cs == nil {
@@ -407,7 +407,7 @@ func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool)
 func (l *layouter) appendInline(node *dom.Node, st *css.Style, items *[]*InlineItem, pre bool) {
 	for _, c := range node.Children {
 		if c.Type == dom.Text {
-			l.appendWords(c.Text, st, items, pre)
+			l.appendWords(c.Text, st, items, pre, node)
 			continue
 		}
 		cs := l.sm[c]
@@ -424,12 +424,12 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 	}
 	switch el.Tag {
 	case "br":
-		*items = append(*items, &InlineItem{LineBreak: true, Style: cs})
+		*items = append(*items, &InlineItem{LineBreak: true, Style: cs, Node: el})
 	case "img":
 		w, h := l.imageSize(el)
 		if w > 0 && h > 0 {
 			*items = append(*items, &InlineItem{
-				Style: cs, Image: el, ImgW: w, ImgH: h,
+				Style: cs, Image: el, Node: el, ImgW: w, ImgH: h,
 				Width: w, Ascent: h, LineHeight: h,
 				SpaceBefore: l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight),
 			})
@@ -439,12 +439,12 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 	}
 }
 
-func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem, pre bool) {
+func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem, pre bool, origin *dom.Node) {
 	asc, lh := l.lineMetricsFor(st)
 	if pre {
 		for i, seg := range strings.Split(text, "\n") {
 			if i > 0 {
-				*items = append(*items, &InlineItem{LineBreak: true, Style: st})
+				*items = append(*items, &InlineItem{LineBreak: true, Style: st, Node: origin})
 			}
 			if seg == "" {
 				continue
@@ -452,6 +452,7 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 			*items = append(*items, &InlineItem{
 				Text:       seg,
 				Style:      st,
+				Node:       origin,
 				Width:      l.m.Measure(seg, st.FontFamily, st.FontSize, st.FontWeight),
 				Ascent:     asc,
 				LineHeight: lh,
@@ -464,6 +465,7 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 		*items = append(*items, &InlineItem{
 			Text:        w,
 			Style:       st,
+			Node:        origin,
 			Width:       l.m.Measure(w, st.FontFamily, st.FontSize, st.FontWeight),
 			SpaceBefore: space,
 			Ascent:      asc,
