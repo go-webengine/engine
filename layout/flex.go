@@ -59,6 +59,11 @@ func (l *layouter) flexItems(node *dom.Node) []*flexItem {
 		if cs == nil || cs.Display == css.DisplayNone {
 			continue
 		}
+		if cs.Position.OutOfFlow() {
+			// Not a flex item; placed later against its containing block.
+			l.outOfFlow = append(l.outOfFlow, outOfFlowItem{node: c})
+			continue
+		}
 		bw := cs.Border.Widths()
 		out = append(out, &flexItem{
 			node:    c,

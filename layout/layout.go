@@ -18,6 +18,20 @@ type layouter struct {
 	m       Measurer
 	imgSize map[*dom.Node][2]float64 // intrinsic sizes for <img>, may be nil
 	floats  *floatCtx
+	// outOfFlow collects absolutely/fixed-positioned elements encountered during
+	// the in-flow pass (and while laying out other positioned subtrees). They are
+	// placed against their containing block after the in-flow layout.
+	outOfFlow []outOfFlowItem
+}
+
+// outOfFlowItem is a queued out-of-flow box plus the approximate static position
+// (the normal-flow cursor at the point it was skipped) used to resolve the box's
+// auto insets, matching CSS's static-position rule far better than dumping it at
+// the containing block origin.
+type outOfFlowItem struct {
+	node             *dom.Node
+	staticX, staticY float64
+	hasStatic        bool
 }
 
 // bfc is the mutable cursor of a block formatting context: y is the committed
@@ -58,6 +72,10 @@ func LayoutDocument(root *dom.Node, sm css.StyleMap, viewportW float64, m Measur
 	if fb := l.floats.bottom(); fb > total {
 		total = fb
 	}
+	// Positioned pass: apply relative offsets, then place out-of-flow
+	// (absolute/fixed) boxes against their containing blocks. May grow the page
+	// height to cover absolutely-positioned content.
+	total = l.positioned(box, viewportW, total)
 	return box, total
 }
 
@@ -145,6 +163,7 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 		box.ContentH = 0
 	}
 	box.Float = st.Float
+	box.Position = st.Position
 	return box
 }
 
@@ -235,6 +254,16 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 			if cs != nil && cs.Display == css.DisplayNone {
 				continue
 			}
+			if cs != nil && cs.Position.OutOfFlow() {
+				// Out of flow: reserve no space here, place later. Do not flush the
+				// pending inline run — an out-of-flow box does not break the line.
+				// Record the current flow cursor as the box's approximate static
+				// position (used when its insets are auto).
+				l.outOfFlow = append(l.outOfFlow, outOfFlowItem{
+					node: c, staticX: cx, staticY: b.y + math.Max(b.carry, 0), hasStatic: true,
+				})
+				continue
+			}
 			if cs != nil && cs.Float != css.FloatNone {
 				flush()
 				l.placeFloat(box, c, cs, cx, cw, b)
@@ -285,6 +314,9 @@ func (l *layouter) hasBlockLevelChild(node *dom.Node) bool {
 		cs := l.sm[c]
 		if cs == nil {
 			continue
+		}
+		if cs.Position.OutOfFlow() {
+			continue // out-of-flow children do not establish a block context
 		}
 		if cs.Float != css.FloatNone || isBlockLevel(cs.Display) {
 			return true
@@ -425,6 +457,13 @@ func (l *layouter) appendInline(node *dom.Node, st *css.Style, items *[]*InlineI
 
 func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*InlineItem, pre bool) {
 	if cs.Display == css.DisplayNone {
+		return
+	}
+	if es := l.sm[el]; es != nil && es.Position.OutOfFlow() {
+		// Out-of-flow inline-level box: contributes no inline item, placed later.
+		// No simple flow cursor here, so its static position falls back to the
+		// containing block origin.
+		l.outOfFlow = append(l.outOfFlow, outOfFlowItem{node: el})
 		return
 	}
 	switch el.Tag {

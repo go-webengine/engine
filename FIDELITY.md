@@ -13,6 +13,58 @@ is absent, and that is stated below, not hidden.
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom.
 
+## Phase 1.8 — CSS `position` + dynamic-pseudo suppression
+
+The bench pinned the go.dev/blog regression to two missing features that let a
+site's sticky/dropdown nav chrome render **in flow**, pushing real content far
+down: no `position` support, and dynamic pseudo-classes (`:hover`/`:focus`)
+effectively always-on. Phase 1.8 adds both, with **exact-geometry unit tests**
+(`layout` and `paint` hold **100%** statement coverage; `css` at 99.7%).
+
+### CSS `position`
+- **`relative`** — the box stays in normal flow (reserves its space) and is
+  painted shifted by `top`/`left`/`right`/`bottom` (`left` wins over `right`,
+  `top` over `bottom`; px/em/% offsets, % resolved against the containing block).
+- **`absolute`** — removed from normal flow (reserves **no** space), placed
+  against the **padding box of the nearest positioned ancestor**, else the
+  initial containing block. `top`/`left`/`right`/`bottom`, a `left`+`right` pair
+  fixing the width, shrink-to-fit auto width, and `min/max-width` clamping.
+- **`fixed`** — removed from flow and resolved against the initial containing
+  block; for a full-page static shot it paints once at its place (document
+  coordinates) and never reserves flow space.
+- **`z-index`** — positioned boxes paint after in-flow content, ordered by
+  z-index (stable within a tie). This is a correct-enough stacking order, not the
+  full CSS stacking-context algorithm (see simplifications).
+
+### Dynamic pseudo-classes are suppressed in the static render
+`:hover`, `:active`, `:focus`, `:focus-within`, `:focus-visible` and `:target`
+**never match** (a screenshot has nothing hovered/focused/targeted), so a
+`display:none`-until-`:hover` submenu stays hidden exactly as in Chrome's default
+shot. The non-dynamic parts are unaffected: `.btn:hover` does not match but
+`.btn` base rules still apply, `.menu:hover .sub` simply does not apply, and in a
+selector list (`a:hover, .base`) the other members still match.
+
+Two offline fixtures back this: `testdata/position_demo.html` (relative /
+absolute / fixed + z-index overlap, golden `position_demo.png`) and
+`testdata/dropdown_hover_demo.html` (a `:hover`/`:focus-within` dropdown that must
+render hidden, golden `dropdown_hover_demo.png`).
+
+### Deliberate simplifications (documented, not faked)
+- **`sticky`** is approximated as **`relative`** for a static full-page shot
+  (there is no scroll position to stick to).
+- **Stacking** paints all positioned boxes after in-flow content and orders them
+  by z-index; it does not implement per-element stacking contexts, negative
+  z-index painting behind the in-flow layer, or `opacity`/`transform`-induced
+  contexts.
+- **Initial containing block height** — this entry point has no separate viewport
+  height, so `fixed`/`absolute` bottom/right offsets and viewport-anchored
+  percentages resolve against the **in-flow document height** as the ICB height.
+- **Static position** — an out-of-flow box with all offsets `auto` is placed at
+  its containing block's origin (the true in-flow static position is not
+  reconstructed). Auto margins on out-of-flow boxes are treated as zero.
+- Out-of-flow boxes inside `<table>` internals are not collected (rare); the
+  block/inline/flex/grid paths all handle them.
+
 ## Phase 1.7 — flexbox completeness + CSS grid
 
 The bench harness identified CSS **flex/grid layout** (not JavaScript) as the
@@ -157,11 +209,13 @@ columns.
   top nav/sidebar collapse) are therefore not honoured, so that chrome
   linearises. In-document `@media` rules *are* now applied. (`css.CascadeVW`
   already accepts external sheets; wiring the fetch is a Phase-2 follow-up.)
-- **No absolute/fixed/sticky positioning, `overflow`, transforms,
-  `border-radius`, `box-shadow`, gradients, web fonts.** Percentage and viewport
-  heights, and `vh`, are approximated. Table `colspan`/`rowspan` and
-  `border-collapse` are not modelled. CSS grid is now supported (Phase 1.7); its
-  deliberately-unsupported sub-features are listed in the Phase 1.7 section above.
+- **No `overflow` clipping, transforms, `border-radius`, `box-shadow`,
+  gradients, web fonts.** Percentage and viewport heights, and `vh`, are
+  approximated. Table `colspan`/`rowspan` and `border-collapse` are not modelled.
+  CSS grid is supported (Phase 1.7) and `position:relative/absolute/fixed` plus
+  dynamic-pseudo suppression are supported (Phase 1.8); the deliberate
+  simplifications of each are listed in their sections above (`sticky` ≈
+  `relative`, approximate z-index stacking).
 - **Fonts**: only bundled Inter/Lora/Go-Mono (regular); bold is faux-bold and
   italic is not rendered.
 
@@ -176,6 +230,8 @@ go run ./cmd/render -file testdata/flex_table_demo.html -out testdata/renders/fl
 go run ./cmd/render -file testdata/flex_wrap_demo.html -out testdata/renders/flex_wrap_demo.png -w 900 -h 700
 go run ./cmd/render -file testdata/grid_demo.html -out testdata/renders/grid_demo.png -w 1000 -h 950
 go run ./cmd/render -file testdata/tailwind_hero_demo.html -out testdata/renders/tailwind_hero_demo.png -w 1024 -h 620
+go run ./cmd/render -file testdata/position_demo.html -out testdata/renders/position_demo.png -w 400 -h 600
+go run ./cmd/render -file testdata/dropdown_hover_demo.html -out testdata/renders/dropdown_hover_demo.png -w 400 -h 300
 ```
 
 The three live URLs were reachable from this environment; no offline substitution

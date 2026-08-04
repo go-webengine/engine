@@ -43,6 +43,12 @@ type Box struct {
 	// Float marks a box taken out of normal flow (float:left/right). Floated
 	// boxes are painted like blocks but positioned by the float algorithm.
 	Float css.Float
+
+	// Position records the box's CSS position. Relative/sticky boxes remain in
+	// flow but are shifted at the end of layout; absolute/fixed boxes are laid
+	// out out of flow and appended to the root box (painted after in-flow
+	// content) with their coordinates already resolved to document space.
+	Position css.Position
 }
 
 // InlineItem is one atom of inline content: a word, an image, or a forced line

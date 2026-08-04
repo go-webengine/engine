@@ -27,11 +27,21 @@ type compound struct {
 	ID      string
 	Univ    bool // explicit "*" (matches any element)
 	Root    bool // ":root" pseudo-class (matches the document root element)
+	// Dynamic is set when the compound carries a dynamic (interaction) pseudo-
+	// class — :hover, :active, :focus, :focus-within, :focus-visible or :target.
+	// A static full-page render has nothing hovered/focused/targeted, so such a
+	// compound never matches (its non-dynamic siblings in a selector list still
+	// apply, and its non-dynamic parts on other compounds are unaffected).
+	Dynamic bool
 }
 
 // matches reports whether the compound matches an element node.
 func (c compound) matches(n *dom.Node) bool {
 	if n.Type != dom.Element {
+		return false
+	}
+	// A dynamic pseudo-class can never match at static render time.
+	if c.Dynamic {
 		return false
 	}
 	// ":root" matches only the document root element (an element with no element
@@ -67,6 +77,9 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 	classCount = len(c.Classes)
 	if c.Root {
 		classCount++ // a pseudo-class contributes class-level specificity
+	}
+	if c.Dynamic {
+		classCount++ // a dynamic pseudo-class also contributes class-level weight
 	}
 	if c.Tag != "" {
 		tagCount = 1
@@ -269,12 +282,17 @@ func tokenizeSelector(s string) []selToken {
 func parseSimple(s string) (compound, bool) {
 	var c compound
 	// Handle pseudo-classes/elements. ":root" is honoured (it selects the
-	// document root, where custom properties are typically declared); every
-	// other pseudo (":hover", "::before", …) is dropped as unmodelled.
+	// document root, where custom properties are typically declared); the dynamic
+	// interaction pseudo-classes mark the compound so it never matches in a static
+	// render; every other pseudo (":nth-child", "::before", …) is dropped as
+	// unmodelled.
 	if i := strings.IndexByte(s, ':'); i >= 0 {
 		for _, p := range strings.Split(strings.ToLower(s[i:]), ":") {
 			if p == "root" {
 				c.Root = true
+			}
+			if isDynamicPseudo(p) {
+				c.Dynamic = true
 			}
 		}
 		s = s[:i]
@@ -285,7 +303,7 @@ func parseSimple(s string) (compound, bool) {
 		s = s[:i]
 	}
 	if s == "*" {
-		return compound{Univ: true, Root: c.Root}, true
+		return compound{Univ: true, Root: c.Root, Dynamic: c.Dynamic}, true
 	}
 	i := 0
 	for i < len(s) && s[i] != '.' && s[i] != '#' {
@@ -310,8 +328,24 @@ func parseSimple(s string) (compound, bool) {
 			c.ID = name
 		}
 	}
+	// A compound with no tag/class/id/:root and no universal reduces to nothing —
+	// a bare ":hover" or "::before" is dropped (an unattached dynamic pseudo would
+	// select nothing in a static render anyway, so failing to parse it is
+	// equivalent to it never matching).
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 && !c.Root {
 		return compound{}, false
 	}
 	return c, true
+}
+
+// isDynamicPseudo reports whether a pseudo token (already lower-cased, with any
+// leading colon stripped by the caller's split) is a dynamic interaction pseudo-
+// class that cannot match in a static screenshot. Functional forms keep their
+// argument list (e.g. "focus-within"); we match on the leading keyword only.
+func isDynamicPseudo(p string) bool {
+	switch p {
+	case "hover", "active", "focus", "focus-within", "focus-visible", "target":
+		return true
+	}
+	return false
 }
