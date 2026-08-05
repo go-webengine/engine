@@ -9,6 +9,8 @@ require (
 	github.com/go-opentype/fonts v0.4.2
 	github.com/go-opentype/opentype v0.5.0
 	github.com/go-widgets/painter v0.2.0
+	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
+	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
 	golang.org/x/net v0.57.0
 )
 
@@ -20,6 +22,7 @@ require (
 	github.com/klauspost/compress v1.17.4 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/image v0.0.0-20211028202545-6944b10bf410 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )
