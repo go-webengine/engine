@@ -169,11 +169,257 @@ func TestChainedCombinators(t *testing.T) {
 	}
 }
 
+// checkbox builds an <input type=type> element, marked checked when checked.
+func checkbox(id, typ string, checked bool) *dom.Node {
+	attr := map[string]string{"type": typ}
+	if id != "" {
+		attr["id"] = id
+	}
+	if checked {
+		attr["checked"] = ""
+	}
+	return &dom.Node{Type: dom.Element, Tag: "input", Attr: attr}
+}
+
+func TestCheckedPseudo(t *testing.T) {
+	on := checkbox("t", "checkbox", true)
+	off := checkbox("t", "checkbox", false)
+
+	sel, ok := parseComplex("input:checked")
+	if !ok {
+		t.Fatal("input:checked should parse")
+	}
+	if !sel.Matches(on) {
+		t.Error(":checked should match a checked input")
+	}
+	if sel.Matches(off) {
+		t.Error(":checked should NOT match an unchecked input")
+	}
+
+	// A bare ":checked" is a valid, real constraint on its own.
+	bare, ok := parseComplex(":checked")
+	if !ok || bare.parts[0].Checked != true {
+		t.Fatalf("bare :checked = %+v ok=%v", bare, ok)
+	}
+	if !bare.Matches(on) || bare.Matches(off) {
+		t.Error("bare :checked match wrong")
+	}
+
+	// <option selected> counts as checked; a plain element never does.
+	opt := &dom.Node{Type: dom.Element, Tag: "option", Attr: map[string]string{"selected": ""}}
+	if !bare.Matches(opt) {
+		t.Error(":checked should match <option selected>")
+	}
+	if bare.Matches(el("div", "", "")) {
+		t.Error(":checked should not match a plain div")
+	}
+	// ":checked" contributes class-level specificity.
+	if got := bare.Specificity(); got != 100 {
+		t.Errorf(":checked specificity = %d, want 100", got)
+	}
+}
+
+func TestNotPseudo(t *testing.T) {
+	box := el("div", "", "box")
+	other := el("div", "", "other")
+
+	// :not(.other) matches .box but not .other.
+	sel, ok := parseComplex("div:not(.other)")
+	if !ok {
+		t.Fatal("div:not(.other) should parse")
+	}
+	if !sel.Matches(box) {
+		t.Error("div:not(.other) should match .box")
+	}
+	if sel.Matches(other) {
+		t.Error("div:not(.other) should NOT match .other")
+	}
+
+	// :not(:checked) — matches an unchecked input, not a checked one.
+	on := checkbox("t", "checkbox", true)
+	off := checkbox("t", "checkbox", false)
+	nc, ok := parseComplex("input:not(:checked)")
+	if !ok {
+		t.Fatal("input:not(:checked) should parse")
+	}
+	if !nc.Matches(off) {
+		t.Error(":not(:checked) should match an unchecked input")
+	}
+	if nc.Matches(on) {
+		t.Error(":not(:checked) should NOT match a checked input")
+	}
+
+	// :not() over a selector list: fails if ANY alternative matches.
+	list, ok := parseComplex("div:not(.a, .other)")
+	if !ok {
+		t.Fatal("div:not(.a, .other) should parse")
+	}
+	if list.Matches(other) {
+		t.Error("div:not(.a, .other) should exclude .other")
+	}
+	if !list.Matches(box) {
+		t.Error("div:not(.a, .other) should keep .box")
+	}
+
+	// :not(:hover) is always true statically → no constraint; .box still matches.
+	nh, ok := parseComplex(".box:not(:hover)")
+	if !ok {
+		t.Fatal(".box:not(:hover) should parse")
+	}
+	if len(nh.parts[0].Not) != 0 {
+		t.Errorf(":not(:hover) should impose no constraint, got %+v", nh.parts[0].Not)
+	}
+	if !nh.Matches(box) {
+		t.Error(".box:not(:hover) should match .box statically")
+	}
+
+	// :not() specificity picks up its argument (id here).
+	spec, ok := parseComplex("div:not(#x)")
+	if !ok {
+		t.Fatal("div:not(#x) should parse")
+	}
+	if got := spec.Specificity(); got != 10000+1 { // one id + one tag
+		t.Errorf("div:not(#x) specificity = %d, want %d", got, 10001)
+	}
+}
+
+func TestNotUnmodelledDoesNotDropRule(t *testing.T) {
+	// A :not() whose argument is empty or UNMODELLED (attribute-only, a
+	// pseudo-element) must NOT drop the rule — it degrades to "no constraint" so
+	// the compound keeps matching its base. This is the regression that would
+	// otherwise disable dark themes gated on `:root:not([data-theme])`.
+	div := el("div", "", "")
+	for _, s := range []string{"div:not()", "div:not(   )", `div:not([data-x])`, "div:not(::before)"} {
+		sel, ok := parseComplex(s)
+		if !ok {
+			t.Errorf("parseComplex(%q) should parse (unmodelled :not = no constraint)", s)
+			continue
+		}
+		if len(sel.parts[0].Not) != 0 {
+			t.Errorf("%q: unmodelled :not should impose no constraint, got %+v", s, sel.parts[0].Not)
+		}
+		if !sel.Matches(div) {
+			t.Errorf("%q should still match a plain div", s)
+		}
+	}
+
+	// The dark-theme shape that regressed go.dev/pkg.go.dev: `:root:not([attr])`
+	// must still select the document root (so its dark custom properties apply).
+	root := el("html", "", "")
+	sel, ok := parseComplex(`:root:not([data-theme])`)
+	if !ok || !sel.Matches(root) {
+		t.Errorf(":root:not([data-theme]) should match the root element; ok=%v", ok)
+	}
+
+	// A comma-separated list is always fully preserved (nothing dropped).
+	sels := ParseSelectorList("div:not(), .ok")
+	if len(sels) != 2 {
+		t.Fatalf("got %d selectors, want 2: %+v", len(sels), sels)
+	}
+	if !sels[1].Matches(el("span", "", "ok")) {
+		t.Error(".ok should match")
+	}
+}
+
+func TestSplitPseudos(t *testing.T) {
+	// A colon inside an attribute value must not split the pseudo list.
+	base, ps := splitPseudos(`a[href="ht:tp"]:hover`)
+	if base != `a[href="ht:tp"]` || len(ps) != 1 || ps[0] != "hover" {
+		t.Errorf("splitPseudos attr-colon = %q %v", base, ps)
+	}
+	// Nested pseudo argument stays a single token.
+	base, ps = splitPseudos(":not(:checked)")
+	if base != "" || len(ps) != 1 || ps[0] != "not(:checked)" {
+		t.Errorf("splitPseudos nested = %q %v", base, ps)
+	}
+	// Multiple chained pseudos.
+	_, ps = splitPseudos("input:focus:checked")
+	if len(ps) != 2 || ps[0] != "focus" || ps[1] != "checked" {
+		t.Errorf("splitPseudos chained = %v", ps)
+	}
+	// No pseudo.
+	base, ps = splitPseudos("div.box")
+	if base != "div.box" || ps != nil {
+		t.Errorf("splitPseudos none = %q %v", base, ps)
+	}
+	// An escaped colon in the base is not a pseudo boundary.
+	base, ps = splitPseudos(`a\:b:checked`)
+	if base != `a\:b` || len(ps) != 1 || ps[0] != "checked" {
+		t.Errorf("splitPseudos escaped-colon = %q %v", base, ps)
+	}
+	// A bracketed argument nested inside :not() tokenizes as one compound
+	// (exercises the depth-tracking of nested [] and () in tokenizeSelector); the
+	// modelled tag prefix survives while the unmodelled attribute is dropped.
+	if sel, ok := parseComplex("a:not(b[c])"); !ok || len(sel.parts) != 1 ||
+		len(sel.parts[0].Not) != 1 || sel.parts[0].Not[0].Tag != "b" {
+		t.Errorf("a:not(b[c]) = %+v ok=%v", sel, ok)
+	}
+	// An attribute-ONLY :not() argument is unmodelled, so it imposes no
+	// constraint — the compound keeps its modelled base ("input") and still
+	// parses (the rule is NOT dropped). See TestNotUnmodelledDoesNotDropRule.
+	if sel, ok := parseComplex(`input:not([type="x"])`); !ok ||
+		len(sel.parts[0].Not) != 0 || sel.parts[0].Tag != "input" {
+		t.Errorf(`input:not([type="x"]) = %+v ok=%v`, sel, ok)
+	}
+	// pseudoNameArg forms.
+	if n, a := pseudoNameArg("not(:checked)"); n != "not" || a != ":checked" {
+		t.Errorf("pseudoNameArg func = %q %q", n, a)
+	}
+	if n, a := pseudoNameArg("checked"); n != "checked" || a != "" {
+		t.Errorf("pseudoNameArg plain = %q %q", n, a)
+	}
+}
+
+// TestCheckboxHack is the crux: a hidden-by-default menu revealed only when the
+// toggle is :checked. With no user interaction the toggle is unchecked, so the
+// reveal rule must NOT apply and the menu stays hidden — Chrome's static state.
+func TestCheckboxHack(t *testing.T) {
+	hide, _ := parseComplex(".menu")                      // display:none base rule
+	reveal, _ := parseComplex("#toggle:checked ~ .menu")  // reveal when checked
+
+	toggle := checkbox("toggle", "checkbox", false)
+	menu := el("div", "", "menu")
+	attach(el("div", "", ""), toggle, menu)
+
+	if !hide.Matches(menu) {
+		t.Fatal(".menu base rule should match the menu")
+	}
+	if reveal.Matches(menu) {
+		t.Error("with an UNCHECKED toggle, the reveal rule must NOT apply (menu stays hidden)")
+	}
+
+	// Now mark the toggle checked: the reveal rule applies (menu shown).
+	toggleOn := checkbox("toggle", "checkbox", true)
+	menu2 := el("div", "", "menu")
+	attach(el("div", "", ""), toggleOn, menu2)
+	if !reveal.Matches(menu2) {
+		t.Error("with a CHECKED toggle, the reveal rule should apply")
+	}
+
+	// The inverse MediaWiki form: hide the container while the checkbox is not
+	// checked. Unchecked → hidden; checked → the hide rule stops matching.
+	hideWhileUnchecked, _ := parseComplex("#toggle:not(:checked) ~ .menu")
+	if !hideWhileUnchecked.Matches(menu) {
+		t.Error(":not(:checked) ~ .menu should hide the menu of an unchecked toggle")
+	}
+	if hideWhileUnchecked.Matches(menu2) {
+		t.Error(":not(:checked) ~ .menu should stop matching once the toggle is checked")
+	}
+}
+
 func TestParseComplexEdgeCases(t *testing.T) {
-	for _, bad := range []string{"", "   ", "> p", "p >", "p > > a", ":hover"} {
+	for _, bad := range []string{"", "   ", "> p", "p >", "p > > a", "::before"} {
 		if _, ok := parseComplex(bad); ok {
 			t.Errorf("parseComplex(%q) should fail", bad)
 		}
+	}
+	// A bare dynamic pseudo now parses to a never-matching compound (equivalent
+	// net effect to being dropped: it applies to nothing in a static render),
+	// which is what lets ":not(:hover)" resolve to "no constraint".
+	if sel, ok := parseComplex(":hover"); !ok {
+		t.Error("parseComplex(:hover) should parse")
+	} else if sel.Matches(el("div", "", "")) {
+		t.Error(":hover must never match statically")
 	}
 	c, ok := parseSimple("p.")
 	if !ok || c.Tag != "p" || len(c.Classes) != 0 {

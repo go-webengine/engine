@@ -33,6 +33,16 @@ type compound struct {
 	// compound never matches (its non-dynamic siblings in a selector list still
 	// apply, and its non-dynamic parts on other compounds are unaffected).
 	Dynamic bool
+	// Checked is set by the ":checked" pseudo-class. At static render time there
+	// is no user interaction, so an element is checked iff it carries the default
+	// "checked" attribute (a checkbox/radio) — see isChecked. This is the pivot of
+	// the CSS "checkbox hack" MediaWiki uses to keep collapsed dropdowns hidden.
+	Checked bool
+	// Not holds the compound selectors of every ":not(...)" attached to this
+	// compound. The compound matches only when NONE of them matches the element.
+	// A ":not()" argument that is a dynamic pseudo (never matches statically) is
+	// dropped here, since negating an always-false selector imposes no constraint.
+	Not []compound
 }
 
 // matches reports whether the compound matches an element node.
@@ -67,7 +77,33 @@ func (c compound) matches(n *dom.Node) bool {
 			}
 		}
 	}
+	// ":checked" — at static render an input is checked iff it has the default
+	// "checked" attribute (there is no user interaction to toggle it).
+	if c.Checked && !isChecked(n) {
+		return false
+	}
+	// ":not(...)" — the compound fails as soon as any negated selector matches.
+	for i := range c.Not {
+		if c.Not[i].matches(n) {
+			return false
+		}
+	}
 	return true
+}
+
+// isChecked reports whether element n is in the checked state at static render
+// time: it carries the default "checked" attribute (checkbox/radio) or, for an
+// <option>, the "selected" attribute. Value-less HTML boolean attributes are
+// parsed by x/net/html to an empty-string value, so presence — not value — is
+// what counts.
+func isChecked(n *dom.Node) bool {
+	if _, ok := n.Attribute("checked"); ok {
+		return true
+	}
+	if _, ok := n.Attribute("selected"); ok {
+		return true
+	}
+	return false
 }
 
 func (c compound) specificity() (idCount, classCount, tagCount int) {
@@ -81,9 +117,23 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 	if c.Dynamic {
 		classCount++ // a dynamic pseudo-class also contributes class-level weight
 	}
+	if c.Checked {
+		classCount++ // ":checked" is a pseudo-class (class-level weight)
+	}
 	if c.Tag != "" {
 		tagCount = 1
 	}
+	// ":not(...)" contributes the specificity of its most specific argument.
+	var na, nb, nc int
+	for _, notC := range c.Not {
+		id, cl, tg := notC.specificity()
+		if id*10000+cl*100+tg > na*10000+nb*100+nc {
+			na, nb, nc = id, cl, tg
+		}
+	}
+	idCount += na
+	classCount += nb
+	tagCount += nc
 	return
 }
 
@@ -354,9 +404,14 @@ type selToken struct {
 // tokenizeSelector splits a complex selector into compound tokens and explicit
 // combinator tokens (>, +, ~). Whitespace between compounds is a descendant
 // combinator; whitespace surrounding an explicit combinator is folded away.
+// Whitespace and combinator characters inside an attribute selector "[...]" or a
+// functional pseudo's "(...)" (e.g. the space/comma in ":not(.a, .b)" or a nested
+// "~") are literal — they must not split the compound — so they are tracked by
+// bracket/paren depth and written through verbatim.
 func tokenizeSelector(s string) []selToken {
 	var toks []selToken
 	var cur strings.Builder
+	depth := 0
 	flush := func() {
 		if cur.Len() > 0 {
 			toks = append(toks, selToken{text: cur.String()})
@@ -365,7 +420,25 @@ func tokenizeSelector(s string) []selToken {
 	}
 	for i := 0; i < len(s); i++ {
 		ch := s[i]
+		if ch == '\\' && i+1 < len(s) { // escape: the next char is always literal
+			cur.WriteByte(ch)
+			cur.WriteByte(s[i+1])
+			i++
+			continue
+		}
+		if depth > 0 { // inside [...] or (...): everything is literal
+			cur.WriteByte(ch)
+			if ch == '[' || ch == '(' {
+				depth++
+			} else if ch == ']' || ch == ')' {
+				depth--
+			}
+			continue
+		}
 		switch ch {
+		case '[', '(':
+			depth++
+			cur.WriteByte(ch)
 		case ' ', '\t', '\n', '\r', '\f':
 			flush()
 			if n := len(toks); n > 0 && !toks[n-1].comb {
@@ -402,29 +475,48 @@ func tokenizeSelector(s string) []selToken {
 // being truncated at the colon. Without this, no Tailwind variant class matches.
 func parseSimple(s string) (compound, bool) {
 	var c compound
-	// Handle pseudo-classes/elements at the first UNescaped ':'. ":root" is
-	// honoured (it selects the document root, where custom properties are
-	// typically declared); the dynamic interaction pseudo-classes mark the
-	// compound so it never matches in a static render; every other pseudo
-	// (":nth-child", "::before", …) is dropped as unmodelled.
-	if base, pseudo, ok := splitUnescaped(s, ':'); ok {
-		for _, p := range strings.Split(strings.ToLower(pseudo), ":") {
-			if p == "root" {
-				c.Root = true
-			}
-			if isDynamicPseudo(p) {
+	// Separate the compound's tag/class/id/attribute base from its pseudo tokens
+	// at the first top-level (not inside [] or ()) ':'. ":root" is honoured (it
+	// selects the document root, where custom properties are typically declared);
+	// ":checked" and ":not(...)" are modelled (below); the dynamic interaction
+	// pseudo-classes mark the compound so it never matches in a static render;
+	// every other pseudo (":nth-child", "::before", …) is dropped as unmodelled —
+	// the compound falls back to matching its base rather than dropping the rule.
+	base, pseudos := splitPseudos(s)
+	for _, p := range pseudos {
+		if p == "" {
+			continue // a "::"-style pseudo-element produced an empty token
+		}
+		name, arg := pseudoNameArg(p)
+		switch name {
+		case "root":
+			c.Root = true
+		case "checked":
+			c.Checked = true
+		case "not":
+			// An unmodelled or empty ":not()" argument imposes NO constraint
+			// rather than dropping the rule — the same "reduce, don't drop"
+			// philosophy applied to unknown pseudos and bare "[attr]". This is
+			// essential: sites gate their dark theme on rules like
+			// `:root:not([data-theme]) { … }`; dropping such a rule (because the
+			// attribute negation is unmodelled) would silently disable the theme.
+			c.Not = append(c.Not, parseNotArg(arg)...)
+		default:
+			if isDynamicPseudo(name) {
 				c.Dynamic = true
 			}
+			// Any other pseudo is unmodelled and intentionally ignored.
 		}
-		s = base
 	}
+	s = base
 	// Drop attribute selectors ("[type=text]"): the constraint is not modelled,
 	// so the compound reduces to its tag/class/id prefix.
 	if base, _, ok := splitUnescaped(s, '['); ok {
 		s = base
 	}
 	if s == "*" {
-		return compound{Univ: true, Root: c.Root, Dynamic: c.Dynamic}, true
+		c.Univ = true
+		return c, true
 	}
 	tag, parts := scanCompound(s)
 	c.Tag = strings.ToLower(tag)
@@ -439,14 +531,111 @@ func parseSimple(s string) (compound, bool) {
 			c.ID = p.name
 		}
 	}
-	// A compound with no tag/class/id/:root and no universal reduces to nothing —
-	// a bare ":hover" or "::before" is dropped (an unattached dynamic pseudo would
-	// select nothing in a static render anyway, so failing to parse it is
-	// equivalent to it never matching).
-	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 && !c.Root {
+	// A compound with no tag/class/id and no modelled pseudo reduces to nothing —
+	// a bare "::before" is dropped. A bare ":hover"/":checked"/":not()" is kept:
+	// a dynamic-only compound never matches statically (equivalent to being
+	// dropped), and ":checked"/":not(...)" carry a real constraint on their own.
+	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
+		!c.Root && !c.Dynamic && !c.Checked && len(c.Not) == 0 {
 		return compound{}, false
 	}
 	return c, true
+}
+
+// splitPseudos separates a compound's base (its tag/class/id/attribute prefix)
+// from its pseudo tokens. It splits at every top-level ':' — one that is not
+// inside an attribute selector "[...]" or a functional pseudo's "(...)" and not
+// backslash-escaped — so ":not(:checked)" stays one token and an attribute value
+// containing a colon does not spuriously split. Each returned pseudo has its
+// leading ':' stripped (a "::before" pseudo-element yields a leading empty token
+// the caller skips); functional pseudos keep their "name(arg)" form.
+func splitPseudos(s string) (base string, pseudos []string) {
+	depth := 0
+	firstColon := -1
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++ // skip the escaped character
+		case '[', '(':
+			depth++
+		case ']', ')':
+			if depth > 0 {
+				depth--
+			}
+		case ':':
+			if depth == 0 {
+				firstColon = i
+			}
+		}
+		if firstColon >= 0 {
+			break
+		}
+	}
+	if firstColon < 0 {
+		return s, nil
+	}
+	base = s[:firstColon]
+	rest := s[firstColon:] // begins with ':'
+	depth = 0
+	start := 0
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case '\\':
+			i++
+		case '[', '(':
+			depth++
+		case ']', ')':
+			if depth > 0 {
+				depth--
+			}
+		case ':':
+			if depth == 0 && i > start {
+				pseudos = append(pseudos, strings.TrimPrefix(rest[start:i], ":"))
+				start = i
+			}
+		}
+	}
+	pseudos = append(pseudos, strings.TrimPrefix(rest[start:], ":"))
+	return base, pseudos
+}
+
+// pseudoNameArg splits a pseudo token into its lower-cased name and, for a
+// functional pseudo, the raw argument between the parentheses ("not(:checked)" →
+// "not", ":checked"). The argument keeps its original case (class names inside
+// ":not()" are case-sensitive). A non-functional pseudo returns an empty arg.
+func pseudoNameArg(p string) (name, arg string) {
+	if i := strings.IndexByte(p, '('); i >= 0 {
+		name = strings.ToLower(p[:i])
+		arg = strings.TrimSuffix(p[i+1:], ")")
+		return name, arg
+	}
+	return strings.ToLower(p), ""
+}
+
+// parseNotArg parses the argument of a ":not(...)" into the compound selectors
+// the negation must test. The argument is a comma-separated list of simple
+// selectors (CSS Level 4 allows a list; the checkbox hack uses a single simple
+// selector such as ":checked" or ".foo"). It never fails the surrounding rule —
+// an alternative that is empty, dynamic (":hover", never matches statically), or
+// unmodelled (an attribute-only "[attr]" or a pseudo-element the parser can't
+// reduce to a real constraint) simply contributes no constraint. Only genuine,
+// modelled constraints (tag/class/id/:checked/nested :not) are returned, so
+// `:not(:checked)` is precise while `:root:not([data-theme])` degrades to
+// `:root` rather than dropping the rule.
+func parseNotArg(arg string) []compound {
+	var out []compound
+	for _, alt := range splitSelectorCommas(arg) {
+		alt = strings.TrimSpace(alt)
+		if alt == "" {
+			continue
+		}
+		neg, ok := parseSimple(alt)
+		if !ok || neg.Dynamic {
+			continue // unmodelled or always-true-statically → no constraint
+		}
+		out = append(out, neg)
+	}
+	return out
 }
 
 // splitUnescaped splits s at the first occurrence of sep that is not preceded by
