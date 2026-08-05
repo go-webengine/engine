@@ -13,6 +13,69 @@ is absent, and that is stated below, not hidden.
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom.
 
+## Phase 2.3 — CSS `:checked` + `:not()` (the checkbox-hack that collapses MediaWiki's dropdowns)
+
+**Date: 2026-08-05.** Phase 2.2's honest residual was that Wikipedia's collapsed
+Vector-2022 **dropdown contents** still painted, because the CSS checkbox-hack was
+not honoured. This phase closes it with three selector features (`css/selector.go`):
+
+- **Sibling combinators `~` / `+`** — already matched (Phase 1.7); reconfirmed with
+  positive + negative tests. They were never the gap.
+- **`:checked`** — at static render an element is checked iff it carries the default
+  `checked` attribute (checkbox/radio) or is an `<option selected>`; there is no
+  interaction to toggle it. A default-unchecked toggle therefore does **not** match.
+- **`:not(...)`** — negation over a simple/compound selector or a comma list
+  (including `:not(:checked)`); the compound matches only when no negated selector
+  matches. Critically, an argument the engine cannot model (an attribute-only
+  `:not([attr])`, a pseudo-element, an empty `:not()`) imposes **no constraint**
+  rather than dropping the rule — the same "reduce, don't drop" rule already used
+  for unknown pseudos and bare `[attr]`. `:not(:hover)` (never matches statically)
+  also imposes no constraint.
+- A **paren/bracket-aware tokenizer + pseudo splitter** so the space/comma in
+  `:not(.a, .b)`, the nested `:` in `:not(:checked)`, and a `:` inside an attribute
+  value are all literal (not split points).
+
+The bug was that `:checked` and `:not(:checked)` were previously *dropped*, so
+MediaWiki's paired reveal (`…:checked ~ … {display:block}`) and hide
+(`…:not(:checked) ~ … {display:none}`) rules both collapsed to the same selector
+and the reveal won — the panel rendered open. Now the unchecked toggle fails
+`:checked` and matches `:not(:checked)`, so the panel defaults to hidden.
+
+**Regression found and fixed along the way (measured).** A first cut made a
+`:not()` with an unmodelled argument *drop the whole selector*. That silently
+disabled the dark theme on go.dev / pkg.go.dev, whose design system gates its
+dark custom properties on `:root:not([data-theme])`-shaped rules — dropping that
+rule fell the page back to **light** while Chrome renders **dark** (a full-page
+inversion, SSIM ≈ 0.24). The fix is the "reduce, don't drop" rule above: the
+unmodelled attribute negation degrades `:root:not([data-theme])` to `:root`, so
+the rule still applies. Verified offline: after the fix `go.dev/blog` renders its
+`#202224` dark background again (it was `#ffffff` white before). This is exactly
+the "don't silently drop rules it shouldn't" hazard the task flagged.
+
+**Wikipedia verdict — montage-verified.** A cropped top-left montage compare (this
+change vs the committed baseline render) confirms the expanded "Main menu / Main
+page / Contents / Current events / Random article / …" list and the right-hand
+"Tools" list are **gone** — the render matches Chrome's collapsed state. That is
+the deliverable, and it holds. **Residual (honest):** the small *text labels* of
+the collapsed toggles ("Main menu", "Toggle the table of contents", the skip link)
+still render as text where Chrome shows icons — an icon-font / `visually-hidden`
+gap, not the checkbox hack. The Wikipedia **windowed SSIM** is the documented
+noisy metric (it swings run-to-run on the variable infobox-logo region); across
+interactive runs it measured 0.41–0.45 around the 0.441 baseline, i.e. flat within
+its noise band while the *targeted* defect (open dropdown lists) is visibly fixed.
+**The full 5-URL bench was not re-run/committed in this pass** (`bench/` is
+unchanged); the feature's correctness rests on the deterministic goldens below and
+the montage inspection, not on the noisy live number.
+
+### Proven deterministically (offline golden, JS disabled)
+
+- `checkbox_hack.html` → `TestCheckboxHackGolden` — a `display:none` menu that a
+  default-unchecked `:checked` toggle leaves **hidden**, the same menu **shown**
+  when the toggle carries `checked`, and a `:not(:checked) ~ x` inverse hiding a
+  menu while unchecked. Asserts the FINAL rendered pixels (solid-colour blocks,
+  font-independent). Plus exact unit tests in `css/selector_test.go` for every new
+  branch (including malformed `:not()`). `layout`/`paint` 100%; `css` ≥ 99.5% floor.
+
 ## Phase 2.2 — dynamic rendering (layout↔JS feedback + settle-then-render)
 
 **Date: 2026-08-05.** Phase 2 ran JavaScript, but only *before* any layout, so a
