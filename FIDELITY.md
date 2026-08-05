@@ -432,3 +432,24 @@ pixels of `testdata/modern_css_demo.html` against `testdata/golden/`.
 
 The three live URLs were reachable from this environment; no offline substitution
 was needed. The two demo fixtures render fully offline via `-file`.
+
+## Visual-fidelity protocol vs Chromium (`scripts/compare/`)
+
+Typography and layout are checked against a real browser with a reproducible
+side-by-side, not by eye alone:
+
+```
+scripts/compare/chromium-compare.sh [-w WIDTH] [-o OUTDIR] [page.html ...]
+```
+
+It renders each page (those in `scripts/compare/pages/`, or any passed
+explicitly) with **go-webengine** and with **headless Chromium** at the *same*
+viewport width and device scale 1, then writes a labelled `NAME.sidebyside.png`
+(OURS | CHROMIUM) and prints a coarse mean-absolute pixel difference per page.
+
+This is a **local developer tool** — it shells out to a Chrome/Chromium binary
+and is deliberately **not** a CI gate (CI has no browser). The MAD score is a
+guide for tracking regressions/improvements run to run, never expected to reach
+0 (font rasterisers differ between engines). Regenerate the committed
+`testdata/golden/*.png` with `UPDATE_GOLDEN=1 go test ./...` when a change is a
+verified improvement.
