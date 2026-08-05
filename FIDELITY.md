@@ -13,6 +13,109 @@ is absent, and that is stated below, not hidden.
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom.
 
+## Phase 2.1 — SVG rendering (`<img src=*.svg>`, `data:image/svg+xml`, inline `<svg>`)
+
+**Date: 2026-08-05.** The next-ranked visible gap was **SVG**: the react.dev React
+atom logo (an inline `<svg>`) and any SVG raster/logo art rendered **blank**
+because go-images only decodes PNG/JPEG. This phase adds a real, pure-Go SVG
+rasteriser and wires it into both the `<img>` image path and inline `<svg>`.
+
+### SVG-library survey and decision (measured, not assumed)
+
+The brief said reuse a maintained CGO=0 rasteriser, not hand-write one. Candidates
+evaluated:
+
+| Library | CGO | License | Verdict |
+|---------|-----|---------|:-------|
+| **`github.com/srwiley/oksvg` + `github.com/srwiley/rasterx`** | **0** | **BSD-3-Clause** | **chosen** |
+| `github.com/tdewolff/canvas` | 0 for the SVG path, but pulls a large multi-backend surface (PDF/HTML/fonts, some rasterisers need cgo) | MIT | heavier; more than needed |
+
+**Chosen: `oksvg` + `rasterx` (both BSD-3-Clause, both pure-Go / CGO=0).**
+Reasons: it is the standard Go SVG-icon rasteriser, licence-compatible with our
+BSD-3 (no copyleft), a tiny two-package surface, and — verified empirically — it
+renders real SVGs correctly: **paths, basic shapes, fills, strokes, linear and
+radial gradients (`url(#id)`), transforms and viewBox scaling** to an `image` we
+composite. A 100×100 test SVG rasterised at 2× target confirmed gradient
+interpolation (top-left `#5cd6f7`, bottom-right `#0e82a8`), path fills and stroke
+geometry, all under `CGO_ENABLED=0`, and it cross-builds on all six 64-bit arches
+(amd64/arm64/ppc64le/riscv64/loong64/s390x). No vendoring — a normal go.mod
+dependency (BSD-3, "build from source").
+
+**What oksvg does / doesn't do (documented, not faked):** it handles the drawing
+subset above plus `currentColor` (we feed the element's computed CSS `color` via
+`ReadReplacingCurrentColor`, so `fill="currentColor"` logos take their real
+colour). It does **not** implement SVG `<filter>` effects, `<mask>`/`<clipPath>`
+compositing, `<pattern>` fills, embedded raster `<image>`, `<text>`/font shaping,
+CSS `<style>` selectors inside the SVG, or animation. Such features degrade to
+"drawn without them" or empty, never a crash.
+
+### What Phase 2.1 implements
+
+- **`<img src="*.svg">` and `data:image/svg+xml`** (`images.go`, `svg.go`):
+  SVG is detected by extension, the `image/svg` media hint, or an `<svg` content
+  sniff. It is rasterised at the element's **used size** — CSS width/height win,
+  then the HTML `width`/`height` presentation attributes, then the viewBox
+  intrinsic size, with a single specified axis deriving the other from the
+  viewBox aspect ratio; an image wider than the viewport is scaled down. A
+  non-base64 `data:` payload is now **percent-decoded** (RFC 2397), which the
+  previous code skipped — that alone was why `data:image/svg+xml,%3Csvg…` images
+  were blank.
+- **Inline `<svg>`** (`images.go`, `svg.go`, `layout/`): the `<svg>` subtree is
+  **serialised back to SVG text** from the DOM (restoring the handful of
+  mixed-case names the HTML parser/DOM lowercased — `viewBox`, `linearGradient`,
+  `radialGradient`, `gradientUnits`, `gradientTransform`, `spreadMethod` — with
+  deterministic attribute ordering and XML-escaped values), rasterised, and
+  treated as a **replaced element** with intrinsic size from its
+  width/height/viewBox. Layout emits it exactly like an `<img>` box, so paint
+  composites it through the existing image-blit path (no new paint branch).
+- **Graceful degradation + cost bounds**: a document that fails to parse or has
+  no usable intrinsic size renders as empty space (a `recover` turns any
+  rasteriser panic into a clean skip — rasterx does panic on some degenerate
+  geometries); the rasterised bitmap is capped at 4096 px per axis.
+
+### Before → after vs headless Chromium (this machine, OS-dark)
+
+| URL | SSIM before | SSIM after | pixdiff before | pixdiff after | Verdict |
+|-----|-----------:|-----------:|---------------:|--------------:|:-------|
+| example.com/ | 0.954 | 0.954 | 1.5% | 1.5% | held (no SVG) |
+| en.wikipedia.org/wiki/Go | 0.413 | 0.413 | 23.0% | 23.0% | held |
+| pkg.go.dev/net/http | 0.628 | 0.628 | 36.5% | 36.5% | held exactly |
+| go.dev/blog/ | 0.666 | **0.670** | 33.2% | 33.2% | **improved** (Go wordmark + gopher + social icons now render at the right size) |
+| react.dev/ | 0.719 | **0.729** | 30.2% | **26.1%** | **improved** (the hero React atom + nav atom render) |
+
+**react.dev — the target — improves: +0.010 SSIM, pixdiff 30.2%→26.1% (−4.1pp).**
+The inline-`<svg>` React atom in the hero (a `currentColor` circle + three
+`rotate()`-transformed orbital ellipses over a `viewBox="-10.5 -9.45 21 18.9"`)
+and the small nav atom now render where Chrome paints them. go.dev/blog improves
+slightly: its Go wordmark, the footer gopher and the Bluesky/Mastodon/GitHub
+social icons are `<img src="*.svg">` that now rasterise — at their **own**
+16×16/82×32 intrinsic size, not the raw viewBox (Bluesky's viewBox is 568×501),
+which is the sizing rule this phase got right. example.com, Wikipedia and
+pkg.go.dev hold exactly. The authoritative regenerated numbers live in
+`bench/REPORT.md`.
+
+**Honest remaining gaps.** oksvg renders the atom's orbits a touch thinner than
+Chrome's and does not composite SVG `<filter>`/`<mask>`/`<pattern>`/embedded
+`<image>`/`<text>`; a handful of react.dev's ~120 icons fall past the per-page
+image budget (`MaxImages`); and an SVG whose display size lives only in CSS a
+selector we don't resolve still falls back to its intrinsic size. None regress
+the five pages.
+
+### Tests
+
+`testdata/svg_golden.html` is a text-free byte-golden fixture (inline `<svg>`
+with a linear gradient, a solid fill, a `currentColor` stroke and a path fill,
+its viewBox scaled 2×) behind `TestSVGGolden`, which asserts exact sampled
+colours at known points (gradient endpoints, the solid rect, the path fill and
+the `currentColor` stroke). `svg_test.go` unit-tests the glue to 100% statement
+coverage including every error path: SVG sniffing, attribute-dimension parsing,
+`currentColor` formatting, the used-size resolver, SVG serialisation/escaping,
+parse-error and sizeless-SVG failures, the `recover` guard (via a substitutable
+rasteriser seam), dimension clamping, and `data:` percent-decoding. End-to-end
+tests cover inline-`<svg>` intrinsic-size layout, `<img>`-SVG attribute sizing
+and a broken `<svg>` degrading to empty. `layout` and `paint` hold **100%**
+statement coverage; `css` holds its floor.
+
 ## Phase 2.0 — CSS gradients, `background-image: url()`, box-shadow, opacity
 
 **Date: 2026-08-05.** Phase 1.9 closed the dark/colour gap and left one ranked

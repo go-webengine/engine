@@ -10,6 +10,7 @@ import (
 	"image"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	goimages "github.com/go-images/images"
@@ -25,12 +26,18 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 	sizes := map[*dom.Node][2]float64{}
 	bitmaps := map[*dom.Node]image.Image{}
 
-	var imgs []*dom.Node
+	// Collect replaced elements: raster/SVG <img> and inline <svg>. An inline
+	// <svg> is a replaced box: it is collected and its subtree is not descended
+	// into (its children are SVG primitives, not flow content).
+	var reps []*dom.Node
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
-		if n.Type == dom.Element && n.Tag == "img" {
+		if n.Type == dom.Element && (n.Tag == "img" || n.Tag == "svg") {
 			if st := sm[n]; st == nil || st.Display != css.DisplayNone {
-				imgs = append(imgs, n)
+				reps = append(reps, n)
+			}
+			if n.Tag == "svg" {
+				return // treat the SVG subtree as an opaque replaced element
 			}
 		}
 		for _, c := range n.Children {
@@ -40,9 +47,21 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 	walk(doc.Root)
 
 	count := 0
-	for _, n := range imgs {
+	for _, n := range reps {
 		if count >= e.MaxImages {
 			break
+		}
+		// Inline <svg>: serialise the subtree and rasterise it.
+		if n.Tag == "svg" {
+			data := []byte(serializeSVG(n))
+			bmp, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
+			if !ok {
+				continue
+			}
+			sizes[n] = [2]float64{float64(w), float64(h)}
+			bitmaps[n] = bmp
+			count++
+			continue
 		}
 		src, ok := n.Attribute("src")
 		if !ok {
@@ -50,6 +69,17 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 		}
 		data, ok := e.fetchImageBytes(ctx, doc.URL, src)
 		if !ok {
+			continue
+		}
+		// <img src="*.svg"> and data:image/svg+xml: rasterise via the SVG path.
+		if looksLikeSVG(data, src) {
+			bmp, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
+			if !ok {
+				continue
+			}
+			sizes[n] = [2]float64{float64(w), float64(h)}
+			bitmaps[n] = bmp
+			count++
 			continue
 		}
 		src0, err := goimages.Decode(bytes.NewReader(data))
@@ -229,6 +259,13 @@ func decodeDataURI(s string) ([]byte, bool) {
 			return nil, false
 		}
 		return b, true
+	}
+	// A non-base64 data URI payload is percent-encoded (RFC 2397); decode it so
+	// e.g. `data:image/svg+xml,%3Csvg...` yields real SVG bytes. PathUnescape
+	// (unlike QueryUnescape) leaves '+' literal, which SVG data needs. An
+	// undecodable payload falls back to the raw bytes.
+	if dec, err := url.PathUnescape(payload); err == nil {
+		return []byte(dec), true
 	}
 	return []byte(payload), true
 }

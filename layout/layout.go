@@ -199,6 +199,21 @@ func firstContentTop(box *Box, fallback float64) float64 {
 // has no block-level children, else a sequence of block boxes with anonymous
 // inline boxes between runs of inline content. Returns the content bottom y.
 func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top float64, b *bfc, sep bool) float64 {
+	// A replaced element (img / inline svg) renders at its intrinsic size as an
+	// atomic box, whatever its `display` value — an <svg display:flex> is still an
+	// image, not a flex container over its SVG primitives. This check therefore
+	// precedes the flex/grid/table display dispatch.
+	if node.Type == dom.Element && isReplacedTag(node.Tag) {
+		if w, h := l.imageSize(node); w > 0 && h > 0 {
+			b.commit()
+			item := &InlineItem{Image: node, Style: st, ImgW: w, ImgH: h,
+				Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y}
+			box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: h, Items: []*InlineItem{item}}}
+			b.y += h
+			return b.y
+		}
+	}
+
 	switch st.Display {
 	case css.DisplayFlex:
 		bottom := l.flex(box, node, st, cx, cw, top, b)
@@ -212,19 +227,6 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		bottom := l.table(box, node, st, cx, cw, top, b)
 		b.y = bottom
 		return bottom
-	}
-
-	// A replaced element (img) laid out as its own block/float box renders at its
-	// intrinsic size rather than establishing an inline context over children.
-	if node.Type == dom.Element && node.Tag == "img" {
-		if w, h := l.imageSize(node); w > 0 && h > 0 {
-			b.commit()
-			item := &InlineItem{Image: node, Style: st, ImgW: w, ImgH: h,
-				Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y}
-			box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: h, Items: []*InlineItem{item}}}
-			b.y += h
-			return b.y
-		}
 	}
 
 	pre := st.WhiteSpace == css.WSPre
@@ -488,7 +490,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 		*items = append(*items, &InlineItem{LineBreak: true, Style: cs, Node: el})
 		// A forced break starts a new line: leading whitespace after it collapses.
 		l.wsPending, l.wsEmitted = false, false
-	case "img":
+	case "img", "svg":
 		w, h := l.imageSize(el)
 		if w > 0 && h > 0 {
 			sb := 0.0
@@ -584,6 +586,12 @@ func (l *layouter) lineMetricsFor(st *css.Style) (ascent, lineHeight float64) {
 	}
 	lh := st.LineHeight.Px
 	return asc + (lh-fh)/2, lh
+}
+
+// isReplacedTag reports whether an element is a replaced box laid out at an
+// intrinsic size (a raster/SVG <img>, or an inline <svg> rasterised upstream).
+func isReplacedTag(tag string) bool {
+	return tag == "img" || tag == "svg"
 }
 
 func (l *layouter) imageSize(el *dom.Node) (float64, float64) {
