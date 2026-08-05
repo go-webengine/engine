@@ -4,14 +4,18 @@
 
 Honest assessment of the renderer on five pages. Phase 0 shipped a static
 HTML→CSS→block/inline→paint→PNG pipeline that **linearised every page to one
-column**. Phase 1 adds the real positioning layer — box model completeness,
-vertical margin collapsing, floats + clear, basic flexbox, basic tables, painted
-borders, `@media` width queries, and selector combinators. This is still a
-**static** renderer with **no JavaScript**; anything a page paints via scripting
-is absent, and that is stated below, not hidden.
+column**. It has since grown a full box model (floats, flexbox, CSS grid, tables,
+`position`), broad CSS (`var()`, `@media`, dark-mode, gradients, box-shadow,
+border-radius, opacity), SVG rasterisation, and **JavaScript execution** (goja +
+a real DOM + a settle-then-render loop). The renderer is **no longer static**:
+script-driven DOM mutations are reflected in the output; render with `DisableJS`
+to get the static, no-JavaScript document. Where a page still diverges from a
+browser it is stated below, not hidden. The phase-by-phase log runs newest-first,
+from Phase 2.4 down to Phase 0.
 
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
-them with the commands at the bottom.
+them with the commands at the bottom. The measured-vs-Chrome numbers live in
+[`bench/REPORT.md`](bench/REPORT.md).
 
 ## Phase 2.4 — JavaScript DOM mutation on the hit-map (`RenderWithLinks`) path
 

@@ -1,10 +1,15 @@
-# Phase-0 Survey — Pure-Go Headless Browser Engine
+# Survey — Pure-Go Headless Browser Engine
 
-**Date: 2026-08-04**
+**Date: 2026-08-04** (prior-art verdict) · **Updated: 2026-08-05** (status notes).
 
 Goal: a CGO=0 HTML/CSS layout + paint engine that renders a real web page to an
 image, no Chromium. This document records the prior-art verdict and the
-reuse-vs-build decision that the Phase-0 code is built on.
+reuse-vs-build decision the engine is built on. It was written at Phase 0; the
+verdicts still hold, and inline **Status (2026-08)** notes below record where the
+shipped engine has since moved past what Phase 0 assumed (JavaScript now runs via
+goja; text uses real bold + italic faces). Current capabilities live in
+[`README.md`](README.md), [`FIDELITY.md`](FIDELITY.md) and
+[`bench/REPORT.md`](bench/REPORT.md).
 
 ## Prior pure-Go browser engines: opossum / mycel
 
@@ -37,9 +42,10 @@ but reuse the same permissive building blocks it wisely chose.
 
 - `github.com/dop251/goja` — pure-Go, **no cgo**, **MIT**. ES5.1 fully + most of
   ES2015 (classes, arrow fns, destructuring, template strings, Promises,
-  generators). Actively maintained; the credible pure-Go JS engine. **Deferred to
-  Phase 1** — Phase 0 is a static renderer with no JS, so goja is not yet a
-  dependency (added when scripting lands).
+  generators). Actively maintained; the credible pure-Go JS engine. **Status
+  (2026-08): shipped.** goja is now a direct dependency; the `js` package binds it
+  to a real DOM with `fetch()`/XHR and laid-out-geometry read-back, and a
+  settle-then-render loop reflects script-driven DOM mutations in the output.
 
 ## Supporting libraries (all permissive, all pure-Go)
 
@@ -61,7 +67,7 @@ with our BSD-3-Clause with standard attribution only.
 |---|---|---|
 | `github.com/go-browserhttp/browserhttp` | v0.1.0 | `NewClient(timeout) *http.Client` — Chrome TLS fingerprint, cookie jar, redirects. Our `Fetch` uses it. |
 | `github.com/go-opentype/opentype` | v0.5.0 | `Face.Measure` (advance widths for line-breaking), `Face.GlyphMask` (8-bit AA coverage for text paint), `Face.Metrics` (ascent/height). FreeType-parity AA. |
-| `github.com/go-opentype/fonts` | v0.4.2 | Embedded OFL fonts: `inter` (sans), `lora` (serif), `gomono` (mono). One static `TTF` per family (regular weight only). |
+| `github.com/go-opentype/fonts` | v0.5.0 | Embedded OFL fonts: `inter` (sans), `lora` (serif), `gomono` (mono), with **real bold and italic** static faces. |
 | `github.com/go-images/images` | v0 | `Decode` (PNG/JPEG → RGBA) + `Resize` for `<img>`. |
 | `github.com/go-widgets/painter` | v0.2.0 | `PixelPainter.FillRect` / `PushClip` for backgrounds onto the `image.RGBA` buffer. |
 
@@ -69,18 +75,21 @@ Notes discovered during API inspection:
 - `painter.PixelPainter.Text` uses a fixed built-in fallback font (not sized), so
   it is **not** used for body text. Sized proportional text is rendered by
   blitting `opentype` glyph masks directly onto the RGBA buffer (src-over alpha).
-- The bundled `fonts` families embed only a **regular** static instance; there is
-  no bold weight and go-opentype does not apply variable-font axes. **Bold is
-  synthesised** (faux-bold: the glyph mask is blitted a second time offset by 1px
-  in x, taking max alpha). Noted as a fidelity limitation.
-- `go-images.Decode` handles PNG + JPEG only (no GIF/WEBP/SVG) — `<img>` is
-  best-effort and skips on unsupported/failed decode.
+- The bundled `fonts` families now embed **real regular / bold / italic** static
+  faces. **Status (2026-08):** the earlier faux-bold synthesis (blit the glyph
+  mask offset by 1px in x) has been **removed** in favour of the real bold and
+  italic faces; the paint layer selects the face for the cascaded weight/style.
+- `go-images.Decode` handles PNG + JPEG only (no GIF/WEBP). **Status (2026-08):**
+  SVG is now rendered separately via `oksvg` + `rasterx` (`<img *.svg>`,
+  `data:image/svg+xml`, inline `<svg>`); other unsupported/failed decodes still
+  skip best-effort.
 
 ## What we reuse vs build
 
 **Reuse:** HTTP (go-browserhttp), HTML parse (x/net/html), text measure+raster
 (go-opentype + fonts), backgrounds (go-widgets/painter), image decode/resize
-(go-images).
+(go-images), JavaScript (goja — now shipped), SVG rasterisation (oksvg +
+rasterx — now shipped).
 
 **Build (clean-room, because prior art can't give it to us):**
 - Our own DOM node tree (`dom`) — a thin, owned wrapper over x/net/html.
