@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 	"github.com/go-webengine/engine/layout"
 	"github.com/go-webengine/engine/paint"
@@ -121,37 +120,17 @@ func (e *Engine) RenderWithLinks(ctx context.Context, rawurl string, viewport im
 // same cascade → layout → paint pipeline as RenderDocument.
 func (e *Engine) RenderDocumentWithLinks(ctx context.Context, doc *Document, viewport image.Rectangle) (*image.RGBA, *RenderInfo, []Link, error) {
 	fonts := paint.NewFonts()
+	vpW, vpH := viewportSize(viewport)
+	// Share the exact cascade → JavaScript settle → layout pipeline that
+	// RenderDocument uses, so the anchor hit-map reflects the JS-settled DOM (a
+	// script that injects, moves or removes links is honoured) and the returned
+	// image is identical to Render's for the same document.
+	rp := e.renderCore(ctx, doc, vpW, vpH, fonts)
+	img := newCanvas(doc, rp, viewport, vpW)
+	paint.PaintFull(img, rp.box, fonts, rp.imgs, rp.bgImgs)
 
-	vpW := viewport.Dx()
-	if vpW <= 0 {
-		vpW = 1024
-	}
-	sheets := e.fetchExternalSheets(ctx, doc, float64(vpW))
-	sm := css.CascadeVW(doc.Root, float64(vpW), sheets)
-	imgSize, imgs := e.loadImages(ctx, doc, sm, vpW)
-
-	box, height := layout.LayoutDocument(doc.Root, sm, float64(vpW), fonts, imgSize)
-
-	canvasH := viewport.Dy()
-	if int(height) > canvasH {
-		canvasH = int(height)
-	}
-	if canvasH <= 0 {
-		canvasH = 1
-	}
-	img := image.NewRGBA(image.Rect(0, 0, vpW, canvasH))
-	fillWhite(img)
-	if bg, ok := pageBackground(doc.Root, sm); ok {
-		fillColor(img, bg)
-	}
-	paint.Paint(img, box, fonts, imgs)
-
-	links := LinksFromBox(box, doc.URL)
-	return img, &RenderInfo{
-		Title:         doc.Title,
-		URL:           doc.URL,
-		ContentHeight: int(height),
-	}, links, nil
+	links := LinksFromBox(rp.box, doc.URL)
+	return img, renderInfo(doc, rp), links, nil
 }
 
 // itemRect returns an inline atom's painted rectangle. For a word the height is

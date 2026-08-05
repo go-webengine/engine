@@ -4,8 +4,10 @@
 // Package engine is a pure-Go (CGO=0) static web rendering engine: it fetches a
 // URL, parses the HTML into a DOM, applies a minimal-but-real CSS subset with
 // cascade and inheritance, lays the content out in block-and-inline flow, and
-// paints anti-aliased text, backgrounds and images to an image.RGBA. Phase 0
-// runs no JavaScript; script-driven content is therefore not populated.
+// paints anti-aliased text, backgrounds and images to an image.RGBA. Page
+// JavaScript runs against a real DOM binding before layout (see package js), so
+// script-driven DOM mutations are reflected in the output; set Engine.DisableJS
+// to render the static, no-JavaScript document instead.
 package engine
 
 import (
@@ -142,16 +144,32 @@ func (e *Engine) Render(ctx context.Context, rawurl string, viewport image.Recta
 // the network if their src is absolute/resolvable).
 func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport image.Rectangle) (*image.RGBA, *RenderInfo, error) {
 	fonts := paint.NewFonts()
+	vpW, vpH := viewportSize(viewport)
+	rp := e.renderCore(ctx, doc, vpW, vpH, fonts)
+	img := newCanvas(doc, rp, viewport, vpW)
+	paint.PaintFull(img, rp.box, fonts, rp.imgs, rp.bgImgs)
+	return img, renderInfo(doc, rp), nil
+}
 
-	vpW := viewport.Dx()
+// viewportSize resolves the render width/height, applying the 1024×768 defaults
+// for a non-positive extent (a common "auto-height" caller passes Dy()==0).
+func viewportSize(viewport image.Rectangle) (vpW, vpH int) {
+	vpW, vpH = viewport.Dx(), viewport.Dy()
 	if vpW <= 0 {
 		vpW = 1024
 	}
-	vpH := viewport.Dy()
 	if vpH <= 0 {
 		vpH = 768
 	}
+	return vpW, vpH
+}
 
+// renderCore runs the shared cascade → JavaScript settle → layout pipeline for
+// doc at the given viewport, returning the settled render pass. It is used by
+// both RenderDocument and RenderDocumentWithLinks so the painted image and the
+// anchor hit-map always describe the exact same JS-settled DOM and geometry. On
+// return doc.Title reflects any document.title a script set.
+func (e *Engine) renderCore(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts) *renderPass {
 	// Set the JS-enabled signal (client-nojs → client-js on <html>) BEFORE the
 	// initial cascade so the first layout — the geometry scripts read back — is
 	// already the JS-enabled one. DisableJS leaves the no-JS fallback in place.
@@ -182,6 +200,17 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 		e.settle(ctx, doc, vpW, vpH, fonts, rp, initialLayout)
 	}
 
+	// A script may have set document.title; re-derive it so RenderInfo reports the
+	// post-script title (matching what a browser tab would show).
+	doc.Title = dom.Title(doc.Root)
+	return rp
+}
+
+// newCanvas allocates the output image, fills the white base and paints the page
+// backdrop (body/html background) over the whole viewport, matching a browser.
+// The height is grown to the laid-out content, at least the viewport height, and
+// clamped to a minimum of one pixel.
+func newCanvas(doc *Document, rp *renderPass, viewport image.Rectangle, vpW int) *image.RGBA {
 	canvasH := viewport.Dy()
 	if int(rp.height) > canvasH {
 		canvasH = int(rp.height)
@@ -191,18 +220,19 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 	}
 	img := image.NewRGBA(image.Rect(0, 0, vpW, canvasH))
 	fillWhite(img)
-	// The canvas base (the page "backdrop") is the body's background — or the
-	// html element's — extended over the whole viewport, matching a browser.
 	if bg, ok := pageBackground(doc.Root, rp.sm); ok {
 		fillColor(img, bg)
 	}
-	paint.PaintFull(img, rp.box, fonts, rp.imgs, rp.bgImgs)
+	return img
+}
 
-	return img, &RenderInfo{
+// renderInfo builds the RenderInfo for a completed render pass.
+func renderInfo(doc *Document, rp *renderPass) *RenderInfo {
+	return &RenderInfo{
 		Title:         doc.Title,
 		URL:           doc.URL,
 		ContentHeight: int(rp.height),
-	}, nil
+	}
 }
 
 // RenderHTML renders an HTML string (with baseURL used to resolve relative
