@@ -170,7 +170,12 @@ func svgRootLen(tag []byte, re *regexp.Regexp) float64 {
 var svgRasterizer = func(icon *oksvg.SvgIcon, w, h, iw, ih int) image.Image {
 	icon.SetTarget(0, 0, float64(w), float64(h))
 	rgba := image.NewRGBA(image.Rect(0, 0, w, h))
-	scanner := rasterx.NewScannerGV(iw, ih, rgba, rgba.Bounds())
+	// The scanner must be sized to the OUTPUT image (w×h, already clamped to
+	// maxSVGDim), not the source viewBox (iw×ih): NewScannerGV allocates internal
+	// buffers proportional to its width×height, and a large viewBox (e.g. a 16px
+	// icon with a 100000-unit viewBox) would otherwise allocate tens of GB. The
+	// icon's ViewBox already maps source coordinates onto the SetTarget rect.
+	scanner := rasterx.NewScannerGV(w, h, rgba, rgba.Bounds())
 	raster := rasterx.NewDasher(w, h, scanner)
 	icon.Draw(raster, 1.0)
 	return rgba
