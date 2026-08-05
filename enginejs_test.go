@@ -8,6 +8,8 @@ import (
 	"image"
 	"strings"
 	"testing"
+
+	"github.com/go-webengine/engine/dom"
 )
 
 // TestJSMutationReflectedInLayout proves the script pass runs BEFORE the cascade
@@ -81,6 +83,91 @@ func TestDisableJSDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestJSInjectedLinkInHitMap proves the JavaScript pass runs on the
+// RenderWithLinks path too: a script that appends an <a href> to the body makes
+// that anchor appear in the returned hit-map, and with JS disabled it does not.
+func TestJSInjectedLinkInHitMap(t *testing.T) {
+	src := `<html><head><title>t</title></head><body>` +
+		`<script>
+			var a = document.createElement('a');
+			a.setAttribute('href', '/injected');
+			a.textContent = 'go here now';
+			document.body.appendChild(a);
+		</script></body></html>`
+	vp := image.Rect(0, 0, 400, 300)
+
+	on := New()
+	_, _, links, err := on.RenderDocumentFromHTML(t, src, "https://example.com/", vp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].Href != "https://example.com/injected" {
+		t.Fatalf("JS-injected anchor should appear in the hit-map, got %+v", links)
+	}
+	if links[0].Rect.Empty() {
+		t.Error("injected link rect is empty")
+	}
+
+	off := New()
+	off.DisableJS = true
+	_, _, offLinks, err := off.RenderDocumentFromHTML(t, src, "https://example.com/", vp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(offLinks) != 0 {
+		t.Fatalf("with JS disabled the anchor must not exist: %+v", offLinks)
+	}
+}
+
+// TestJSTitleReflectedInRenderInfo proves a script that sets document.title is
+// reflected in RenderInfo.Title on both the plain and the with-links paths.
+func TestJSTitleReflectedInRenderInfo(t *testing.T) {
+	src := `<html><head><title>old</title></head><body>` +
+		`<script>document.title = 'new title';</script></body></html>`
+	vp := image.Rect(0, 0, 200, 100)
+
+	_, info, err := New().RenderHTML(context.Background(), src, "https://example.com/", vp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Title != "new title" {
+		t.Fatalf("RenderDocument title = %q, want %q", info.Title, "new title")
+	}
+
+	root, err := parseDoc(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wl, _, err := New().RenderDocumentWithLinks(context.Background(), root, vp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wl.Title != "new title" {
+		t.Fatalf("RenderDocumentWithLinks title = %q, want %q", wl.Title, "new title")
+	}
+}
+
+// RenderDocumentFromHTML parses src and renders it with the with-links pipeline,
+// a small offline convenience for the JS hit-map tests.
+func (e *Engine) RenderDocumentFromHTML(t *testing.T, src, baseURL string, vp image.Rectangle) (*image.RGBA, *RenderInfo, []Link, error) {
+	t.Helper()
+	doc, err := parseDoc(src)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	doc.URL = baseURL
+	return e.RenderDocumentWithLinks(context.Background(), doc, vp)
+}
+
+// parseDoc parses src into a Document with a placeholder URL.
+func parseDoc(src string) (*Document, error) {
+	root, err := dom.Parse(src)
+	if err != nil {
+		return nil, err
+	}
+	return &Document{URL: "https://example.com/", Title: dom.Title(root), Root: root, HTML: src}, nil
 }
 
 // renderTopLeft renders src and returns the top-left pixel's RGB.

@@ -13,6 +13,62 @@ is absent, and that is stated below, not hidden.
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom.
 
+## Phase 2.4 — JavaScript DOM mutation on the hit-map (`RenderWithLinks`) path
+
+**Date: 2026-08-05.** Phase 2.2 wired the layout↔JS settle loop into
+`RenderDocument`, but the anchor-hit-map entry points `RenderWithLinks` /
+`RenderDocumentWithLinks` (used by the wasmdesk browserproxy to turn a click into
+a navigation) still ran the **old JS-free** pipeline: cascade → layout → paint
+with no script pass. A page whose links (or their positions, or the whole body)
+are built by JavaScript therefore produced an **empty or stale hit-map** — a click
+landed nowhere. This phase makes both paths share one pipeline.
+
+- `RenderDocument` and `RenderDocumentWithLinks` now both call a single
+  `renderCore` (`engine.go`): `MarkJSEnabled` → initial cascade/layout → the
+  Phase-2.2 `settle` loop → final layout. The painted image and the returned
+  `[]Link` are guaranteed to describe the **same JS-settled DOM and geometry**, and
+  the with-links image is now byte-identical to `Render`'s (both use `PaintFull`,
+  so background images paint on the hit-map path too).
+- `document.title` set by a script is now reflected in `RenderInfo.Title` on both
+  paths (`renderCore` re-derives the title after the settle loop).
+
+**Proven deterministically (offline goldens, engine package):**
+
+- `TestJSInjectedLinkInHitMap` — a script that does
+  `createElement('a')` + `setAttribute('href', …)` + `textContent` +
+  `body.appendChild` yields exactly one link (`https://example.com/injected`) with a
+  non-empty painted rect through `RenderDocumentWithLinks`; with `DisableJS` the
+  hit-map is empty. This is the regression the phase fixes, asserted directly.
+- `TestJSTitleReflectedInRenderInfo` — a script `document.title = 'new title'` is
+  reflected in `RenderInfo.Title` on both the plain and the with-links paths.
+- The pre-existing `enginejs_test.go` invariants (JS-injected paragraphs grow the
+  laid-out page; the `client-js` signal reaches the cascade; `DisableJS` leaves the
+  no-JS fallback) all still hold. `css`/`layout`/`paint`/`dom` coverage floors
+  unchanged and green; the new `renderCore`/`viewportSize`/`newCanvas`/`renderInfo`
+  helpers are at 100% statement coverage.
+
+**Measured vs headless Chromium (this machine).** New compare page
+`scripts/compare/pages/js-dom-mutation.html` builds all of its visible content at
+parse time from JavaScript — `document.title`, `getElementById`, `createElement`,
+`createTextNode`, `textContent`, `setAttribute`, `appendChild`, an `innerHTML`
+list, an inline `style`, and a `querySelector` read-back-and-edit. At width 640
+(`scripts/compare/chromium-compare.sh`):
+
+| page | MAD (0 = identical) |
+|------|---------------------|
+| `js-dom-mutation` (this phase) | **0.0131** |
+| `typography` (static baseline) | 0.0113 |
+
+The JS page scores within noise of the static-text baseline — i.e. the DOM the
+engine renders after running the scripts is the same DOM Chromium renders, down to
+the `.box` CSS class applied to a JS-created element and the "(edited via
+querySelector)" text on the first list item. The residual is the documented
+font-antialiasing delta, plus one **pre-existing, JS-unrelated** gap visible in the
+side-by-side: the engine does not yet paint `<li>` `list-style` bullet discs (a
+list-marker feature, not a scripting issue). The engine reports
+`title="DOM mutated by JS", contentHeight=306` for this page; with JS disabled only
+the static `<h1>` remains.
+
 ## Phase 2.3 — CSS `:checked` + `:not()` (the checkbox-hack that collapses MediaWiki's dropdowns)
 
 **Date: 2026-08-05.** Phase 2.2's honest residual was that Wikipedia's collapsed
