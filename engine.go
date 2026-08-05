@@ -1,13 +1,15 @@
 // Copyright (c) the go-webengine/engine authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Package engine is a pure-Go (CGO=0) static web rendering engine: it fetches a
-// URL, parses the HTML into a DOM, applies a minimal-but-real CSS subset with
-// cascade and inheritance, lays the content out in block-and-inline flow, and
-// paints anti-aliased text, backgrounds and images to an image.RGBA. Page
-// JavaScript runs against a real DOM binding before layout (see package js), so
-// script-driven DOM mutations are reflected in the output; set Engine.DisableJS
-// to render the static, no-JavaScript document instead.
+// Package engine is a pure-Go (CGO=0) web rendering engine: it fetches a URL,
+// parses the HTML into a DOM, applies a real CSS subset (cascade, inheritance,
+// var(), @media, dark-mode, gradients), runs the page's JavaScript against a
+// real DOM binding, lays the content out with a full box model (block, inline,
+// float, flex, grid, table, position), and paints anti-aliased text,
+// backgrounds, gradients, box-shadows, images and SVG to an image.RGBA. A
+// settle-then-render loop re-lays-out after scripts mutate the DOM, so
+// script-driven changes are reflected in the output; set Engine.DisableJS to
+// render the static, no-JavaScript document instead.
 package engine
 
 import (
