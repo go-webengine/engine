@@ -74,9 +74,13 @@ func (f *Fonts) face(fam css.FontFamily, sizePx float64) *opentype.Face {
 func (f *Fonts) Measure(text string, fam css.FontFamily, sizePx float64, weight int) float64 {
 	fc := f.face(fam, sizePx)
 	w := fc.Measure(text)
-	if weight >= 600 {
-		// Faux-bold widens each rune by roughly one device pixel.
-		w += len([]rune(text))
+	if weight >= 600 && text != "" {
+		// Faux-bold smears each glyph one device pixel to the right (see
+		// paintItem's double-blit), widening the run's PAINTED extent by only ~1px
+		// overall — per-glyph advances are unchanged. Reserving one extra pixel
+		// keeps layout aligned with paint; the old per-rune widening over-reserved
+		// and left a visible gap after every bold word.
+		w++
 	}
 	return float64(w)
 }

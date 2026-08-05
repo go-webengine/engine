@@ -22,7 +22,22 @@ type layouter struct {
 	// the in-flow pass (and while laying out other positioned subtrees). They are
 	// placed against their containing block after the in-flow layout.
 	outOfFlow []outOfFlowItem
+
+	// Inline whitespace-collapsing state, valid only while collecting one inline
+	// formatting context (reset at each collectInline / collectInlineFrom entry).
+	// wsPending records that the content emitted so far ends with collapsible
+	// whitespace, so the next word takes a leading space; wsEmitted records that
+	// at least one inline item has been emitted, so leading whitespace at the very
+	// start of the context collapses away (no spurious indent). CSS collapses
+	// whitespace ACROSS inline-element boundaries, which is why this is layouter
+	// state threaded through the recursive collection rather than per text node.
+	wsPending bool
+	wsEmitted bool
 }
+
+// beginInlineContext resets the whitespace-collapsing state at the top of an
+// inline formatting context.
+func (l *layouter) beginInlineContext() { l.wsPending, l.wsEmitted = false, false }
 
 // outOfFlowItem is a queued out-of-flow box plus the approximate static position
 // (the normal-flow cursor at the point it was skipped) used to resolve the box's
@@ -421,12 +436,14 @@ func usedHeight(st *css.Style, bw css.Edges, cw float64) (float64, bool) {
 
 func (l *layouter) collectInline(node *dom.Node, st *css.Style, pre bool) []*InlineItem {
 	var items []*InlineItem
+	l.beginInlineContext()
 	l.appendInline(node, st, &items, pre)
 	return items
 }
 
 func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool) []*InlineItem {
 	var items []*InlineItem
+	l.beginInlineContext()
 	for _, n := range nodes {
 		if n.Type == dom.Text {
 			l.appendWords(n.Text, st, &items, pre, n.Parent)
@@ -469,14 +486,21 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 	switch el.Tag {
 	case "br":
 		*items = append(*items, &InlineItem{LineBreak: true, Style: cs, Node: el})
+		// A forced break starts a new line: leading whitespace after it collapses.
+		l.wsPending, l.wsEmitted = false, false
 	case "img":
 		w, h := l.imageSize(el)
 		if w > 0 && h > 0 {
+			sb := 0.0
+			if l.wsEmitted && l.wsPending {
+				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight)
+			}
 			*items = append(*items, &InlineItem{
 				Style: cs, Image: el, Node: el, ImgW: w, ImgH: h,
 				Width: w, Ascent: h, LineHeight: h,
-				SpaceBefore: l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight),
+				SpaceBefore: sb,
 			})
+			l.wsEmitted, l.wsPending = true, false
 		}
 	default:
 		l.appendInline(el, cs, items, pre || cs.WhiteSpace == css.WSPre)
@@ -505,17 +529,49 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 		return
 	}
 	space := l.m.Measure(" ", st.FontFamily, st.FontSize, st.FontWeight)
-	for _, w := range strings.Fields(text) {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		// A whitespace-only (or empty) text node between inline content carries a
+		// single collapsible space to the next word — unless nothing has been
+		// emitted yet, in which case leading whitespace collapses to nothing.
+		if strings.TrimSpace(text) == "" && text != "" {
+			l.wsPending = true
+		}
+		return
+	}
+	// Leading whitespace of this run is a collapsible space before its first word.
+	if isSpace(rune(text[0])) {
+		l.wsPending = true
+	}
+	for i, w := range words {
+		sb := 0.0
+		if i > 0 {
+			sb = space // whitespace between words within a run collapses to one space
+		} else if l.wsEmitted && l.wsPending {
+			sb = space // a boundary space — but never a leading indent on the first item
+		}
 		*items = append(*items, &InlineItem{
 			Text:        w,
 			Style:       st,
 			Node:        origin,
 			Width:       l.m.Measure(w, st.FontFamily, st.FontSize, st.FontWeight),
-			SpaceBefore: space,
+			SpaceBefore: sb,
 			Ascent:      asc,
 			LineHeight:  lh,
 		})
+		l.wsEmitted = true
+		l.wsPending = false
 	}
+	// Trailing whitespace defers a space to whatever inline content comes next.
+	if isSpace(rune(text[len(text)-1])) {
+		l.wsPending = true
+	}
+}
+
+// isSpace reports whether r is ASCII whitespace subject to CSS whitespace
+// collapsing (space, tab, newline, carriage return, form feed).
+func isSpace(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
 }
 
 // lineMetricsFor returns the ascent and line height for a style, honouring an

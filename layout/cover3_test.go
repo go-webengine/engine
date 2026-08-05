@@ -32,9 +32,11 @@ func TestPreferredWidthInlineWithBreak(t *testing.T) {
 	root, _ := dom.Parse(`<html><body><span id="s">ab<br>cd</span></body></html>`)
 	l.sm = css.Cascade(root)
 	s := dom.Find(root, "span")
-	// "ab"(20) + space(10) + "cd"(20) = 50 (break skipped, words joined).
-	if got := l.preferredWidth(s, l.sm[s]); got != 50 {
-		t.Errorf("inline preferred = %v want 50", got)
+	// Source "ab<br>cd" has NO whitespace around the break, so the runs join with
+	// no space (CSS collapsing): "ab"(20) + "cd"(20) = 40. (A phantom space across a
+	// spaceless boundary was the pre-fix inline-whitespace bug.)
+	if got := l.preferredWidth(s, l.sm[s]); got != 40 {
+		t.Errorf("inline preferred = %v want 40", got)
 	}
 }
 
