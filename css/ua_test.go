@@ -11,7 +11,7 @@ func TestUADeclarationsAllBranches(t *testing.T) {
 	blockish := []string{"html", "body", "div", "section", "article", "header",
 		"footer", "nav", "main", "aside", "figure", "form", "hr",
 		"blockquote", "pre", "address", "fieldset", "figcaption", "p",
-		"h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "dd", "dt", "dl",
+		"h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "dd", "dt", "dl",
 		"caption"}
 	for _, tag := range blockish {
 		decls := uaDeclarations(tag)
@@ -94,6 +94,19 @@ func TestUADeclarationsAllBranches(t *testing.T) {
 	}
 	if !hasDecl(uaDeclarations("ul"), "padding-left", "40px") {
 		t.Error("ul padding")
+	}
+	// List defaults: <li> is a list-item; <ul> discs, <ol> decimals.
+	if !hasDisplay(uaDeclarations("li"), "list-item") {
+		t.Error("li: expected display:list-item")
+	}
+	if !hasDecl(uaDeclarations("ul"), "list-style-type", "disc") {
+		t.Error("ul: expected list-style-type:disc")
+	}
+	if !hasDecl(uaDeclarations("ol"), "list-style-type", "decimal") {
+		t.Error("ol: expected list-style-type:decimal")
+	}
+	if !hasDecl(uaDeclarations("ol"), "padding-left", "40px") {
+		t.Error("ol padding")
 	}
 }
 

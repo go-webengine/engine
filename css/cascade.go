@@ -82,8 +82,23 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style
 		}
 	}
 
-	// User-agent defaults.
+	// User-agent defaults: the per-tag declarations (specificity 0) plus the few
+	// descendant UA rules (matched at their real specificity, still at UA origin)
+	// that alternate the nested-list marker glyph disc→circle→square by depth.
 	add(uaDeclarations(n.Tag), precUA, 0)
+	for _, r := range uaDescendantRules {
+		spec := -1
+		for _, sel := range r.Selectors {
+			if sel.Matches(n) {
+				if s := sel.Specificity(); s > spec {
+					spec = s
+				}
+			}
+		}
+		if spec >= 0 {
+			add(r.Declarations, precUA, spec)
+		}
+	}
 	// Author rules whose selectors match, each at its selector's specificity.
 	for _, r := range rules {
 		spec := -1

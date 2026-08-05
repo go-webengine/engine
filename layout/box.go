@@ -49,6 +49,24 @@ type Box struct {
 	// out out of flow and appended to the root box (painted after in-flow
 	// content) with their coordinates already resolved to document space.
 	Position css.Position
+
+	// Marker is the list-item marker box (bullet or ordinal), non-nil only on a
+	// display:list-item box whose list-style-type is not `none`. Its coordinates
+	// are in document space, positioned relative to this box's content box.
+	Marker *Marker
+}
+
+// Marker is a laid-out list-item marker. For a bullet type (disc/circle/square)
+// X,Y,W,H is the glyph's square bounding box. For the decimal type, Text is the
+// ordinal string ("1.", "2.", …), X is its pen origin, Y the top of its line box
+// and Ascent the baseline offset; W is the text advance (H unused). Style
+// supplies the marker's colour and, for decimal, its font face.
+type Marker struct {
+	Type       css.ListStyleType
+	Style      *css.Style
+	X, Y, W, H float64
+	Ascent     float64
+	Text       string
 }
 
 // InlineItem is one atom of inline content: a word, an image, or a forced line

@@ -31,6 +31,42 @@ func parseLineHeight(v string, emRef float64) (LineHeight, bool) {
 	return LineHeight{}, false
 }
 
+// parseListStyleType maps a list-style-type keyword to a ListStyleType.
+func parseListStyleType(lv string) (ListStyleType, bool) {
+	switch lv {
+	case "disc":
+		return ListDisc, true
+	case "circle":
+		return ListCircle, true
+	case "square":
+		return ListSquare, true
+	case "decimal":
+		return ListDecimal, true
+	case "none":
+		return ListNone, true
+	}
+	return 0, false
+}
+
+// applyListStyle parses the list-style shorthand, enough to set the marker type
+// and position. A recognised type keyword sets ListStyleType; inside/outside set
+// the position; a list-style-image (url()) or any other token is ignored at this
+// fidelity (the shorthand's `none` is treated as type none).
+func applyListStyle(s *Style, lv string) {
+	for _, tok := range strings.Fields(lv) {
+		switch tok {
+		case "inside":
+			s.ListStylePosition = ListInside
+		case "outside":
+			s.ListStylePosition = ListOutside
+		default:
+			if t, ok := parseListStyleType(tok); ok {
+				s.ListStyleType = t
+			}
+		}
+	}
+}
+
 func parseJustify(lv string) (Justify, bool) {
 	switch lv {
 	case "flex-start", "start", "left", "normal":
