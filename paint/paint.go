@@ -92,6 +92,10 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 	if box.Style != nil && !box.Anonymous && box.W > 0 && box.H > 0 {
 		paintBorders(pp, box)
 	}
+	// 5.5 List-item marker (bullet or ordinal) in the indent left of the content.
+	if box.Marker != nil {
+		paintMarker(dst, pp, box.Marker, f)
+	}
 	// 6. Inline content.
 	for _, line := range box.Lines {
 		for _, it := range line.Items {
@@ -462,6 +466,37 @@ func uniformBorder(b css.Borders) bool {
 }
 
 func iround(f float64) int { return int(f + 0.5) }
+
+// paintMarker draws a list-item marker. A decimal marker reuses the inline text
+// painter (the ordinal string in the item's own face and colour); the bullet
+// types map to painter primitives — a disc is a full-radius filled round rect, a
+// hollow circle a stroked round rect, and a square a plain filled rect.
+func paintMarker(dst *image.RGBA, pp *painter.PixelPainter, m *layout.Marker, f *Fonts) {
+	if m.Type == css.ListDecimal {
+		paintItem(dst, &layout.InlineItem{Text: m.Text, Style: m.Style, X: m.X, Y: m.Y, Ascent: m.Ascent}, f, nil)
+		return
+	}
+	r := markerRect(m)
+	col := toPainter(m.Style.Color)
+	switch m.Type {
+	case css.ListSquare:
+		pp.FillRect(r, col)
+	case css.ListCircle:
+		pp.StrokeRoundRect(r, r.W/2, col, 1)
+	default: // css.ListDisc
+		pp.FillRoundRect(r, r.W/2, col)
+	}
+}
+
+// markerRect is a bullet marker's integer bounding rectangle in device pixels.
+func markerRect(m *layout.Marker) painter.Rect {
+	return painter.Rect{
+		X: int(math.Round(m.X)),
+		Y: int(math.Round(m.Y)),
+		W: int(math.Round(m.W)),
+		H: int(math.Round(m.H)),
+	}
+}
 
 func paintItem(dst *image.RGBA, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image) {
 	if it.Image != nil {

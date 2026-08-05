@@ -213,8 +213,13 @@ func (s *Style) apply(d Declaration, emRef float64) {
 	lv := strings.ToLower(v)
 	switch d.Property {
 	case "display":
+		// A non-list display clears the list-item flag; `list-item` sets it (it is
+		// a block-level box that additionally generates a marker).
+		s.ListItem = false
 		switch lv {
-		case "block", "list-item", "flow-root":
+		case "list-item":
+			s.Display, s.ListItem = DisplayBlock, true
+		case "block", "flow-root":
 			s.Display = DisplayBlock
 		case "grid", "inline-grid":
 			s.Display = DisplayGrid
@@ -332,6 +337,19 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		case "normal", "nowrap":
 			s.WhiteSpace = WSNormal
 		}
+	case "list-style-type":
+		if t, ok := parseListStyleType(lv); ok {
+			s.ListStyleType = t
+		}
+	case "list-style-position":
+		switch lv {
+		case "outside":
+			s.ListStylePosition = ListOutside
+		case "inside":
+			s.ListStylePosition = ListInside
+		}
+	case "list-style":
+		applyListStyle(s, lv)
 	case "width":
 		if l, ok := parseLength(v, emRef); ok {
 			s.Width = l

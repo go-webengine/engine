@@ -286,6 +286,34 @@ const (
 	WSPre
 )
 
+// ListStyleType is the marker style of a display:list-item box. It inherits.
+type ListStyleType uint8
+
+const (
+	// ListDisc is a filled circle (the initial value / <ul> default).
+	ListDisc ListStyleType = iota
+	// ListCircle is a hollow (stroked) circle.
+	ListCircle
+	// ListSquare is a filled square.
+	ListSquare
+	// ListDecimal is an ascending decimal number ("1.", "2.", …) — the <ol> default.
+	ListDecimal
+	// ListNone paints no marker.
+	ListNone
+)
+
+// ListStylePosition is where the marker sits relative to the item's content. It
+// inherits.
+type ListStylePosition uint8
+
+const (
+	// ListOutside places the marker in the indent to the left of the content box
+	// (the initial value).
+	ListOutside ListStylePosition = iota
+	// ListInside places the marker inside the content box, before the first line.
+	ListInside
+)
+
 // TextAlign is the horizontal alignment of inline content in a block.
 type TextAlign uint8
 
@@ -340,6 +368,13 @@ type Style struct {
 	TextAlign  TextAlign
 	WhiteSpace WhiteSpace
 	LineHeight LineHeight
+
+	// ListItem marks a display:list-item box (it generates a marker). It is not
+	// inherited. ListStyleType and ListStylePosition are inherited and select the
+	// marker glyph and its placement.
+	ListItem          bool
+	ListStyleType     ListStyleType
+	ListStylePosition ListStylePosition
 
 	// BorderRadius is the corner radius applied to the border box when painting
 	// the background and border. It is a single (uniform) radius: the common real
@@ -503,10 +538,13 @@ func inheritFrom(parent Style) Style {
 		MaxHeight:   Length{Auto: true},
 		FlexBasis:   Length{Auto: true},
 		FlexShrink:  1,
-		TextAlign:   parent.TextAlign,   // inherited
-		WhiteSpace:  parent.WhiteSpace,  // inherited
-		LineHeight:  parent.LineHeight,  // inherited
-		CustomProps: parent.CustomProps, // inherited (shared until copy-on-write)
+		TextAlign:   parent.TextAlign,  // inherited
+		WhiteSpace:  parent.WhiteSpace, // inherited
+		LineHeight:  parent.LineHeight, // inherited
+		// list-style-type / list-style-position inherit; list-item does not.
+		ListStyleType:     parent.ListStyleType,
+		ListStylePosition: parent.ListStylePosition,
+		CustomProps:       parent.CustomProps, // inherited (shared until copy-on-write)
 
 		// position and the offsets are not inherited: reset to static / auto.
 		Top:        Length{Auto: true},

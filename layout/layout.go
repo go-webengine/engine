@@ -239,6 +239,11 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		return bottom
 	}
 
+	// List-item counter for this block's direct list-item children. It seeds from
+	// an <ol start> and honours a per-item <li value>; nested lists get a fresh
+	// counter because each list container runs its own contents() pass.
+	counter := listStart(node)
+
 	var run []*dom.Node
 	flush := func() {
 		if len(run) == 0 {
@@ -291,6 +296,13 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 				l.handleClear(cs, b)
 				child := l.place(c, cs, cx, cw, b)
 				box.Children = append(box.Children, child)
+				if cs.ListItem {
+					if val, ok := attrInt(c, "value"); ok {
+						counter = val
+					}
+					l.attachMarker(child, cs, counter)
+					counter++
+				}
 			} else {
 				run = append(run, c)
 			}

@@ -3,6 +3,17 @@
 
 package css
 
+// uaDescendantRules are the user-agent stylesheet rules that need a descendant
+// selector (which the per-tag uaDeclarations cannot express). They alternate the
+// list marker glyph by nesting depth exactly like a browser's UA sheet: a `ul`
+// at depth 1 is a disc (set by the tag rule), a `ul ul` at depth 2 a circle, and
+// a `ul ul ul` at depth 3-or-deeper a square (the deepest matching, highest
+// specificity, rule wins). They are matched at UA origin, so any author rule
+// still overrides them.
+var uaDescendantRules = ParseStylesheet(
+	"ul ul { list-style-type: circle }\n" +
+		"ul ul ul { list-style-type: square }\n")
+
 // uaDeclarations returns the user-agent default declarations for a tag, as
 // property:value pairs. These mirror a browser's default stylesheet for the
 // common structural and text tags Phase 0 supports. Values in px are chosen to
@@ -55,10 +66,14 @@ func uaDeclarations(tag string) []Declaration {
 		return []Declaration{{"display", "block"}, {"font-size", "13px"}, {"font-weight", "bold"}, {"margin", "22px 0"}}
 	case "h6":
 		return []Declaration{{"display", "block"}, {"font-size", "11px"}, {"font-weight", "bold"}, {"margin", "24px 0"}}
-	case "ul", "ol":
-		return []Declaration{{"display", "block"}, {"margin", "16px 0"}, {"padding-left", "40px"}}
+	case "ul":
+		return []Declaration{{"display", "block"}, {"margin", "16px 0"}, {"padding-left", "40px"},
+			{"list-style-type", "disc"}}
+	case "ol":
+		return []Declaration{{"display", "block"}, {"margin", "16px 0"}, {"padding-left", "40px"},
+			{"list-style-type", "decimal"}}
 	case "li":
-		return []Declaration{{"display", "block"}}
+		return []Declaration{{"display", "list-item"}}
 	case "a":
 		return []Declaration{{"color", "#0000ee"}}
 	case "strong", "b":

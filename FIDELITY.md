@@ -17,6 +17,65 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## Phase 2.5 — list-item markers (`<ul>` / `<ol>` bullets and numbers)
+
+**Date: 2026-08-05.** The one visible gap the Phase-2.4 Chromium compare recorded
+was that `<li>` items laid out and painted their content but with **no marker** —
+no disc, no number. This phase closes it end-to-end across `css`/`layout`/`paint`.
+
+- **UA defaults** — `<li>` is now `display:list-item`; `<ul>` defaults to
+  `list-style-type:disc`, `<ol>` to `decimal`; both keep the 40px indent. Marker
+  glyph inherits, so an item picks up its container's type. Nested `<ul>` alternate
+  **disc → circle → square** by depth via UA descendant rules (`ul ul`, `ul ul ul`)
+  matched at UA origin, exactly like a browser's UA sheet.
+- **CSS** — `list-style-type` (`disc`/`circle`/`square`/`decimal`/`none`),
+  `list-style-position` (`outside`/`inside`), and the `list-style` shorthand are
+  parsed and cascaded (all three inherit). A `display:list-item` box carries a new
+  `ListItem` flag; other display values clear it.
+- **Layout** — a list-item box gets a `Marker` positioned (for the default
+  `outside`) in the indent to the LEFT of the content box, vertically centred on
+  the first line (falling back to the content-box top for an empty item). `<ol>`
+  runs a per-list counter honouring `<ol start>` and `<li value>`; nested lists get
+  a fresh counter (so a nested `<ol>` restarts at 1). Marker coordinates are unit-
+  tested to exact values relative to the content box.
+- **Paint** — a disc is a full-radius `FillRoundRect`, a hollow circle a
+  `StrokeRoundRect`, a square a `FillRect`; a decimal marker reuses the inline text
+  painter for its ordinal ("1.", "2.", …) in the item's own face/colour. `none`
+  paints nothing (no marker is even attached).
+
+**Deferred (documented):** `list-style-position:inside` is parsed and cascaded but
+rendered with the same outside geometry — reserving inline space for an inside
+marker is left for a later pass. `list-style-image` (bitmap markers) and non-
+decimal ordered styles (`lower-roman`, `lower-alpha`, …) are out of scope; an
+unknown `list-style-type` keeps the inherited/UA default.
+
+**Proven deterministically (offline).** `TestListMarkersGolden` renders a `<ul>`
+(discs) + `<ol>` (decimals) and asserts painted ink in the gutter left of the
+content plus a byte-exact golden PNG (`testdata/golden/list_markers.png`);
+`TestListStyleNonePaintsNoMarker` proves an identical layout with
+`list-style-type:none` paints **zero** gutter pixels. Full unit coverage of the
+new code in `css`/`layout`/`paint` (each at or above its ratchet floor: layout and
+paint stay at **100%**, css at 99.6% ≥ 99.5%).
+
+**Measured vs headless Chromium (this machine).** New compare page
+`scripts/compare/pages/lists.html` exercises nested `<ul>` (disc→circle→square),
+nested `<ol>` (counter restart) and `<ol start="10">`. At width 640
+(`scripts/compare/chromium-compare.sh`):
+
+| page | MAD before | MAD after |
+|------|-----------:|----------:|
+| `lists` (this phase) | *(marker gap: no bullets/numbers)* | **0.0065** |
+| `js-dom-mutation` (baseline, re-measured) | 0.0131 | 0.0132 |
+| `typography` (baseline, re-measured) | 0.0113 | 0.0113 |
+
+The list page now scores **below** the static-text baseline: the markers match
+Chromium down to font-antialiasing noise, and the disc/circle/square-by-depth,
+decimal counters, nested restart and `start` offset all line up glyph-for-glyph in
+the side-by-side. The marker gap flagged in Phase 2.4 is **closed**. One minor
+residual remains, unrelated to markers: our nested lists carry slightly more
+vertical spacing than Chromium (a nested-list block-margin/collapsing nuance), a
+small delta well within the page's MAD.
+
 ## Phase 2.4 — JavaScript DOM mutation on the hit-map (`RenderWithLinks`) path
 
 **Date: 2026-08-05.** Phase 2.2 wired the layout↔JS settle loop into
@@ -67,9 +126,9 @@ The JS page scores within noise of the static-text baseline — i.e. the DOM the
 engine renders after running the scripts is the same DOM Chromium renders, down to
 the `.box` CSS class applied to a JS-created element and the "(edited via
 querySelector)" text on the first list item. The residual is the documented
-font-antialiasing delta, plus one **pre-existing, JS-unrelated** gap visible in the
-side-by-side: the engine does not yet paint `<li>` `list-style` bullet discs (a
-list-marker feature, not a scripting issue). The engine reports
+font-antialiasing delta. (The one **pre-existing, JS-unrelated** gap noted here in
+Phase 2.4 — that the engine did not paint `<li>` `list-style` bullet discs — is
+**closed in Phase 2.5** above; list markers now render.) The engine reports
 `title="DOM mutated by JS", contentHeight=306` for this page; with JS disabled only
 the static `<h1>` remains.
 
