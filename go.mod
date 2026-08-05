@@ -6,7 +6,7 @@ require (
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/go-browserhttp/browserhttp v0.1.0
 	github.com/go-images/images v0.0.0-20260702213524-ea366b42f216
-	github.com/go-opentype/fonts v0.4.2
+	github.com/go-opentype/fonts v0.5.0
 	github.com/go-opentype/opentype v0.5.0
 	github.com/go-widgets/painter v0.2.0
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c

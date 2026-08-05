@@ -18,11 +18,11 @@ import (
 // lives in the paint package (backed by go-opentype); tests inject a fake.
 type Measurer interface {
 	// Measure returns the advance width in pixels of text in the given family,
-	// size and weight.
-	Measure(text string, fam css.FontFamily, sizePx float64, weight int) float64
+	// size, weight and style (italic).
+	Measure(text string, fam css.FontFamily, sizePx float64, weight int, italic bool) float64
 	// Metrics returns the ascent (baseline offset from the top) and the line
-	// height in pixels for a family/size/weight.
-	Metrics(fam css.FontFamily, sizePx float64, weight int) (ascent, lineHeight float64)
+	// height in pixels for a family/size/weight/style.
+	Metrics(fam css.FontFamily, sizePx float64, weight int, italic bool) (ascent, lineHeight float64)
 }
 
 // Box is a laid-out block box. X,Y,W,H describe the border box (which, with no

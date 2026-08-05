@@ -14,10 +14,10 @@ import (
 // 10px, ascent 8 and line height 20 — so geometry is exactly predictable.
 type fakeMeasurer struct{}
 
-func (fakeMeasurer) Measure(text string, _ css.FontFamily, _ float64, _ int) float64 {
+func (fakeMeasurer) Measure(text string, _ css.FontFamily, _ float64, _ int, _ bool) float64 {
 	return float64(len([]rune(text)) * 10)
 }
-func (fakeMeasurer) Metrics(css.FontFamily, float64, int) (float64, float64) { return 8, 20 }
+func (fakeMeasurer) Metrics(css.FontFamily, float64, int, bool) (float64, float64) { return 8, 20 }
 
 func layoutHTML(t *testing.T, src string, vpW float64) *Box {
 	t.Helper()

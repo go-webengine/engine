@@ -495,7 +495,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 		if w > 0 && h > 0 {
 			sb := 0.0
 			if l.wsEmitted && l.wsPending {
-				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight)
+				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
 			}
 			*items = append(*items, &InlineItem{
 				Style: cs, Image: el, Node: el, ImgW: w, ImgH: h,
@@ -523,14 +523,14 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 				Text:       seg,
 				Style:      st,
 				Node:       origin,
-				Width:      l.m.Measure(seg, st.FontFamily, st.FontSize, st.FontWeight),
+				Width:      l.m.Measure(seg, st.FontFamily, st.FontSize, st.FontWeight, st.Italic),
 				Ascent:     asc,
 				LineHeight: lh,
 			})
 		}
 		return
 	}
-	space := l.m.Measure(" ", st.FontFamily, st.FontSize, st.FontWeight)
+	space := l.m.Measure(" ", st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 	words := strings.Fields(text)
 	if len(words) == 0 {
 		// A whitespace-only (or empty) text node between inline content carries a
@@ -556,7 +556,7 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 			Text:        w,
 			Style:       st,
 			Node:        origin,
-			Width:       l.m.Measure(w, st.FontFamily, st.FontSize, st.FontWeight),
+			Width:       l.m.Measure(w, st.FontFamily, st.FontSize, st.FontWeight, st.Italic),
 			SpaceBefore: sb,
 			Ascent:      asc,
 			LineHeight:  lh,
@@ -580,7 +580,7 @@ func isSpace(r rune) bool {
 // explicit line-height (which sets the line box height, centring the font's
 // natural height within it).
 func (l *layouter) lineMetricsFor(st *css.Style) (ascent, lineHeight float64) {
-	asc, fh := l.m.Metrics(st.FontFamily, st.FontSize, st.FontWeight)
+	asc, fh := l.m.Metrics(st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 	if st.LineHeight.Normal || st.LineHeight.Px <= 0 {
 		return asc, fh
 	}

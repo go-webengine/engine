@@ -175,6 +175,18 @@ func TestApplyProperties(t *testing.T) {
 	if s.FontWeight != 600 {
 		t.Error("weight 600")
 	}
+	apply("font-style", "italic", 16)
+	if !s.Italic {
+		t.Error("font-style italic")
+	}
+	apply("font-style", "oblique", 16)
+	if !s.Italic {
+		t.Error("font-style oblique")
+	}
+	apply("font-style", "normal", 16)
+	if s.Italic {
+		t.Error("font-style normal resets italic")
+	}
 	apply("text-align", "center", 16)
 	if s.TextAlign != AlignCenter {
 		t.Error("align center")

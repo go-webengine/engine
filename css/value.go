@@ -326,6 +326,7 @@ type Style struct {
 	FontSize   float64 // px
 	FontWeight int     // 400 = normal, 700 = bold
 	FontFamily FontFamily
+	Italic     bool // font-style: italic|oblique (inherited)
 	Margin     Edges
 	Padding    Edges
 	Border     Borders
@@ -493,6 +494,7 @@ func inheritFrom(parent Style) Style {
 		FontSize:    parent.FontSize,
 		FontWeight:  parent.FontWeight,
 		FontFamily:  parent.FontFamily,
+		Italic:      parent.Italic,      // inherited
 		Width:       Length{Auto: true}, // reset
 		MinWidth:    Length{Auto: true},
 		MaxWidth:    Length{Auto: true},

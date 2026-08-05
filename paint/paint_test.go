@@ -75,29 +75,37 @@ func TestBlitImageClipsOutOfBounds(t *testing.T) {
 
 func TestFontsMeasureAndMetrics(t *testing.T) {
 	f := NewFonts()
-	w := f.Measure("Hello", css.Sans, 16, 400)
+	w := f.Measure("Hello", css.Sans, 16, 400, false)
 	if w <= 0 {
 		t.Fatalf("measure = %v", w)
 	}
-	// Bold is at least as wide as regular (faux-bold adds per-rune width).
-	if wb := f.Measure("Hello", css.Sans, 16, 700); wb < w {
+	// The real Inter Bold face measures at least as wide as Regular.
+	if wb := f.Measure("Hello", css.Sans, 16, 700, false); wb < w {
 		t.Errorf("bold %v < regular %v", wb, w)
 	}
+	// A real italic face measures (and renders) distinctly from regular.
+	if wi := f.Measure("Hello", css.Sans, 16, 400, true); wi <= 0 {
+		t.Errorf("italic measure = %v", wi)
+	}
 	// Cache hit on the second call for the same face.
-	_ = f.Measure("world", css.Serif, 16, 400)
-	_ = f.Measure("world", css.Serif, 16, 400)
+	_ = f.Measure("world", css.Serif, 16, 400, false)
+	_ = f.Measure("world", css.Serif, 16, 400, false)
 
-	asc, lh := f.Metrics(css.Mono, 16, 400)
+	asc, lh := f.Metrics(css.Mono, 16, 400, false)
 	if asc <= 0 || lh <= 0 {
 		t.Errorf("metrics = %v %v", asc, lh)
 	}
+	// Mono bold/italic fall back to the single Go Mono face (no panic, measures).
+	if f.Measure("x", css.Mono, 16, 700, true) <= 0 {
+		t.Error("mono bold-italic fallback should still measure")
+	}
 	// Tiny size triggers the 1.15*size minimum line-height floor.
-	_, lhTiny := f.Metrics(css.Sans, 1, 400)
+	_, lhTiny := f.Metrics(css.Sans, 1, 400, false)
 	if lhTiny < 1 {
 		t.Errorf("tiny line height = %v", lhTiny)
 	}
 	// Unknown family falls back to Sans (and size<1 clamps to 1).
-	if f.Measure("x", css.FontFamily(99), 0.2, 400) <= 0 {
+	if f.Measure("x", css.FontFamily(99), 0.2, 400, false) <= 0 {
 		t.Error("unknown family/size should still measure")
 	}
 }

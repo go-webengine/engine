@@ -63,8 +63,8 @@ func uaDeclarations(tag string) []Declaration {
 		return []Declaration{{"color", "#0000ee"}}
 	case "strong", "b":
 		return []Declaration{{"font-weight", "bold"}}
-	case "em", "i", "cite", "var":
-		return nil // italic not rendered in Phase 0; no metric change
+	case "em", "i", "cite", "var", "dfn":
+		return []Declaration{{"font-style", "italic"}}
 	case "small":
 		return []Declaration{{"font-size", "13px"}}
 	case "code", "kbd", "samp", "tt":
