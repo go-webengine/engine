@@ -72,11 +72,15 @@ func TestUADeclarationsAllBranches(t *testing.T) {
 	if !hasDecl(uaDeclarations("small"), "font-size", "13px") {
 		t.Error("small font-size")
 	}
-	// Tags with no default declarations.
-	for _, tag := range []string{"em", "i", "cite", "var", "unknowntag"} {
-		if uaDeclarations(tag) != nil {
-			t.Errorf("%s: expected nil declarations", tag)
+	// Italic tags default to font-style:italic.
+	for _, tag := range []string{"em", "i", "cite", "var", "dfn"} {
+		if !hasDecl(uaDeclarations(tag), "font-style", "italic") {
+			t.Errorf("%s: expected font-style:italic", tag)
 		}
+	}
+	// Unknown tags have no default declarations.
+	if uaDeclarations("unknowntag") != nil {
+		t.Error("unknowntag: expected nil declarations")
 	}
 	// Special block extras.
 	if !hasDecl(uaDeclarations("body"), "margin", "8px") {

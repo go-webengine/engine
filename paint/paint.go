@@ -474,18 +474,14 @@ func paintItem(dst *image.RGBA, it *layout.InlineItem, f *Fonts, imgs map[*dom.N
 		return
 	}
 	st := it.Style
-	fc := f.face(st.FontFamily, st.FontSize)
+	fc := f.styleFace(st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 	baseline := int(it.Y + it.Ascent)
 	penX := int(it.X)
 	col := st.Color
-	bold := st.FontWeight >= 600
 	for _, r := range it.Text {
 		bounds, mask, maskp, advance, ok := fc.GlyphMask(r, penX, baseline)
 		if ok && mask != nil {
 			blitMask(dst, bounds, mask, maskp, col)
-			if bold {
-				blitMask(dst, bounds.Add(image.Pt(1, 0)), mask, maskp, col)
-			}
 		}
 		penX += advance
 	}

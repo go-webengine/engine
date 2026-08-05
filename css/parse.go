@@ -306,6 +306,14 @@ func (s *Style) apply(d Declaration, emRef float64) {
 				s.FontWeight = n
 			}
 		}
+	case "font-style":
+		// italic and oblique both select the slanted face; normal resets it.
+		switch lv {
+		case "italic", "oblique":
+			s.Italic = true
+		case "normal":
+			s.Italic = false
+		}
 	case "font-family":
 		s.FontFamily = parseFontFamily(lv)
 	case "text-align":
