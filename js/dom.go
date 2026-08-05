@@ -241,9 +241,16 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		return b.vm.ToValue(true)
 	})
 
-	// Layout/geometry stubs: enough for scripts that probe them without crashing.
-	o.Set("getBoundingClientRect", func(goja.FunctionCall) goja.Value { return b.zeroRect() })
-	o.Set("getClientRects", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
+	// Layout/geometry: backed by the real laid-out box tree when a Metrics source
+	// is installed (the engine's settle loop), else zeros (the legacy no-layout
+	// path). This is what mw.loader / responsive scripts read to decide layout.
+	o.Set("getBoundingClientRect", func(goja.FunctionCall) goja.Value { return b.boundingRect(n) })
+	o.Set("getClientRects", func(goja.FunctionCall) goja.Value {
+		if _, _, _, _, ok := b.rectOf(n); ok {
+			return b.vm.NewArray(b.boundingRect(n))
+		}
+		return b.vm.NewArray()
+	})
 	o.Set("focus", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 	o.Set("blur", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 	o.Set("click", func(goja.FunctionCall) goja.Value {
@@ -255,7 +262,15 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		b.insertAdjacentHTML(n, strings.ToLower(call.Argument(0).String()), call.Argument(1).String())
 		return goja.Undefined()
 	})
-	for _, z := range []string{"offsetWidth", "offsetHeight", "clientWidth", "clientHeight", "scrollWidth", "scrollHeight", "scrollTop", "scrollLeft", "offsetTop", "offsetLeft"} {
+	b.accessor(o, "offsetWidth", func() goja.Value { return b.vm.ToValue(b.borderW(n)) }, nil)
+	b.accessor(o, "offsetHeight", func() goja.Value { return b.vm.ToValue(b.borderH(n)) }, nil)
+	b.accessor(o, "clientWidth", func() goja.Value { return b.vm.ToValue(b.borderW(n)) }, nil)
+	b.accessor(o, "clientHeight", func() goja.Value { return b.vm.ToValue(b.borderH(n)) }, nil)
+	b.accessor(o, "scrollWidth", func() goja.Value { return b.vm.ToValue(b.borderW(n)) }, nil)
+	b.accessor(o, "scrollHeight", func() goja.Value { return b.vm.ToValue(b.borderH(n)) }, nil)
+	b.accessor(o, "offsetTop", func() goja.Value { return b.vm.ToValue(b.offsetTop(n)) }, nil)
+	b.accessor(o, "offsetLeft", func() goja.Value { return b.vm.ToValue(b.offsetLeft(n)) }, nil)
+	for _, z := range []string{"scrollTop", "scrollLeft"} {
 		b.accessor(o, z, func() goja.Value { return b.vm.ToValue(0) }, nil)
 	}
 	b.accessor(o, "offsetParent", func() goja.Value { return b.wrap(elementParent(n)) }, nil)

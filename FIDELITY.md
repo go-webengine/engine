@@ -13,6 +13,68 @@ is absent, and that is stated below, not hidden.
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom.
 
+## Phase 2.2 — dynamic rendering (layout↔JS feedback + settle-then-render)
+
+**Date: 2026-08-05.** Phase 2 ran JavaScript, but only *before* any layout, so a
+page whose final visual state is produced at runtime by JS reading layout metrics
+could never reach it. This phase adds the feedback loop.
+
+**1. Real layout metrics to JS.** After an initial cascade+layout, the JS DOM
+returns real numbers instead of stubs: `getBoundingClientRect()` (x/y/width/
+height/top/left/right/bottom), `offsetWidth/Height`, `clientWidth/Height`,
+`scrollWidth/Height`, `offsetTop/Left` (relative to the offset parent), and
+`window.getComputedStyle(el)` resolving **used** values (width/height/display/
+position/margins/padding/font-size/line-height/color/…). These read from the
+actual laid-out box tree via a new `layout.BuildIndex` (border-box rect per
+element; inline elements get the union of their fragments). `window.innerWidth/
+innerHeight` were already wired. This is what responsive scripts and MediaWiki's
+`mw.loader` consult to decide what to collapse or reveal.
+
+**2. Dynamic `<script>` execution.** A `<script>` inserted into the DOM at runtime
+(inline text or `src`) is fetched through `e.Client` (so the SSRF guard applies)
+and executed in the same goja runtime, in document order, once each — the
+ResourceLoader mechanism. Bounded by the existing script-count / byte / wall-clock
+limits.
+
+**3. Injected `<style>`/`<link>` + inline-style mutations take effect.** The
+re-cascade re-collects `<style>` text and `<link>` sheets from the *mutated* DOM
+(not a stale snapshot), so `document.createElement('style')`+append, `el.style.*`
+writes, `setAttribute('class'|'style')` and `classList` changes all show up on the
+next layout. Injected `<link>` sheets are refetched only when the link set
+changes.
+
+**4. Settle-then-render.** `RenderDocument` now: initial cascade+layout → run
+scripts + drain the async loop (timers/promises/fetch/XHR + injected scripts) →
+re-cascade + re-layout → **iterate to a bounded fixpoint** (≤3 passes; a pass runs
+only when a DOM/attribute/text signature changed, so a page whose JS mutates
+nothing pays no extra layout). Deterministic and always terminating: a pass cap
+plus a wall-clock deadline guard (an expensive page keeps its pre-settle layout
+rather than risk a timeout). A budget-gated final resource refresh reloads
+theme-specific images/backgrounds the pre-JS layout never fetched.
+`DisableJS` bypasses the whole loop for the byte-deterministic offline fixtures.
+
+### Proven deterministically (offline goldens, JS enabled)
+
+- `dynamic_metrics_toggle.html` — a script reads `offsetWidth === 200` and toggles
+  a class that grows+recolours a box. The rendered pixels show the widened box;
+  the `DisableJS` control does not. Proves **real metric read-back drives layout**.
+- `dynamic_style_inject.html` — `createElement('style')` + `appendChild` injects a
+  rule that recolours/resizes an element; the next cascade re-collects it.
+- `dynamic_script_inject.html` — a dynamically appended inline `<script>` executes
+  and mutates the DOM; the mutation reaches the final paint.
+
+### Measured effect (see `bench/REPORT.md`)
+
+**Wikipedia (the target): 0.413 → 0.441 SSIM, pixdiff 23.0% → 22.4%.** Instrumented,
+`mw.loader` now runs — 3 scripts injected at runtime and executed, 0 errors — and
+sets Vector-2022 to its collapsed/unpinned feature-class state (Chrome's mode),
+realigning the article to the top. **Residual (honest):** the collapsed
+main-menu dropdown's *contents* still paint on the left — a **CSS selector gap**
+(the `#…-checkbox ~ .vector-unpinned-container { display:none }` checkbox-hack is
+not applied), not a JS or ES-modules gap. example.com/pkg.go.dev/go.dev hold;
+react.dev is flat within its live-SPA noise band; no page regresses. Timing rises
+(one or two extra layouts for JS-mutating pages) but stays well within budget.
+
 ## Phase 2.1 — SVG rendering (`<img src=*.svg>`, `data:image/svg+xml`, inline `<svg>`)
 
 **Date: 2026-08-05.** The next-ranked visible gap was **SVG**: the react.dev React

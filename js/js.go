@@ -90,78 +90,46 @@ type binder struct {
 	cookie   string
 	storage  map[string]*storageArea
 	reqCount int // JS-initiated HTTP requests this render (bounded by maxRequests)
+
+	// metrics is the real geometry/used-value source read back by
+	// getBoundingClientRect / offset* / getComputedStyle. Nil = report zeros /
+	// inline styles (the legacy Run path with no layout feedback).
+	metrics Metrics
+	// executed records which <script> elements have already run, so a settle pass
+	// runs only scripts injected since the previous pass (in document order),
+	// never re-running a script.
+	executed map[*dom.Node]bool
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled
 // signal, executes the page's scripts in document order, drains queued timers,
 // and dispatches DOMContentLoaded/load. It never returns a script error as
-// fatal; Result.Err is only set for setup failures.
+// fatal; Result.Err is only set for setup failures. It is the one-shot,
+// no-layout-feedback entry point (used by the js package's own tests); the
+// engine drives a Session directly so scripts can read real geometry.
 func Run(root *dom.Node, opt Options) Result {
-	if opt.Ctx == nil {
-		opt.Ctx = context.Background()
-	}
-	if opt.Timeout <= 0 {
-		opt.Timeout = DefaultTimeout
-	}
-	if opt.ViewportWidth <= 0 {
-		opt.ViewportWidth = 1024
-	}
-	if opt.ViewportHeight <= 0 {
-		opt.ViewportHeight = 768
-	}
-
-	b := &binder{
-		vm:         goja.New(),
-		root:       root,
-		opt:        opt,
-		cache:      map[*dom.Node]*goja.Object{},
-		windowNode: &dom.Node{Type: dom.Element, Tag: "#window"},
-		docNode:    root,
-		listeners:  map[*dom.Node]map[string][]goja.Value{},
-		storage:    map[string]*storageArea{},
-		deadman:    time.Now().Add(opt.Timeout),
-	}
-
-	var res Result
-	// A binding bug must never crash the host render.
-	defer func() {
-		if r := recover(); r != nil {
-			b.logf("panic: %v", r)
-		}
-	}()
-
-	// The JS-enabled signal: real browsers run a site's early script that swaps
-	// client-nojs for client-js on <html>; we set it unconditionally up front so
-	// even a later script error cannot leave the no-JS fallback in place.
-	b.setClientJS()
-
-	b.install()
-
-	// Interrupt any single runaway script once the whole budget is spent, or when
-	// the caller's context is cancelled. The watcher exits as soon as Run returns.
-	timer := time.AfterFunc(opt.Timeout, func() { b.vm.Interrupt("script budget exceeded") })
-	defer timer.Stop()
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-opt.Ctx.Done():
-			b.vm.Interrupt("context cancelled")
-		case <-done:
-		}
-	}()
-
-	b.runScripts(&res)
-	b.dispatchLifecycle(&res)
-	return res
+	s := Begin(root, opt)
+	defer s.Close()
+	s.RunInitial()
+	return s.Result()
 }
 
-// runScripts executes every <script> in document order, honouring the budget.
+// runScripts executes every not-yet-run <script> in document order, honouring
+// the budget. A script runs at most once across the whole session, so calling
+// this again after the DOM gains new <script> elements runs only those new ones
+// (a ResourceLoader-style injected-script chain), in document order.
 func (b *binder) runScripts(res *Result) {
+	if b.executed == nil {
+		b.executed = map[*dom.Node]bool{}
+	}
 	for _, s := range collectScripts(b.root) {
+		if b.executed[s.node] {
+			continue
+		}
 		if res.ScriptsRun+res.ScriptsFailed >= maxScripts || b.expired() {
 			return
 		}
+		b.executed[s.node] = true
 		src, ok := b.scriptSource(s)
 		if !ok {
 			continue

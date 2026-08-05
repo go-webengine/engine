@@ -151,24 +151,40 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 	if vpH <= 0 {
 		vpH = 768
 	}
-	// Run the page's scripts against a minimal DOM binding BEFORE the cascade so
-	// progressive-enhancement mutations (the client-js class swap, nav collapse,
-	// injected style/markup) are reflected in what we style and lay out. A script
-	// error never aborts the render; the pass is bounded by a wall-clock budget.
-	e.runScripts(ctx, doc, vpW, vpH)
-	// Fetch <link rel="stylesheet"> sheets (the dominant fidelity factor for
-	// real sites) and cascade at the render width so @media width queries and
-	// external theme/layout rules resolve correctly.
-	sheets := e.fetchExternalSheets(ctx, doc, float64(vpW))
-	sm := css.CascadeVW(doc.Root, float64(vpW), sheets)
-	imgSize, imgs := e.loadImages(ctx, doc, sm, vpW)
-	bgImgs := e.loadBackgroundImages(ctx, doc, sm)
 
-	box, height := layout.LayoutDocument(doc.Root, sm, float64(vpW), fonts, imgSize)
+	// Set the JS-enabled signal (client-nojs → client-js on <html>) BEFORE the
+	// initial cascade so the first layout — the geometry scripts read back — is
+	// already the JS-enabled one. DisableJS leaves the no-JS fallback in place.
+	if !e.DisableJS {
+		js.MarkJSEnabled(doc.Root)
+	}
+
+	// Initial pass: fetch <link rel="stylesheet"> sheets (the dominant fidelity
+	// factor for real sites), cascade at the render width (so @media width queries
+	// and external theme/layout rules resolve), load images, and lay out. This is
+	// the geometry the page's scripts see through getBoundingClientRect / offset*
+	// / getComputedStyle.
+	rp := &renderPass{}
+	rp.sheets = e.fetchExternalSheets(ctx, doc, float64(vpW))
+	rp.sm = css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
+	rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, vpW)
+	rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
+
+	start := time.Now()
+	rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
+	initialLayout := time.Since(start)
+
+	// Settle-then-render: run scripts against the real geometry, let them mutate
+	// the DOM / inject <script>/<style>, and iterate cascade→layout to a bounded
+	// fixpoint. A script error never aborts the render; the pass is bounded by a
+	// wall-clock budget and a pass cap, so it can never hang.
+	if !e.DisableJS {
+		e.settle(ctx, doc, vpW, vpH, fonts, rp, initialLayout)
+	}
 
 	canvasH := viewport.Dy()
-	if int(height) > canvasH {
-		canvasH = int(height)
+	if int(rp.height) > canvasH {
+		canvasH = int(rp.height)
 	}
 	if canvasH <= 0 {
 		canvasH = 1
@@ -177,35 +193,16 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 	fillWhite(img)
 	// The canvas base (the page "backdrop") is the body's background — or the
 	// html element's — extended over the whole viewport, matching a browser.
-	if bg, ok := pageBackground(doc.Root, sm); ok {
+	if bg, ok := pageBackground(doc.Root, rp.sm); ok {
 		fillColor(img, bg)
 	}
-	paint.PaintFull(img, box, fonts, imgs, bgImgs)
+	paint.PaintFull(img, rp.box, fonts, rp.imgs, rp.bgImgs)
 
 	return img, &RenderInfo{
 		Title:         doc.Title,
 		URL:           doc.URL,
-		ContentHeight: int(height),
+		ContentHeight: int(rp.height),
 	}, nil
-}
-
-// runScripts executes the document's JavaScript against a minimal DOM binding,
-// mutating doc.Root in place. It is a no-op when DisableJS is set. Errors are
-// swallowed (logged via JSLog if set); the render always proceeds.
-func (e *Engine) runScripts(ctx context.Context, doc *Document, vpW, vpH int) {
-	if e.DisableJS {
-		return
-	}
-	js.Run(doc.Root, js.Options{
-		PageURL:        doc.URL,
-		UserAgent:      e.UserAgent,
-		Client:         e.Client,
-		Ctx:            ctx,
-		Timeout:        e.JSTimeout,
-		ViewportWidth:  vpW,
-		ViewportHeight: vpH,
-		Log:            e.JSLog,
-	})
 }
 
 // RenderHTML renders an HTML string (with baseURL used to resolve relative

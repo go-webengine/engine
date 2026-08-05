@@ -105,7 +105,7 @@ func (b *binder) installStubs(g *goja.Object) {
 	g.Set("open", func(goja.FunctionCall) goja.Value { return goja.Null() })
 	g.Set("getComputedStyle", func(call goja.FunctionCall) goja.Value {
 		if n := b.node(call.Argument(0)); n != nil {
-			return b.vm.NewDynamicObject(&styleDynObj{b: b, n: n})
+			return b.newComputedStyle(n)
 		}
 		return b.vm.NewObject()
 	})
