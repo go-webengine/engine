@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
-	github.com/go-browserhttp/browserhttp v0.1.0
+	github.com/go-browserhttp/browserhttp v0.2.0
 	github.com/go-images/images v0.0.0-20260702213524-ea366b42f216
 	github.com/go-opentype/fonts v0.5.0
 	github.com/go-opentype/opentype v0.5.0
@@ -16,6 +16,7 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/breml/rootcerts v0.3.7 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
