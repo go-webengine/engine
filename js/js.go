@@ -189,6 +189,15 @@ func (b *binder) execute(src, name string) (ok bool) {
 		}
 	}()
 	b.vm.ClearInterrupt()
+	// ClearInterrupt wipes any pending interrupt — including the watcher's
+	// one-shot "context cancelled" fired for a context that was ALREADY cancelled
+	// before this script started (the watcher's select fires once, then exits, so
+	// it will not re-fire). Re-arm it here so an already-cancelled context still
+	// interrupts this script immediately instead of letting it run to the budget
+	// timeout.
+	if b.opt.Ctx.Err() != nil {
+		b.vm.Interrupt("context cancelled")
+	}
 	if _, err := b.vm.RunProgram(prog); err != nil {
 		b.logf("run %s: %v", name, err)
 		return false
