@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-browserhttp/browserhttp"
@@ -172,6 +173,16 @@ func viewportSize(viewport image.Rectangle) (vpW, vpH int) {
 // anchor hit-map always describe the exact same JS-settled DOM and geometry. On
 // return doc.Title reflects any document.title a script set.
 func (e *Engine) renderCore(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts) *renderPass {
+	return e.renderCoreStaged(ctx, doc, vpW, vpH, fonts, nil)
+}
+
+// renderCoreStaged is renderCore with an optional per-stage hook that drives
+// progressive rendering. onStage (when non-nil) is called with "initial" right
+// after the first layout and BEFORE the JS settle loop, then with "settle" after
+// each settle pass that changed the geometry; the caller emits the "final" frame
+// from the returned pass. onStage==nil reproduces the original batch pipeline
+// exactly, so RenderDocument / RenderDocumentWithLinks are unchanged.
+func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, onStage func(stage string, rp *renderPass)) *renderPass {
 	// Set the JS-enabled signal (client-nojs → client-js on <html>) BEFORE the
 	// initial cascade so the first layout — the geometry scripts read back — is
 	// already the JS-enabled one. DisableJS leaves the no-JS fallback in place.
@@ -194,12 +205,19 @@ func (e *Engine) renderCore(ctx context.Context, doc *Document, vpW, vpH int, fo
 	rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
 	initialLayout := time.Since(start)
 
+	// First fully-styled frame: external CSS is applied and images placed, so this
+	// paints without any unstyled flash. On a script-heavy page it is the big
+	// perceived-latency win — the user sees the styled page before JS settles.
+	if onStage != nil {
+		onStage("initial", rp)
+	}
+
 	// Settle-then-render: run scripts against the real geometry, let them mutate
 	// the DOM / inject <script>/<style>, and iterate cascade→layout to a bounded
 	// fixpoint. A script error never aborts the render; the pass is bounded by a
 	// wall-clock budget and a pass cap, so it can never hang.
 	if !e.DisableJS {
-		e.settle(ctx, doc, vpW, vpH, fonts, rp, initialLayout)
+		e.settle(ctx, doc, vpW, vpH, fonts, rp, initialLayout, onStage)
 	}
 
 	// A script may have set document.title; re-derive it so RenderInfo reports the
@@ -321,6 +339,29 @@ func (e *Engine) fetchExternalSheets(ctx context.Context, doc *Document, vw floa
 	ctx, cancel := context.WithTimeout(ctx, externalSheetTimeout)
 	defer cancel()
 
+	// Prefetch the applicable top-level sheet bodies CONCURRENTLY into a cache to
+	// cut time-to-first-styled-paint (the initial progressive frame waits on this
+	// fetch). This does NOT change the cascade: the sequential walk below still
+	// applies sheets and their @imports in document order — it just reads bodies
+	// the concurrent prefetch already retrieved. Deterministic: goroutines write
+	// only their own result slot; the cache map is populated single-threaded.
+	cache := map[string]sheetResult{}
+	var pre []string
+	seenPre := map[string]bool{}
+	for _, ln := range links {
+		if len(pre) >= maxExternalSheets {
+			break
+		}
+		if !css.MediaApplies(ln.Media, vw) {
+			continue
+		}
+		if abs, ok := resolveURL(doc.URL, ln.Href); ok && !seenPre[abs] {
+			seenPre[abs] = true
+			pre = append(pre, abs)
+		}
+	}
+	e.prefetchSheets(ctx, pre, cache)
+
 	seen := map[string]bool{}
 	var out []string
 	for _, ln := range links {
@@ -334,20 +375,52 @@ func (e *Engine) fetchExternalSheets(ctx context.Context, doc *Document, vw floa
 		if !ok {
 			continue
 		}
-		out = e.appendSheet(ctx, abs, vw, seen, out, 0)
+		out = e.appendSheet(ctx, abs, vw, seen, out, 0, cache)
 	}
 	return out
+}
+
+// sheetResult is a fetched stylesheet body and whether the fetch succeeded.
+type sheetResult struct {
+	text string
+	ok   bool
+}
+
+// prefetchSheets fetches urls concurrently, storing each result in cache keyed
+// by URL. Each goroutine writes only its own slot, and the cache map is filled
+// single-threaded after the fetches join, so the result is race-free and
+// independent of completion order.
+func (e *Engine) prefetchSheets(ctx context.Context, urls []string, cache map[string]sheetResult) {
+	if len(urls) == 1 {
+		t, ok := e.fetchSheetNet(ctx, urls[0])
+		cache[urls[0]] = sheetResult{t, ok}
+		return
+	}
+	res := make([]sheetResult, len(urls))
+	var wg sync.WaitGroup
+	for i, u := range urls {
+		wg.Add(1)
+		go func(i int, u string) {
+			defer wg.Done()
+			t, ok := e.fetchSheetNet(ctx, u)
+			res[i] = sheetResult{t, ok}
+		}(i, u)
+	}
+	wg.Wait()
+	for i, u := range urls {
+		cache[u] = res[i]
+	}
 }
 
 // appendSheet fetches the sheet at absURL (if not already seen and within
 // limits), recursively prepends its leading @import targets, then appends the
 // sheet's own text. It returns the possibly-extended out slice.
-func (e *Engine) appendSheet(ctx context.Context, absURL string, vw float64, seen map[string]bool, out []string, depth int) []string {
+func (e *Engine) appendSheet(ctx context.Context, absURL string, vw float64, seen map[string]bool, out []string, depth int, cache map[string]sheetResult) []string {
 	if depth > maxImportDepth || len(out) >= maxExternalSheets || seen[absURL] {
 		return out
 	}
 	seen[absURL] = true
-	text, ok := e.fetchSheet(ctx, absURL)
+	text, ok := e.fetchSheet(ctx, absURL, cache)
 	if !ok {
 		return out
 	}
@@ -358,15 +431,26 @@ func (e *Engine) appendSheet(ctx context.Context, absURL string, vw float64, see
 			continue
 		}
 		if abs, ok := resolveURL(absURL, imp); ok {
-			out = e.appendSheet(ctx, abs, vw, seen, out, depth+1)
+			out = e.appendSheet(ctx, abs, vw, seen, out, depth+1, cache)
 		}
 	}
 	return append(out, text)
 }
 
-// fetchSheet retrieves a single stylesheet as UTF-8 text, bounded by
-// maxSheetBytes. Non-2xx or oversized/undecodable responses report false.
-func (e *Engine) fetchSheet(ctx context.Context, absURL string) (string, bool) {
+// fetchSheet returns a stylesheet body, preferring a value the concurrent
+// prefetch already placed in cache and falling back to a direct network fetch
+// (for @import targets, which are not prefetched).
+func (e *Engine) fetchSheet(ctx context.Context, absURL string, cache map[string]sheetResult) (string, bool) {
+	if r, ok := cache[absURL]; ok {
+		return r.text, r.ok
+	}
+	return e.fetchSheetNet(ctx, absURL)
+}
+
+// fetchSheetNet performs the actual network fetch of a stylesheet body,
+// bounded by maxSheetBytes. Non-2xx or oversized/undecodable responses report
+// false.
+func (e *Engine) fetchSheetNet(ctx context.Context, absURL string) (string, bool) {
 	if !strings.HasPrefix(absURL, "http://") && !strings.HasPrefix(absURL, "https://") {
 		return "", false
 	}
