@@ -473,11 +473,41 @@ type BoxShadow struct {
 	Inset            bool
 }
 
-// LineHeight is a resolved line-height. Normal means "use the font's own line
-// height"; otherwise Px is the resolved height in pixels.
+// LineHeight is a computed line-height. Normal means "use the font's own line
+// height". Otherwise it is EITHER a fixed pixel height (Px, from a length or
+// percentage value) OR a unitless Factor of the element's own font-size.
+//
+// The distinction is load-bearing for inheritance (CSS 2.1 §10.8.1): a length
+// or percentage line-height computes to a fixed pixel value that descendants
+// inherit unchanged, whereas a unitless number computes to the number itself
+// and inherits AS the number, so each descendant re-multiplies by its OWN
+// font-size. Collapsing a unitless line-height to pixels at the declaring
+// element (as an earlier version did) leaks the ancestor's font-size onto
+// larger/smaller descendants, making their line boxes too short and letting
+// glyphs from adjacent lines overlap.
 type LineHeight struct {
 	Px     float64
+	Factor float64 // unitless multiplier of the element's own font-size (0 = none)
 	Normal bool
+}
+
+// Resolve returns the used line-height in pixels for an element whose computed
+// font-size is fontSize, and whether an explicit height applies. It returns
+// (0, false) for `normal` (defer to the font's natural metrics) and for a
+// non-positive height. A unitless Factor is multiplied by fontSize; a fixed Px
+// is returned unchanged.
+func (h LineHeight) Resolve(fontSize float64) (float64, bool) {
+	if h.Normal {
+		return 0, false
+	}
+	if h.Factor > 0 {
+		px := h.Factor * fontSize
+		return px, px > 0
+	}
+	if h.Px <= 0 {
+		return 0, false
+	}
+	return h.Px, true
 }
 
 // Bold reports whether the weight renders as bold.

@@ -593,10 +593,12 @@ func isSpace(r rune) bool {
 // natural height within it).
 func (l *layouter) lineMetricsFor(st *css.Style) (ascent, lineHeight float64) {
 	asc, fh := l.m.Metrics(st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
-	if st.LineHeight.Normal || st.LineHeight.Px <= 0 {
+	lh, ok := st.LineHeight.Resolve(st.FontSize)
+	if !ok {
 		return asc, fh
 	}
-	lh := st.LineHeight.Px
+	// Distribute the extra (or negative) leading equally above and below the
+	// font's natural box (CSS half-leading), so the baseline stays centred.
 	return asc + (lh-fh)/2, lh
 }
 
@@ -739,23 +741,33 @@ func forceOne(items []*InlineItem) (*LineBox, int) {
 	return line, i
 }
 
+// lineMetrics computes a line box's height, common baseline offset and used
+// inline width. All items share one baseline at the tallest ascent; the line
+// box must then be tall enough to hold BOTH the tallest ascent above the
+// baseline AND the deepest descent below it. Taking these two maxima
+// independently (rather than max(item.LineHeight)) is what keeps a line with
+// mixed font sizes / line-heights from letting a tall inline's glyphs spill
+// into the next line: each item spans [baseline-ascent, baseline+(lineHeight-
+// ascent)], so the line height baseline+maxBelow bounds every item exactly and
+// successive lines never overlap.
 func lineMetrics(line *LineBox, fbH, fbAsc float64) (lineH, baseline, used float64) {
 	if len(line.Items) == 0 {
 		return fbH, fbAsc, 0
 	}
+	var maxBelow float64
 	for i, it := range line.Items {
-		if it.LineHeight > lineH {
-			lineH = it.LineHeight
-		}
 		if it.Ascent > baseline {
 			baseline = it.Ascent
+		}
+		if below := it.LineHeight - it.Ascent; below > maxBelow {
+			maxBelow = below
 		}
 		if i > 0 {
 			used += it.SpaceBefore
 		}
 		used += it.Width
 	}
-	return lineH, baseline, used
+	return baseline + maxBelow, baseline, used
 }
 
 func alignOffset(a css.TextAlign, cw, used float64) float64 {

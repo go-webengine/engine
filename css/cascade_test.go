@@ -70,6 +70,42 @@ func TestCascadeInheritance(t *testing.T) {
 	}
 }
 
+func TestCascadeUnitlessLineHeightInheritsAsFactor(t *testing.T) {
+	// A unitless line-height set on an ancestor must inherit as the NUMBER, so a
+	// larger-font descendant resolves to factor × its OWN font-size — not the
+	// ancestor's collapsed pixel value. This is what stops big inline text from
+	// overlapping adjacent lines.
+	src := `<html><body style="font-size:16px;line-height:1.5">` +
+		`<p style="font-size:16px">body-size <span style="font-size:32px">big</span></p>` +
+		`</body></html>`
+	sm := Cascade(mustParse(t, src))
+	body := styleOf(t, src, "body")
+	if body.LineHeight.Factor != 1.5 || body.LineHeight.Px != 0 {
+		t.Fatalf("body line-height = %+v, want factor 1.5", body.LineHeight)
+	}
+	// The <span> inherits the factor and resolves against its own 32px font-size.
+	var span *Style
+	for n, st := range sm {
+		if n.Tag == "span" {
+			span = st
+		}
+	}
+	if span == nil {
+		t.Fatal("no span style")
+	}
+	if span.LineHeight.Factor != 1.5 {
+		t.Fatalf("span inherited factor = %v, want 1.5", span.LineHeight.Factor)
+	}
+	if px, ok := span.LineHeight.Resolve(span.FontSize); !ok || px != 48 {
+		t.Errorf("span line-height Resolve = %v,%v want 48,true (1.5×32)", px, ok)
+	}
+	// The 16px paragraph text still resolves to 24 with the same inherited factor.
+	p := styleOf(t, src, "p")
+	if px, ok := p.LineHeight.Resolve(p.FontSize); !ok || px != 24 {
+		t.Errorf("p line-height Resolve = %v,%v want 24,true (1.5×16)", px, ok)
+	}
+}
+
 func TestCascadeSpecificityOrdering(t *testing.T) {
 	src := `<html><head><style>
 		p { color: red }

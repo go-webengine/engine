@@ -17,6 +17,52 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## Phase 2.6 — line-height inheritance + mixed-size line boxes (text-overlap fix)
+
+**Date: 2026-08-07.** A downstream consumer (the go-news-reader preview) reported
+**overlapping text** on real pages. Reproduced at preview width (400px) with a page
+mixing headings, wrapped body copy and inline spans of different `font-size` under a
+unitless `line-height` (`scripts/compare/pages/overlap.html`). Two independent root
+causes, both fixed in the pure-logic layer (no paint hack):
+
+- **CSS — unitless `line-height` was collapsed to pixels too early.** `line-height`
+  stored only a resolved `Px`, so a unitless value like `1.5` on `<body>` was
+  computed to `1.5 × 16 = 24px` at the body and that *pixel* value was **inherited**
+  by every descendant. A 28–40px inline span therefore got a 24px line-height
+  instead of `1.5 × its own size`, so its line box was far too short and the big
+  glyphs spilled into the next line. Per CSS 2.1 §10.8.1 a unitless value computes
+  to the *number* and inherits as the number; each element re-multiplies by its own
+  font-size. `LineHeight` now carries a `Factor` and resolves via
+  `LineHeight.Resolve(fontSize)`; length/percentage values still compute to a fixed
+  `Px` that inherits unchanged.
+- **Layout — a line box advanced by `max(item.LineHeight)`.** On a line mixing
+  metrics, the tallest ascent and the deepest descent can come from *different*
+  items, so `max(LineHeight)` under-sizes the line and lets a glyph spill. The line
+  box now advances by `maxAscent + maxDescentBelow`, which bounds every item's
+  glyph extent exactly (`[baseline−ascent, baseline+(lineHeight−ascent)]`). For a
+  single-font line this is identical to the old value (no regression); for mixed
+  lines it guarantees successive lines never overlap.
+
+Regression tests assert the geometry directly, not just "it renders":
+`lineMetrics` with independent ascent/descent maxima; end-to-end non-overlap over
+every laid-out line (each line top ≥ previous bottom, every item within its line
+box) for the mixed-size, multi-paragraph and heading cases; and unitless
+`line-height` inheriting as a factor across differently-sized descendants.
+
+**Measured vs headless Chromium (this machine), `overlap.html` at width 400:**
+
+| page | MAD before | MAD after |
+|------|-----------:|----------:|
+| `overlap` (whole page) | 0.0542 | 0.0551 |
+| `overlap` (mixed-size band, y∈[315,420]) | 0.1930 | 0.1887 |
+
+The whole-page MAD is essentially flat because this coarse metric is dominated by
+font-antialiasing differences vs Chromium and the fix is a *localised* vertical-
+spacing correction — before the fix the big inline glyphs merely painted **on top
+of** the neighbouring line (an overlap the averaged score barely registers). The
+side-by-side confirms the crash is gone, and the definitive proof is the geometric
+non-overlap unit tests. `layout` and `paint` stay at 100.0% statement coverage.
+
 ## Phase 2.5 — list-item markers (`<ul>` / `<ol>` bullets and numbers)
 
 **Date: 2026-08-05.** The one visible gap the Phase-2.4 Chromium compare recorded

@@ -15,12 +15,14 @@ func parseLineHeight(v string, emRef float64) (LineHeight, bool) {
 	if lv == "normal" {
 		return LineHeight{Normal: true}, true
 	}
-	// A bare number (no unit) is a multiplier of the font-size.
+	// A bare number (no unit) is a UNITLESS multiplier of the font-size. It is
+	// kept as a factor (not collapsed to px here) so it inherits as the number
+	// and each descendant re-multiplies by its own font-size (CSS 2.1 §10.8.1).
 	if f, err := strconv.ParseFloat(lv, 64); err == nil {
 		if f < 0 {
 			return LineHeight{}, false
 		}
-		return LineHeight{Px: f * emRef}, true
+		return LineHeight{Factor: f}, true
 	}
 	if l, ok := parseLength(v, emRef); ok && !l.Auto {
 		if l.IsPercent {
