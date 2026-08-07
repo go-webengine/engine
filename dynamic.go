@@ -115,10 +115,10 @@ func (m *layoutMetrics) Computed(n *dom.Node, prop string) (string, bool) {
 		}
 		return "normal", true
 	case "line-height":
-		if st.LineHeight.Normal || st.LineHeight.Px <= 0 {
-			return "normal", true
+		if lh, ok := st.LineHeight.Resolve(st.FontSize); ok {
+			return pxStr(lh), true
 		}
-		return pxStr(st.LineHeight.Px), true
+		return "normal", true
 	case "color":
 		return colorString(st.Color), true
 	case "background-color":

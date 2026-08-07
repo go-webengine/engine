@@ -73,9 +73,17 @@ func TestApplyLineHeight(t *testing.T) {
 	if !s.LineHeight.Normal {
 		t.Error("normal")
 	}
+	// A unitless multiplier is kept as a Factor (NOT collapsed to px), so it can
+	// inherit as the number and re-multiply by each descendant's own font-size.
 	applyOn(s, "line-height", "2", 16)
-	if s.LineHeight.Normal || s.LineHeight.Px != 32 {
+	if s.LineHeight.Normal || s.LineHeight.Px != 0 || s.LineHeight.Factor != 2 {
 		t.Errorf("multiplier = %v", s.LineHeight)
+	}
+	if px, ok := s.LineHeight.Resolve(16); !ok || px != 32 {
+		t.Errorf("factor Resolve(16) = %v,%v want 32,true", px, ok)
+	}
+	if px, ok := s.LineHeight.Resolve(30); !ok || px != 60 {
+		t.Errorf("factor Resolve(30) = %v,%v want 60,true", px, ok)
 	}
 	applyOn(s, "line-height", "24px", 16)
 	if s.LineHeight.Px != 24 {

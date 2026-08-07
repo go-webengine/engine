@@ -172,3 +172,28 @@ func TestParseLengthViewportAndRem(t *testing.T) {
 		t.Error("xrem should fail")
 	}
 }
+
+func TestLineHeightResolve(t *testing.T) {
+	cases := []struct {
+		name     string
+		lh       LineHeight
+		fontSize float64
+		wantPx   float64
+		wantOK   bool
+	}{
+		{"normal", LineHeight{Normal: true}, 16, 0, false},
+		{"factor", LineHeight{Factor: 1.5}, 20, 30, true},
+		{"factor larger font", LineHeight{Factor: 1.5}, 32, 48, true},
+		{"factor with zero font-size", LineHeight{Factor: 1.5}, 0, 0, false},
+		{"fixed px", LineHeight{Px: 24}, 16, 24, true},
+		{"zero px is normal-ish", LineHeight{Px: 0}, 16, 0, false},
+		{"negative px rejected", LineHeight{Px: -5}, 16, 0, false},
+	}
+	for _, c := range cases {
+		px, ok := c.lh.Resolve(c.fontSize)
+		if px != c.wantPx || ok != c.wantOK {
+			t.Errorf("%s: Resolve(%v) = %v,%v want %v,%v",
+				c.name, c.fontSize, px, ok, c.wantPx, c.wantOK)
+		}
+	}
+}
