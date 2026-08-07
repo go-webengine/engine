@@ -436,3 +436,38 @@ func TestParseComplexEdgeCases(t *testing.T) {
 		t.Error("bare attribute compound should fail")
 	}
 }
+
+// TestPseudoElementMatchesNothing verifies that a compound carrying a pseudo-
+// ELEMENT (::before/::after/… and their CSS2 single-colon spellings) matches no
+// real element: the rule targets a generated box the engine does not synthesise,
+// so its declarations must NOT be applied to the originating element. This is the
+// fix for clearfix idioms like `.wrap::after{height:0;overflow:hidden}` wrongly
+// collapsing the real `.wrap` element.
+func TestPseudoElementMatchesNothing(t *testing.T) {
+	wrap := el("div", "", "wrap")
+	// Both the double-colon and legacy single-colon spellings, and a bare form.
+	for _, sel := range []string{".wrap::after", ".wrap:after", ".wrap::before", "div::first-line", "p::marker"} {
+		s, ok := parseComplex(sel)
+		if !ok {
+			t.Fatalf("parseComplex(%q) should parse (keeping the rule, matching nothing)", sel)
+		}
+		if !s.parts[len(s.parts)-1].PseudoElement {
+			t.Errorf("%q: key compound should be flagged PseudoElement", sel)
+		}
+		if s.Matches(wrap) && sel == ".wrap::after" {
+			t.Errorf("%q must not match the real .wrap element", sel)
+		}
+	}
+	// A pseudo-CLASS on the same base still matches (only pseudo-ELEMENTS are
+	// suppressed): guards against over-broadening the suppression.
+	if s, _ := parseComplex(".wrap:first-child"); !s.Matches(wrap) {
+		t.Error(".wrap:first-child (pseudo-class, unmodelled) should still match its base")
+	}
+	// isPseudoElement direct: a name that is not a pseudo-element returns false.
+	if isPseudoElement("hover") || isPseudoElement("nth-child") {
+		t.Error("pseudo-classes must not be classified as pseudo-elements")
+	}
+	if !isPseudoElement("after") || !isPseudoElement("-webkit-scrollbar") {
+		t.Error("pseudo-elements must be classified as such")
+	}
+}
