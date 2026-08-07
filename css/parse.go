@@ -389,6 +389,29 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		case "content-box":
 			s.BoxSizing = ContentBox
 		}
+	case "overflow":
+		// One value sets both axes; two values are `overflow-x overflow-y`.
+		f := strings.Fields(lv)
+		if len(f) == 1 {
+			if o, ok := parseOverflowKeyword(f[0]); ok {
+				s.OverflowX, s.OverflowY = o, o
+			}
+		} else if len(f) >= 2 {
+			if o, ok := parseOverflowKeyword(f[0]); ok {
+				s.OverflowX = o
+			}
+			if o, ok := parseOverflowKeyword(f[1]); ok {
+				s.OverflowY = o
+			}
+		}
+	case "overflow-x":
+		if o, ok := parseOverflowKeyword(lv); ok {
+			s.OverflowX = o
+		}
+	case "overflow-y":
+		if o, ok := parseOverflowKeyword(lv); ok {
+			s.OverflowY = o
+		}
 	case "line-height":
 		if lh, ok := parseLineHeight(v, emRef); ok {
 			s.LineHeight = lh

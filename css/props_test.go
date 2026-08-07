@@ -345,3 +345,47 @@ func TestFourValuesEmpty(t *testing.T) {
 		t.Error("five should fail")
 	}
 }
+
+func TestApplyOverflow(t *testing.T) {
+	// Single value sets both axes.
+	s := &Style{}
+	applyOn(s, "overflow", "hidden", 16)
+	if s.OverflowX != OverflowHidden || s.OverflowY != OverflowHidden {
+		t.Errorf("overflow:hidden => x=%v y=%v", s.OverflowX, s.OverflowY)
+	}
+	// Two values are `overflow-x overflow-y`.
+	s = &Style{}
+	applyOn(s, "overflow", "scroll auto", 16)
+	if s.OverflowX != OverflowScroll || s.OverflowY != OverflowAuto {
+		t.Errorf("overflow:scroll auto => x=%v y=%v", s.OverflowX, s.OverflowY)
+	}
+	// Longhands.
+	s = &Style{}
+	applyOn(s, "overflow-x", "clip", 16)
+	applyOn(s, "overflow-y", "visible", 16)
+	if s.OverflowX != OverflowClip || s.OverflowY != OverflowVisible {
+		t.Errorf("longhands => x=%v y=%v", s.OverflowX, s.OverflowY)
+	}
+	// An unrecognised keyword leaves the axis unchanged.
+	s = &Style{OverflowX: OverflowHidden, OverflowY: OverflowHidden}
+	applyOn(s, "overflow", "bogus", 16)
+	applyOn(s, "overflow", "clip bogus", 16) // x set, y unchanged
+	if s.OverflowX != OverflowClip || s.OverflowY != OverflowHidden {
+		t.Errorf("bogus handling => x=%v y=%v", s.OverflowX, s.OverflowY)
+	}
+	applyOn(s, "overflow-x", "bogus", 16) // unchanged
+	applyOn(s, "overflow-y", "bogus", 16)
+	if s.OverflowX != OverflowClip || s.OverflowY != OverflowHidden {
+		t.Errorf("bogus longhand changed value")
+	}
+	// Empty overflow value: no fields (len==0) — no change, no panic.
+	s = &Style{}
+	applyOn(s, "overflow", "", 16)
+	if s.OverflowX != OverflowVisible {
+		t.Errorf("empty overflow changed value")
+	}
+	// Clips() helper.
+	if OverflowVisible.Clips() || !OverflowHidden.Clips() {
+		t.Errorf("Clips() wrong")
+	}
+}

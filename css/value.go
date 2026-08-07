@@ -115,6 +115,45 @@ const (
 	BorderBox
 )
 
+// Overflow is the computed overflow of one axis. For the engine's headless
+// paint every non-visible value (hidden/clip/scroll/auto) clips descendant
+// painting to the box's padding box — there is no interactive scrolling, so a
+// scroll/auto container renders exactly its visible window, matching the first
+// paint a user would see. This is what keeps the universal `sr-only` /
+// visually-hidden pattern (position:absolute;width:1px;height:1px;
+// overflow:hidden;clip) from painting its screen-reader text at full size.
+type Overflow uint8
+
+const (
+	// OverflowVisible is the initial value: content is not clipped.
+	OverflowVisible Overflow = iota
+	OverflowHidden
+	OverflowClip
+	OverflowScroll
+	OverflowAuto
+)
+
+// Clips reports whether this overflow value clips descendant painting.
+func (o Overflow) Clips() bool { return o != OverflowVisible }
+
+// parseOverflowKeyword maps a single overflow keyword to its value, reporting
+// whether it was recognised.
+func parseOverflowKeyword(s string) (Overflow, bool) {
+	switch s {
+	case "visible":
+		return OverflowVisible, true
+	case "hidden":
+		return OverflowHidden, true
+	case "clip":
+		return OverflowClip, true
+	case "scroll":
+		return OverflowScroll, true
+	case "auto":
+		return OverflowAuto, true
+	}
+	return OverflowVisible, false
+}
+
 // BorderStyle is the subset of border-style the engine paints. Any non-none,
 // non-hidden line style renders as a solid line (dashed/dotted/etc. collapse to
 // solid at this fidelity).
@@ -389,6 +428,11 @@ type Style struct {
 	// box; distinct from a 0 margin.
 	MarginLeftAuto  bool
 	MarginRightAuto bool
+
+	// Overflow per axis (not inherited; initial value visible). Any non-visible
+	// value clips descendant painting to this box's padding box.
+	OverflowX Overflow
+	OverflowY Overflow
 
 	// Positioning that affects normal flow.
 	Float Float
