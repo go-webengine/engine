@@ -120,7 +120,15 @@ func (f *floatCtx) findSlot(side css.Float, yTop, outerW, outerH, regionLeft, re
 	best := yTop
 	for {
 		left, right := f.available(best, best+outerH, regionLeft, regionRight)
-		if right-left >= outerW || right-left <= 0 {
+		// Accept the band once it is wide enough for the box. A band that is too
+		// narrow — including one fully blocked by earlier floats (right-left <= 0)
+		// — is NOT a valid slot: per CSS a float that does not fit drops to a lower
+		// band rather than being placed at the blocked edge (which, for a
+		// full-width left float behind another, is the container's right edge and
+		// pushes the box off-screen). The nextEdge fallback below still terminates
+		// the scan for a box wider than the region (no float can ever free enough
+		// room, so it lands at the current left/right edge below all floats).
+		if right-left >= outerW {
 			if side == css.FloatRight {
 				return right - outerW, best
 			}

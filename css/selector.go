@@ -43,6 +43,16 @@ type compound struct {
 	// A ":not()" argument that is a dynamic pseudo (never matches statically) is
 	// dropped here, since negating an always-false selector imposes no constraint.
 	Not []compound
+	// PseudoElement is set when the compound carries a pseudo-ELEMENT (::before,
+	// ::after, ::first-line, ::marker, ::placeholder, …). Unlike a pseudo-CLASS —
+	// which only constrains WHICH real element matches, so an unmodelled one may
+	// safely degrade to "no constraint" — a pseudo-element targets a GENERATED box
+	// that is not the originating element. The engine does not synthesise those
+	// boxes, so such a compound must match NOTHING. Degrading it to its base (as
+	// the generic "reduce, don't drop" path does) would wrongly apply the
+	// pseudo-element's declarations to the real element — e.g. a clearfix
+	// `.wrap::after{height:0;overflow:hidden}` would collapse the actual `.wrap`.
+	PseudoElement bool
 }
 
 // matches reports whether the compound matches an element node.
@@ -52,6 +62,11 @@ func (c compound) matches(n *dom.Node) bool {
 	}
 	// A dynamic pseudo-class can never match at static render time.
 	if c.Dynamic {
+		return false
+	}
+	// A pseudo-element targets a generated box, not this element; since the engine
+	// does not synthesise pseudo-element boxes, such a compound matches nothing.
+	if c.PseudoElement {
 		return false
 	}
 	// ":root" matches only the document root element (an element with no element
@@ -502,10 +517,16 @@ func parseSimple(s string) (compound, bool) {
 			// attribute negation is unmodelled) would silently disable the theme.
 			c.Not = append(c.Not, parseNotArg(arg)...)
 		default:
-			if isDynamicPseudo(name) {
+			switch {
+			case isDynamicPseudo(name):
 				c.Dynamic = true
+			case isPseudoElement(name):
+				// A pseudo-element styles a generated box, not the real element, so
+				// the compound must match nothing (see compound.PseudoElement).
+				c.PseudoElement = true
 			}
-			// Any other pseudo is unmodelled and intentionally ignored.
+			// Any other pseudo (e.g. :nth-child) is unmodelled and intentionally
+			// ignored — the compound degrades to matching its base.
 		}
 	}
 	s = base
@@ -699,6 +720,28 @@ func scanCompound(s string) (tag string, parts []compoundPart) {
 func isDynamicPseudo(p string) bool {
 	switch p {
 	case "hover", "active", "focus", "focus-within", "focus-visible", "target":
+		return true
+	}
+	return false
+}
+
+// isPseudoElement reports whether a pseudo token (lower-cased, colons stripped)
+// names a pseudo-ELEMENT — a generated/sub box that is not the originating
+// element. Both the CSS2 single-colon spellings (:before, :after, :first-line,
+// :first-letter) and the CSS3 double-colon spellings collapse to the same token
+// here, so one list covers both. The common vendor-prefixed form-control and
+// scrollbar pseudo-elements are included because themes frequently size them,
+// and applying that sizing to the real control would be wrong. Functional
+// pseudo-elements (::part(), ::slotted(), ::highlight()) arrive name-only (the
+// argument having been split off), so their bare names suffice.
+func isPseudoElement(p string) bool {
+	switch p {
+	case "before", "after", "first-line", "first-letter", "marker", "placeholder",
+		"selection", "backdrop", "file-selector-button", "cue", "grammar-error",
+		"spelling-error", "target-text", "highlight", "part", "slotted",
+		"-moz-selection", "-moz-placeholder", "-webkit-input-placeholder",
+		"-ms-input-placeholder", "-webkit-scrollbar", "-webkit-scrollbar-thumb",
+		"-webkit-scrollbar-track", "-webkit-scrollbar-button":
 		return true
 	}
 	return false
