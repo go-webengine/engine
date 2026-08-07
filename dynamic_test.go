@@ -287,7 +287,7 @@ func TestSettleBudgetGuard(t *testing.T) {
 	defer cancel()
 	// A huge claimed initial-layout duration forces the 2*layoutDur > remaining
 	// guard to trip on the first re-layout.
-	e.settle(ctx, doc, 400, 300, fonts, rp, time.Hour)
+	e.settle(ctx, doc, 400, 300, fonts, rp, time.Hour, nil)
 
 	if !strings.Contains(strings.Join(logs, "\n"), "re-layout skipped") {
 		t.Fatalf("expected the deadline guard to skip re-layout; logs:\n%s", strings.Join(logs, "\n"))

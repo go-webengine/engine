@@ -251,7 +251,10 @@ func domSignature(root *dom.Node) uint64 {
 // already-laid-out DOM, feeds it the real geometry, runs the page scripts, then
 // iterates cascade→layout→inject-scripts to a bounded fixpoint, updating rp in
 // place. It is deterministic and always terminates (pass cap + time budget).
-func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, initialLayout time.Duration) {
+// onStage (when non-nil, from a progressive render) is called with "settle"
+// after each pass that re-laid-out the document; the caller dedups against the
+// previous emitted frame's geometry.
+func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, initialLayout time.Duration, onStage func(stage string, rp *renderPass)) {
 	sess := js.Begin(doc.Root, e.jsOptions(ctx, doc, vpW, vpH))
 	defer sess.Close()
 
@@ -293,6 +296,13 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 		rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
 		layoutDur = time.Since(start)
 		relaidOut = true
+
+		// Progressive: emit an intermediate frame for this re-laid-out pass (the
+		// interruptible-reflow analogue). The caller dedups a pass whose geometry
+		// did not visibly change from the previous emitted frame.
+		if onStage != nil {
+			onStage("settle", rp)
+		}
 
 		sess.SetMetrics(newLayoutMetrics(rp.box, rp.sm, vpW, vpH))
 		// Run any <script> injected since the last pass (a ResourceLoader chain).
