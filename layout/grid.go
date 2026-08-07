@@ -366,7 +366,48 @@ func (l *layouter) sizeColumns(items []*gridItem, st *css.Style, nCols int, cw, 
 	if st.JustifyContent == css.JustifyStart {
 		stretchAutoTracks(base, autoTrack, cw, colGap, nCols)
 	}
+	// Auto tracks are sized to their max-content in baseTrack, which for a column
+	// of long wrappable text is the whole unwrapped run — far wider than the grid.
+	// A browser lets such a track SHRINK to the available space so its content
+	// wraps; without a matching step the track (and every item in it) overflows
+	// the grid to the right and paints off-screen. Shrink the auto tracks back to
+	// fit the grid's definite width when their combined base overflows it.
+	shrinkAutoTracks(base, autoTrack, cw, colGap, nCols)
 	return base
+}
+
+// shrinkAutoTracks reduces auto tracks proportionally when the total track size
+// overflows the axis, so an auto column of long text wraps to the grid width
+// instead of overflowing to the right. Only auto (intrinsically sized) tracks
+// shrink — fixed px/percent and resolved fr tracks keep their size — and only
+// when the combined base actually exceeds the axis (the common non-overflow case
+// is untouched). If the fixed tracks alone already exceed the axis there is
+// nothing shrinkable and the grid overflows, matching a browser.
+func shrinkAutoTracks(base []float64, autoTrack []bool, axisSize, gap float64, n int) {
+	var total, autoSum float64
+	for i := 0; i < n; i++ {
+		total += base[i]
+		if autoTrack[i] {
+			autoSum += base[i]
+		}
+	}
+	total += gap * float64(n-1)
+	excess := total - axisSize
+	if excess <= 0 || autoSum <= 0 {
+		return
+	}
+	// Remove the overflow from the auto tracks, proportionally to their size,
+	// flooring at 0 (a track narrower than a word then wraps/overflows word by
+	// word, exactly as the inline layout already handles an over-wide word).
+	scale := (autoSum - excess) / autoSum
+	if scale < 0 {
+		scale = 0
+	}
+	for i := 0; i < n; i++ {
+		if autoTrack[i] {
+			base[i] *= scale
+		}
+	}
 }
 
 // stretchAutoTracks grows auto tracks equally to fill any positive leftover
