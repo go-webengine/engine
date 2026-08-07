@@ -63,7 +63,7 @@ func TestPaintGradientRoundedClip(t *testing.T) {
 
 func TestPaintGradientNilGrad(t *testing.T) {
 	dst := white(4, 4)
-	paintGradient(dst, image.Rect(0, 0, 4, 4), 0, nil) // no panic, no change
+	paintGradient(dst, image.Rect(0, 0, 4, 4), 0, nil, dst.Rect) // no panic, no change
 	if c := dst.RGBAAt(1, 1); c.R != 255 {
 		t.Error("nil gradient changed pixels")
 	}
@@ -218,7 +218,7 @@ func TestPaintBgBitmapDegenerateSizes(t *testing.T) {
 	PaintFull(dst, box, NewFonts(), nil, map[string]image.Image{"x": src})
 	// Zero-dimension source is a no-op.
 	empty := image.NewRGBA(image.Rect(0, 0, 0, 0))
-	paintBgBitmap(dst, image.Rect(0, 0, 10, 10), 0, empty, css.BgSize{Kind: css.SizeAuto}, css.BgPosition{}, css.NoRepeat)
+	paintBgBitmap(dst, image.Rect(0, 0, 10, 10), 0, empty, css.BgSize{Kind: css.SizeAuto}, css.BgPosition{}, css.NoRepeat, dst.Rect)
 }
 
 // TestPaintDropShadow: a soft drop shadow darkens pixels below/right of the box
@@ -418,20 +418,20 @@ func TestBlitScaledClippedSourceBounds(t *testing.T) {
 	// A tile positioned so part maps outside the source is clipped per-pixel.
 	dst := white(10, 10)
 	src := solidImage(2, 2, color.RGBA{0, 0, 200, 255})
-	blitScaledClipped(dst, src, 8, 8, 4, 4, image.Rect(0, 0, 10, 10), 0)
+	blitScaledClipped(dst, src, 8, 8, 4, 4, image.Rect(0, 0, 10, 10), 0, dst.Rect)
 	if c := dst.RGBAAt(9, 9); c.B < 150 {
 		t.Errorf("clipped tile pixel = %+v want blue", c)
 	}
 	// A fractional offset makes the far edge map to sx==iw (source out of bounds),
 	// exercising the per-pixel source-bounds guard without panicking.
-	blitScaledClipped(dst, src, 0.3, 0.3, 2, 2, image.Rect(0, 0, 5, 5), 0)
+	blitScaledClipped(dst, src, 0.3, 0.3, 2, 2, image.Rect(0, 0, 5, 5), 0, dst.Rect)
 }
 
 func TestBlitScaledClippedTransparentPixel(t *testing.T) {
 	// A source pixel with alpha 0 is skipped (cov==0 branch).
 	dst := white(4, 4)
 	src := image.NewRGBA(image.Rect(0, 0, 2, 2)) // all transparent
-	blitScaledClipped(dst, src, 0, 0, 2, 2, image.Rect(0, 0, 4, 4), 0)
+	blitScaledClipped(dst, src, 0, 0, 2, 2, image.Rect(0, 0, 4, 4), 0, dst.Rect)
 	if c := dst.RGBAAt(0, 0); c.R != 255 {
 		t.Errorf("transparent source pixel painted: %+v", c)
 	}

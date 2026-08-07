@@ -52,7 +52,7 @@ func TestBlitImage(t *testing.T) {
 			src.SetRGBA(x, y, color.RGBA{200, 0, 0, 255})
 		}
 	}
-	blitImage(dst, src, 2, 2)
+	blitImage(dst, src, 2, 2, dst.Rect)
 	if c := dst.RGBAAt(3, 3); c.R != 200 || c.G != 0 {
 		t.Errorf("blit pixel = %+v", c)
 	}
@@ -69,8 +69,8 @@ func TestBlitImageClipsOutOfBounds(t *testing.T) {
 		src.Pix[i] = 255
 	}
 	// Draw partly off the top-left and bottom-right edges; must not panic.
-	blitImage(dst, src, -1, -1)
-	blitImage(dst, src, 3, 3)
+	blitImage(dst, src, -1, -1, dst.Rect)
+	blitImage(dst, src, 3, 3, dst.Rect)
 }
 
 func TestFontsMeasureAndMetrics(t *testing.T) {
