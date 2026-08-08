@@ -208,6 +208,33 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 		w, _ := l.imageSize(node)
 		return w + edges
 	}
+	// A flex ROW lays its items side by side, so its max-content main size is the
+	// SUM of the items' outer main sizes plus the inter-item gaps — not the max of
+	// them (the block / flex-column case handled below). Without this a
+	// content-sized flex row (itself a flex item, float or inline-block) is
+	// under-sized to its widest child, and the inner row then has negative free
+	// space that flex-shrink collapses the items with, overlapping them
+	// horizontally (the GitHub repo-nav "Code / Issues / Pull requests / …"
+	// jumble).
+	if node.Type == dom.Element && st.Display == css.DisplayFlex && st.FlexDirection == css.FlexRow {
+		var sum float64
+		n := 0
+		for _, c := range node.Children {
+			if c.Type != dom.Element {
+				continue
+			}
+			cs := l.sm[c]
+			if cs == nil || cs.Display == css.DisplayNone {
+				continue
+			}
+			sum += l.preferredWidth(c, cs) + cs.Margin.Left + cs.Margin.Right
+			n++
+		}
+		if n > 1 {
+			sum += gapLen(st.ColumnGap) * float64(n-1)
+		}
+		return sum + edges
+	}
 	if l.hasBlockLevelChild(node) {
 		var max float64
 		for _, c := range node.Children {
