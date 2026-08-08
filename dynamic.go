@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"image"
 	"strconv"
@@ -263,6 +264,23 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 	// applied), captured before the scripts run so a mutation is detectable.
 	sig := domSignature(doc.Root)
 	sess.RunInitial()
+
+	// ES modules run after classic scripts (they are deferred). goja cannot run a
+	// module graph natively, so transpile the page's <script type="module"> graph
+	// to one classic IIFE with esbuild, inject it as a classic script, and run it
+	// through the same pass. Strictly gated: a page with no module scripts skips
+	// this entirely. Best-effort — a bundle failure leaves the page as-is.
+	if !e.DisableJS {
+		if bundled, mstats, ok := e.bundleModuleScripts(ctx, doc); ok {
+			e.jslog(fmt.Sprintf("modules: bundled %d entr(y/ies) -> %d modules, %d->%d bytes in %s",
+				mstats.entries, mstats.fetched, mstats.bytesIn, mstats.bytesOut, mstats.wallClock))
+			injectBundledScript(doc.Root, bundled)
+			sess.RunPending()
+		} else if mstats.entries > 0 {
+			e.jslog(fmt.Sprintf("modules: %d module script(s) not bundled (fetched=%d, errors=%d, first=%q)",
+				mstats.entries, mstats.fetched, mstats.errors, mstats.firstErr))
+		}
+	}
 
 	deadline, hasDeadline := ctx.Deadline()
 	layoutDur := initialLayout

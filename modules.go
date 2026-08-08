@@ -1,0 +1,270 @@
+// Copyright (c) the go-webengine/engine authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+package engine
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/evanw/esbuild/pkg/api"
+
+	"github.com/go-webengine/engine/dom"
+)
+
+// ES-module handling.
+//
+// goja (the pure-Go JS runtime the js package embeds) has NO ES-module support:
+// its parser rejects `import`/`export`/`import()`/`import.meta` as reserved
+// words, and it exposes no ModuleRecord / ModuleLoader primitive — so a module
+// graph cannot be compiled or linked natively (verified against goja HEAD).
+//
+// Modern SPAs (Mastodon, Vite/webpack output) ship their whole app as
+// `<script type="module">` graphs, which the classic-script pass therefore
+// skips entirely. To run them we take the only viable pure-Go path: transpile
+// the module graph to a single classic IIFE with esbuild (github.com/evanw/
+// esbuild, pure Go, CGO-free), fetching every module/import through the engine's
+// own HTTP client, then hand the bundled classic source to the existing script
+// pass. This resolves static imports, dynamic import(), re-exports and
+// import.meta at bundle time, so goja only ever sees plain ES2017 it can run.
+//
+// The work is bounded (module count, bytes, wall-clock) and strictly gated: a
+// page with no module scripts never touches esbuild, so non-module pages are
+// unaffected.
+
+const (
+	// maxModuleFetches caps how many module/import sources one page may pull, so a
+	// pathological graph cannot fan out without bound.
+	maxModuleFetches = 1200
+	// maxModuleSourceBytes caps the total fetched module source per page.
+	maxModuleSourceBytes = 48 << 20
+	// moduleBundleTimeout bounds the whole fetch+bundle stage; it is further capped
+	// by whatever remains of the caller's deadline.
+	moduleBundleTimeout = 20 * time.Second
+	// moduleFetchTimeout bounds a single module source fetch.
+	moduleFetchTimeout = 8 * time.Second
+)
+
+// moduleEntry is one page-level module script: an external src or inline source.
+type moduleEntry struct {
+	src    string // resolved-relative URL (empty for inline)
+	inline string // inline module body (empty for external)
+}
+
+// collectModuleScripts returns the page's `type="module"` scripts in document
+// order (external first via src, else inline body).
+func collectModuleScripts(root *dom.Node) []moduleEntry {
+	var out []moduleEntry
+	var walk func(n *dom.Node)
+	walk = func(n *dom.Node) {
+		if n.Type == dom.Element && n.Tag == "script" {
+			if typ, ok := n.Attribute("type"); ok && strings.EqualFold(strings.TrimSpace(typ), "module") {
+				if src, ok := n.Attribute("src"); ok && strings.TrimSpace(src) != "" {
+					out = append(out, moduleEntry{src: strings.TrimSpace(src)})
+				} else {
+					var sb strings.Builder
+					for _, c := range n.Children {
+						if c.Type == dom.Text {
+							sb.WriteString(c.Text)
+						}
+					}
+					if strings.TrimSpace(sb.String()) != "" {
+						out = append(out, moduleEntry{inline: sb.String()})
+					}
+				}
+			}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	return out
+}
+
+// moduleBundleStats reports what a bundle did (for diagnostics/logging).
+type moduleBundleStats struct {
+	entries   int
+	fetched   int
+	bytesIn   int
+	bytesOut  int
+	errors    int
+	warnings  int
+	firstErr  string
+	wallClock time.Duration
+}
+
+// bundleModuleScripts fetches and transpiles the page's module graph to a single
+// classic IIFE using esbuild. Every module and import specifier is fetched
+// through e.Client (so the page's cookies/TLS apply). It returns the bundled
+// classic source and stats; ok is false when there are no module scripts, no
+// HTTP client, or the bundle fails (in which case the page renders without the
+// module app — the OpenGraph fallback still engages for an empty body).
+func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string, moduleBundleStats, bool) {
+	entries := collectModuleScripts(doc.Root)
+	var stats moduleBundleStats
+	stats.entries = len(entries)
+	if len(entries) == 0 || e.Client == nil {
+		return "", stats, false
+	}
+
+	// Bound the whole stage by the smaller of our budget and the caller's deadline.
+	bctx, cancel := context.WithTimeout(ctx, moduleBundleTimeout)
+	defer cancel()
+
+	// Build a virtual entry that pulls in every module script in document order:
+	// external ones via an import of their absolute URL, inline ones inlined (their
+	// own imports are resolved relative to the page URL).
+	var entrySrc strings.Builder
+	for _, en := range entries {
+		if en.src != "" {
+			if abs, ok := resolveURL(doc.URL, en.src); ok {
+				fmt.Fprintf(&entrySrc, "import %q;\n", abs)
+			}
+		} else {
+			entrySrc.WriteString(en.inline)
+			entrySrc.WriteByte('\n')
+		}
+	}
+
+	var (
+		fetched int
+		bytesIn int
+	)
+	start := time.Now()
+	plugin := api.Plugin{
+		Name: "webengine-http",
+		Setup: func(build api.PluginBuild) {
+			build.OnResolve(api.OnResolveOptions{Filter: `.*`}, func(args api.OnResolveArgs) (api.OnResolveResult, error) {
+				abs, ok := resolveModuleSpecifier(doc.URL, args.Importer, args.Path)
+				if !ok {
+					return api.OnResolveResult{}, fmt.Errorf("cannot resolve %q", args.Path)
+				}
+				return api.OnResolveResult{Path: abs, Namespace: "http"}, nil
+			})
+			build.OnLoad(api.OnLoadOptions{Filter: `.*`, Namespace: "http"}, func(args api.OnLoadArgs) (api.OnLoadResult, error) {
+				if bctx.Err() != nil {
+					return api.OnLoadResult{}, bctx.Err()
+				}
+				if fetched >= maxModuleFetches || bytesIn >= maxModuleSourceBytes {
+					return api.OnLoadResult{}, fmt.Errorf("module graph too large")
+				}
+				src, ok := e.fetchModuleSource(bctx, args.Path)
+				if !ok {
+					return api.OnLoadResult{}, fmt.Errorf("fetch failed: %s", args.Path)
+				}
+				fetched++
+				bytesIn += len(src)
+				contents := src
+				return api.OnLoadResult{Contents: &contents, Loader: api.LoaderJS, ResolveDir: "/"}, nil
+			})
+		},
+	}
+
+	res := api.Build(api.BuildOptions{
+		Stdin: &api.StdinOptions{
+			Contents:   entrySrc.String(),
+			ResolveDir: "/",
+			Sourcefile: doc.URL,
+			Loader:     api.LoaderJS,
+		},
+		Bundle:        true,
+		Format:        api.FormatIIFE,
+		Target:        api.ES2017,
+		Write:         false,
+		LogLevel:      api.LogLevelSilent,
+		Plugins:       []api.Plugin{plugin},
+		Sourcemap:     api.SourceMapNone,
+		LegalComments: api.LegalCommentsNone,
+		Supported:     map[string]bool{"import-meta": false},
+	})
+
+	stats.fetched = fetched
+	stats.bytesIn = bytesIn
+	stats.errors = len(res.Errors)
+	stats.warnings = len(res.Warnings)
+	stats.wallClock = time.Since(start)
+	if len(res.Errors) > 0 {
+		stats.firstErr = res.Errors[0].Text
+		return "", stats, false
+	}
+	if len(res.OutputFiles) == 0 {
+		return "", stats, false
+	}
+	out := string(res.OutputFiles[0].Contents)
+	stats.bytesOut = len(out)
+	return out, stats, true
+}
+
+// resolveModuleSpecifier resolves an import specifier against its importer (or
+// the page URL when importing from the virtual entry), producing an absolute
+// http(s) URL. Bare specifiers (no leading /, ./, ../ or scheme) are rejected —
+// without an import map they cannot be located.
+func resolveModuleSpecifier(pageURL, importer, spec string) (string, bool) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return "", false
+	}
+	if strings.HasPrefix(spec, "http://") || strings.HasPrefix(spec, "https://") {
+		return spec, true
+	}
+	if !strings.HasPrefix(spec, "/") && !strings.HasPrefix(spec, "./") && !strings.HasPrefix(spec, "../") {
+		return "", false // bare specifier
+	}
+	base := importer
+	if base == "" || !strings.HasPrefix(base, "http") {
+		base = pageURL
+	}
+	return resolveURL(base, spec)
+}
+
+// fetchModuleSource retrieves one module's source through e.Client, bounded.
+func (e *Engine) fetchModuleSource(ctx context.Context, abs string) (string, bool) {
+	if !strings.HasPrefix(abs, "http") {
+		return "", false
+	}
+	rctx, cancel := context.WithTimeout(ctx, moduleFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(rctx, http.MethodGet, abs, nil)
+	if err != nil {
+		return "", false
+	}
+	if e.UserAgent != "" {
+		req.Header.Set("User-Agent", e.UserAgent)
+	}
+	resp, err := e.Client.Do(req)
+	if err != nil {
+		return "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", false
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModuleSourceBytes))
+	if err != nil {
+		return "", false
+	}
+	return string(body), true
+}
+
+// injectBundledScript appends a classic <script> carrying src to the document
+// body (or <html> as a fallback), so the existing script pass runs it. It
+// returns the injected node.
+func injectBundledScript(root *dom.Node, src string) *dom.Node {
+	host := dom.Find(root, "body")
+	if host == nil {
+		host = dom.Find(root, "html")
+	}
+	if host == nil {
+		host = root
+	}
+	s := dom.NewElement("script")
+	s.Attr["data-webengine-module-bundle"] = "1"
+	dom.AppendChild(s, dom.NewText(src))
+	dom.AppendChild(host, s)
+	return s
+}

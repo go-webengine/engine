@@ -52,6 +52,7 @@ func (b *binder) install() {
 	b.installNet(g)
 	b.installCrypto(g)
 	b.installEncoding(g)
+	b.installURLSearchParams(g)
 }
 
 // installTimers wires setTimeout/setInterval/rAF etc. onto g, all of which queue
