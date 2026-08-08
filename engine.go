@@ -53,7 +53,17 @@ type RenderInfo struct {
 type Engine struct {
 	Client    *http.Client
 	UserAgent string
+	// MaxImages bounds how many RASTER (non-SVG) <img>/background images are
+	// fetched and decoded per render — the expensive network + large-decode work.
 	MaxImages int
+	// MaxVectorImages bounds how many VECTOR images (inline <svg> and
+	// <img src="*.svg"> / data:image/svg+xml) are rasterised per render. Vector
+	// chrome (nav/footer/social/UI icons) is cheap but plentiful — real design
+	// systems place many dozens ahead of the content — so it gets its OWN, more
+	// generous budget. Without this split a wall of decorative icons early in the
+	// DOM exhausts a single shared budget and starves the actual content photos
+	// (raster) further down (the DeepMind hero black-void bug).
+	MaxVectorImages int
 
 	// DisableJS turns off the JavaScript pass. Offline fixture tests that must
 	// stay byte-deterministic set this; the default (false) runs page scripts.
@@ -73,6 +83,11 @@ func New() *Engine {
 		Client:    browserhttp.NewClient(30 * time.Second),
 		UserAgent: browserhttp.DefaultUserAgent,
 		MaxImages: 40,
+		// 400 comfortably covers icon-dense design systems (Material, Primer,
+		// Font Awesome pages carry well under a few hundred distinct icons in the
+		// initial DOM) while still bounding a pathological page — each vector
+		// rasterisation is bounded work, so 400 caps runaway cost.
+		MaxVectorImages: 400,
 	}
 }
 
