@@ -4,6 +4,7 @@ go 1.26.4
 
 require (
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
+	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
 	github.com/go-images/images v0.0.0-20260702213524-ea366b42f216
 	github.com/go-opentype/fonts v0.5.0

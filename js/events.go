@@ -205,6 +205,7 @@ func (b *binder) buildURL(ref string, baseV goja.Value) *goja.Object {
 	o.Set("search", withPrefix("?", u.RawQuery))
 	o.Set("hash", withPrefix("#", u.Fragment))
 	o.Set("origin", origin(u))
+	o.Set("searchParams", b.newURLSearchParams(b.vm.ToValue(u.RawQuery)))
 	o.Set("toString", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(u.String()) })
 	return o
 }
