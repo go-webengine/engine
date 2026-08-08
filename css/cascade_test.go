@@ -202,3 +202,22 @@ func TestCascadeVWMediaWidth(t *testing.T) {
 		t.Errorf("mobile side float = %v want none", st.Float)
 	}
 }
+
+func TestCascadeHiddenAttribute(t *testing.T) {
+	// A bare `hidden` attribute maps to display:none at UA origin.
+	if d := styleOf(t, `<html><body><div hidden>x</div></body></html>`, "div").Display; d != DisplayNone {
+		t.Errorf("<div hidden> display = %v, want none", d)
+	}
+	// An inline author `display` beats the UA [hidden] rule (origin > specificity).
+	if d := styleOf(t, `<html><body><p hidden style="display:block">x</p></body></html>`, "p").Display; d != DisplayBlock {
+		t.Errorf("<p hidden style=display:block> = %v, want block (author wins)", d)
+	}
+	// Even a low-specificity author rule (tag selector) beats UA [hidden].
+	if d := styleOf(t, `<html><head><style>span{display:flex}</style></head><body><span hidden>x</span></body></html>`, "span").Display; d != DisplayFlex {
+		t.Errorf("span[hidden] with author span{display:flex} = %v, want flex (author wins)", d)
+	}
+	// hidden="until-found" is revealable content, NOT hidden.
+	if d := styleOf(t, `<html><body><div hidden="until-found">x</div></body></html>`, "div").Display; d != DisplayBlock {
+		t.Errorf(`<div hidden="until-found"> = %v, want block (not hidden)`, d)
+	}
+}
