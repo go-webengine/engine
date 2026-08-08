@@ -86,6 +86,14 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style
 	// descendant UA rules (matched at their real specificity, still at UA origin)
 	// that alternate the nested-list marker glyph disc→circle→square by depth.
 	add(uaDeclarations(n.Tag), precUA, 0)
+	// The HTML `hidden` attribute maps to `display:none` via the UA rule
+	// `[hidden]{display:none}`. It is added at UA origin so any author `display`
+	// (even a low-specificity or normal one) still wins per the cascade — matching
+	// a browser. The modern `hidden="until-found"` value is revealable content and
+	// is NOT hidden here.
+	if v, ok := n.Attribute("hidden"); ok && !strings.EqualFold(strings.TrimSpace(v), "until-found") {
+		add([]Declaration{{"display", "none"}}, precUA, 0)
+	}
 	for _, r := range uaDescendantRules {
 		spec := -1
 		for _, sel := range r.Selectors {
