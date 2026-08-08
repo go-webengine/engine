@@ -74,6 +74,16 @@ type Engine struct {
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)
+	// MetaFallback, when true, renders a clean readable card synthesised from a
+	// page's OpenGraph/meta tags (og:title/og:description/og:image, <title>) as a
+	// LAST RESORT — only when the real render is empty (a JavaScript SPA the engine
+	// cannot hydrate: Mastodon, X, app-shell sites). Default false: it fabricates
+	// content that is not in the page's rendered DOM, so it is opt-in; a
+	// link-preview / reader consumer enables it, while callers wanting a faithful
+	// render (or to detect the blank SPA themselves) are unaffected. It never
+	// triggers on a page that renders any real content, so normal pages are
+	// byte-identical whether it is on or off.
+	MetaFallback bool
 }
 
 // New returns an Engine with a browser-like HTTP client (Chrome TLS
@@ -238,6 +248,19 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// A script may have set document.title; re-derive it so RenderInfo reports the
 	// post-script title (matching what a browser tab would show).
 	doc.Title = dom.Title(doc.Root)
+
+	// Last-resort meta/OG fallback: an un-hydratable SPA lays out to nothing
+	// (no visible text or images). Rather than return a blank page, synthesise a
+	// readable card from the page's OpenGraph/meta tags and render THAT instead.
+	// Only replaces a genuinely empty render, so a page that rendered any real
+	// content is untouched. Applied after settle, so the batch render and the
+	// progressive "final" frame both carry the card (the pre-settle "initial"
+	// frame still reflects the raw page).
+	if e.MetaFallback && renderedEmpty(rp.box, rp.height) {
+		if fb := e.buildMetaFallback(ctx, doc, vpW, fonts); fb != nil {
+			rp = fb
+		}
+	}
 	return rp
 }
 
