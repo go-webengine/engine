@@ -46,13 +46,20 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 	}
 	walk(doc.Root)
 
-	count := 0
+	// Separate budgets: cheap-but-plentiful vector chrome (inline <svg> and
+	// <img src="*.svg">) must not starve the expensive raster content photos.
+	// Each item is charged to its budget when it passes the gate (before any
+	// fetch), so both the fetch and decode work stay bounded even on a page of
+	// only-failing images. Under budget every image is processed exactly as
+	// before.
+	raster, vector := 0, 0
 	for _, n := range reps {
-		if count >= e.MaxImages {
-			break
-		}
-		// Inline <svg>: serialise the subtree and rasterise it.
+		// Inline <svg>: serialise the subtree and rasterise it (vector budget).
 		if n.Tag == "svg" {
+			if vector >= e.MaxVectorImages {
+				continue
+			}
+			vector++
 			data := []byte(serializeSVG(n))
 			bmp, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
 			if !ok {
@@ -60,12 +67,24 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 			}
 			sizes[n] = [2]float64{float64(w), float64(h)}
 			bitmaps[n] = bmp
-			count++
 			continue
 		}
 		src, ok := n.Attribute("src")
 		if !ok {
 			continue
+		}
+		// Classify vector vs raster from the src alone so a wall of *.svg icons
+		// spends only the vector budget, never the raster one.
+		if srcLooksLikeSVG(src) {
+			if vector >= e.MaxVectorImages {
+				continue
+			}
+			vector++
+		} else {
+			if raster >= e.MaxImages {
+				continue
+			}
+			raster++
 		}
 		data, ok := e.fetchImageBytes(ctx, doc.URL, src)
 		if !ok {
@@ -79,7 +98,6 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 			}
 			sizes[n] = [2]float64{float64(w), float64(h)}
 			bitmaps[n] = bmp
-			count++
 			continue
 		}
 		src0, err := goimages.Decode(bytes.NewReader(data))
@@ -115,7 +133,6 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 		}
 		sizes[n] = [2]float64{float64(w), float64(h)}
 		bitmaps[n] = src0
-		count++
 	}
 	return sizes, bitmaps
 }
@@ -152,10 +169,23 @@ func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css
 	}
 
 	out := map[string]image.Image{}
-	count := 0
+	// Same raster/vector budget split as loadImages, charged before the fetch so
+	// a wall of decorative SVG backgrounds never spends the raster budget (and
+	// the fetch work stays bounded even when every url fails to decode). Vector
+	// backgrounds are not rasterised here (only raster formats decode), but they
+	// are still gated so they cannot exhaust the raster budget.
+	raster, vector := 0, 0
 	for _, raw := range urls {
-		if count >= e.MaxImages {
-			break
+		if srcLooksLikeSVG(raw) {
+			if vector >= e.MaxVectorImages {
+				continue
+			}
+			vector++
+		} else {
+			if raster >= e.MaxImages {
+				continue
+			}
+			raster++
 		}
 		data, ok := e.fetchImageBytes(ctx, doc.URL, raw)
 		if !ok {
@@ -169,7 +199,6 @@ func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css
 			continue
 		}
 		out[raw] = img
-		count++
 	}
 	if len(out) == 0 {
 		return nil

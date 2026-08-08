@@ -28,14 +28,7 @@ const maxSVGDim = 4096
 // sniffing an "<svg" tag near the start of the content (covers http responses
 // and data: URIs whose payload is SVG regardless of the declared media type).
 func looksLikeSVG(data []byte, src string) bool {
-	s := strings.ToLower(strings.TrimSpace(src))
-	if i := strings.IndexAny(s, "?#"); i >= 0 {
-		s = s[:i]
-	}
-	if strings.HasSuffix(s, ".svg") {
-		return true
-	}
-	if strings.Contains(s, "image/svg") { // data:image/svg+xml,...
+	if srcLooksLikeSVG(src) {
 		return true
 	}
 	head := data
@@ -43,6 +36,18 @@ func looksLikeSVG(data []byte, src string) bool {
 		head = head[:1024]
 	}
 	return bytes.Contains(bytes.ToLower(head), []byte("<svg"))
+}
+
+// srcLooksLikeSVG reports whether a src/url alone (no fetched bytes) identifies
+// an SVG: a ".svg" path (ignoring any query/fragment) or an "image/svg" media
+// type in a data: URI. It lets the image budgeter classify vector vs raster
+// BEFORE fetching, so a wall of decorative SVGs never spends the raster budget.
+func srcLooksLikeSVG(src string) bool {
+	s := strings.ToLower(strings.TrimSpace(src))
+	if i := strings.IndexAny(s, "?#"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.HasSuffix(s, ".svg") || strings.Contains(s, "image/svg")
 }
 
 // svgToBitmap parses an SVG document and rasterises it at the used pixel size
