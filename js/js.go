@@ -80,6 +80,11 @@ type binder struct {
 	opt   Options
 	cache map[*dom.Node]*goja.Object
 
+	// protos maps each DOM/BOM interface name (HTMLElement, Text, Event, …) to its
+	// `.prototype`, built by installInterfaces. wrap() stamps a node wrapper with
+	// the matching one so `el instanceof HTMLElement` holds and subclassing works.
+	protos map[string]*goja.Object
+
 	windowNode *dom.Node // sentinel node keying window-level listeners
 	docNode    *dom.Node // sentinel node keying document-level listeners
 	listeners  map[*dom.Node]map[string][]goja.Value

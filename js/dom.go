@@ -41,6 +41,13 @@ func (b *binder) wrap(n *dom.Node) goja.Value {
 	} else {
 		b.defineElement(o, n)
 	}
+	// Stamp the wrapper with its interface prototype (HTMLElement/Text/…) so
+	// `node instanceof HTMLElement` holds and core-js/React-DOM subclass checks
+	// resolve. The per-instance accessors above still shadow, so behaviour is
+	// unchanged; the prototype only adds the instanceof/subclass chain.
+	if p := b.protoForNode(n); p != nil {
+		_ = o.SetPrototype(p)
+	}
 	return o
 }
 
@@ -70,6 +77,17 @@ func (b *binder) defineText(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "parentElement", func() goja.Value { return b.wrap(elementParent(n)) }, nil)
 	b.accessor(o, "nextSibling", func() goja.Value { return b.wrap(nextSibling(n)) }, nil)
 	b.accessor(o, "previousSibling", func() goja.Value { return b.wrap(prevSibling(n)) }, nil)
+	b.accessor(o, "ownerDocument", func() goja.Value { return b.documentValue() }, nil)
+}
+
+// documentValue returns the JS document object (the wrapper for the root node),
+// the value of every node's ownerDocument. React reads node.ownerDocument to key
+// its event system, so this must be a real object, never undefined.
+func (b *binder) documentValue() goja.Value {
+	if d, ok := b.cache[b.root]; ok {
+		return d
+	}
+	return goja.Null()
 }
 
 // defineElement populates an Element node wrapper with the supported surface.
@@ -119,6 +137,7 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "previousElementSibling", func() goja.Value { return b.wrap(prevElementSibling(n)) }, nil)
 	b.accessor(o, "nextSibling", func() goja.Value { return b.wrap(nextSibling(n)) }, nil)
 	b.accessor(o, "previousSibling", func() goja.Value { return b.wrap(prevSibling(n)) }, nil)
+	b.accessor(o, "ownerDocument", func() goja.Value { return b.documentValue() }, nil)
 
 	b.accessor(o, "hidden",
 		func() goja.Value { _, ok := n.Attribute("hidden"); return b.vm.ToValue(ok) },
@@ -313,6 +332,42 @@ func (b *binder) removeAttr(n *dom.Node, name string) {
 	}
 }
 
+// newRange builds a best-effort Range object: the structural methods are wired
+// as no-ops with sensible return shapes, enough that selection/measurement code
+// (react-intl, tooltip positioning) does not throw.
+func (b *binder) newRange() goja.Value {
+	o := b.vm.NewObject()
+	if p := b.protos["Range"]; p != nil {
+		_ = o.SetPrototype(p)
+	}
+	o.Set("collapsed", true)
+	o.Set("startOffset", 0)
+	o.Set("endOffset", 0)
+	o.Set("commonAncestorContainer", goja.Null())
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	for _, m := range []string{"setStart", "setEnd", "setStartBefore", "setStartAfter",
+		"setEndBefore", "setEndAfter", "selectNode", "selectNodeContents", "collapse",
+		"deleteContents", "insertNode", "surroundContents", "detach"} {
+		o.Set(m, noop)
+	}
+	o.Set("cloneRange", func(goja.FunctionCall) goja.Value { return b.newRange() })
+	o.Set("cloneContents", func(goja.FunctionCall) goja.Value { return b.wrap(dom.NewElement("#fragment")) })
+	o.Set("extractContents", func(goja.FunctionCall) goja.Value { return b.wrap(dom.NewElement("#fragment")) })
+	o.Set("createContextualFragment", func(call goja.FunctionCall) goja.Value {
+		frag := dom.NewElement("#fragment")
+		if nodes, err := dom.ParseFragment(call.Argument(0).String()); err == nil {
+			for _, c := range nodes {
+				dom.AppendChild(frag, c)
+			}
+		}
+		return b.wrap(frag)
+	})
+	o.Set("getBoundingClientRect", func(goja.FunctionCall) goja.Value { return b.zeroRect() })
+	o.Set("getClientRects", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
+	o.Set("toString", func(goja.FunctionCall) goja.Value { return b.vm.ToValue("") })
+	return o
+}
+
 // newDataset exposes element.dataset (data-* attributes) as a dynamic object.
 func (b *binder) newDataset(n *dom.Node) goja.Value {
 	return b.vm.NewDynamicObject(&datasetDynObj{b: b, n: n})
@@ -493,6 +548,23 @@ func (b *binder) installDocument() *goja.Object {
 		b.dispatch(b.docNode, eventType(call.Argument(0)), call.Argument(0))
 		return b.vm.ToValue(true)
 	})
+	d.Set("hasFocus", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(true) })
+	d.Set("elementFromPoint", func(goja.FunctionCall) goja.Value { return goja.Null() })
+	d.Set("elementsFromPoint", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
+	d.Set("getSelection", func(goja.FunctionCall) goja.Value { return goja.Null() })
+	d.Set("createRange", func(goja.FunctionCall) goja.Value { return b.newRange() })
+	d.Set("createEvent", func(call goja.FunctionCall) goja.Value { return b.newEvent("") })
+	d.Set("createNodeIterator", func(goja.FunctionCall) goja.Value { return b.vm.NewObject() })
+	d.Set("createTreeWalker", func(goja.FunctionCall) goja.Value { return b.vm.NewObject() })
+	d.Set("importNode", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(cloneNode(b.node(call.Argument(0)), call.Argument(1).ToBoolean()))
+	})
+	d.Set("adoptNode", func(call goja.FunctionCall) goja.Value { return call.Argument(0) })
+	d.Set("contains", func(call goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(contains(b.root, b.node(call.Argument(0))))
+	})
+	d.Set("execCommand", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
+	d.Set("queryCommandState", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
 	d.Set("write", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 	d.Set("writeln", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 	d.Set("open", func(goja.FunctionCall) goja.Value { return d })
@@ -500,6 +572,9 @@ func (b *binder) installDocument() *goja.Object {
 	b.accessor(d, "currentScript", func() goja.Value { return goja.Null() }, nil)
 	b.accessor(d, "activeElement", func() goja.Value { return b.wrap(dom.Find(b.root, "body")) }, nil)
 	b.accessor(d, "scrollingElement", func() goja.Value { return b.wrap(dom.Find(b.root, "html")) }, nil)
+	if p := b.protos["Document"]; p != nil {
+		_ = d.SetPrototype(p)
+	}
 	return d
 }
 

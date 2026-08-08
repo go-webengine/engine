@@ -76,9 +76,16 @@ func (b *binder) handlerFunc(h goja.Value) goja.Callable {
 	return nil
 }
 
-// newEvent builds a minimal Event object of the given type.
+// newEvent builds a minimal Event object of the given type, stamped with
+// Event.prototype (when the interface hierarchy is installed) so dispatched
+// events are `instanceof Event`.
 func (b *binder) newEvent(typ string) *goja.Object {
-	o := b.vm.NewObject()
+	var o *goja.Object
+	if b.protos != nil && b.protos["Event"] != nil {
+		o = b.vm.CreateObject(b.protos["Event"])
+	} else {
+		o = b.vm.NewObject()
+	}
 	o.Set("type", typ)
 	o.Set("bubbles", false)
 	o.Set("cancelable", false)
@@ -111,28 +118,11 @@ func eventType(v goja.Value) string {
 	return v.String()
 }
 
-// installConstructors wires the constructible globals hydration code expects:
-// Event/CustomEvent, the observer classes, URL, XMLHttpRequest and the Node
-// type-constant holder.
+// installConstructors wires the remaining constructible globals hydration code
+// expects: the observer classes, URL and Image. The DOM/BOM interface hierarchy
+// (Event/CustomEvent, Node, HTMLElement, DOMException, …) is installed separately
+// by installInterfaces, which makes those properly subclassable.
 func (b *binder) installConstructors(g *goja.Object) {
-	g.Set("Event", func(call goja.ConstructorCall) *goja.Object {
-		ev := b.newEvent(call.Argument(0).String())
-		applyEventInit(ev, call.Argument(1))
-		return ev
-	})
-	g.Set("CustomEvent", func(call goja.ConstructorCall) *goja.Object {
-		ev := b.newEvent(call.Argument(0).String())
-		init := call.Argument(1)
-		applyEventInit(ev, init)
-		ev.Set("detail", goja.Null())
-		if obj, ok := init.(*goja.Object); ok {
-			if d := obj.Get("detail"); d != nil {
-				ev.Set("detail", d)
-			}
-		}
-		return ev
-	})
-
 	observer := func(call goja.ConstructorCall) *goja.Object {
 		o := b.vm.NewObject()
 		noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
@@ -153,16 +143,6 @@ func (b *binder) installConstructors(g *goja.Object) {
 	g.Set("Image", func(call goja.ConstructorCall) *goja.Object {
 		return b.vm.NewObject()
 	})
-
-	node := b.vm.NewObject()
-	for name, val := range map[string]int{
-		"ELEMENT_NODE": 1, "TEXT_NODE": 3, "COMMENT_NODE": 8, "DOCUMENT_NODE": 9,
-		"DOCUMENT_FRAGMENT_NODE": 11, "ATTRIBUTE_NODE": 2, "CDATA_SECTION_NODE": 4,
-		"PROCESSING_INSTRUCTION_NODE": 7, "DOCUMENT_TYPE_NODE": 10,
-	} {
-		node.Set(name, val)
-	}
-	g.Set("Node", node)
 }
 
 // applyEventInit copies the bubbles/cancelable flags from an EventInit dict.

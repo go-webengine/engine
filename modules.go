@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
@@ -90,6 +91,7 @@ func collectModuleScripts(root *dom.Node) []moduleEntry {
 type moduleBundleStats struct {
 	entries   int
 	fetched   int
+	failed    int // modules that could not be fetched (served as empty)
 	bytesIn   int
 	bytesOut  int
 	errors    int
@@ -132,7 +134,9 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 	}
 
 	var (
+		mu      sync.Mutex
 		fetched int
+		failed  int
 		bytesIn int
 	)
 	start := time.Now()
@@ -150,15 +154,30 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 				if bctx.Err() != nil {
 					return api.OnLoadResult{}, bctx.Err()
 				}
-				if fetched >= maxModuleFetches || bytesIn >= maxModuleSourceBytes {
+				mu.Lock()
+				over := fetched >= maxModuleFetches || bytesIn >= maxModuleSourceBytes
+				mu.Unlock()
+				if over {
 					return api.OnLoadResult{}, fmt.Errorf("module graph too large")
 				}
 				src, ok := e.fetchModuleSource(bctx, args.Path)
+				empty := ""
 				if !ok {
-					return api.OnLoadResult{}, fmt.Errorf("fetch failed: %s", args.Path)
+					// A single unfetchable chunk (a rate-limited or optional
+					// locale/vendor split under esbuild's parallel fetch burst)
+					// must not abort the whole app bundle: serve it empty, the way
+					// a browser's failed dynamic import only rejects that promise.
+					// A genuinely critical missing module then surfaces as a bounded
+					// runtime error we can see, not a total bundle failure.
+					mu.Lock()
+					failed++
+					mu.Unlock()
+					return api.OnLoadResult{Contents: &empty, Loader: api.LoaderJS, ResolveDir: "/"}, nil
 				}
+				mu.Lock()
 				fetched++
 				bytesIn += len(src)
+				mu.Unlock()
 				contents := src
 				return api.OnLoadResult{Contents: &contents, Loader: api.LoaderJS, ResolveDir: "/"}, nil
 			})
@@ -184,6 +203,7 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 	})
 
 	stats.fetched = fetched
+	stats.failed = failed
 	stats.bytesIn = bytesIn
 	stats.errors = len(res.Errors)
 	stats.warnings = len(res.Warnings)
@@ -222,33 +242,60 @@ func resolveModuleSpecifier(pageURL, importer, spec string) (string, bool) {
 	return resolveURL(base, spec)
 }
 
-// fetchModuleSource retrieves one module's source through e.Client, bounded.
+// moduleFetchRetries is how many extra attempts a module fetch makes on a
+// transient failure (a 429/5xx or connection error), the way a large module
+// graph fanned out in parallel briefly rate-limits the origin.
+const moduleFetchRetries = 2
+
+// fetchModuleSource retrieves one module's source through e.Client, bounded, with
+// a short bounded retry on transient failure.
 func (e *Engine) fetchModuleSource(ctx context.Context, abs string) (string, bool) {
 	if !strings.HasPrefix(abs, "http") {
 		return "", false
 	}
+	for attempt := 0; ; attempt++ {
+		src, retry, ok := e.fetchModuleOnce(ctx, abs)
+		if ok {
+			return src, true
+		}
+		if !retry || attempt >= moduleFetchRetries || ctx.Err() != nil {
+			return "", false
+		}
+		// Small backoff to let a rate-limited origin recover, bounded by ctx.
+		select {
+		case <-ctx.Done():
+			return "", false
+		case <-time.After(time.Duration(attempt+1) * 150 * time.Millisecond):
+		}
+	}
+}
+
+// fetchModuleOnce does a single fetch attempt. retry reports whether the failure
+// looks transient (worth another attempt): a network error or a 429/5xx.
+func (e *Engine) fetchModuleOnce(ctx context.Context, abs string) (body string, retry, ok bool) {
 	rctx, cancel := context.WithTimeout(ctx, moduleFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, abs, nil)
 	if err != nil {
-		return "", false
+		return "", false, false
 	}
 	if e.UserAgent != "" {
 		req.Header.Set("User-Agent", e.UserAgent)
 	}
 	resp, err := e.Client.Do(req)
 	if err != nil {
-		return "", false
+		return "", true, false // network/timeout: transient
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", false
+		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
+		return "", transient, false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxModuleSourceBytes))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxModuleSourceBytes))
 	if err != nil {
-		return "", false
+		return "", true, false
 	}
-	return string(body), true
+	return string(raw), false, true
 }
 
 // injectBundledScript appends a classic <script> carrying src to the document
