@@ -4,6 +4,7 @@
 package js
 
 import (
+	"encoding/base64"
 	"net/url"
 	"strings"
 
@@ -16,6 +17,9 @@ import (
 // install wires the whole DOM/BOM surface onto the goja global scope.
 func (b *binder) install() {
 	g := b.vm.GlobalObject()
+	// Build the DOM/BOM interface constructor hierarchy first, so installDocument
+	// and every wrap() can stamp nodes with the right interface prototype.
+	b.installInterfaces(g)
 	doc := b.installDocument()
 	g.Set("document", doc)
 
@@ -53,6 +57,7 @@ func (b *binder) install() {
 	b.installCrypto(g)
 	b.installEncoding(g)
 	b.installURLSearchParams(g)
+	b.installIntl(g)
 }
 
 // installTimers wires setTimeout/setInterval/rAF etc. onto g, all of which queue
@@ -124,6 +129,33 @@ func (b *binder) installStubs(g *goja.Object) {
 // installClasslessStorageAPIs wires atob/btoa and structuredClone.
 func (b *binder) installClasslessStorageAPIs(g *goja.Object) {
 	g.Set("structuredClone", func(call goja.FunctionCall) goja.Value { return call.Argument(0) })
+	g.Set("btoa", func(call goja.FunctionCall) goja.Value {
+		// btoa encodes a binary string (each char a byte) to base64.
+		in := call.Argument(0).String()
+		buf := make([]byte, len(in))
+		for i := 0; i < len(in); i++ {
+			buf[i] = in[i]
+		}
+		return b.vm.ToValue(base64.StdEncoding.EncodeToString(buf))
+	})
+	g.Set("atob", func(call goja.FunctionCall) goja.Value {
+		s := strings.TrimSpace(call.Argument(0).String())
+		dec, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			// Fall back to raw-std (no padding) as browsers are lenient.
+			if dec2, err2 := base64.RawStdEncoding.DecodeString(strings.TrimRight(s, "=")); err2 == nil {
+				dec = dec2
+			} else {
+				panic(b.vm.NewTypeError("Failed to decode base64"))
+			}
+		}
+		// atob returns a binary string: each byte becomes one char.
+		var sb strings.Builder
+		for _, c := range dec {
+			sb.WriteByte(c)
+		}
+		return b.vm.ToValue(sb.String())
+	})
 }
 
 // newLocation builds window.location from the page URL. assign()/replace()
@@ -196,7 +228,7 @@ func (b *binder) newConsole() goja.Value {
 			if b.opt.Log != nil {
 				parts := make([]string, len(call.Arguments))
 				for i, a := range call.Arguments {
-					parts[i] = a.String()
+					parts[i] = b.consoleArg(a)
 				}
 				b.opt.Log(level + ": " + strings.Join(parts, " "))
 			}
@@ -211,6 +243,23 @@ func (b *binder) newConsole() goja.Value {
 		o.Set(name, noop)
 	}
 	return o
+}
+
+// consoleArg formats one console.* argument. For an error-like object (has both
+// a message and a stack) it appends the stack, so a framework that logs a caught
+// error via console.error surfaces the throw site in JSLog instead of just the
+// message — the difference between a debuggable and an opaque hydration failure.
+func (b *binder) consoleArg(a goja.Value) string {
+	if obj, ok := a.(*goja.Object); ok {
+		msg := obj.Get("message")
+		stk := obj.Get("stack")
+		if msg != nil && !goja.IsUndefined(msg) && stk != nil && !goja.IsUndefined(stk) {
+			if s := stk.String(); s != "" {
+				return s
+			}
+		}
+	}
+	return a.String()
 }
 
 func (b *binder) newHistory() goja.Value {
