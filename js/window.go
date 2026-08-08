@@ -50,6 +50,8 @@ func (b *binder) install() {
 	b.installStubs(g)
 	b.installConstructors(g)
 	b.installNet(g)
+	b.installCrypto(g)
+	b.installEncoding(g)
 }
 
 // installTimers wires setTimeout/setInterval/rAF etc. onto g, all of which queue
@@ -123,28 +125,45 @@ func (b *binder) installClasslessStorageAPIs(g *goja.Object) {
 	g.Set("structuredClone", func(call goja.FunctionCall) goja.Value { return call.Argument(0) })
 }
 
-// newLocation builds window.location from the page URL.
+// newLocation builds window.location from the page URL. assign()/replace()
+// update the location's own href/component fields and the binder's PageURL
+// (resolving the target against the current href) so scripts that navigate via
+// location see a consistent, updated location — the best-effort stand-in for a
+// real navigation, which this single-document settle does not perform.
 func (b *binder) newLocation() goja.Value {
-	u, err := url.Parse(b.opt.PageURL)
-	if err != nil || u == nil {
-		u = &url.URL{}
-	}
 	o := b.vm.NewObject()
-	set := func(name, val string) { o.Set(name, val) }
-	set("href", b.opt.PageURL)
-	set("protocol", withColon(u.Scheme))
-	set("host", u.Host)
-	set("hostname", u.Hostname())
-	set("port", u.Port())
-	set("pathname", pathOr(u.Path))
-	set("search", withPrefix("?", u.RawQuery))
-	set("hash", withPrefix("#", u.Fragment))
-	set("origin", origin(u))
-	o.Set("assign", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
-	o.Set("replace", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	b.setLocationFields(o, b.opt.PageURL)
+	navigate := func(call goja.FunctionCall) goja.Value {
+		target := call.Argument(0).String()
+		if abs, ok := resolveURL(b.opt.PageURL, target); ok {
+			b.opt.PageURL = abs
+			b.setLocationFields(o, abs)
+		}
+		return goja.Undefined()
+	}
+	o.Set("assign", navigate)
+	o.Set("replace", navigate)
 	o.Set("reload", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 	o.Set("toString", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(b.opt.PageURL) })
 	return o
+}
+
+// setLocationFields (re)populates the URL-component data properties of a
+// location object from a URL string.
+func (b *binder) setLocationFields(o *goja.Object, raw string) {
+	u, err := url.Parse(raw)
+	if err != nil || u == nil {
+		u = &url.URL{}
+	}
+	o.Set("href", raw)
+	o.Set("protocol", withColon(u.Scheme))
+	o.Set("host", u.Host)
+	o.Set("hostname", u.Hostname())
+	o.Set("port", u.Port())
+	o.Set("pathname", pathOr(u.Path))
+	o.Set("search", withPrefix("?", u.RawQuery))
+	o.Set("hash", withPrefix("#", u.Fragment))
+	o.Set("origin", origin(u))
 }
 
 func (b *binder) newNavigator() goja.Value {

@@ -441,8 +441,11 @@ func TestLocationFields(t *testing.T) {
 		location.assign('x'); location.replace('y'); location.reload();
 		console.log('href='+location.href+' str='+location.toString());
 	`))
+	// assign/replace resolve their target against the current href and update the
+	// location (and toString, which reflects the binder's PageURL): 'x' resolves
+	// against https://ex.com/a/b to https://ex.com/a/x, then 'y' to /a/y.
 	mustHave(t, logs, "loc=https:|ex.com|ex.com||/a/b|?x=1&y=2|#frag|https://ex.com",
-		"href="+testURL)
+		"href=https://ex.com/a/y str=https://ex.com/a/y")
 }
 
 func TestEmptyLocation(t *testing.T) {
