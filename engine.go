@@ -202,11 +202,13 @@ func (e *Engine) renderCore(ctx context.Context, doc *Document, vpW, vpH int, fo
 }
 
 // renderCoreStaged is renderCore with an optional per-stage hook that drives
-// progressive rendering. onStage (when non-nil) is called with "initial" right
-// after the first layout and BEFORE the JS settle loop, then with "settle" after
-// each settle pass that changed the geometry; the caller emits the "final" frame
-// from the returned pass. onStage==nil reproduces the original batch pipeline
-// exactly, so RenderDocument / RenderDocumentWithLinks are unchanged.
+// progressive rendering. onStage (when non-nil) is called with "initial" for the
+// text-first frame (styled layout BEFORE any image is fetched), then "images"
+// once the images are loaded and re-laid-out, then "settle" after each settle
+// pass that changed the geometry; the caller emits the "final" frame from the
+// returned pass. onStage==nil reproduces the original batch pipeline exactly (a
+// single images-then-layout pass, no wasted pre-image layout), so RenderDocument
+// / RenderDocumentWithLinks are byte-identical to before.
 func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, onStage func(stage string, rp *renderPass)) *renderPass {
 	// Set the JS-enabled signal (client-nojs → client-js on <html>) BEFORE the
 	// initial cascade so the first layout — the geometry scripts read back — is
@@ -216,13 +218,29 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	}
 
 	// Initial pass: fetch <link rel="stylesheet"> sheets (the dominant fidelity
-	// factor for real sites), cascade at the render width (so @media width queries
-	// and external theme/layout rules resolve), load images, and lay out. This is
-	// the geometry the page's scripts see through getBoundingClientRect / offset*
-	// / getComputedStyle.
+	// factor for real sites) and cascade at the render width (so @media width
+	// queries and external theme/layout rules resolve).
 	rp := &renderPass{}
 	rp.sheets = e.fetchExternalSheets(ctx, doc, float64(vpW))
 	rp.sm = css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
+
+	// TEXT-FIRST progressive frame (progressive path ONLY): lay out and emit the
+	// fully-styled page BEFORE the slow, network-bound image fetch. Images reserve
+	// their boxes from width/height attributes or CSS sizes (layout's imageSize
+	// falls back to those on an imgSize miss), so the text geometry is already
+	// sane; the image regions paint as page background until the refinement frame.
+	// This is the big perceived-latency win — sequential image fetch no longer
+	// gates the first styled paint. The batch path (onStage==nil) skips this so it
+	// does exactly one layout, keeping its output byte-identical to before.
+	if onStage != nil {
+		rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, nil)
+		onStage("initial", rp)
+	}
+
+	// Load images + background images (bounded, fetched concurrently) and lay out
+	// with the real intrinsic sizes. This is the geometry the page's scripts see
+	// through getBoundingClientRect / offset* / getComputedStyle, so it runs
+	// BEFORE the JS settle loop in both paths.
 	rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, vpW)
 	rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
 
@@ -230,11 +248,11 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
 	initialLayout := time.Since(start)
 
-	// First fully-styled frame: external CSS is applied and images placed, so this
-	// paints without any unstyled flash. On a script-heavy page it is the big
-	// perceived-latency win — the user sees the styled page before JS settles.
+	// Refinement frame: the same styled page WITH images placed. The caller dedups
+	// it against the text-first frame by geomSig, so a page whose image intrinsic
+	// sizes moved nothing (or a page with no images) yields just initial+final.
 	if onStage != nil {
-		onStage("initial", rp)
+		onStage("images", rp)
 	}
 
 	// Settle-then-render: run scripts against the real geometry, let them mutate
