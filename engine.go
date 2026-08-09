@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -71,6 +72,15 @@ type Engine struct {
 	// JSTimeout bounds the total script + timer budget per render. Zero selects
 	// js.DefaultTimeout.
 	JSTimeout time.Duration
+	// MaxJSHeapBytes bounds process heap growth during the JavaScript settle
+	// stage (script execution AND the esbuild module-bundle fetch/parse). Some
+	// real pages ship huge module graphs (GitHub, large SPAs) whose bundling
+	// balloons memory into the gigabytes before any time budget trips; a watchdog
+	// samples the heap and, once growth from the stage's start exceeds this bound,
+	// cancels the stage so it falls back to the already-computed pre-script layout
+	// instead of driving the process toward OOM. Zero selects a sane default; a
+	// negative value disables the guard.
+	MaxJSHeapBytes int64
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)
@@ -98,6 +108,10 @@ func New() *Engine {
 		// initial DOM) while still bounding a pathological page — each vector
 		// rasterisation is bounded work, so 400 caps runaway cost.
 		MaxVectorImages: 400,
+		// A normal page's whole render stays well under a few hundred MB; 768MB of
+		// growth during the script stage means a runaway module bundle, so cut it
+		// off there and keep the good pre-script layout.
+		MaxJSHeapBytes: 768 << 20,
 	}
 }
 
@@ -258,9 +272,15 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// Settle-then-render: run scripts against the real geometry, let them mutate
 	// the DOM / inject <script>/<style>, and iterate cascade→layout to a bounded
 	// fixpoint. A script error never aborts the render; the pass is bounded by a
-	// wall-clock budget and a pass cap, so it can never hang.
+	// wall-clock budget and a pass cap, so it can never hang. A heap watchdog
+	// additionally cancels the whole stage (aborting a runaway module bundle or
+	// script) once memory balloons past MaxJSHeapBytes, so a page like GitHub's
+	// huge module graph falls back to its already-good pre-script layout instead
+	// of driving the process toward OOM.
 	if !e.DisableJS {
-		e.settle(ctx, doc, vpW, vpH, fonts, rp, initialLayout, onStage)
+		sctx, stop := e.heapGuardedContext(ctx)
+		e.settle(sctx, doc, vpW, vpH, fonts, rp, initialLayout, onStage)
+		stop()
 	}
 
 	// A script may have set document.title; re-derive it so RenderInfo reports the
@@ -280,6 +300,51 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 		}
 	}
 	return rp
+}
+
+// heapGuardedContext derives a context from parent that is cancelled once the
+// process heap grows by more than MaxJSHeapBytes from the moment of the call — a
+// runaway-memory backstop for the JavaScript settle stage (script execution and
+// the esbuild module bundle). The returned stop function must be called to
+// release the watchdog; it also cancels the derived context. A negative
+// MaxJSHeapBytes disables the guard (the returned context is a plain cancel
+// child); zero selects the 768MB default.
+func (e *Engine) heapGuardedContext(parent context.Context) (context.Context, func()) {
+	ctx, cancel := context.WithCancel(parent)
+	limit := e.MaxJSHeapBytes
+	if limit == 0 {
+		limit = 768 << 20
+	}
+	if limit < 0 {
+		return ctx, cancel // guard disabled
+	}
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	ceiling := ms.HeapAlloc + uint64(limit)
+	done := make(chan struct{})
+	go func() {
+		t := time.NewTicker(150 * time.Millisecond)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				if m.HeapAlloc > ceiling {
+					cancel() // heap ballooned: abort the settle stage
+					return
+				}
+			}
+		}
+	}()
+	return ctx, func() {
+		close(done)
+		cancel()
+	}
 }
 
 // newCanvas allocates the output image, fills the white base and paints the page
