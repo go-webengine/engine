@@ -50,6 +50,21 @@ func uaDeclarations(tag string) []Declaration {
 	case "th":
 		return []Declaration{{"display", "table-cell"}, {"padding", "1px"},
 			{"font-weight", "bold"}, {"text-align", "center"}}
+	case "center":
+		// The legacy <center> element: a block that centres its inline content and
+		// its definite-width block/table children (see AlignCenterBlocks).
+		return []Declaration{{"display", "block"}, {"text-align", "-webkit-center"}}
+	case "font", "big", "nobr", "wbr", "strike":
+		d := []Declaration{{"display", "inline"}}
+		if tag == "big" {
+			// `larger` ≈ 1.2× the parent size; expressed in em since the engine
+			// resolves font-size against the parent.
+			d = append(d, Declaration{"font-size", "1.2em"})
+		}
+		if tag == "strike" {
+			d = append(d, Declaration{"text-decoration", "line-through"})
+		}
+		return d
 	case "caption":
 		return []Declaration{{"display", "block"}, {"text-align", "center"}}
 	case "p":

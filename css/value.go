@@ -363,6 +363,12 @@ const (
 	AlignCenter
 	// AlignRight right-aligns each line.
 	AlignRight
+	// AlignCenterBlocks centres inline content like AlignCenter and additionally
+	// centres a definite-width block/table child within its container — the legacy
+	// behaviour of the <center> element and the align="center" attribute (browsers'
+	// -moz-center / -webkit-center). A plain text-align:center author rule never
+	// produces it, so standards-mode blocks are unaffected.
+	AlignCenterBlocks
 )
 
 // Edges holds the four sides of a margin or padding box, in pixels.
@@ -597,24 +603,24 @@ func initialStyle() Style {
 // font-family, text-align.
 func inheritFrom(parent Style) Style {
 	return Style{
-		Display:     DisplayInline, // reset (non-inherited)
-		Color:       parent.Color,
-		Background:  Transparent, // reset
-		FontSize:    parent.FontSize,
-		FontWeight:  parent.FontWeight,
-		FontFamily:  parent.FontFamily,
-		Italic:      parent.Italic,      // inherited
-		Width:       Length{Auto: true}, // reset
-		MinWidth:    Length{Auto: true},
-		MaxWidth:    Length{Auto: true},
-		Height:      Length{Auto: true},
-		MinHeight:   Length{Auto: true},
-		MaxHeight:   Length{Auto: true},
-		FlexBasis:   Length{Auto: true},
-		FlexShrink:  1,
-		TextAlign:   parent.TextAlign,  // inherited
-		WhiteSpace:  parent.WhiteSpace, // inherited
-		LineHeight:  parent.LineHeight, // inherited
+		Display:    DisplayInline, // reset (non-inherited)
+		Color:      parent.Color,
+		Background: Transparent, // reset
+		FontSize:   parent.FontSize,
+		FontWeight: parent.FontWeight,
+		FontFamily: parent.FontFamily,
+		Italic:     parent.Italic,      // inherited
+		Width:      Length{Auto: true}, // reset
+		MinWidth:   Length{Auto: true},
+		MaxWidth:   Length{Auto: true},
+		Height:     Length{Auto: true},
+		MinHeight:  Length{Auto: true},
+		MaxHeight:  Length{Auto: true},
+		FlexBasis:  Length{Auto: true},
+		FlexShrink: 1,
+		TextAlign:  parent.TextAlign,  // inherited
+		WhiteSpace: parent.WhiteSpace, // inherited
+		LineHeight: parent.LineHeight, // inherited
 		// list-style-type / list-style-position inherit; list-item does not.
 		ListStyleType:     parent.ListStyleType,
 		ListStylePosition: parent.ListStylePosition,

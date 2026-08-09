@@ -107,6 +107,12 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style
 			add(r.Declarations, precUA, spec)
 		}
 	}
+	// Legacy HTML presentational attributes (width, bgcolor, align, <font> …) map
+	// to declarations at author origin with zero specificity, placed BEFORE any
+	// author stylesheet — so a real CSS rule always overrides them, a UA default
+	// does not. They are added here (ahead of the author-rule loop) so their
+	// cascade order precedes every matched author rule.
+	add(presentationalHints(n), precAuthor, 0)
 	// Author rules whose selectors match, each at its selector's specificity.
 	for _, r := range rules {
 		spec := -1

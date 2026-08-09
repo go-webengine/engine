@@ -399,6 +399,13 @@ func resolveWidths(st *css.Style, cw float64) (contentW, ml, mr float64) {
 		ml, mr = leftover, mrFixed
 	case st.MarginRightAuto:
 		ml, mr = mlFixed, leftover
+	case st.TextAlign == css.AlignCenterBlocks && mlFixed == 0 && mrFixed == 0:
+		// Legacy <center> / align="center": centre a definite-width block within
+		// its container when no explicit margins constrain it.
+		if leftover > 0 {
+			ml = leftover / 2
+			mr = leftover - ml
+		}
 	default:
 		ml, mr = mlFixed, mrFixed+leftover
 	}
@@ -772,7 +779,7 @@ func lineMetrics(line *LineBox, fbH, fbAsc float64) (lineH, baseline, used float
 
 func alignOffset(a css.TextAlign, cw, used float64) float64 {
 	switch a {
-	case css.AlignCenter:
+	case css.AlignCenter, css.AlignCenterBlocks:
 		if cw > used {
 			return (cw - used) / 2
 		}
@@ -788,7 +795,7 @@ func alignOffset(a css.TextAlign, cw, used float64) float64 {
 // [left,right] for a given alignment.
 func alignOffsetIn(a css.TextAlign, left, right, used float64) float64 {
 	switch a {
-	case css.AlignCenter:
+	case css.AlignCenter, css.AlignCenterBlocks:
 		if right-left > used {
 			return left + (right-left-used)/2
 		}
