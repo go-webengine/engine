@@ -38,6 +38,16 @@ import (
 // unaffected.
 
 const (
+	// maxModuleEntryScripts caps how many page-level <script type="module"> entry
+	// points a page may have before the whole bundle stage is skipped. esbuild's
+	// api.Build is a synchronous, essentially uncancellable call, and a large app
+	// (GitHub and other framework SPAs ship a dozen-plus module entries) fans its
+	// import graph out into hundreds of parallel chunk fetches that balloon memory
+	// and time well before any byte/fetch cap trips. Such pages are heavy apps the
+	// engine cannot hydrate anyway and their server-rendered HTML already lays out
+	// fine, so past this threshold we skip bundling entirely rather than risk an
+	// OOM. Small module-using pages (a handful of entries) still bundle.
+	maxModuleEntryScripts = 6
 	// maxModuleFetches caps how many module/import sources one page may pull, so a
 	// pathological graph cannot fan out without bound.
 	maxModuleFetches = 1200
@@ -111,6 +121,13 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 	var stats moduleBundleStats
 	stats.entries = len(entries)
 	if len(entries) == 0 || e.Client == nil {
+		return "", stats, false
+	}
+	// A page with many module entry points is a heavy framework app whose graph
+	// would fan out into an unbounded parallel fetch/parse burst; skip bundling
+	// (its server HTML already renders) rather than risk an OOM.
+	if len(entries) > maxModuleEntryScripts {
+		stats.firstErr = "module bundle skipped: too many entry scripts"
 		return "", stats, false
 	}
 
