@@ -11,13 +11,51 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strings"
+	"sync"
 
 	goimages "github.com/go-images/images"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 )
+
+// imgWorkers is the concurrency bound for image fetch+decode: enough to hide
+// per-image network latency (the dominant cost) without unbounded fan-out.
+func imgWorkers(n int) int {
+	w := min(8, runtime.GOMAXPROCS(0))
+	if w > n {
+		w = n
+	}
+	return w
+}
+
+// parallelDo runs fn over indices [0,n) using a bounded worker pool. fn must
+// write only to its own index i (no shared state), so the result is independent
+// of scheduling and completion order — the determinism the callers rely on. fn
+// is expected to short-circuit on a cancelled context itself.
+func parallelDo(n int, fn func(i int)) {
+	if n == 0 {
+		return
+	}
+	ch := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < imgWorkers(n); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range ch {
+				fn(i)
+			}
+		}()
+	}
+	for i := 0; i < n; i++ {
+		ch <- i
+	}
+	close(ch)
+	wg.Wait()
+}
 
 // loadImages fetches and decodes every <img> in the document (best-effort),
 // returning intrinsic sizes for layout and decoded bitmaps for paint. Images
@@ -48,30 +86,25 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 
 	// Separate budgets: cheap-but-plentiful vector chrome (inline <svg> and
 	// <img src="*.svg">) must not starve the expensive raster content photos.
-	// Each item is charged to its budget when it passes the gate (before any
-	// fetch), so both the fetch and decode work stay bounded even on a page of
-	// only-failing images. Under budget every image is processed exactly as
-	// before.
+	// Each item is charged to its budget when it passes the gate, in DOCUMENT
+	// ORDER, BEFORE any fetch is dispatched — so the accepted set is exactly the
+	// same regardless of the concurrent scheduling below (determinism), and both
+	// fetch and decode work stay bounded even on a page of only-failing images.
 	raster, vector := 0, 0
+	var jobs []*dom.Node
 	for _, n := range reps {
-		// Inline <svg>: serialise the subtree and rasterise it (vector budget).
 		if n.Tag == "svg" {
+			// Inline <svg>: no src, charged to the vector budget.
 			if vector >= e.MaxVectorImages {
 				continue
 			}
 			vector++
-			data := []byte(serializeSVG(n))
-			bmp, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
-			if !ok {
-				continue
-			}
-			sizes[n] = [2]float64{float64(w), float64(h)}
-			bitmaps[n] = bmp
+			jobs = append(jobs, n)
 			continue
 		}
 		src, ok := n.Attribute("src")
 		if !ok {
-			continue
+			continue // a src-less <img> is skipped without charging any budget
 		}
 		// Classify vector vs raster from the src alone so a wall of *.svg icons
 		// spends only the vector budget, never the raster one.
@@ -86,55 +119,95 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 			}
 			raster++
 		}
-		data, ok := e.fetchImageBytes(ctx, doc.URL, src)
-		if !ok {
-			continue
+		jobs = append(jobs, n)
+	}
+
+	// Fetch+decode the accepted set CONCURRENTLY (network latency is the dominant
+	// cost). Each worker writes only its own result slot; the maps are then filled
+	// single-threaded in document order, so the output is byte-identical to the
+	// sequential version for any fixture.
+	type result struct {
+		size [2]float64
+		bmp  image.Image
+		ok   bool
+	}
+	results := make([]result, len(jobs))
+	parallelDo(len(jobs), func(i int) {
+		size, bmp, ok := e.loadOneImage(ctx, doc, sm, viewportW, jobs[i])
+		results[i] = result{size, bmp, ok}
+	})
+	for i, n := range jobs {
+		if results[i].ok {
+			sizes[n] = results[i].size
+			bitmaps[n] = results[i].bmp
 		}
-		// <img src="*.svg"> and data:image/svg+xml: rasterise via the SVG path.
-		if looksLikeSVG(data, src) {
-			bmp, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
-			if !ok {
-				continue
-			}
-			sizes[n] = [2]float64{float64(w), float64(h)}
-			bitmaps[n] = bmp
-			continue
-		}
-		src0, err := goimages.Decode(bytes.NewReader(data))
-		if err != nil {
-			continue
-		}
-		w, h := src0.Bounds().Dx(), src0.Bounds().Dy()
-		if w <= 0 || h <= 0 {
-			continue
-		}
-		// Apply a single-axis CSS width/height as a browser does: the specified
-		// axis is used and the other is scaled by the intrinsic aspect ratio (so
-		// e.g. a wide logo constrained to height:1.5rem is ~72px wide, not its
-		// full intrinsic width). Both axes set uses both; neither keeps intrinsic.
-		if cw, ch, ok := cssImageSize(sm[n], w, h); ok {
-			if cw != w || ch != h {
-				if scaled, err := goimages.Resize(src0, cw, ch, goimages.Bilinear); err == nil {
-					src0 = scaled
-					w, h = cw, ch
-				}
-			}
-		}
-		// Scale down to fit the viewport width, preserving aspect ratio.
-		if w > viewportW && viewportW > 0 {
-			nh := int(float64(h) * float64(viewportW) / float64(w))
-			if nh < 1 {
-				nh = 1
-			}
-			if scaled, err := goimages.Resize(src0, viewportW, nh, goimages.Bilinear); err == nil {
-				src0 = scaled
-				w, h = viewportW, nh
-			}
-		}
-		sizes[n] = [2]float64{float64(w), float64(h)}
-		bitmaps[n] = src0
 	}
 	return sizes, bitmaps
+}
+
+// loadOneImage fetches and decodes one accepted replaced element (inline <svg>,
+// raster <img>, or <img src="*.svg">), returning its intrinsic size and bitmap.
+// ok=false means skip it (no maps entry) — a cancelled context, a failed fetch,
+// or an undecodable payload. It is pure with respect to its node, so it is safe
+// to run concurrently for distinct nodes.
+func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int, n *dom.Node) (size [2]float64, bmp image.Image, ok bool) {
+	if ctx.Err() != nil {
+		return size, nil, false // respect cancellation before any work
+	}
+	// Inline <svg>: serialise the subtree and rasterise it.
+	if n.Tag == "svg" {
+		data := []byte(serializeSVG(n))
+		b, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
+		if !ok {
+			return size, nil, false
+		}
+		return [2]float64{float64(w), float64(h)}, b, true
+	}
+	src, _ := n.Attribute("src") // presence was checked in the gate
+	data, ok := e.fetchImageBytes(ctx, doc.URL, src)
+	if !ok {
+		return size, nil, false
+	}
+	// <img src="*.svg"> and data:image/svg+xml: rasterise via the SVG path.
+	if looksLikeSVG(data, src) {
+		b, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
+		if !ok {
+			return size, nil, false
+		}
+		return [2]float64{float64(w), float64(h)}, b, true
+	}
+	src0, err := goimages.Decode(bytes.NewReader(data))
+	if err != nil {
+		return size, nil, false
+	}
+	w, h := src0.Bounds().Dx(), src0.Bounds().Dy()
+	if w <= 0 || h <= 0 {
+		return size, nil, false
+	}
+	// Apply a single-axis CSS width/height as a browser does: the specified axis
+	// is used and the other is scaled by the intrinsic aspect ratio (so e.g. a
+	// wide logo constrained to height:1.5rem is ~72px wide, not its full intrinsic
+	// width). Both axes set uses both; neither keeps intrinsic.
+	if cw, ch, ok := cssImageSize(sm[n], w, h); ok {
+		if cw != w || ch != h {
+			if scaled, err := goimages.Resize(src0, cw, ch, goimages.Bilinear); err == nil {
+				src0 = scaled
+				w, h = cw, ch
+			}
+		}
+	}
+	// Scale down to fit the viewport width, preserving aspect ratio.
+	if w > viewportW && viewportW > 0 {
+		nh := int(float64(h) * float64(viewportW) / float64(w))
+		if nh < 1 {
+			nh = 1
+		}
+		if scaled, err := goimages.Resize(src0, viewportW, nh, goimages.Bilinear); err == nil {
+			src0 = scaled
+			w, h = viewportW, nh
+		}
+	}
+	return [2]float64{float64(w), float64(h)}, src0, true
 }
 
 // loadBackgroundImages fetches and decodes every distinct CSS
@@ -168,13 +241,14 @@ func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css
 		return nil
 	}
 
-	out := map[string]image.Image{}
-	// Same raster/vector budget split as loadImages, charged before the fetch so
-	// a wall of decorative SVG backgrounds never spends the raster budget (and
-	// the fetch work stays bounded even when every url fails to decode). Vector
-	// backgrounds are not rasterised here (only raster formats decode), but they
-	// are still gated so they cannot exhaust the raster budget.
+	// Same raster/vector budget split as loadImages, charged in document order
+	// BEFORE any fetch so a wall of decorative SVG backgrounds never spends the
+	// raster budget and the accepted set is independent of the concurrent
+	// scheduling below (and the fetch work stays bounded even when every url fails
+	// to decode). Vector backgrounds are not rasterised here (only raster formats
+	// decode), but they are still gated so they cannot exhaust the raster budget.
 	raster, vector := 0, 0
+	var accepted []string
 	for _, raw := range urls {
 		if srcLooksLikeSVG(raw) {
 			if vector >= e.MaxVectorImages {
@@ -187,23 +261,47 @@ func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css
 			}
 			raster++
 		}
-		data, ok := e.fetchImageBytes(ctx, doc.URL, raw)
-		if !ok {
-			continue
+		accepted = append(accepted, raw)
+	}
+
+	// Fetch+decode the accepted set CONCURRENTLY; each worker writes only its own
+	// result slot and the map is filled single-threaded in document order, so the
+	// output is byte-identical to the sequential version.
+	results := make([]image.Image, len(accepted))
+	parallelDo(len(accepted), func(i int) {
+		results[i] = e.loadOneBackground(ctx, doc, accepted[i])
+	})
+	out := map[string]image.Image{}
+	for i, raw := range accepted {
+		if results[i] != nil {
+			out[raw] = results[i]
 		}
-		img, err := goimages.Decode(bytes.NewReader(data))
-		if err != nil {
-			continue
-		}
-		if img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
-			continue
-		}
-		out[raw] = img
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// loadOneBackground fetches and decodes one accepted background-image url,
+// returning nil on a cancelled context, a failed fetch, or an undecodable /
+// zero-size payload. Safe to run concurrently for distinct urls.
+func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw string) image.Image {
+	if ctx.Err() != nil {
+		return nil
+	}
+	data, ok := e.fetchImageBytes(ctx, doc.URL, raw)
+	if !ok {
+		return nil
+	}
+	img, err := goimages.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil
+	}
+	if img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
+		return nil
+	}
+	return img
 }
 
 // cssImageSize resolves the used pixel dimensions of an image given its style

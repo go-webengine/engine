@@ -6,9 +6,14 @@
 // incrementally; the engine emulates that with a small number of fully-styled
 // frames (external CSS already applied, so no unstyled flash):
 //
-//   - "initial": the first layout, right after external sheets are fetched and
-//     cascaded and images placed, BEFORE the JS settle loop — the big
-//     perceived-latency win on script-heavy pages.
+//   - "initial": the TEXT-FIRST frame — external sheets fetched and cascaded and
+//     the page laid out, but BEFORE any image is fetched (image boxes reserve
+//     from their attr/CSS sizes). The big perceived-latency win: the styled text
+//     paints without waiting on the slow, network-bound image fetch.
+//   - "images": after the images/background images are loaded and the page is
+//     re-laid-out with their real intrinsic sizes (deduped against "initial" by
+//     geometry — a page with no images that moved nothing yields just
+//     initial+final).
 //   - "settle": after each settle pass that visibly changed the geometry
 //     (deduped; bounded by the settle pass cap) — the interruptible-reflow
 //     analogue.
@@ -31,8 +36,8 @@ import (
 
 // ProgressiveFrame is one staged snapshot delivered to a RenderProgressive
 // callback. Img is an independent allocation; Links matches RenderWithLinks's
-// shape; Stage is "initial" | "settle" | "final"; Final is true exactly once,
-// on the last frame.
+// shape; Stage is "initial" | "images" | "settle" | "final"; Final is true
+// exactly once, on the last frame.
 type ProgressiveFrame struct {
 	Img   *image.RGBA
 	Links []Link
@@ -65,12 +70,13 @@ func (e *Engine) RenderDocumentProgressive(ctx context.Context, doc *Document, v
 		haveLast bool
 	)
 	// emit paints the CURRENT pass into a FRESH canvas, gathers its links and
-	// delivers one frame. Intermediate "settle" frames whose geometry is
-	// unchanged from the previous emitted frame are skipped; "initial" and
-	// "final" always emit (so even a trivial page yields initial+final).
+	// delivers one frame. Intermediate frames ("images" and "settle") whose
+	// geometry is unchanged from the previous emitted frame are skipped; "initial"
+	// and "final" always emit (so even a trivial page yields initial+final, and a
+	// page with no images collapses the "images" frame into it).
 	emit := func(stage string, rp *renderPass, final bool) {
 		sig := geomSig(rp)
-		if stage == "settle" && haveLast && sig == lastSig {
+		if stage != "initial" && !final && haveLast && sig == lastSig {
 			return
 		}
 		lastSig, haveLast = sig, true
