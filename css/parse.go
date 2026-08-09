@@ -329,6 +329,10 @@ func (s *Style) apply(d Declaration, emRef float64) {
 			s.TextAlign = AlignCenter
 		case "right", "end":
 			s.TextAlign = AlignRight
+		case "-webkit-center", "-moz-center":
+			// Legacy centre-including-blocks, emitted by the UA rule for <center>
+			// and by the align="center" presentational hint.
+			s.TextAlign = AlignCenterBlocks
 		}
 	case "white-space":
 		switch lv {
