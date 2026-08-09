@@ -137,28 +137,92 @@ func (e *Engine) Fetch(ctx context.Context, rawurl string) (*Document, error) {
 	}, nil
 }
 
-// get performs the HTTP GET, returning body, final URL and content-type.
+// fallbackUserAgent identifies the engine honestly for the plain-client retry
+// used when the browser-mimicking fetch is bounced by a bot interstitial.
+const fallbackUserAgent = "go-webengine/1.0 (+https://github.com/go-webengine)"
+
+// plainClient is a stock net/http client (Go's own TLS fingerprint, no cookie
+// jar) used only for the bot-challenge fallback: a public page fronted by a
+// Cloudflare-style check that challenges the browser-like primary client is
+// commonly served in full to a plain, non-browser client (the content curl
+// gets). Its timeout matches the browser client's default.
+var plainClient = &http.Client{Timeout: 30 * time.Second}
+
+// get performs the HTTP GET, returning body, final URL and content-type. If the
+// primary (browser-mimicking) client is served a bot-challenge interstitial —
+// a false positive that renders as a "security verification / browser not
+// supported" page instead of the real content — it retries once with a plain,
+// honestly-identified client, which such checks routinely serve the real public
+// page. The retry is used only when it actually yields non-challenge content.
 func (e *Engine) get(ctx context.Context, rawurl string) ([]byte, string, string, error) {
+	body, final, ctype, status, hdr, err := doGet(ctx, e.Client, rawurl, e.UserAgent)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if isBotChallenge(status, hdr, body) {
+		if b2, f2, c2, s2, h2, e2 := doGet(ctx, plainClient, rawurl, fallbackUserAgent); e2 == nil && s2 < 400 && !isBotChallenge(s2, h2, b2) {
+			return b2, f2, c2, nil
+		}
+	}
+	return body, final, ctype, nil
+}
+
+// doGet issues one GET through client, returning the (size-limited) body, the
+// post-redirect URL, the content-type, the status code and the response headers.
+func doGet(ctx context.Context, client *http.Client, rawurl, userAgent string) (body []byte, final, ctype string, status int, hdr http.Header, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawurl, nil)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", 0, nil, err
 	}
-	req.Header.Set("User-Agent", e.UserAgent)
+	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	resp, err := e.Client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", 0, nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	body, err = io.ReadAll(io.LimitReader(resp.Body, 32<<20))
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", 0, nil, err
 	}
-	final := rawurl
+	final = rawurl
 	if resp.Request != nil && resp.Request.URL != nil {
 		final = resp.Request.URL.String()
 	}
-	return body, final, resp.Header.Get("Content-Type"), nil
+	return body, final, resp.Header.Get("Content-Type"), resp.StatusCode, resp.Header, nil
+}
+
+// botChallengeMarkers are body fragments (lower-case) that identify a
+// Cloudflare-style anti-bot interstitial rather than real page content.
+var botChallengeMarkers = [][]byte{
+	[]byte("performing security verification"),
+	[]byte("just a moment"),
+	[]byte("cf-browser-verification"),
+	[]byte("challenge-platform"),
+	[]byte("browser not supported"),
+	[]byte("attention required"),
+	[]byte("enable javascript and cookies to continue"),
+}
+
+// isBotChallenge reports whether a response is an anti-bot interstitial (so the
+// caller can retry with a plain client). It is deliberately narrow: only a 403
+// or 503 whose headers or body carry a known challenge marker qualifies, so a
+// normal 200 page that merely mentions "security verification" in its text is
+// never mistaken for one.
+func isBotChallenge(status int, hdr http.Header, body []byte) bool {
+	if status != http.StatusForbidden && status != http.StatusServiceUnavailable {
+		return false
+	}
+	if hdr != nil && hdr.Get("Cf-Mitigated") != "" {
+		return true
+	}
+	lb := bytes.ToLower(body)
+	for _, m := range botChallengeMarkers {
+		if bytes.Contains(lb, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // decodeCharset converts body to UTF-8, honouring the Content-Type charset and
