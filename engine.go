@@ -84,6 +84,13 @@ type Engine struct {
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)
+	// Backdrop is the base colour painted under a page before its own background.
+	// The zero value (transparent) selects the default white paper. A themed host
+	// (e.g. a reader in dark mode) sets it to its surface colour so a page that
+	// declares no background of its own — most plainly a bare image — is framed to
+	// match instead of flashing white. A page that DOES declare a background still
+	// paints its own over this, so normal sites are unchanged.
+	Backdrop css.Color
 	// MetaFallback, when true, renders a clean readable card synthesised from a
 	// page's OpenGraph/meta tags (og:title/og:description/og:image, <title>) as a
 	// LAST RESORT — only when the real render is empty (a JavaScript SPA the engine
@@ -252,7 +259,7 @@ func (e *Engine) RenderDocument(ctx context.Context, doc *Document, viewport ima
 	fonts := paint.NewFonts()
 	vpW, vpH := viewportSize(viewport)
 	rp := e.renderCore(ctx, doc, vpW, vpH, fonts)
-	img := newCanvas(doc, rp, viewport, vpW)
+	img := e.newCanvas(doc, rp, viewport, vpW)
 	paint.PaintFull(img, rp.box, fonts, rp.imgs, rp.bgImgs)
 	return img, renderInfo(doc, rp), nil
 }
@@ -415,7 +422,7 @@ func (e *Engine) heapGuardedContext(parent context.Context) (context.Context, fu
 // backdrop (body/html background) over the whole viewport, matching a browser.
 // The height is grown to the laid-out content, at least the viewport height, and
 // clamped to a minimum of one pixel.
-func newCanvas(doc *Document, rp *renderPass, viewport image.Rectangle, vpW int) *image.RGBA {
+func (e *Engine) newCanvas(doc *Document, rp *renderPass, viewport image.Rectangle, vpW int) *image.RGBA {
 	canvasH := viewport.Dy()
 	if int(rp.height) > canvasH {
 		canvasH = int(rp.height)
@@ -424,7 +431,12 @@ func newCanvas(doc *Document, rp *renderPass, viewport image.Rectangle, vpW int)
 		canvasH = 1
 	}
 	img := image.NewRGBA(image.Rect(0, 0, vpW, canvasH))
-	fillWhite(img)
+	// Base paper: the configured Backdrop when opaque, else white.
+	if e.Backdrop.A > 0 {
+		fillColor(img, e.Backdrop)
+	} else {
+		fillWhite(img)
+	}
 	if bg, ok := pageBackground(doc.Root, rp.sm); ok {
 		fillColor(img, bg)
 	}

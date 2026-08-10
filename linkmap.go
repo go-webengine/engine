@@ -126,7 +126,7 @@ func (e *Engine) RenderDocumentWithLinks(ctx context.Context, doc *Document, vie
 	// script that injects, moves or removes links is honoured) and the returned
 	// image is identical to Render's for the same document.
 	rp := e.renderCore(ctx, doc, vpW, vpH, fonts)
-	img := newCanvas(doc, rp, viewport, vpW)
+	img := e.newCanvas(doc, rp, viewport, vpW)
 	paint.PaintFull(img, rp.box, fonts, rp.imgs, rp.bgImgs)
 
 	links := LinksFromBox(rp.box, doc.URL)
