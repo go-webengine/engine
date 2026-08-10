@@ -128,6 +128,23 @@ func (e *Engine) Fetch(ctx context.Context, rawurl string) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Standalone-image response: the URL is a bare raster image (image/png,
+	// image/jpeg, …), not an HTML page. There is no markup to parse — feeding the
+	// image bytes to the HTML parser produces a garbage/empty DOM — so synthesise
+	// a document that displays the image at the full viewport width, matching how
+	// a browser presents a direct image link. SVG is excluded: a fetched SVG
+	// document already renders through the inline-<svg> path. This runs before the
+	// HTML parse and is shared by every entry point (Render, RenderProgressive,
+	// Screenshot), so all of them get the image document.
+	if mediaType, ok, _ := imageContentType(ctype); ok {
+		title := imageDocTitle(finalURL)
+		src := imageDocumentHTML(mediaType, body, finalURL, title)
+		root, perr := dom.Parse(src)
+		if perr != nil {
+			return nil, perr
+		}
+		return &Document{URL: finalURL, Title: dom.Title(root), Root: root, HTML: src}, nil
+	}
 	utf8, err := decodeCharset(body, ctype)
 	if err != nil {
 		utf8 = body // fall back to raw bytes on decode failure

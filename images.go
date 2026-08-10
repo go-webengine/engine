@@ -196,6 +196,24 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 			}
 		}
 	}
+	// A PERCENTAGE CSS width sizes the image to that fraction of the viewport,
+	// scaling UP as well as down (a browser's `width:100%`). The layout engine
+	// draws a replaced element at exactly the size returned here, so an image
+	// meant to fill its container — most plainly a standalone image document,
+	// synthesised as `<img style="width:100%">` — must be scaled to the viewport
+	// here; otherwise a small image would render at its native size instead of
+	// spanning the pane. cssImageSize handles only DEFINITE px sizes, so a
+	// percentage is resolved separately, against the viewport width.
+	if pw, ok := percentImageWidth(sm[n], viewportW); ok && pw != w {
+		nh := int(float64(h) * float64(pw) / float64(w))
+		if nh < 1 {
+			nh = 1
+		}
+		if scaled, err := goimages.Resize(src0, pw, nh, goimages.Bilinear); err == nil {
+			src0 = scaled
+			w, h = pw, nh
+		}
+	}
 	// Scale down to fit the viewport width, preserving aspect ratio.
 	if w > viewportW && viewportW > 0 {
 		nh := int(float64(h) * float64(viewportW) / float64(w))
@@ -331,6 +349,21 @@ func cssImageSize(st *css.Style, iw, ih int) (w, h int, ok bool) {
 	default:
 		return 0, 0, false
 	}
+}
+
+// percentImageWidth resolves a PERCENTAGE CSS width on an image against the
+// viewport width, returning the target pixel width (>= 1). It reports false
+// when the style has no percentage width, when the percentage is non-positive,
+// or when the viewport width is unknown — so only an explicit `width:N%` opts
+// in and everything else keeps its intrinsic/definite sizing.
+func percentImageWidth(st *css.Style, viewportW int) (int, bool) {
+	if st == nil || viewportW <= 0 {
+		return 0, false
+	}
+	if !st.Width.IsPercent || st.Width.Percent <= 0 {
+		return 0, false
+	}
+	return iround(st.Width.Percent * float64(viewportW)), true
 }
 
 // iround rounds a non-negative float to the nearest int (>= 1).
