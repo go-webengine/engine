@@ -80,7 +80,7 @@ func (e *Engine) RenderDocumentProgressive(ctx context.Context, doc *Document, v
 			return
 		}
 		lastSig, haveLast = sig, true
-		img := newCanvas(doc, rp, viewport, vpW)
+		img := e.newCanvas(doc, rp, viewport, vpW)
 		paint.PaintFull(img, rp.box, fonts, rp.imgs, rp.bgImgs)
 		onFrame(ProgressiveFrame{
 			Img:   img,
