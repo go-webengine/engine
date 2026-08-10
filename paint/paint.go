@@ -110,7 +110,8 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 	}
 	// 6. Inline content.
 	for _, line := range box.Lines {
-		for _, it := range line.Items {
+		for i, it := range line.Items {
+			paintInlineBackground(pp, box, line, i, inner)
 			paintItem(dst, it, f, imgs, inner)
 		}
 	}
@@ -612,6 +613,40 @@ func markerRect(m *layout.Marker) painter.Rect {
 		W: int(math.Round(m.W)),
 		H: int(math.Round(m.H)),
 	}
+}
+
+// paintInlineBackground fills the solid background colour of an inline-level
+// element behind one of its inline items (a word). A block box paints its own
+// background in step 2, but an inline element — a <span style="background:…">
+// or a display:inline-block "pill" — owns no block box of its own, so without
+// this its background never paints; any light text the author set against that
+// background (the very common white-text-on-a-coloured-label pattern) then lands
+// as light-on-white and vanishes entirely.
+//
+// The guard it.Style != box.Style skips the block's OWN direct text, which
+// carries the block's Style pointer and whose background step 2 has already
+// painted — so only genuine inline-descendant backgrounds are drawn here and a
+// plain block with a background is never double-painted. When the previous item
+// on the line comes from the same originating element, the space between the two
+// words is internal to that element, so it is covered too and a multi-word
+// inline background paints as one continuous band.
+func paintInlineBackground(pp *painter.PixelPainter, box *layout.Box, line *layout.LineBox, i int, clip image.Rectangle) {
+	it := line.Items[i]
+	if it.Style == nil || it.Style.Background.A == 0 || it.Image != nil || it.LineBreak {
+		return
+	}
+	if box.Style != nil && it.Style == box.Style {
+		return // direct text of this block: its background is the box's own
+	}
+	left := int(it.X)
+	if i > 0 {
+		if prev := line.Items[i-1]; prev.Node != nil && prev.Node == it.Node {
+			left = int(it.X - it.SpaceBefore) // internal space: extend the band left
+		}
+	}
+	right := int(it.X + it.Width)
+	r := painter.Rect{X: left, Y: int(it.Y), W: right - left, H: int(it.LineHeight)}
+	fillRectClipped(pp, r, it.Style.Background, clip)
 }
 
 func paintItem(dst *image.RGBA, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, clip image.Rectangle) {
