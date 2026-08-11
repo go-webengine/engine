@@ -51,9 +51,24 @@ type RenderInfo struct {
 }
 
 // Engine holds the HTTP client and render configuration.
+// ImageCache is an optional byte cache the engine consults before downloading a
+// remote image, and populates after a successful download. A host wires it to a
+// persistent (e.g. on-disk) cache so repeated renders of the same page — or of
+// any page sharing an image — reuse the bytes instead of re-fetching over the
+// network. Keys are absolute image URLs. Implementations must be safe for
+// concurrent use (the engine loads a page's images concurrently).
+type ImageCache interface {
+	Get(url string) ([]byte, bool)
+	Put(url string, data []byte)
+}
+
 type Engine struct {
 	Client    *http.Client
 	UserAgent string
+	// ImageCache, when non-nil, is consulted before every remote image download
+	// and populated after each successful one, so a host can serve repeated
+	// renders from a persistent cache. Nil (the default) fetches every time.
+	ImageCache ImageCache
 	// MaxImages bounds how many RASTER (non-SVG) <img>/background images are
 	// fetched and decoded per render — the expensive network + large-decode work.
 	MaxImages int

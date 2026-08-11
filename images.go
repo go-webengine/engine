@@ -386,6 +386,13 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 	if !ok || !(strings.HasPrefix(abs, "http://") || strings.HasPrefix(abs, "https://")) {
 		return nil, false
 	}
+	// A configured cache serves a previously-fetched image with no network, so a
+	// re-render (or another page using the same asset) is instant.
+	if e.ImageCache != nil {
+		if data, ok := e.ImageCache.Get(abs); ok {
+			return data, true
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, abs, nil)
 	if err != nil {
 		return nil, false
@@ -402,6 +409,9 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, false
+	}
+	if e.ImageCache != nil {
+		e.ImageCache.Put(abs, data)
 	}
 	return data, true
 }
