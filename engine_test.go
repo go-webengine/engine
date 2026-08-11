@@ -8,8 +8,12 @@ import (
 	"context"
 	"encoding/base64"
 	"image"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -250,6 +254,53 @@ func TestFetchImageBytesSchemes(t *testing.T) {
 	// Empty/unresolvable src rejected.
 	if _, ok := e.fetchImageBytes(context.Background(), "https://a/", "   "); ok {
 		t.Error("empty src should be rejected")
+	}
+}
+
+// mapImageCache is a tiny in-memory ImageCache for the hook test.
+type mapImageCache struct {
+	mu sync.Mutex
+	m  map[string][]byte
+}
+
+func (c *mapImageCache) Get(url string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	b, ok := c.m[url]
+	return b, ok
+}
+func (c *mapImageCache) Put(url string, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m[url] = data
+}
+
+func TestFetchImageBytesUsesCache(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Write([]byte("PNGDATA"))
+	}))
+	defer srv.Close()
+
+	e := New()
+	e.Client = srv.Client()
+	e.ImageCache = &mapImageCache{m: map[string][]byte{}}
+	ctx := context.Background()
+
+	// Miss → downloads and populates the cache.
+	if b, ok := e.fetchImageBytes(ctx, srv.URL+"/", srv.URL+"/a.png"); !ok || string(b) != "PNGDATA" {
+		t.Fatalf("first fetch = %q %v", b, ok)
+	}
+	if atomic.LoadInt32(&hits) != 1 {
+		t.Fatalf("first fetch hits = %d, want 1", hits)
+	}
+	// Hit → served from the cache with no network.
+	if b, ok := e.fetchImageBytes(ctx, srv.URL+"/", srv.URL+"/a.png"); !ok || string(b) != "PNGDATA" {
+		t.Fatalf("cached fetch = %q %v", b, ok)
+	}
+	if n := atomic.LoadInt32(&hits); n != 1 {
+		t.Fatalf("second fetch hit the network (%d requests); cache should have served it", n)
 	}
 }
 
