@@ -4,7 +4,6 @@
 package engine
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"image"
@@ -15,11 +14,37 @@ import (
 	"strings"
 	"sync"
 
-	goimages "github.com/go-images/images"
+	"github.com/go-gfx/gfx/codec"
+	"github.com/go-gfx/gfx/raster"
+	"github.com/go-gfx/gfx/resample"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 )
+
+// resampleMode maps a computed style's image-rendering to a go-gfx resampling
+// filter. The default is Bicubic (a smooth, antialiasing Keys/Catmull-Rom
+// resample — sharp on enlargement, low-pass on reduction); `image-rendering:
+// pixelated`/`crisp-edges` opts into Nearest for hard-edged pixel art.
+func resampleMode(st *css.Style) resample.Mode {
+	if st != nil && st.ImageRendering == css.IRPixelated {
+		return resample.Nearest
+	}
+	return resample.Bicubic
+}
+
+// resizeRaster scales src to w×h with mode, filtering colour in premultiplied-
+// alpha space so a transparent pixel's colour cannot bleed into the visible
+// edge of a cut-out (a logo/icon fringe). It falls back to the unscaled source
+// when go-gfx rejects the target (non-positive dimensions), so a caller need not
+// re-check what it already validated.
+func resizeRaster(src *raster.Image, w, h int, mode resample.Mode) *raster.Image {
+	out, err := resample.ResizePremultiplied(src, w, h, mode)
+	if err != nil {
+		return src
+	}
+	return out
+}
 
 // imgWorkers is the concurrency bound for image fetch+decode: enough to hide
 // per-image network latency (the dominant cost) without unbounded fan-out.
@@ -176,24 +201,23 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 		}
 		return [2]float64{float64(w), float64(h)}, b, true
 	}
-	src0, err := goimages.Decode(bytes.NewReader(data))
+	src0, err := codec.Decode(data)
 	if err != nil {
 		return size, nil, false
 	}
-	w, h := src0.Bounds().Dx(), src0.Bounds().Dy()
+	w, h := src0.W, src0.H
 	if w <= 0 || h <= 0 {
 		return size, nil, false
 	}
+	mode := resampleMode(sm[n])
 	// Apply a single-axis CSS width/height as a browser does: the specified axis
 	// is used and the other is scaled by the intrinsic aspect ratio (so e.g. a
 	// wide logo constrained to height:1.5rem is ~72px wide, not its full intrinsic
 	// width). Both axes set uses both; neither keeps intrinsic.
 	if cw, ch, ok := cssImageSize(sm[n], w, h); ok {
 		if cw != w || ch != h {
-			if scaled, err := goimages.Resize(src0, cw, ch, goimages.Bilinear); err == nil {
-				src0 = scaled
-				w, h = cw, ch
-			}
+			src0 = resizeRaster(src0, cw, ch, mode)
+			w, h = cw, ch
 		}
 	}
 	// A PERCENTAGE CSS width sizes the image to that fraction of the viewport,
@@ -209,10 +233,8 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 		if nh < 1 {
 			nh = 1
 		}
-		if scaled, err := goimages.Resize(src0, pw, nh, goimages.Bilinear); err == nil {
-			src0 = scaled
-			w, h = pw, nh
-		}
+		src0 = resizeRaster(src0, pw, nh, mode)
+		w, h = pw, nh
 	}
 	// Scale down to fit the viewport width, preserving aspect ratio.
 	if w > viewportW && viewportW > 0 {
@@ -220,12 +242,10 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 		if nh < 1 {
 			nh = 1
 		}
-		if scaled, err := goimages.Resize(src0, viewportW, nh, goimages.Bilinear); err == nil {
-			src0 = scaled
-			w, h = viewportW, nh
-		}
+		src0 = resizeRaster(src0, viewportW, nh, mode)
+		w, h = viewportW, nh
 	}
-	return [2]float64{float64(w), float64(h)}, src0, true
+	return [2]float64{float64(w), float64(h)}, src0.ToNRGBA(), true
 }
 
 // loadBackgroundImages fetches and decodes every distinct CSS
@@ -312,14 +332,14 @@ func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw strin
 	if !ok {
 		return nil
 	}
-	img, err := goimages.Decode(bytes.NewReader(data))
+	img, err := codec.Decode(data)
 	if err != nil {
 		return nil
 	}
-	if img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
+	if img.W <= 0 || img.H <= 0 {
 		return nil
 	}
-	return img
+	return img.ToNRGBA()
 }
 
 // cssImageSize resolves the used pixel dimensions of an image given its style

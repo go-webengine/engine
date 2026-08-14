@@ -203,6 +203,26 @@ func TestApplyProperties(t *testing.T) {
 	if s.WhiteSpace != WSNormal {
 		t.Error("white-space normal")
 	}
+	for _, kw := range []string{"pixelated", "crisp-edges", "-webkit-optimize-contrast"} {
+		s.ImageRendering = IRAuto
+		apply("image-rendering", kw, 16)
+		if s.ImageRendering != IRPixelated {
+			t.Errorf("image-rendering %q should be pixelated", kw)
+		}
+	}
+	for _, kw := range []string{"auto", "smooth", "high-quality", "optimizeQuality"} {
+		s.ImageRendering = IRPixelated
+		apply("image-rendering", kw, 16)
+		if s.ImageRendering != IRAuto {
+			t.Errorf("image-rendering %q should be auto", kw)
+		}
+	}
+	// An unrecognised keyword leaves the value untouched.
+	s.ImageRendering = IRPixelated
+	apply("image-rendering", "bogus", 16)
+	if s.ImageRendering != IRPixelated {
+		t.Error("unknown image-rendering keyword should be ignored")
+	}
 	apply("width", "50%", 16)
 	if !s.Width.IsPercent || s.Width.Percent != 0.5 {
 		t.Errorf("width = %v", s.Width)

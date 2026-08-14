@@ -7,6 +7,9 @@ import (
 	"image"
 	"math"
 
+	"github.com/go-gfx/gfx/raster"
+	"github.com/go-gfx/gfx/resample"
+
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 	"github.com/go-webengine/engine/layout"
@@ -259,7 +262,7 @@ func paintBackgroundLayers(dst *image.RGBA, box *layout.Box, rad int, bgImgs map
 			size := nthSize(st.BackgroundSize, i)
 			pos := nthPosition(st.BackgroundPosition, i)
 			rep := nthRepeat(st.BackgroundRepeat, i)
-			paintBgBitmap(dst, bx, rad, src, size, pos, rep, clip)
+			paintBgBitmap(dst, bx, rad, src, size, pos, rep, clip, st)
 		}
 	}
 }
@@ -289,41 +292,73 @@ func paintGradient(dst *image.RGBA, bx image.Rectangle, rad int, g *css.Gradient
 
 // paintBgBitmap paints a decoded background bitmap into the box rect honouring
 // background-size, background-position and background-repeat, clipped to the
-// rounded rect.
-func paintBgBitmap(dst *image.RGBA, bx image.Rectangle, rad int, src image.Image, size css.BgSize, pos css.BgPosition, rep css.BgRepeat, clip image.Rectangle) {
+// rounded rect. The tile is resampled ONCE to its drawn pixel size with a
+// high-quality filter (see scaleTile) and then stamped, so the image on screen
+// is antialiased rather than the nearest-neighbour blocks a per-pixel sampler
+// would produce.
+func paintBgBitmap(dst *image.RGBA, bx image.Rectangle, rad int, src image.Image, size css.BgSize, pos css.BgPosition, rep css.BgRepeat, clip image.Rectangle, st *css.Style) {
 	iw, ih := src.Bounds().Dx(), src.Bounds().Dy()
 	if iw <= 0 || ih <= 0 {
 		return
 	}
 	bw, bh := float64(bx.Dx()), float64(bx.Dy())
 	dw, dh := bgTileSize(size, float64(iw), float64(ih), bw, bh)
-	if dw < 1 {
-		dw = 1
+	tw, th := int(math.Round(dw)), int(math.Round(dh))
+	if tw < 1 {
+		tw = 1
 	}
-	if dh < 1 {
-		dh = 1
+	if th < 1 {
+		th = 1
 	}
+	// Resample the source to the drawn tile size once, up front (bicubic by
+	// default; nearest for image-rendering:pixelated). Every stamp below is then
+	// a plain 1:1 copy — the resampling quality lives here, not in the blitter.
+	tile := scaleTile(src, tw, th, bgMode(st))
 	// Position: percentage aligns the image's p% point to the box's p% point.
-	ox := resolvePos(pos.X, bw-dw)
-	oy := resolvePos(pos.Y, bh-dh)
+	ox := resolvePos(pos.X, bw-float64(tw))
+	oy := resolvePos(pos.Y, bh-float64(th))
 	// Repeat: compute the tile index range covering the box.
 	iMin, iMax := 0, 0
 	jMin, jMax := 0, 0
 	if rep == css.RepeatBoth || rep == css.RepeatX {
-		iMin = int(math.Floor((0 - ox) / dw))
-		iMax = int(math.Ceil((bw - ox) / dw))
+		iMin = int(math.Floor((0 - ox) / float64(tw)))
+		iMax = int(math.Ceil((bw - ox) / float64(tw)))
 	}
 	if rep == css.RepeatBoth || rep == css.RepeatY {
-		jMin = int(math.Floor((0 - oy) / dh))
-		jMax = int(math.Ceil((bh - oy) / dh))
+		jMin = int(math.Floor((0 - oy) / float64(th)))
+		jMax = int(math.Ceil((bh - oy) / float64(th)))
 	}
 	for j := jMin; j <= jMax; j++ {
 		for i := iMin; i <= iMax; i++ {
-			tileX := float64(bx.Min.X) + ox + float64(i)*dw
-			tileY := float64(bx.Min.Y) + oy + float64(j)*dh
-			blitScaledClipped(dst, src, tileX, tileY, dw, dh, bx, rad, clip)
+			tileX := int(math.Round(float64(bx.Min.X) + ox + float64(i*tw)))
+			tileY := int(math.Round(float64(bx.Min.Y) + oy + float64(j*th)))
+			blitTileClipped(dst, tile, tileX, tileY, bx, rad, clip)
 		}
 	}
+}
+
+// bgMode maps a computed style's image-rendering to a resampling filter for
+// background images: bicubic (smooth) by default, nearest for pixelated.
+func bgMode(st *css.Style) resample.Mode {
+	if st != nil && st.ImageRendering == css.IRPixelated {
+		return resample.Nearest
+	}
+	return resample.Bicubic
+}
+
+// scaleTile returns src resampled to w×h using mode, in premultiplied-alpha
+// space so a transparent pixel's colour does not bleed into a cut-out's edge.
+// It returns src unchanged when it is already w×h (the common repeat/auto case),
+// and falls back to src if go-gfx rejects the size (defensive: w,h are >= 1).
+func scaleTile(src image.Image, w, h int, mode resample.Mode) image.Image {
+	if src.Bounds().Dx() == w && src.Bounds().Dy() == h {
+		return src
+	}
+	out, err := resample.ResizePremultiplied(raster.FromImage(src), w, h, mode)
+	if err != nil {
+		return src
+	}
+	return out.ToNRGBA()
 }
 
 // bgTileSize computes the drawn tile size for a background image.
@@ -379,30 +414,19 @@ func resolvePos(l css.Length, free float64) float64 {
 	return l.Px
 }
 
-// blitScaledClipped draws src scaled to dw×dh at (dx,dy), sampling nearest, and
-// clips each pixel to the rounded box rect.
-func blitScaledClipped(dst *image.RGBA, src image.Image, dx, dy, dw, dh float64, bx image.Rectangle, rad int, clip image.Rectangle) {
-	b := src.Bounds()
-	iw, ih := b.Dx(), b.Dy()
-	x0 := int(math.Floor(dx))
-	y0 := int(math.Floor(dy))
-	x1 := int(math.Ceil(dx + dw))
-	y1 := int(math.Ceil(dy + dh))
-	region := image.Rect(x0, y0, x1, y1).Intersect(bx).Intersect(dst.Rect).Intersect(clip)
+// blitTileClipped stamps an already-scaled tile at integer offset (dx,dy) with a
+// 1:1 pixel copy, clipping each pixel to the rounded box rect (and to clip and
+// the destination bounds). A source pixel with zero alpha is skipped; others are
+// blended straight over the destination at their own alpha as coverage.
+func blitTileClipped(dst *image.RGBA, tile image.Image, dx, dy int, bx image.Rectangle, rad int, clip image.Rectangle) {
+	b := tile.Bounds()
+	region := image.Rect(dx, dy, dx+b.Dx(), dy+b.Dy()).Intersect(bx).Intersect(dst.Rect).Intersect(clip)
 	for y := region.Min.Y; y < region.Max.Y; y++ {
 		for x := region.Min.X; x < region.Max.X; x++ {
 			if !insideRoundRect(x, y, bx, rad) {
 				continue
 			}
-			// Map dst pixel back to source pixel (nearest).
-			u := (float64(x) + 0.5 - dx) / dw * float64(iw)
-			v := (float64(y) + 0.5 - dy) / dh * float64(ih)
-			sx := b.Min.X + int(u)
-			sy := b.Min.Y + int(v)
-			if sx < b.Min.X || sx >= b.Max.X || sy < b.Min.Y || sy >= b.Max.Y {
-				continue
-			}
-			r, g, bl, a := src.At(sx, sy).RGBA()
+			r, g, bl, a := tile.At(b.Min.X+(x-dx), b.Min.Y+(y-dy)).RGBA()
 			cov := uint8(a >> 8)
 			if cov == 0 {
 				continue

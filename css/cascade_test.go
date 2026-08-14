@@ -70,6 +70,21 @@ func TestCascadeInheritance(t *testing.T) {
 	}
 }
 
+func TestCascadeImageRenderingInherits(t *testing.T) {
+	// image-rendering is an inherited property: a value set on an ancestor reaches
+	// a descendant <img> that never declares it.
+	st := styleOf(t, `<html><body style="image-rendering:pixelated">`+
+		`<div><img></div></body></html>`, "img")
+	if st.ImageRendering != IRPixelated {
+		t.Errorf("inherited image-rendering = %v, want IRPixelated", st.ImageRendering)
+	}
+	// The initial value is IRAuto (smooth) when nobody sets it.
+	def := styleOf(t, `<html><body><img></body></html>`, "img")
+	if def.ImageRendering != IRAuto {
+		t.Errorf("default image-rendering = %v, want IRAuto", def.ImageRendering)
+	}
+}
+
 func TestCascadeUnitlessLineHeightInheritsAsFactor(t *testing.T) {
 	// A unitless line-height set on an ancestor must inherit as the NUMBER, so a
 	// larger-font descendant resolves to factor × its OWN font-size — not the

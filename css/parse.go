@@ -341,6 +341,13 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		case "normal", "nowrap":
 			s.WhiteSpace = WSNormal
 		}
+	case "image-rendering":
+		switch lv {
+		case "pixelated", "crisp-edges", "-webkit-optimize-contrast":
+			s.ImageRendering = IRPixelated
+		case "auto", "smooth", "high-quality", "optimizequality":
+			s.ImageRendering = IRAuto
+		}
 	case "list-style-type":
 		if t, ok := parseListStyleType(lv); ok {
 			s.ListStyleType = t

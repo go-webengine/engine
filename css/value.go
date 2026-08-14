@@ -325,6 +325,21 @@ const (
 	WSPre
 )
 
+// ImageRendering selects the resampling filter used to scale a raster image
+// (an <img> or a background-image) to a size other than its intrinsic one. It
+// inherits (per CSS Images 3).
+type ImageRendering uint8
+
+const (
+	// IRAuto lets the engine pick a high-quality (smooth) filter — a bicubic
+	// resample. It is the initial value and also covers `smooth` / `high-quality`.
+	IRAuto ImageRendering = iota
+	// IRPixelated preserves hard pixel edges by nearest-neighbour sampling, the
+	// behaviour pixel art wants (`image-rendering: pixelated`). `crisp-edges`
+	// maps here too: both ask the engine not to smooth the image.
+	IRPixelated
+)
+
 // ListStyleType is the marker style of a display:list-item box. It inherits.
 type ListStyleType uint8
 
@@ -413,6 +428,11 @@ type Style struct {
 	TextAlign  TextAlign
 	WhiteSpace WhiteSpace
 	LineHeight LineHeight
+
+	// ImageRendering selects the scaling filter for raster images (inherited).
+	// The initial value IRAuto means high-quality (bicubic); IRPixelated asks
+	// for nearest-neighbour (pixel art).
+	ImageRendering ImageRendering
 
 	// ListItem marks a display:list-item box (it generates a marker). It is not
 	// inherited. ListStyleType and ListStylePosition are inherited and select the
@@ -603,24 +623,25 @@ func initialStyle() Style {
 // font-family, text-align.
 func inheritFrom(parent Style) Style {
 	return Style{
-		Display:    DisplayInline, // reset (non-inherited)
-		Color:      parent.Color,
-		Background: Transparent, // reset
-		FontSize:   parent.FontSize,
-		FontWeight: parent.FontWeight,
-		FontFamily: parent.FontFamily,
-		Italic:     parent.Italic,      // inherited
-		Width:      Length{Auto: true}, // reset
-		MinWidth:   Length{Auto: true},
-		MaxWidth:   Length{Auto: true},
-		Height:     Length{Auto: true},
-		MinHeight:  Length{Auto: true},
-		MaxHeight:  Length{Auto: true},
-		FlexBasis:  Length{Auto: true},
-		FlexShrink: 1,
-		TextAlign:  parent.TextAlign,  // inherited
-		WhiteSpace: parent.WhiteSpace, // inherited
-		LineHeight: parent.LineHeight, // inherited
+		Display:        DisplayInline, // reset (non-inherited)
+		Color:          parent.Color,
+		Background:     Transparent, // reset
+		FontSize:       parent.FontSize,
+		FontWeight:     parent.FontWeight,
+		FontFamily:     parent.FontFamily,
+		Italic:         parent.Italic,      // inherited
+		Width:          Length{Auto: true}, // reset
+		MinWidth:       Length{Auto: true},
+		MaxWidth:       Length{Auto: true},
+		Height:         Length{Auto: true},
+		MinHeight:      Length{Auto: true},
+		MaxHeight:      Length{Auto: true},
+		FlexBasis:      Length{Auto: true},
+		FlexShrink:     1,
+		TextAlign:      parent.TextAlign,      // inherited
+		WhiteSpace:     parent.WhiteSpace,     // inherited
+		LineHeight:     parent.LineHeight,     // inherited
+		ImageRendering: parent.ImageRendering, // inherited
 		// list-style-type / list-style-position inherit; list-item does not.
 		ListStyleType:     parent.ListStyleType,
 		ListStylePosition: parent.ListStylePosition,

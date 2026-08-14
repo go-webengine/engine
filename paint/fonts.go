@@ -3,7 +3,7 @@
 
 // Package paint rasterises a laid-out box tree onto an *image.RGBA using
 // go-opentype for anti-aliased text, go-widgets/painter for backgrounds and
-// go-images-decoded bitmaps for <img>. It also provides the Measurer the
+// go-gfx-decoded bitmaps for <img>. It also provides the Measurer the
 // layout package needs (advances + vertical metrics from real font faces).
 package paint
 
