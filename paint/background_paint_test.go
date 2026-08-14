@@ -8,6 +8,8 @@ import (
 	"image/color"
 	"testing"
 
+	"github.com/go-gfx/gfx/resample"
+
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 	"github.com/go-webengine/engine/layout"
@@ -218,7 +220,7 @@ func TestPaintBgBitmapDegenerateSizes(t *testing.T) {
 	PaintFull(dst, box, NewFonts(), nil, map[string]image.Image{"x": src})
 	// Zero-dimension source is a no-op.
 	empty := image.NewRGBA(image.Rect(0, 0, 0, 0))
-	paintBgBitmap(dst, image.Rect(0, 0, 10, 10), 0, empty, css.BgSize{Kind: css.SizeAuto}, css.BgPosition{}, css.NoRepeat, dst.Rect)
+	paintBgBitmap(dst, image.Rect(0, 0, 10, 10), 0, empty, css.BgSize{Kind: css.SizeAuto}, css.BgPosition{}, css.NoRepeat, dst.Rect, nil)
 }
 
 // TestPaintDropShadow: a soft drop shadow darkens pixels below/right of the box
@@ -414,26 +416,74 @@ func TestPaintFullNonDrawable(t *testing.T) {
 	PaintFull(dst, &layout.Box{Style: &css.Style{Background: css.Color{A: 255}}, W: 0, H: 0}, NewFonts(), nil, nil)
 }
 
-func TestBlitScaledClippedSourceBounds(t *testing.T) {
-	// A tile positioned so part maps outside the source is clipped per-pixel.
+func TestBlitTileClippedBounds(t *testing.T) {
+	// A tile stamped partly off the box is clipped to the region; the pixels that
+	// land inside paint, those outside are left alone.
 	dst := white(10, 10)
-	src := solidImage(2, 2, color.RGBA{0, 0, 200, 255})
-	blitScaledClipped(dst, src, 8, 8, 4, 4, image.Rect(0, 0, 10, 10), 0, dst.Rect)
+	src := solidImage(4, 4, color.RGBA{0, 0, 200, 255})
+	blitTileClipped(dst, src, 8, 8, image.Rect(0, 0, 10, 10), 0, dst.Rect)
 	if c := dst.RGBAAt(9, 9); c.B < 150 {
 		t.Errorf("clipped tile pixel = %+v want blue", c)
 	}
-	// A fractional offset makes the far edge map to sx==iw (source out of bounds),
-	// exercising the per-pixel source-bounds guard without panicking.
-	blitScaledClipped(dst, src, 0.3, 0.3, 2, 2, image.Rect(0, 0, 5, 5), 0, dst.Rect)
+	// Stamping fully outside the destination paints nothing and does not panic.
+	blitTileClipped(dst, src, 20, 20, image.Rect(0, 0, 10, 10), 0, dst.Rect)
 }
 
-func TestBlitScaledClippedTransparentPixel(t *testing.T) {
+func TestBlitTileClippedTransparentPixel(t *testing.T) {
 	// A source pixel with alpha 0 is skipped (cov==0 branch).
 	dst := white(4, 4)
 	src := image.NewRGBA(image.Rect(0, 0, 2, 2)) // all transparent
-	blitScaledClipped(dst, src, 0, 0, 2, 2, image.Rect(0, 0, 4, 4), 0, dst.Rect)
+	blitTileClipped(dst, src, 0, 0, image.Rect(0, 0, 4, 4), 0, dst.Rect)
 	if c := dst.RGBAAt(0, 0); c.R != 255 {
 		t.Errorf("transparent source pixel painted: %+v", c)
+	}
+}
+
+func TestBgMode(t *testing.T) {
+	if bgMode(nil) != resample.Bicubic {
+		t.Error("nil style should default to bicubic")
+	}
+	if bgMode(&css.Style{ImageRendering: css.IRAuto}) != resample.Bicubic {
+		t.Error("IRAuto should be bicubic")
+	}
+	if bgMode(&css.Style{ImageRendering: css.IRPixelated}) != resample.Nearest {
+		t.Error("IRPixelated should be nearest")
+	}
+}
+
+// TestPaintBgBitmapPixelatedScales exercises the nearest (pixelated) path
+// through paintBgBitmap: a 2x2 checker background scaled up to cover a 20x20 box
+// must reproduce the source's two distinct colours as solid quadrant blocks.
+func TestPaintBgBitmapPixelatedScales(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 2, 2))
+	src.Set(0, 0, color.RGBA{200, 0, 0, 255})
+	src.Set(1, 0, color.RGBA{0, 0, 200, 255})
+	src.Set(0, 1, color.RGBA{0, 0, 200, 255})
+	src.Set(1, 1, color.RGBA{200, 0, 0, 255})
+	dst := white(20, 20)
+	st := urlStyle("x", css.BgSize{Kind: css.SizeCover}, css.BgPosition{}, css.NoRepeat)
+	st.ImageRendering = css.IRPixelated
+	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "div"}, Style: st, X: 0, Y: 0, W: 20, H: 20}
+	PaintFull(dst, box, NewFonts(), nil, map[string]image.Image{"x": src})
+	// Top-left quadrant is the red source pixel, top-right the blue one — nearest
+	// keeps them as hard blocks (no blend between them).
+	if c := dst.RGBAAt(4, 4); c.R < 150 || c.B > 60 {
+		t.Errorf("pixelated top-left = %+v want red", c)
+	}
+	if c := dst.RGBAAt(15, 4); c.B < 150 || c.R > 60 {
+		t.Errorf("pixelated top-right = %+v want blue", c)
+	}
+}
+
+func TestScaleTileIdentityAndError(t *testing.T) {
+	src := solidImage(4, 4, color.RGBA{10, 20, 30, 255})
+	// Same size: returned unchanged (the common repeat/auto case).
+	if got := scaleTile(src, 4, 4, resample.Bicubic); got != image.Image(src) {
+		t.Error("scaleTile at identical size should return src unchanged")
+	}
+	// A non-positive target makes go-gfx error; scaleTile falls back to src.
+	if got := scaleTile(src, 0, 4, resample.Bicubic); got != image.Image(src) {
+		t.Error("scaleTile with bad size should fall back to src")
 	}
 }
 
