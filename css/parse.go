@@ -292,6 +292,10 @@ func (s *Style) apply(d Declaration, emRef float64) {
 			}
 			s.Opacity, s.HasOpacity = f, true
 		}
+	case "filter":
+		if fs, ok := parseFilterList(v, emRef); ok {
+			s.Filters = fs
+		}
 	case "font-size":
 		if l, ok := parseLength(v, emRef); ok && !l.Auto {
 			if l.IsPercent {

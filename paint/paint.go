@@ -42,18 +42,30 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	if box == nil || clip.Empty() {
 		return
 	}
-	if box.Style != nil && box.Style.HasOpacity {
-		op := box.Style.Opacity
-		if op <= 0 {
-			return // fully transparent: paint nothing
+	op := 1.0
+	hasFilter := false
+	if box.Style != nil {
+		if box.Style.HasOpacity {
+			op = box.Style.Opacity
+			if op <= 0 {
+				return // fully transparent: paint nothing
+			}
 		}
-		if op < 1 {
-			tmp := image.NewRGBA(dst.Rect)
-			tpp := painter.NewPixelPainter(tmp.Pix, tmp.Rect.Dx(), tmp.Rect.Dy())
-			paintBoxContent(tmp, tpp, box, f, imgs, bgImgs, clip)
-			compositeGroup(dst, tmp, op)
-			return
+		hasFilter = len(box.Style.Filters) > 0
+	}
+	// A group pass (render to an offscreen buffer, then composite) is needed when
+	// the box has a `filter` chain and/or a fractional opacity. Filters are
+	// applied to the group's rendered output before it is composited, so blur /
+	// drop-shadow spread and colour transforms see the whole subtree at once.
+	if hasFilter || op < 1 {
+		tmp := image.NewRGBA(dst.Rect)
+		tpp := painter.NewPixelPainter(tmp.Pix, tmp.Rect.Dx(), tmp.Rect.Dy())
+		paintBoxContent(tmp, tpp, box, f, imgs, bgImgs, clip)
+		if hasFilter {
+			tmp = applyFilters(tmp, box.Style.Filters, box.Style.Color)
 		}
+		compositeGroup(dst, tmp, op)
+		return
 	}
 	paintBoxContent(dst, pp, box, f, imgs, bgImgs, clip)
 }

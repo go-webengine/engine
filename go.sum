@@ -14,6 +14,8 @@ github.com/go-browserhttp/browserhttp v0.2.0 h1:3RcjOQVHgqhSOmI5cfsURpexw/vetoDU
 github.com/go-browserhttp/browserhttp v0.2.0/go.mod h1:VJiwBxLetXdc8eDadOcNbiO0EelNQPny0cLZhg1hTKU=
 github.com/go-gfx/gfx v0.1.0 h1:tBwT4YYnsdZlESY5MRp8aptg30iZxIH0G/8pZ/Ve3ZY=
 github.com/go-gfx/gfx v0.1.0/go.mod h1:bFt/MWyYWRU3Ic9IaB8XOC9KLMMHRRmahMk4FaIGK7g=
+github.com/go-images/images v0.0.0-20260814204114-5f83e6345a72 h1:DTFd9qVqDiXznHCQLTpVZI3Zfl+8oziV3+FrdlsgeGk=
+github.com/go-images/images v0.0.0-20260814204114-5f83e6345a72/go.mod h1:SGZR2+ytivMHEnOGioYRzufyM0zDDje6esITJ/BsClY=
 github.com/go-opentype/fonts v0.5.0 h1:K/utHAXfdo7OfrcsrtDTyakO5nqmcUwLTL5HaIAgThI=
 github.com/go-opentype/fonts v0.5.0/go.mod h1:C6yQL2apHItfEZ5hztpsHF0S5mlX/hklLlq/Z5fRG/g=
 github.com/go-opentype/opentype v0.5.0 h1:++VoqgbXgYACyTTNzUAivoxW9M3m2gxWMAn6bIY7DXg=
