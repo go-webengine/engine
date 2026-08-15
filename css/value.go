@@ -12,6 +12,8 @@ package css
 import (
 	"strconv"
 	"strings"
+
+	gfxcolor "github.com/go-gfx/gfx/color"
 )
 
 // Color is an 8-bit-per-channel RGBA colour. A==0 is treated as transparent.
@@ -843,8 +845,12 @@ func parseHSLChannels(hs, ss, ls string, a uint8) (Color, bool) {
 	if !ok1 || !ok2 {
 		return Color{}, false
 	}
-	r, g, b := hslToRGB(h, sPerc, lPerc)
-	return Color{r, g, b, a}, true
+	// HSL -> sRGB is a colour-space conversion, not CSS parsing: route it through
+	// go-gfx's shared colour layer rather than a local copy. gfxcolor.HSLToSRGB
+	// returns gamma-sRGB channels in 0..1; scale and clamp to 8-bit exactly as
+	// the previous in-package hslToRGB did (byte-identical).
+	rf, gf, bf := gfxcolor.HSLToSRGB(gfxcolor.HSL{H: h, S: sPerc, L: lPerc})
+	return Color{clampByte(rf * 255), clampByte(gf * 255), clampByte(bf * 255), a}, true
 }
 
 // parsePercentUnit parses a "50%" (or bare "0.5"→treated as fraction*100 not
@@ -857,46 +863,6 @@ func parsePercentUnit(p string) (float64, bool) {
 		return 0, false
 	}
 	return f / 100, true
-}
-
-// hslToRGB converts HSL (h degrees, s and l in 0..1) to 8-bit RGB.
-func hslToRGB(h, s, l float64) (uint8, uint8, uint8) {
-	h = h - 360*mathFloor(h/360) // normalise into [0,360)
-	c := (1 - absF(2*l-1)) * s
-	hp := h / 60
-	x := c * (1 - absF(hp-2*mathFloor(hp/2)-1))
-	var r1, g1, b1 float64
-	switch {
-	case hp < 1:
-		r1, g1, b1 = c, x, 0
-	case hp < 2:
-		r1, g1, b1 = x, c, 0
-	case hp < 3:
-		r1, g1, b1 = 0, c, x
-	case hp < 4:
-		r1, g1, b1 = 0, x, c
-	case hp < 5:
-		r1, g1, b1 = x, 0, c
-	default:
-		r1, g1, b1 = c, 0, x
-	}
-	m := l - c/2
-	return clampByte((r1 + m) * 255), clampByte((g1 + m) * 255), clampByte((b1 + m) * 255)
-}
-
-func absF(f float64) float64 {
-	if f < 0 {
-		return -f
-	}
-	return f
-}
-
-func mathFloor(f float64) float64 {
-	i := float64(int64(f))
-	if f < 0 && i != f {
-		i--
-	}
-	return i
 }
 
 func clampByte(f float64) uint8 {
