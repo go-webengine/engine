@@ -23,8 +23,8 @@ import (
 // AdjustContrast, and premultiplied-alpha handling is go-gfx's colour helpers.
 // The component-transfer / colour-matrix filters (brightness, saturate,
 // grayscale, sepia, hue-rotate, invert) are the CSS Filter Effects spec
-// matrices — go-images has no equivalent (its Grayscale/Invert use different,
-// full-strength-only coefficients), so they are computed from the spec constants.
+// matrices, whose colour-space construction lives in go-gfx's colour layer
+// (gfxcolor.*Matrix); this package only iterates the pixel buffer through them.
 func applyFilters(src *image.RGBA, filters []css.Filter, curColor css.Color) *image.RGBA {
 	img := src
 	for _, f := range filters {
@@ -36,17 +36,17 @@ func applyFilters(src *image.RGBA, filters []css.Filter, curColor css.Color) *im
 			// by the factor — exactly CSS contrast(<amount>).
 			img = images.AdjustContrast(img, f.Amount)
 		case css.FilterBrightness:
-			img = applyMatrix(img, brightnessMatrix(f.Amount))
+			img = applyMatrix(img, gfxcolor.BrightnessMatrix(f.Amount))
 		case css.FilterSaturate:
-			img = applyMatrix(img, saturateMatrix(f.Amount, 0.213, 0.715, 0.072))
+			img = applyMatrix(img, gfxcolor.SaturateMatrix(f.Amount))
 		case css.FilterGrayscale:
-			img = applyMatrix(img, saturateMatrix(1-f.Amount, 0.2126, 0.7152, 0.0722))
+			img = applyMatrix(img, gfxcolor.GrayscaleMatrix(f.Amount))
 		case css.FilterSepia:
-			img = applyMatrix(img, sepiaMatrix(f.Amount))
+			img = applyMatrix(img, gfxcolor.SepiaMatrix(f.Amount))
 		case css.FilterHueRotate:
-			img = applyMatrix(img, hueRotateMatrix(f.Amount))
+			img = applyMatrix(img, gfxcolor.HueRotateMatrix(f.Amount))
 		case css.FilterInvert:
-			img = applyMatrix(img, invertMatrix(f.Amount))
+			img = applyMatrix(img, gfxcolor.InvertMatrix(f.Amount))
 		case css.FilterDropShadow:
 			img = dropShadowFilter(img, f, curColor)
 		}
@@ -54,13 +54,13 @@ func applyFilters(src *image.RGBA, filters []css.Filter, curColor css.Color) *im
 	return img
 }
 
-// colorMatrix is a 3x4 colour transform: three rows of [cr cg cb offset]. The
-// colour channels are computed as cr*R + cg*G + cb*B + offset*255 (offsets are
-// in the 0..1 range, matching the spec), clamped to [0,255]; alpha is preserved.
-type colorMatrix [3][4]float64
-
-// applyMatrix applies m to every pixel of src, returning a new buffer.
-func applyMatrix(src *image.RGBA, m colorMatrix) *image.RGBA {
+// applyMatrix applies the go-gfx colour matrix m to every pixel of src,
+// returning a new buffer. The transform is evaluated in 0..255 byte space (the
+// matrix offset, spec-defined in 0..1, is scaled by 255) and clamped to
+// [0,255]; alpha is preserved. Keeping the arithmetic in byte space — rather
+// than normalising to gfxcolor.Apply's 0..1 range and back — makes the result
+// bit-identical to the previous in-package implementation.
+func applyMatrix(src *image.RGBA, m gfxcolor.ColorMatrix) *image.RGBA {
 	dst := image.NewRGBA(src.Rect)
 	for i := 0; i < len(src.Pix); i += 4 {
 		r := float64(src.Pix[i])
@@ -72,58 +72,6 @@ func applyMatrix(src *image.RGBA, m colorMatrix) *image.RGBA {
 		dst.Pix[i+3] = src.Pix[i+3]
 	}
 	return dst
-}
-
-// brightnessMatrix scales each channel by a (CSS brightness is a multiply, so a
-// negative delta / additive AdjustBrightness would be wrong here).
-func brightnessMatrix(a float64) colorMatrix {
-	return colorMatrix{
-		{a, 0, 0, 0},
-		{0, a, 0, 0},
-		{0, 0, a, 0},
-	}
-}
-
-// invertMatrix interpolates towards the negative by a: out = (1-2a)*in + a.
-func invertMatrix(a float64) colorMatrix {
-	d := 1 - 2*a
-	return colorMatrix{
-		{d, 0, 0, a},
-		{0, d, 0, a},
-		{0, 0, d, a},
-	}
-}
-
-// saturateMatrix is the CSS/SVG saturation matrix for factor s with luminance
-// coefficients (lr,lg,lb). saturate() uses (0.213,0.715,0.072); grayscale(a) is
-// this matrix at s = 1-a with (0.2126,0.7152,0.0722).
-func saturateMatrix(s, lr, lg, lb float64) colorMatrix {
-	return colorMatrix{
-		{lr + s*(1-lr), lg - s*lg, lb - s*lb, 0},
-		{lr - s*lr, lg + s*(1-lg), lb - s*lb, 0},
-		{lr - s*lr, lg - s*lg, lb + s*(1-lb), 0},
-	}
-}
-
-// sepiaMatrix is the CSS sepia() matrix at amount a (a=1 is full sepia).
-func sepiaMatrix(a float64) colorMatrix {
-	t := 1 - a
-	return colorMatrix{
-		{0.393 + 0.607*t, 0.769 - 0.769*t, 0.189 - 0.189*t, 0},
-		{0.349 - 0.349*t, 0.686 + 0.314*t, 0.168 - 0.168*t, 0},
-		{0.272 - 0.272*t, 0.534 - 0.534*t, 0.131 + 0.869*t, 0},
-	}
-}
-
-// hueRotateMatrix is the CSS hue-rotate() matrix for an angle of rad radians.
-func hueRotateMatrix(rad float64) colorMatrix {
-	c := math.Cos(rad)
-	s := math.Sin(rad)
-	return colorMatrix{
-		{0.213 + c*0.787 - s*0.213, 0.715 - c*0.715 - s*0.715, 0.072 - c*0.072 + s*0.928, 0},
-		{0.213 - c*0.213 + s*0.143, 0.715 + c*0.285 + s*0.140, 0.072 - c*0.072 - s*0.283, 0},
-		{0.213 - c*0.213 - s*0.787, 0.715 - c*0.715 + s*0.715, 0.072 + c*0.928 + s*0.072, 0},
-	}
 }
 
 // blurFilter applies a Gaussian blur of standard deviation sigma to a

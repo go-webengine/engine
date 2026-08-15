@@ -6,7 +6,7 @@ require (
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
-	github.com/go-gfx/gfx v0.1.0
+	github.com/go-gfx/gfx v0.5.0
 	github.com/go-images/images v0.0.0-20260814204114-5f83e6345a72
 	github.com/go-opentype/fonts v0.5.0
 	github.com/go-opentype/opentype v0.5.0
