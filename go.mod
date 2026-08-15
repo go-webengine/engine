@@ -7,11 +7,13 @@ require (
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
 	github.com/go-gfx/gfx v0.1.0
+	github.com/go-images/images v0.0.0-20260814204114-5f83e6345a72
 	github.com/go-opentype/fonts v0.5.0
 	github.com/go-opentype/opentype v0.5.0
 	github.com/go-widgets/painter v0.2.0
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
+	golang.org/x/image v0.45.0
 	golang.org/x/net v0.57.0
 )
 
@@ -26,7 +28,6 @@ require (
 	github.com/sergeymakinen/go-bmp v1.0.0 // indirect
 	github.com/sergeymakinen/go-ico v1.0.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
-	golang.org/x/image v0.45.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 )

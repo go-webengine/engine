@@ -533,6 +533,11 @@ type Style struct {
 	// genuine opacity from the zero value (an unset Style is fully opaque).
 	Opacity    float64
 	HasOpacity bool
+
+	// Filters is the element's `filter` function chain, applied in order to the
+	// element's rendered output (its box plus subtree) as a group. Nil == no
+	// filter. Not inherited (`filter` is a non-inherited property).
+	Filters []Filter
 }
 
 // BoxShadow is one box-shadow layer.
