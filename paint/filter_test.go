@@ -50,7 +50,7 @@ func one(f css.Filter) []css.Filter { return []css.Filter{f} }
 // --- Component-transfer / colour-matrix filters vs analytic ground truth ---
 
 func TestBrightnessFilterAnalytic(t *testing.T) {
-	in := solid(3, 3, css.Color{200, 100, 50, 255})
+	in := solid(3, 3, css.Color{R: 200, G: 100, B: 50, A: 255})
 	// brightness(0.5): each channel halved.
 	out := applyFilters(in, one(css.Filter{Kind: css.FilterBrightness, Amount: 0.5}), css.Color{})
 	assertPixel(t, out, 1, 1, 100, 50, 25, 255, 0)
@@ -60,7 +60,7 @@ func TestBrightnessFilterAnalytic(t *testing.T) {
 }
 
 func TestContrastFilterAnalytic(t *testing.T) {
-	in := solid(3, 3, css.Color{200, 100, 50, 255})
+	in := solid(3, 3, css.Color{R: 200, G: 100, B: 50, A: 255})
 	// contrast(2): (v-128)*2+128 → 200→255, 100→72, 50→-28→0. (reuses go-images)
 	out := applyFilters(in, one(css.Filter{Kind: css.FilterContrast, Amount: 2}), css.Color{})
 	assertPixel(t, out, 1, 1, 255, 72, 0, 255, 0)
@@ -70,7 +70,7 @@ func TestContrastFilterAnalytic(t *testing.T) {
 }
 
 func TestInvertFilterAnalytic(t *testing.T) {
-	in := solid(3, 3, css.Color{10, 20, 30, 255})
+	in := solid(3, 3, css.Color{R: 10, G: 20, B: 30, A: 255})
 	// invert(1): 255-v.
 	out := applyFilters(in, one(css.Filter{Kind: css.FilterInvert, Amount: 1}), css.Color{})
 	assertPixel(t, out, 1, 1, 245, 235, 225, 255, 0)
@@ -80,7 +80,7 @@ func TestInvertFilterAnalytic(t *testing.T) {
 }
 
 func TestGrayscaleFilterAnalytic(t *testing.T) {
-	in := solid(3, 3, css.Color{100, 150, 200, 255})
+	in := solid(3, 3, css.Color{R: 100, G: 150, B: 200, A: 255})
 	// grayscale(1): luminance 0.2126*100+0.7152*150+0.0722*200 = 142.98 → 143.
 	lum := uint8(math.Round(0.2126*100 + 0.7152*150 + 0.0722*200))
 	out := applyFilters(in, one(css.Filter{Kind: css.FilterGrayscale, Amount: 1}), css.Color{})
@@ -91,7 +91,7 @@ func TestGrayscaleFilterAnalytic(t *testing.T) {
 }
 
 func TestSaturateFilterAnalytic(t *testing.T) {
-	in := solid(3, 3, css.Color{100, 150, 200, 255})
+	in := solid(3, 3, css.Color{R: 100, G: 150, B: 200, A: 255})
 	// saturate(1) is identity.
 	id := applyFilters(in, one(css.Filter{Kind: css.FilterSaturate, Amount: 1}), css.Color{})
 	assertPixel(t, id, 1, 1, 100, 150, 200, 255, 0)
@@ -102,7 +102,7 @@ func TestSaturateFilterAnalytic(t *testing.T) {
 }
 
 func TestSepiaFilterAnalytic(t *testing.T) {
-	in := solid(3, 3, css.Color{100, 100, 100, 255})
+	in := solid(3, 3, css.Color{R: 100, G: 100, B: 100, A: 255})
 	// sepia(1) on grey 100: rows sum to 1.351/1.203/0.937 → 135/120/94.
 	out := applyFilters(in, one(css.Filter{Kind: css.FilterSepia, Amount: 1}), css.Color{})
 	r := uint8(math.Round((0.393 + 0.769 + 0.189) * 100))
@@ -116,11 +116,11 @@ func TestSepiaFilterAnalytic(t *testing.T) {
 
 func TestHueRotateFilterAnalytic(t *testing.T) {
 	// hue-rotate(0) is identity.
-	in := solid(3, 3, css.Color{100, 150, 200, 255})
+	in := solid(3, 3, css.Color{R: 100, G: 150, B: 200, A: 255})
 	id := applyFilters(in, one(css.Filter{Kind: css.FilterHueRotate, Amount: 0}), css.Color{})
 	assertPixel(t, id, 1, 1, 100, 150, 200, 255, 0)
 	// A neutral grey is invariant under any hue rotation (matrix rows sum to 1).
-	grey := solid(3, 3, css.Color{120, 120, 120, 255})
+	grey := solid(3, 3, css.Color{R: 120, G: 120, B: 120, A: 255})
 	out := applyFilters(grey, one(css.Filter{Kind: css.FilterHueRotate, Amount: math.Pi / 3}), css.Color{})
 	assertPixel(t, out, 1, 1, 120, 120, 120, 255, 1)
 }
@@ -128,7 +128,7 @@ func TestHueRotateFilterAnalytic(t *testing.T) {
 // --- Blur: premultiplied correctness vs a naive straight blur ---
 
 func TestBlurZeroIsNoOp(t *testing.T) {
-	in := solid(4, 4, css.Color{10, 20, 30, 255})
+	in := solid(4, 4, css.Color{R: 10, G: 20, B: 30, A: 255})
 	out := applyFilters(in, one(css.Filter{Kind: css.FilterBlur, Amount: 0}), css.Color{})
 	if out != in {
 		t.Error("blur(0) should return the input buffer unchanged")
@@ -137,7 +137,7 @@ func TestBlurZeroIsNoOp(t *testing.T) {
 
 func TestBlurUniformOpaqueUnchanged(t *testing.T) {
 	// Blurring a solid opaque field leaves every pixel unchanged (clamp-to-edge).
-	in := solid(8, 8, css.Color{60, 120, 180, 255})
+	in := solid(8, 8, css.Color{R: 60, G: 120, B: 180, A: 255})
 	out := applyFilters(in, one(css.Filter{Kind: css.FilterBlur, Amount: 2}), css.Color{})
 	assertPixel(t, out, 4, 4, 60, 120, 180, 255, 1)
 	assertPixel(t, out, 0, 0, 60, 120, 180, 255, 1)
@@ -184,7 +184,7 @@ func TestDropShadowHardOffset(t *testing.T) {
 			in.Pix[i], in.Pix[i+1], in.Pix[i+2], in.Pix[i+3] = 0, 0, 0, 255
 		}
 	}
-	f := css.Filter{Kind: css.FilterDropShadow, OffsetX: 5, OffsetY: 5, Color: css.Color{255, 0, 0, 255}}
+	f := css.Filter{Kind: css.FilterDropShadow, OffsetX: 5, OffsetY: 5, Color: css.Color{R: 255, G: 0, B: 0, A: 255}}
 	out := applyFilters(in, one(f), css.Color{})
 	// The element itself stays black on top.
 	assertPixel(t, out, 7, 7, 0, 0, 0, 255, 0)
@@ -206,7 +206,7 @@ func TestDropShadowCurrentColor(t *testing.T) {
 		}
 	}
 	f := css.Filter{Kind: css.FilterDropShadow, OffsetX: 3, OffsetY: 3, UseCurrentColor: true}
-	out := applyFilters(in, one(f), css.Color{0, 200, 0, 255})
+	out := applyFilters(in, one(f), css.Color{R: 0, G: 200, B: 0, A: 255})
 	// Shadow region (offset, outside element) is the current colour green.
 	assertPixel(t, out, 8, 8, 0, 200, 0, 255, 0)
 }
@@ -222,7 +222,7 @@ func TestDropShadowBlurSoftens(t *testing.T) {
 			in.Pix[i], in.Pix[i+1], in.Pix[i+2], in.Pix[i+3] = 0, 0, 0, 255
 		}
 	}
-	f := css.Filter{Kind: css.FilterDropShadow, OffsetX: 6, OffsetY: 6, Blur: 6, Color: css.Color{255, 0, 0, 255}}
+	f := css.Filter{Kind: css.FilterDropShadow, OffsetX: 6, OffsetY: 6, Blur: 6, Color: css.Color{R: 255, G: 0, B: 0, A: 255}}
 	out := applyFilters(in, one(f), css.Color{})
 	// Centre of the shadow footprint is strongly red.
 	_, _, _, ca := px(out, 16, 16)
@@ -239,7 +239,7 @@ func TestDropShadowBlurSoftens(t *testing.T) {
 // --- Chaining: filters apply left to right ---
 
 func TestFilterChainOrder(t *testing.T) {
-	in := solid(3, 3, css.Color{200, 100, 50, 255})
+	in := solid(3, 3, css.Color{R: 200, G: 100, B: 50, A: 255})
 	// invert(1) then grayscale(1): first → (55,155,205), then luminance.
 	chain := []css.Filter{
 		{Kind: css.FilterInvert, Amount: 1},
@@ -271,7 +271,7 @@ func TestClamp8Bounds(t *testing.T) {
 func TestPaintBoxFilterGroup(t *testing.T) {
 	dst := white(20, 20)
 	st := &css.Style{
-		Background: css.Color{0, 0, 255, 255},
+		Background: css.Color{R: 0, G: 0, B: 255, A: 255},
 		Filters:    []css.Filter{{Kind: css.FilterGrayscale, Amount: 1}},
 	}
 	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "div"}, Style: st, X: 0, Y: 0, W: 20, H: 20}
@@ -291,7 +291,7 @@ func TestPaintBoxFilterGroup(t *testing.T) {
 func TestPaintBoxFilterWithOpacity(t *testing.T) {
 	dst := white(20, 20)
 	st := &css.Style{
-		Background: css.Color{0, 0, 0, 255},
+		Background: css.Color{R: 0, G: 0, B: 0, A: 255},
 		Filters:    []css.Filter{{Kind: css.FilterInvert, Amount: 1}}, // black → white
 		Opacity:    0.5,
 		HasOpacity: true,
