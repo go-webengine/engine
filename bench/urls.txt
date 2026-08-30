@@ -1,5 +1,12 @@
 # Baseline comparison set for webengine vs headless Chromium.
 # One URL per line; blank lines and #-comments are ignored.
+#
+# Widened 2026-08-30: the original 5 pages had gone stale as a fidelity signal
+# (unchanged for weeks while ~40 PRs landed) and under-represent the range of
+# real sites the browserproxy has to render — this adds distinct layout/CSS/JS
+# stress profiles (table-based legacy layout, a design-system doc site, a
+# heavy app shell, Tailwind-driven marketing content, a data-grid page) without
+# growing the suite so large a single run becomes impractical.
 
 # 1. Minimal static page (centred column, tiny CSS).
 https://example.com/
@@ -15,3 +22,22 @@ https://go.dev/blog/
 
 # 5. Deliberately JS-heavy SPA (shows the current no-JavaScript gap).
 https://react.dev/
+
+# 6. Old-school table/font-tag layout, extremely high real-world traffic.
+https://news.ycombinator.com/
+
+# 7. Modern docs design system: sticky sidebar nav, syntax-highlighted code,
+#    dense cross-reference links.
+https://developer.mozilla.org/en-US/docs/Web/CSS
+
+# 8. Heavy authenticated-feeling app shell: GitHub's Primer design system,
+#    badges, tabs, complex flex/grid chrome around a content pane.
+https://github.com/golang/go
+
+# 9. Utility-class (Tailwind) marketing/docs site distinct from react.dev's
+#    Next.js app shell — heavy on gradients, custom fonts, dark-mode variants.
+https://tailwindcss.com/
+
+# 10. Dense data-grid page: a large coloured compatibility table, the opposite
+#     layout shape from every prose-heavy page above.
+https://caniuse.com/
