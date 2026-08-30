@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-webengine/engine/dom"
 )
@@ -270,5 +271,87 @@ func TestModuleBundleFailureFallback(t *testing.T) {
 	app := findByID(doc.Root, "app")
 	if got := strings.TrimSpace(dom.TextContent(app)); got != "keep" {
 		t.Fatalf("failed bundle should leave DOM untouched: #app = %q", got)
+	}
+}
+
+// TestAwaitBoundedTimesOutWhenFnNeverReturns proves the wall-clock guard added
+// after a live hang: rendering developer.mozilla.org left the render stuck for
+// minutes inside esbuild's api.Build (a synchronous call with no context/
+// cancellation) long after its own 20s bundle budget had expired — the
+// deadline was being honoured by the plugin's individual resolve/load
+// callbacks, but nothing stopped esbuild's internal scanner from taking far
+// longer to drain an already-queued backlog. awaitBounded is what
+// bundleModuleScripts now waits on instead of the raw call: it must return
+// promptly once ctx is done, even though fn (standing in for api.Build) never
+// returns on its own — the abandoned goroutine is left running rather than
+// held onto.
+func TestAwaitBoundedTimesOutWhenFnNeverReturns(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	block := make(chan struct{}) // never closed: fn "hangs" like the live esbuild call did
+	start := time.Now()
+	_, ok := awaitBounded(ctx, func() int {
+		<-block
+		return 42
+	})
+	if ok {
+		t.Fatal("expected ok=false: fn never returns before ctx is done")
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("awaitBounded blocked for %s past ctx's 20ms deadline", elapsed)
+	}
+}
+
+// TestAwaitBoundedReturnsResult covers the ordinary path: fn returns well
+// before ctx expires, so its value passes through unchanged.
+func TestAwaitBoundedReturnsResult(t *testing.T) {
+	v, ok := awaitBounded(context.Background(), func() string { return "done" })
+	if !ok || v != "done" {
+		t.Errorf("awaitBounded = %q,%v want %q,true", v, ok, "done")
+	}
+}
+
+// TestModuleBundleAbandonedOnBudget is the integration-level companion to
+// TestAwaitBoundedTimesOutWhenFnNeverReturns: with a bundle context that is
+// already past its deadline by the time bundleModuleScripts runs (a page
+// whose module fetch would otherwise hang), the call returns quickly with
+// ok=false and a stats.firstErr naming the abandonment, rather than blocking.
+func TestModuleBundleAbandonedOnBudget(t *testing.T) {
+	// release must close BEFORE srv.Close() runs (srv.Close() blocks until every
+	// handler has returned) — deferred in this order so LIFO unwinds it first.
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><script type="module" src="/e.js"></script></body></html>`))
+	})
+	mux.HandleFunc("/e.js", func(w http.ResponseWriter, r *http.Request) {
+		<-release // would hang the request well past the test's deadline below
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	defer close(release)
+
+	e := New()
+	e.Client = srv.Client()
+	doc, err := e.Fetch(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, stats, ok := e.bundleModuleScripts(ctx, doc)
+	elapsed := time.Since(start)
+	if ok {
+		t.Fatal("expected the bundle to be abandoned, not to succeed")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("bundleModuleScripts blocked for %s past its own budget", elapsed)
+	}
+	if !strings.Contains(stats.firstErr, "abandoned") {
+		t.Errorf("stats.firstErr = %q, want it to mention the bundle was abandoned", stats.firstErr)
 	}
 }

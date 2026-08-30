@@ -156,11 +156,30 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 		failed  int
 		bytesIn int
 	)
+	// overBudget reports whether the bundle stage's time or size cap has been
+	// spent. It MUST gate OnResolve as well as OnLoad: esbuild's api.Build is a
+	// synchronous, uncancellable call, and OnResolve alone can keep enumerating a
+	// large/pathological transitive import graph (observed live on
+	// developer.mozilla.org — many minutes past moduleBundleTimeout) even once
+	// every subsequent OnLoad is failing fast, because resolving a new specifier
+	// costs nothing by itself and was never checked against either bound. Gating
+	// resolution too is what actually stops the scan, not just the fetch.
+	overBudget := func() bool {
+		if bctx.Err() != nil {
+			return true
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		return fetched >= maxModuleFetches || bytesIn >= maxModuleSourceBytes
+	}
 	start := time.Now()
 	plugin := api.Plugin{
 		Name: "webengine-http",
 		Setup: func(build api.PluginBuild) {
 			build.OnResolve(api.OnResolveOptions{Filter: `.*`}, func(args api.OnResolveArgs) (api.OnResolveResult, error) {
+				if overBudget() {
+					return api.OnResolveResult{}, fmt.Errorf("module bundle budget exhausted")
+				}
 				abs, ok := resolveModuleSpecifier(doc.URL, args.Importer, args.Path)
 				if !ok {
 					return api.OnResolveResult{}, fmt.Errorf("cannot resolve %q", args.Path)
@@ -168,13 +187,7 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 				return api.OnResolveResult{Path: abs, Namespace: "http"}, nil
 			})
 			build.OnLoad(api.OnLoadOptions{Filter: `.*`, Namespace: "http"}, func(args api.OnLoadArgs) (api.OnLoadResult, error) {
-				if bctx.Err() != nil {
-					return api.OnLoadResult{}, bctx.Err()
-				}
-				mu.Lock()
-				over := fetched >= maxModuleFetches || bytesIn >= maxModuleSourceBytes
-				mu.Unlock()
-				if over {
+				if overBudget() {
 					return api.OnLoadResult{}, fmt.Errorf("module graph too large")
 				}
 				src, ok := e.fetchModuleSource(bctx, args.Path)
@@ -201,23 +214,42 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 		},
 	}
 
-	res := api.Build(api.BuildOptions{
-		Stdin: &api.StdinOptions{
-			Contents:   entrySrc.String(),
-			ResolveDir: "/",
-			Sourcefile: doc.URL,
-			Loader:     api.LoaderJS,
-		},
-		Bundle:        true,
-		Format:        api.FormatIIFE,
-		Target:        api.ES2017,
-		Write:         false,
-		LogLevel:      api.LogLevelSilent,
-		Plugins:       []api.Plugin{plugin},
-		Sourcemap:     api.SourceMapNone,
-		LegalComments: api.LegalCommentsNone,
-		Supported:     map[string]bool{"import-meta": false},
+	// api.Build is synchronous and takes no context, so overBudget() alone cannot
+	// guarantee it returns promptly: it only stops NEW resolves/loads, but a
+	// large/pathological transitive graph can leave esbuild's internal scanner
+	// draining an already-queued backlog for far longer than moduleBundleTimeout
+	// — observed live on developer.mozilla.org, where the call was still blocked
+	// in bundler.scanAllDependencies minutes after bctx had expired. awaitBounded
+	// stops WAITING for it once the budget is spent instead; the abandoned call
+	// keeps running (and is eventually garbage-collected once it finishes), but
+	// it can no longer hold up this render.
+	res, ok := awaitBounded(bctx, func() api.BuildResult {
+		return api.Build(api.BuildOptions{
+			Stdin: &api.StdinOptions{
+				Contents:   entrySrc.String(),
+				ResolveDir: "/",
+				Sourcefile: doc.URL,
+				Loader:     api.LoaderJS,
+			},
+			Bundle:        true,
+			Format:        api.FormatIIFE,
+			Target:        api.ES2017,
+			Write:         false,
+			LogLevel:      api.LogLevelSilent,
+			Plugins:       []api.Plugin{plugin},
+			Sourcemap:     api.SourceMapNone,
+			LegalComments: api.LegalCommentsNone,
+			Supported:     map[string]bool{"import-meta": false},
+		})
 	})
+	if !ok {
+		mu.Lock()
+		stats.fetched, stats.failed, stats.bytesIn = fetched, failed, bytesIn
+		mu.Unlock()
+		stats.wallClock = time.Since(start)
+		stats.firstErr = "module bundle abandoned: esbuild did not return within the bundle budget"
+		return "", stats, false
+	}
 
 	stats.fetched = fetched
 	stats.failed = failed
@@ -313,6 +345,24 @@ func (e *Engine) fetchModuleOnce(ctx context.Context, abs string) (body string, 
 		return "", true, false
 	}
 	return string(raw), false, true
+}
+
+// awaitBounded runs fn in its own goroutine and returns its result with ok
+// true, or a zero value with ok false if ctx is done first. There is no way to
+// cancel an arbitrary synchronous call (like esbuild's api.Build, which takes
+// no context) — only a way to stop WAITING for it. On the false path fn keeps
+// running in the background; the goroutine exits and is collected once fn
+// eventually returns, whether or not anything is still around to read it.
+func awaitBounded[T any](ctx context.Context, fn func() T) (T, bool) {
+	done := make(chan T, 1)
+	go func() { done <- fn() }()
+	select {
+	case v := <-done:
+		return v, true
+	case <-ctx.Done():
+		var zero T
+		return zero, false
+	}
 }
 
 // injectBundledScript appends a classic <script> carrying src to the document
