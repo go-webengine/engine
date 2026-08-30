@@ -58,13 +58,32 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	// applied to the group's rendered output before it is composited, so blur /
 	// drop-shadow spread and colour transforms see the whole subtree at once.
 	if hasFilter || op < 1 {
-		tmp := image.NewRGBA(dst.Rect)
+		// The group buffer only needs to cover the rows this box's subtree can
+		// actually paint into (its ink bounds, expanded for any blur/drop-shadow
+		// spread), not the whole page: a page has a fixed, modest width but can be
+		// tens of thousands of pixels tall, and a `filter`/fractional-opacity box is
+		// typically a small icon or card. dst's PixelPainter still requires a
+		// buffer starting at row 0 (it has no notion of a row origin), so the
+		// PAINT step allocates [0, y1) — but the expensive per-pixel work (colour-
+		// matrix filters, blur, composite) runs on a COPY of just [y0, y1),
+		// re-anchored to row 0. The copy (not a zero-copy reslice) is deliberate:
+		// go-images' AdjustContrast/GaussianBlur re-anchor any non-zero-origin
+		// image.RGBA to (0,0) internally (see ToRGBA/newLike), which would silently
+		// discard a shared reslice's row offset and paint the filtered result at
+		// the top of the page. Re-anchoring ourselves, up front, and tracking the
+		// offset separately through compositeGroupAt sidesteps that entirely.
+		y0, y1 := groupRows(box, hasFilter, dst.Rect, clip)
+		if y1 <= y0 {
+			return // the box's ink bounds don't intersect the visible clip at all
+		}
+		tmp := image.NewRGBA(image.Rect(dst.Rect.Min.X, dst.Rect.Min.Y, dst.Rect.Max.X, y1))
 		tpp := painter.NewPixelPainter(tmp.Pix, tmp.Rect.Dx(), tmp.Rect.Dy())
 		paintBoxContent(tmp, tpp, box, f, imgs, bgImgs, clip)
+		group := copyRows(tmp, y0, y1)
 		if hasFilter {
-			tmp = applyFilters(tmp, box.Style.Filters, box.Style.Color)
+			group = applyFilters(group, box.Style.Filters, box.Style.Color)
 		}
-		compositeGroup(dst, tmp, op)
+		compositeGroupAt(dst, group, op, y0)
 		return
 	}
 	paintBoxContent(dst, pp, box, f, imgs, bgImgs, clip)
@@ -745,9 +764,12 @@ func blendPixel(dst *image.RGBA, x, y int, col css.Color, cov uint8) {
 	dst.Pix[i+3] = uint8(outA*255 + 0.5)
 }
 
-// compositeGroup composites a transparent group buffer src over dst, scaling the
-// group's alpha by the group opacity (0..1).
-func compositeGroup(dst, src *image.RGBA, opacity float64) {
+// compositeGroupAt composites a transparent, zero-origin group buffer src over
+// dst at row offset yOffset (src's row 0 lands on dst row yOffset), scaling the
+// group's alpha by the group opacity (0..1). The offset is threaded through
+// explicitly rather than carried in src.Rect.Min because src has already been
+// re-anchored to (0,0) by copyRows (see the comment on that function).
+func compositeGroupAt(dst, src *image.RGBA, opacity float64, yOffset int) {
 	cov := uint8(opacity*255 + 0.5)
 	for y := src.Rect.Min.Y; y < src.Rect.Max.Y; y++ {
 		for x := src.Rect.Min.X; x < src.Rect.Max.X; x++ {
@@ -756,9 +778,134 @@ func compositeGroup(dst, src *image.RGBA, opacity float64) {
 			if a == 0 {
 				continue
 			}
-			blendPixel(dst, x, y, css.Color{R: src.Pix[i+0], G: src.Pix[i+1], B: src.Pix[i+2], A: a}, cov)
+			blendPixel(dst, x, y+yOffset, css.Color{R: src.Pix[i+0], G: src.Pix[i+1], B: src.Pix[i+2], A: a}, cov)
 		}
 	}
+}
+
+// groupRows returns the row range [y0, y1) a filter/opacity group buffer for
+// box actually needs to cover: box's own ink bounds (its subtree's painted
+// extent, which can exceed its border box — a shrink-wrapped float, a negative
+// margin, an outset box-shadow), expanded for any blur/drop-shadow spread in
+// its filter chain, intersected with the ancestor clip and the canvas. Only
+// rows are bounded (not columns): a page is typically a fixed, modest width but
+// can be tens of thousands of pixels tall, so that is where the win is: X is
+// left at the canvas's full width since narrowing it would buy little for the
+// extra bookkeeping.
+func groupRows(box *layout.Box, hasFilter bool, canvas, clip image.Rectangle) (y0, y1 int) {
+	ext := subtreeExtent(box)
+	if hasFilter {
+		if m := filterMargin(box.Style.Filters); m > 0 {
+			ext.Min.Y -= int(m)
+			ext.Max.Y += int(m)
+		}
+	}
+	rows := image.Rect(canvas.Min.X, ext.Min.Y, canvas.Max.X, ext.Max.Y).Intersect(clip).Intersect(canvas)
+	return rows.Min.Y, rows.Max.Y
+}
+
+// subtreeExtent returns the smallest axis-aligned rectangle (in absolute
+// document pixels) covering everything box's paintBoxContent recursion can
+// draw: the box's own border box plus any outset box-shadow spread, its list
+// marker, its line boxes, and — recursively — every child. A block box's own
+// W/H is not always a safe upper bound on its own (a shrink-wrapped
+// float/negative margin can place a descendant outside it — see the comment on
+// clipsContent), so this walks the real subtree rather than trusting box.H.
+func subtreeExtent(box *layout.Box) image.Rectangle {
+	if box == nil {
+		return image.Rectangle{}
+	}
+	r := shadowExpandedRect(box)
+	if box.Marker != nil {
+		m := box.Marker
+		r = r.Union(pixelRect(m.X, m.Y, m.X+m.W, m.Y+m.H))
+	}
+	for _, line := range box.Lines {
+		r = r.Union(pixelRect(line.X, line.Y, line.X+line.W, line.Y+line.H))
+	}
+	for _, ch := range box.Children {
+		r = r.Union(subtreeExtent(ch))
+	}
+	return r
+}
+
+// shadowExpandedRect is box's own border box, expanded by the spread of any
+// outset (non-inset) box-shadow it carries — the same geometry paintDropShadow
+// paints into.
+func shadowExpandedRect(box *layout.Box) image.Rectangle {
+	x0, y0 := box.X, box.Y
+	x1, y1 := box.X+box.W, box.Y+box.H
+	if box.Style != nil {
+		for _, sh := range box.Style.BoxShadows {
+			if sh.Inset {
+				continue
+			}
+			sigma := sh.Blur / 2
+			pad := math.Ceil(sigma*3) + 1
+			x0 = math.Min(x0, box.X+sh.OffsetX-sh.Spread-pad)
+			y0 = math.Min(y0, box.Y+sh.OffsetY-sh.Spread-pad)
+			x1 = math.Max(x1, box.X+box.W+sh.OffsetX+sh.Spread+pad)
+			y1 = math.Max(y1, box.Y+box.H+sh.OffsetY+sh.Spread+pad)
+		}
+	}
+	return pixelRect(x0, y0, x1, y1)
+}
+
+// pixelRect converts a document-space rect to an integer pixel rect, rounding
+// outward so a fractional edge is never clipped.
+func pixelRect(x0, y0, x1, y1 float64) image.Rectangle {
+	return image.Rect(int(math.Floor(x0)), int(math.Floor(y0)), int(math.Ceil(x1)), int(math.Ceil(y1)))
+}
+
+// filterMargin returns the pixel margin a filter chain's spatial effects
+// (blur, drop-shadow) can spread beyond the element's own bounds — the same
+// 3-sigma-plus-one convention paintDropShadow uses for CSS box-shadow. Purely
+// pointwise filters (brightness, contrast, …) contribute nothing.
+func filterMargin(filters []css.Filter) float64 {
+	var m float64
+	for _, f := range filters {
+		var v float64
+		switch f.Kind {
+		case css.FilterBlur:
+			v = math.Ceil(f.Amount*3) + 1
+		case css.FilterDropShadow:
+			sigma := f.Blur / 2
+			v = math.Abs(f.OffsetX) + math.Abs(f.OffsetY) + math.Ceil(sigma*3) + 1
+		}
+		if v > m {
+			m = v
+		}
+	}
+	return m
+}
+
+// copyRows returns a fresh, zero-origin image.RGBA holding a COPY of img's row
+// range [y0, y1) (full width). It deliberately copies rather than reslicing
+// img's backing array in place: a reslice would keep img's non-zero Rect.Min,
+// and go-images' AdjustContrast/GaussianBlur (used by the CSS contrast and
+// blur/drop-shadow filters) re-anchor any non-zero-origin image.RGBA to (0,0)
+// internally (ToRGBA/newLike) before processing it — silently discarding a
+// reslice's row offset and making the filtered result land at the top of the
+// page instead of at the box's real position. Returning an explicitly
+// re-anchored copy up front, with the caller tracking y0 separately (see
+// compositeGroupAt), avoids relying on every current and future pixel
+// primitive to preserve a rect it has no reason to.
+func copyRows(img *image.RGBA, y0, y1 int) *image.RGBA {
+	if y0 < img.Rect.Min.Y {
+		y0 = img.Rect.Min.Y
+	}
+	if y1 > img.Rect.Max.Y {
+		y1 = img.Rect.Max.Y
+	}
+	w := img.Rect.Dx()
+	if y1 <= y0 {
+		return image.NewRGBA(image.Rect(0, 0, w, 0))
+	}
+	out := image.NewRGBA(image.Rect(0, 0, w, y1-y0))
+	lo := (y0 - img.Rect.Min.Y) * img.Stride
+	hi := (y1 - img.Rect.Min.Y) * img.Stride
+	copy(out.Pix, img.Pix[lo:hi])
+	return out
 }
 
 // blitImage draws src onto dst with its top-left at (dx, dy), confined to clip
