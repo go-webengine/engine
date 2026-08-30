@@ -379,7 +379,7 @@ func TestCompositeGroupSkipsTransparent(t *testing.T) {
 	dst := white(2, 1)
 	src := image.NewRGBA(image.Rect(0, 0, 2, 1)) // all transparent
 	src.SetRGBA(0, 0, color.RGBA{0, 0, 0, 255})  // one opaque black
-	compositeGroup(dst, src, 1)
+	compositeGroupAt(dst, src, 1, 0)
 	if c := dst.RGBAAt(0, 0); c.R != 0 {
 		t.Errorf("opaque group pixel = %+v want black", c)
 	}

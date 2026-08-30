@@ -60,3 +60,58 @@ func TestRunNeitherURLNorFile(t *testing.T) {
 		t.Errorf("no url/file: code = %d, want 2", code)
 	}
 }
+
+func offlineFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	htmlPath := filepath.Join(dir, "in.html")
+	if err := os.WriteFile(htmlPath, []byte(
+		`<html><head><title>T</title></head><body><div>hi</div></body></html>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return htmlPath
+}
+
+func TestRunCPUProfile(t *testing.T) {
+	dir := t.TempDir()
+	prof := filepath.Join(dir, "cpu.prof")
+	code := run([]string{"-file", offlineFixture(t), "-out", filepath.Join(dir, "o.png"),
+		"-cpuprofile", prof}, os.Stderr)
+	if code != 0 {
+		t.Fatalf("run -cpuprofile: code = %d, want 0", code)
+	}
+	if fi, err := os.Stat(prof); err != nil || fi.Size() == 0 {
+		t.Fatalf("cpu profile = %v %v", fi, err)
+	}
+}
+
+func TestRunCPUProfileBadPath(t *testing.T) {
+	dir := t.TempDir()
+	code := run([]string{"-file", offlineFixture(t), "-out", filepath.Join(dir, "o.png"),
+		"-cpuprofile", filepath.Join(dir, "nonexistent-dir", "cpu.prof")}, os.Stderr)
+	if code != 1 {
+		t.Errorf("bad cpuprofile path: code = %d, want 1", code)
+	}
+}
+
+func TestRunMemProfile(t *testing.T) {
+	dir := t.TempDir()
+	prof := filepath.Join(dir, "mem.prof")
+	code := run([]string{"-file", offlineFixture(t), "-out", filepath.Join(dir, "o.png"),
+		"-memprofile", prof}, os.Stderr)
+	if code != 0 {
+		t.Fatalf("run -memprofile: code = %d, want 0", code)
+	}
+	if fi, err := os.Stat(prof); err != nil || fi.Size() == 0 {
+		t.Fatalf("mem profile = %v %v", fi, err)
+	}
+}
+
+func TestRunMemProfileBadPath(t *testing.T) {
+	dir := t.TempDir()
+	code := run([]string{"-file", offlineFixture(t), "-out", filepath.Join(dir, "o.png"),
+		"-memprofile", filepath.Join(dir, "nonexistent-dir", "mem.prof")}, os.Stderr)
+	if code != 1 {
+		t.Errorf("bad memprofile path: code = %d, want 1", code)
+	}
+}
