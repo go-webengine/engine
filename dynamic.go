@@ -309,10 +309,23 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 			rp.sheets = e.fetchExternalSheets(ctx, doc, float64(vpW))
 			prevLinks = k
 		}
-		rp.sm = css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
+		newSm := css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
 		start := time.Now()
-		rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
+		newBox, newHeight := layout.LayoutDocument(doc.Root, newSm, float64(vpW), fonts, rp.imgSize)
 		layoutDur = time.Since(start)
+
+		// Never let a script pass erase an already-good render: a client-side
+		// router that fails to load its own error route (observed on react.dev)
+		// can unmount the whole app tree while still leaving the DOM "changed"
+		// (so the signature check above does not save us). If the page had real
+		// content before this pass and has essentially none after it, the pass is
+		// almost certainly a broken script re-render, not an intentional wipe —
+		// keep the last good layout and stop, rather than settling on blank.
+		if !renderedEmpty(rp.box, rp.height) && renderedEmpty(newBox, newHeight) {
+			e.jslog("settle: script pass emptied an already-rendered page; keeping prior layout")
+			break
+		}
+		rp.sm, rp.box, rp.height = newSm, newBox, newHeight
 		relaidOut = true
 
 		// Progressive: emit an intermediate frame for this re-laid-out pass (the

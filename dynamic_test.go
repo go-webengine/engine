@@ -231,6 +231,26 @@ func TestSettleFixpointCap(t *testing.T) {
 	}
 }
 
+// TestSettleKeepsGoodRenderOnScriptWipe covers a guard added after a live
+// regression: react.dev's client router failed to load its own error route
+// and, in the process, unmounted the whole app tree — but the DOM was still
+// "changed" (so the no-op signature check does not catch it), and the settle
+// loop happily re-laid-out and kept the now-empty result, turning a real page
+// into a blank render. If a page had real content before a script pass and has
+// essentially none after it, the pass must be discarded and the last good
+// layout kept instead.
+func TestSettleKeepsGoodRenderOnScriptWipe(t *testing.T) {
+	src := `<html><head></head><body>
+		<p>Real, visible article content long enough to lay out well above the
+		empty-render threshold, exactly like a page's initial static HTML.</p>
+		<script>document.body.innerHTML = '';</script>
+	</body></html>`
+	_, info := renderDoc(t, New(), src, context.Background(), image.Rect(0, 0, 400, 200))
+	if info.ContentHeight < emptyRenderHeight {
+		t.Fatalf("script wipe emptied the page: contentHeight=%d, want the pre-script layout kept", info.ContentHeight)
+	}
+}
+
 // TestSettleNoMutationEarlyReturn covers the branch where the scripts change
 // nothing layout-relevant: the initial layout stands, no re-layout happens.
 func TestSettleNoMutationEarlyReturn(t *testing.T) {
