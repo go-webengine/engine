@@ -92,7 +92,7 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style
 	// a browser. The modern `hidden="until-found"` value is revealable content and
 	// is NOT hidden here.
 	if v, ok := n.Attribute("hidden"); ok && !strings.EqualFold(strings.TrimSpace(v), "until-found") {
-		add([]Declaration{{"display", "none"}}, precUA, 0)
+		add([]Declaration{{Property: "display", Value: "none"}}, precUA, 0)
 	}
 	for _, r := range uaDescendantRules {
 		spec := -1
@@ -135,6 +135,15 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style
 	// Sort ascending so the last-applied declaration wins.
 	sort.SliceStable(cands, func(i, j int) bool {
 		a, b := cands[i], cands[j]
+		// !important forms its own cascade tier above every normal declaration,
+		// regardless of origin or specificity: an author `!important` beats an
+		// inline non-important style, which otherwise would always win. Within
+		// each tier (important or not), origin/specificity/order still apply
+		// exactly as before — this is the one addition to an otherwise-unchanged
+		// comparator, so a stylesheet with no `!important` sorts identically.
+		if a.decl.Important != b.decl.Important {
+			return !a.decl.Important
+		}
 		if a.precedence != b.precedence {
 			return a.precedence < b.precedence
 		}

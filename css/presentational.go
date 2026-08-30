@@ -33,19 +33,19 @@ func presentationalHints(n *dom.Node) []Declaration {
 		"video", "object", "iframe", "embed", "input":
 		if v, ok := attr("width"); ok {
 			if p := lengthHint(v); p != "" {
-				d = append(d, Declaration{"width", p})
+				d = append(d, Declaration{Property: "width", Value: p})
 			}
 		}
 		if v, ok := attr("height"); ok {
 			if p := lengthHint(v); p != "" {
-				d = append(d, Declaration{"height", p})
+				d = append(d, Declaration{Property: "height", Value: p})
 			}
 		}
 	}
 
 	// bgcolor → background-color (table, cells, rows, body, and legacy others).
 	if v, ok := attr("bgcolor"); ok && v != "" {
-		d = append(d, Declaration{"background-color", v})
+		d = append(d, Declaration{Property: "background-color", Value: v})
 	}
 
 	// align: on replaced/table boxes it floats (or centres a table); on flow
@@ -55,28 +55,28 @@ func presentationalHints(n *dom.Node) []Declaration {
 		case "img", "object", "iframe", "embed", "input":
 			switch strings.ToLower(v) {
 			case "left":
-				d = append(d, Declaration{"float", "left"})
+				d = append(d, Declaration{Property: "float", Value: "left"})
 			case "right":
-				d = append(d, Declaration{"float", "right"})
+				d = append(d, Declaration{Property: "float", Value: "right"})
 			}
 		case "table":
 			switch strings.ToLower(v) {
 			case "left":
-				d = append(d, Declaration{"float", "left"})
+				d = append(d, Declaration{Property: "float", Value: "left"})
 			case "right":
-				d = append(d, Declaration{"float", "right"})
+				d = append(d, Declaration{Property: "float", Value: "right"})
 			case "center":
-				d = append(d, Declaration{"margin-left", "auto"}, Declaration{"margin-right", "auto"})
+				d = append(d, Declaration{Property: "margin-left", Value: "auto"}, Declaration{Property: "margin-right", Value: "auto"})
 			}
 		default: // td, th, tr, div, p, thead, tbody, tfoot, col, caption, h1-6, …
 			switch strings.ToLower(v) {
 			case "left":
-				d = append(d, Declaration{"text-align", "left"})
+				d = append(d, Declaration{Property: "text-align", Value: "left"})
 			case "right":
-				d = append(d, Declaration{"text-align", "right"})
+				d = append(d, Declaration{Property: "text-align", Value: "right"})
 			case "center":
 				// Legacy centre-including-blocks, like the <center> element.
-				d = append(d, Declaration{"text-align", "-webkit-center"})
+				d = append(d, Declaration{Property: "text-align", Value: "-webkit-center"})
 			}
 		}
 	}
@@ -85,7 +85,7 @@ func presentationalHints(n *dom.Node) []Declaration {
 	if tag == "table" {
 		if v, ok := attr("border"); ok && v != "" && v != "0" {
 			if p := lengthHint(v); p != "" {
-				d = append(d, Declaration{"border-width", p}, Declaration{"border-style", "solid"})
+				d = append(d, Declaration{Property: "border-width", Value: p}, Declaration{Property: "border-style", Value: "solid"})
 			}
 		}
 	}
@@ -93,14 +93,14 @@ func presentationalHints(n *dom.Node) []Declaration {
 	// <font color=… size=… face=…>.
 	if tag == "font" || tag == "basefont" {
 		if v, ok := attr("color"); ok && v != "" {
-			d = append(d, Declaration{"color", v})
+			d = append(d, Declaration{Property: "color", Value: v})
 		}
 		if v, ok := attr("face"); ok && v != "" {
-			d = append(d, Declaration{"font-family", v})
+			d = append(d, Declaration{Property: "font-family", Value: v})
 		}
 		if v, ok := attr("size"); ok {
 			if fs := fontSizeAttr(v); fs != "" {
-				d = append(d, Declaration{"font-size", fs})
+				d = append(d, Declaration{Property: "font-size", Value: fs})
 			}
 		}
 	}
@@ -108,7 +108,7 @@ func presentationalHints(n *dom.Node) []Declaration {
 	// <body text=… bgcolor=… link=…>: the text colour and page background.
 	if tag == "body" {
 		if v, ok := attr("text"); ok && v != "" {
-			d = append(d, Declaration{"color", v})
+			d = append(d, Declaration{Property: "color", Value: v})
 		}
 	}
 

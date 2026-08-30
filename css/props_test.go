@@ -10,7 +10,9 @@ func newStyle() *Style {
 	return &s
 }
 
-func applyOn(s *Style, prop, val string, em float64) { s.apply(Declaration{prop, val}, em) }
+func applyOn(s *Style, prop, val string, em float64) {
+	s.apply(Declaration{Property: prop, Value: val}, em)
+}
 
 func TestApplyDisplayValues(t *testing.T) {
 	cases := map[string]Display{

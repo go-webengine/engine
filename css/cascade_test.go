@@ -150,6 +150,58 @@ func TestCascadeSpecificityOrdering(t *testing.T) {
 	}
 }
 
+// TestCascadeImportantBeatsSpecificity covers the cascade tier added for
+// `!important`: a low-specificity class rule marked !important must win over a
+// higher-specificity id rule that is not — the opposite of the normal
+// specificity order proven in TestCascadeSpecificityOrdering above. This is
+// exactly the shape a real site (MDN) relies on to force a component hidden
+// (`.left-sidebar{display:none!important}`) regardless of any later, more
+// specific rule that would otherwise reveal it.
+func TestCascadeImportantBeatsSpecificity(t *testing.T) {
+	src := `<html><head><style>
+		.c { color: green !important }
+		#i { color: blue }
+	</style></head><body><p id="i" class="c">x</p></body></html>`
+	if st := styleOf(t, src, "p"); st.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("!important class should beat non-important id, got %v", st.Color)
+	}
+}
+
+// TestCascadeImportantOrderingWithinTier covers that two !important
+// declarations still resolve by the normal specificity/order rules AMONG
+// themselves — !important lifts a declaration into a higher tier, it does not
+// exempt it from the ordinary cascade within that tier.
+func TestCascadeImportantOrderingWithinTier(t *testing.T) {
+	// Higher specificity important wins over lower specificity important.
+	src := `<html><head><style>
+		.c { color: red !important }
+		#i { color: blue !important }
+	</style></head><body><p id="i" class="c">x</p></body></html>`
+	if st := styleOf(t, src, "p"); st.Color != (Color{0, 0, 255, 255}) {
+		t.Errorf("higher-specificity !important should win, got %v", st.Color)
+	}
+
+	// Equal specificity: the later !important rule wins.
+	src2 := `<html><head><style>
+		.c { color: red !important }
+		.c { color: green !important }
+	</style></head><body><p class="c">x</p></body></html>`
+	if st := styleOf(t, src2, "p"); st.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("later !important rule should win, got %v", st.Color)
+	}
+}
+
+// TestCascadeImportantAbsentUnaffected proves a stylesheet with no !important
+// at all sorts identically to before — the new comparator branch is a pure
+// addition, not a behaviour change for the common case.
+func TestCascadeImportantAbsentUnaffected(t *testing.T) {
+	src := `<html><head><style>p{color:red}.c{color:green}#i{color:blue}</style></head>` +
+		`<body><p id="i" class="c">x</p></body></html>`
+	if st := styleOf(t, src, "p"); st.Color != (Color{0, 0, 255, 255}) {
+		t.Errorf("id should still win with no !important present, got %v", st.Color)
+	}
+}
+
 func TestCascadeAuthorOverridesUA(t *testing.T) {
 	// Author rule beats UA default (a's blue link colour).
 	src := `<html><head><style>a{color:red}</style></head><body><a>x</a></body></html>`

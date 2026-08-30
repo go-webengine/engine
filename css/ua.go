@@ -24,86 +24,86 @@ func uaDeclarations(tag string) []Declaration {
 		"nav", "main", "aside", "figure", "form", "hr",
 		"blockquote", "pre", "address", "fieldset", "figcaption",
 		"dl", "dd", "dt":
-		d := []Declaration{{"display", "block"}}
+		d := []Declaration{{Property: "display", Value: "block"}}
 		if tag == "body" {
-			d = append(d, Declaration{"margin", "8px"})
+			d = append(d, Declaration{Property: "margin", Value: "8px"})
 		}
 		if tag == "blockquote" || tag == "figure" {
-			d = append(d, Declaration{"margin", "16px 40px"})
+			d = append(d, Declaration{Property: "margin", Value: "16px 40px"})
 		}
 		if tag == "dd" {
-			d = append(d, Declaration{"margin-left", "40px"})
+			d = append(d, Declaration{Property: "margin-left", Value: "40px"})
 		}
 		if tag == "pre" {
-			d = append(d, Declaration{"font-family", "monospace"},
-				Declaration{"white-space", "pre"}, Declaration{"margin", "13px 0"})
+			d = append(d, Declaration{Property: "font-family", Value: "monospace"},
+				Declaration{Property: "white-space", Value: "pre"}, Declaration{Property: "margin", Value: "13px 0"})
 		}
 		return d
 	case "table":
-		return []Declaration{{"display", "table"}, {"border-color", "gray"}}
+		return []Declaration{{Property: "display", Value: "table"}, {Property: "border-color", Value: "gray"}}
 	case "thead", "tbody", "tfoot":
-		return []Declaration{{"display", "table-row-group"}}
+		return []Declaration{{Property: "display", Value: "table-row-group"}}
 	case "tr":
-		return []Declaration{{"display", "table-row"}}
+		return []Declaration{{Property: "display", Value: "table-row"}}
 	case "td":
-		return []Declaration{{"display", "table-cell"}, {"padding", "1px"}}
+		return []Declaration{{Property: "display", Value: "table-cell"}, {Property: "padding", Value: "1px"}}
 	case "th":
-		return []Declaration{{"display", "table-cell"}, {"padding", "1px"},
-			{"font-weight", "bold"}, {"text-align", "center"}}
+		return []Declaration{{Property: "display", Value: "table-cell"}, {Property: "padding", Value: "1px"},
+			{Property: "font-weight", Value: "bold"}, {Property: "text-align", Value: "center"}}
 	case "center":
 		// The legacy <center> element: a block that centres its inline content and
 		// its definite-width block/table children (see AlignCenterBlocks).
-		return []Declaration{{"display", "block"}, {"text-align", "-webkit-center"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "text-align", Value: "-webkit-center"}}
 	case "font", "big", "nobr", "wbr", "strike":
-		d := []Declaration{{"display", "inline"}}
+		d := []Declaration{{Property: "display", Value: "inline"}}
 		if tag == "big" {
 			// `larger` ≈ 1.2× the parent size; expressed in em since the engine
 			// resolves font-size against the parent.
-			d = append(d, Declaration{"font-size", "1.2em"})
+			d = append(d, Declaration{Property: "font-size", Value: "1.2em"})
 		}
 		if tag == "strike" {
-			d = append(d, Declaration{"text-decoration", "line-through"})
+			d = append(d, Declaration{Property: "text-decoration", Value: "line-through"})
 		}
 		return d
 	case "caption":
-		return []Declaration{{"display", "block"}, {"text-align", "center"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "text-align", Value: "center"}}
 	case "p":
-		return []Declaration{{"display", "block"}, {"margin", "16px 0"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "margin", Value: "16px 0"}}
 	case "h1":
-		return []Declaration{{"display", "block"}, {"font-size", "32px"}, {"font-weight", "bold"}, {"margin", "21px 0"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "font-size", Value: "32px"}, {Property: "font-weight", Value: "bold"}, {Property: "margin", Value: "21px 0"}}
 	case "h2":
-		return []Declaration{{"display", "block"}, {"font-size", "24px"}, {"font-weight", "bold"}, {"margin", "20px 0"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "font-size", Value: "24px"}, {Property: "font-weight", Value: "bold"}, {Property: "margin", Value: "20px 0"}}
 	case "h3":
-		return []Declaration{{"display", "block"}, {"font-size", "19px"}, {"font-weight", "bold"}, {"margin", "18px 0"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "font-size", Value: "19px"}, {Property: "font-weight", Value: "bold"}, {Property: "margin", Value: "18px 0"}}
 	case "h4":
-		return []Declaration{{"display", "block"}, {"font-size", "16px"}, {"font-weight", "bold"}, {"margin", "21px 0"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "font-size", Value: "16px"}, {Property: "font-weight", Value: "bold"}, {Property: "margin", Value: "21px 0"}}
 	case "h5":
-		return []Declaration{{"display", "block"}, {"font-size", "13px"}, {"font-weight", "bold"}, {"margin", "22px 0"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "font-size", Value: "13px"}, {Property: "font-weight", Value: "bold"}, {Property: "margin", Value: "22px 0"}}
 	case "h6":
-		return []Declaration{{"display", "block"}, {"font-size", "11px"}, {"font-weight", "bold"}, {"margin", "24px 0"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "font-size", Value: "11px"}, {Property: "font-weight", Value: "bold"}, {Property: "margin", Value: "24px 0"}}
 	case "ul":
-		return []Declaration{{"display", "block"}, {"margin", "16px 0"}, {"padding-left", "40px"},
-			{"list-style-type", "disc"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "margin", Value: "16px 0"}, {Property: "padding-left", Value: "40px"},
+			{Property: "list-style-type", Value: "disc"}}
 	case "ol":
-		return []Declaration{{"display", "block"}, {"margin", "16px 0"}, {"padding-left", "40px"},
-			{"list-style-type", "decimal"}}
+		return []Declaration{{Property: "display", Value: "block"}, {Property: "margin", Value: "16px 0"}, {Property: "padding-left", Value: "40px"},
+			{Property: "list-style-type", Value: "decimal"}}
 	case "li":
-		return []Declaration{{"display", "list-item"}}
+		return []Declaration{{Property: "display", Value: "list-item"}}
 	case "a":
-		return []Declaration{{"color", "#0000ee"}}
+		return []Declaration{{Property: "color", Value: "#0000ee"}}
 	case "strong", "b":
-		return []Declaration{{"font-weight", "bold"}}
+		return []Declaration{{Property: "font-weight", Value: "bold"}}
 	case "em", "i", "cite", "var", "dfn":
-		return []Declaration{{"font-style", "italic"}}
+		return []Declaration{{Property: "font-style", Value: "italic"}}
 	case "small":
-		return []Declaration{{"font-size", "13px"}}
+		return []Declaration{{Property: "font-size", Value: "13px"}}
 	case "code", "kbd", "samp", "tt":
-		return []Declaration{{"font-family", "monospace"}}
+		return []Declaration{{Property: "font-family", Value: "monospace"}}
 	case "span", "label", "abbr", "sup", "sub", "mark", "u", "s", "del", "ins",
 		"time", "q", "img", "button", "input", "select", "textarea":
-		return []Declaration{{"display", "inline"}}
+		return []Declaration{{Property: "display", Value: "inline"}}
 	case "head", "title", "style", "script", "meta", "link", "base", "noscript":
-		return []Declaration{{"display", "none"}}
+		return []Declaration{{Property: "display", Value: "none"}}
 	default:
 		return nil
 	}
