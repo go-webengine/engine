@@ -18,6 +18,32 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-08-31 (cont. 2) — two stale sibling-org dependencies caught unclaimed perf fixes
+
+Bumping `go-widgets/painter` from its very first tagged release (v0.2.0) to
+v0.12.0 (engine#68) picked up ten releases of accumulated paint-primitive
+work at once, including `FillRect fills rows, not pixels` (v0.8.0): a
+per-pixel loop replaced by a row built once and doubled by `copy()`.
+Similarly, `go-gfx/gfx` v0.5.0 → v0.19.0 (engine#69) picked up
+`raster.FromImage` reading `*image.YCbCr` (what every JPEG decodes to) from
+its own bytes instead of the generic interface-based colour-model path —
+upstream measured 69ms and 3,840,002 heap allocations for a single
+1200×1600 page before that fix. Neither bump changed the engine's own
+code; both were caught only because pprof showed the OLD, unoptimised
+implementation still running in a profile taken today. **Lesson: a
+pinned sibling-org dependency can silently miss real fixes for a long
+time — `go list -m -u all` after any profiling session, not just when
+something looks broken.**
+
+One expected, verified-as-a-fix visual change came with the painter bump:
+`StrokeRect`/`StrokeRoundRect` previously always painted a 1px border
+regardless of the requested width (v0.11.0 fixed this) — a `border: 2px
+solid` now genuinely renders 2px. Regenerated the affected golden and
+`testdata/renders/*.png` files rather than leaving them stale.
+
+pkg.go.dev/net/http (the largest page in the corpus, 88659px tall, so paint
+cost dominates): ~3.4s → ~2.8s across both bumps together.
+
 ## 2026-08-31 (cont.) — the grid bug from the entry below fixed, plus a sandbox-escape and two dedupe wins
 
 Two real CSS Grid bugs, found by dumping the live box tree (a temporary
