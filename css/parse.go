@@ -58,9 +58,13 @@ func ParseStylesheet(src string) []Rule {
 
 // ParseStylesheetVW parses a full stylesheet into rules, evaluating @media
 // blocks against viewport width vw: a matching @media block's inner rules are
-// included, a non-matching one is skipped. Other at-rules (@font-face,
-// @keyframes, @supports, @import, ...) are skipped wholesale. Malformed rules
-// are skipped defensively.
+// included, a non-matching one is skipped. @layer blocks are unwrapped (their
+// rules included as if the layer boundary were not there — this engine does
+// not model cross-layer cascade priority, but that is far less wrong than
+// dropping the content: Tailwind v4's default output, among many other
+// frameworks, puts nearly all of its CSS inside @layer). Other at-rules
+// (@font-face, @keyframes, @supports, @import, ...) are skipped wholesale.
+// Malformed rules are skipped defensively.
 func ParseStylesheetVW(src string, vw float64) []Rule {
 	return parseRules(stripComments(src), vw)
 }
@@ -82,14 +86,33 @@ func parseRules(src string, vw float64) []Rule {
 		body := src[blockStart+1 : blockEnd]
 		i = blockEnd + 1
 
+		// A bare at-rule statement ending in ';' (e.g. "@layer theme, base,
+		// utilities;" declaring layer order, or "@import url(x);") has no '{' of
+		// its own, so it rides along in the SAME prelude text as whatever
+		// construct actually owns this brace. Only the text after the last such
+		// ';' describes that construct.
+		if semi := strings.LastIndexByte(prelude, ';'); semi >= 0 {
+			prelude = strings.TrimSpace(prelude[semi+1:])
+		}
+
 		if strings.HasPrefix(prelude, "@") {
-			// Honour @media blocks whose width query matches the viewport; the
-			// inner body is itself a list of rules. Skip all other at-rules.
-			if lower := strings.ToLower(prelude); strings.HasPrefix(lower, "@media") {
+			lower := strings.ToLower(prelude)
+			switch {
+			case strings.HasPrefix(lower, "@media"):
+				// Honour @media blocks whose width query matches the viewport; the
+				// inner body is itself a list of rules.
 				if mediaMatches(lower[len("@media"):], vw) {
 					rules = append(rules, parseRules(body, vw)...)
 				}
+			case strings.HasPrefix(lower, "@layer"):
+				// A named layer's body is itself a list of rules; a bare "@layer
+				// name{...}" (anonymous or named) always applies — there is no
+				// width/media condition to test, only a cascade PRIORITY this
+				// engine does not model (see the doc comment above).
+				rules = append(rules, parseRules(body, vw)...)
 			}
+			// Every other at-rule (@font-face, @keyframes, @supports, ...) is
+			// skipped wholesale, as before.
 			continue
 		}
 		sels := ParseSelectorList(prelude)

@@ -129,6 +129,100 @@ func TestParseStylesheetMediaQueries(t *testing.T) {
 	}
 }
 
+// declValues returns a property->value map flattening every declaration of
+// every rule, for the common "did this apply" style of assertion below.
+func declValues(rules []Rule) map[string]string {
+	got := map[string]string{}
+	for _, r := range rules {
+		for _, d := range r.Declarations {
+			got[d.Property] = d.Value
+		}
+	}
+	return got
+}
+
+// TestParseStylesheetLayerBasic covers the core fix: a named @layer's rules
+// must be included, not dropped — Tailwind v4's default output (and many
+// other frameworks) puts nearly all of its CSS inside @layer utilities, and
+// this engine silently discarding it meant almost the whole stylesheet never
+// reached the cascade (observed live: tailwindcss.com had 690KB of CSS but
+// only 181 rules parsed out of it before this fix — 5334 after).
+func TestParseStylesheetLayerBasic(t *testing.T) {
+	rules := ParseStylesheetVW(`@layer utilities { .flex { display: flex } }`, 1024)
+	if got := declValues(rules); got["display"] != "flex" {
+		t.Errorf("@layer utilities content should be included, got %+v", got)
+	}
+}
+
+// TestParseStylesheetLayerAnonymousAndNested covers an anonymous @layer (no
+// name) and @media nested inside @layer (the shape Tailwind actually emits
+// for responsive/dark-mode variants defined as utilities).
+func TestParseStylesheetLayerAnonymousAndNested(t *testing.T) {
+	css := `
+	@layer { .anon { color: red } }
+	@layer utilities {
+		@media (min-width: 640px) { .sm\:block { display: block } }
+	}
+	`
+	got := declValues(ParseStylesheetVW(css, 1024))
+	if got["color"] != "red" {
+		t.Errorf("anonymous @layer content should be included, got %+v", got)
+	}
+	if got["display"] != "block" {
+		t.Errorf("@media nested inside @layer should still be evaluated, got %+v", got)
+	}
+}
+
+// TestParseStylesheetLayerBareDeclaration covers the bare "@layer a, b, c;"
+// order-declaration form (no body of its own — just establishes priority,
+// which this engine does not model). It must not itself contribute rules,
+// and — critically — must not swallow whatever real construct follows it,
+// since a bare declaration has no '{' and so shares its textual prelude with
+// the next brace found (the exact shape Tailwind emits:
+// "@layer theme, base, components, utilities;" followed immediately by
+// "@layer properties{...}").
+func TestParseStylesheetLayerBareDeclaration(t *testing.T) {
+	css := `
+	@layer theme, base, utilities;
+	@layer utilities { .grid { display: grid } }
+	`
+	got := declValues(ParseStylesheetVW(css, 1024))
+	if got["display"] != "grid" {
+		t.Errorf("layer after a bare order-declaration should still parse, got %+v", got)
+	}
+}
+
+// TestParseStylesheetBareDeclarationBeforeNormalRule covers the same bare-
+// declaration hazard when what follows is an ordinary rule, not another
+// at-rule — the case a purely prefix-based check (without splitting at the
+// last ';') would get wrong: it would see a prelude like
+// "@layer a, b;\n.foo" and skip it wholesale, silently dropping ".foo".
+func TestParseStylesheetBareDeclarationBeforeNormalRule(t *testing.T) {
+	css := `
+	@layer a, b;
+	.foo { color: green }
+	`
+	got := declValues(ParseStylesheetVW(css, 1024))
+	if got["color"] != "green" {
+		t.Errorf("a normal rule after a bare @layer declaration must still parse, got %+v", got)
+	}
+}
+
+// TestParseStylesheetOtherAtRulesStillSkipped is the regression guard: the
+// @layer fix must not accidentally start recursing into unrelated at-rules
+// that were correctly skipped before.
+func TestParseStylesheetOtherAtRulesStillSkipped(t *testing.T) {
+	css := `
+	@font-face { font-family: X; src: url(x) }
+	@keyframes spin { from { transform: none } to { transform: none } }
+	@supports (display: grid) { .g { display: grid } }
+	`
+	rules := ParseStylesheetVW(css, 1024)
+	if len(rules) != 0 {
+		t.Errorf("expected @font-face/@keyframes/@supports to still be skipped wholesale, got %+v", rules)
+	}
+}
+
 func TestMediaMatches(t *testing.T) {
 	if mediaMatches("print", 1024) {
 		t.Error("print should not match")
