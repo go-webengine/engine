@@ -49,7 +49,7 @@ func (l *layouter) grid(box *Box, node *dom.Node, st *css.Style, cx, cw, top flo
 		nCols = gridImpliedColumns(items)
 	}
 
-	l.placeItems(items, st, nCols)
+	l.placeItems(items, st, nCols, nRowsExplicit)
 
 	nRows := nRowsExplicit
 	for _, it := range items {
@@ -147,14 +147,24 @@ func gridImpliedColumns(items []*gridItem) int {
 
 // placeItems assigns each item its row/column track span: named areas first,
 // then explicit line/span placement, then row-major auto-flow for the rest.
-func (l *layouter) placeItems(items []*gridItem, st *css.Style, nCols int) {
+// nRowsExplicit is the grid-template-rows track count (0 if there is none),
+// which lets a negative row line (e.g. `grid-row: 1 / -1`, Tailwind's
+// `row-span-full`) resolve against the explicit grid instead of being left
+// unresolved — an unresolved negative end previously collapsed such a span
+// to zero rows, so the item reserved no occupancy at all and a later
+// auto-placed item could slide into the cells it was meant to cover.
+func (l *layouter) placeItems(items []*gridItem, st *css.Style, nCols, nRowsExplicit int) {
 	occ := newOccupancy()
+	rowTracks := -1
+	if nRowsExplicit > 0 {
+		rowTracks = nRowsExplicit
+	}
 
 	// Pass 1: items with a definite column AND row (named area or explicit lines).
 	var autoItems []*gridItem
 	for _, it := range items {
 		c0, cSpan, cDef := resolveAxisPlacement(it.st.GridColumnStart, it.st.GridColumnEnd, nCols)
-		rStart, rSpan, rDef := resolveAxisPlacement(it.st.GridRowStart, it.st.GridRowEnd, -1)
+		rStart, rSpan, rDef := resolveAxisPlacement(it.st.GridRowStart, it.st.GridRowEnd, rowTracks)
 		if area, ok := lookupArea(st, it.st.GridArea); ok {
 			it.r0, it.r1, it.c0, it.c1 = area.r0, area.r1, area.c0, area.c1
 			occ.fill(it.r0, it.r1, it.c0, it.c1)
@@ -174,7 +184,7 @@ func (l *layouter) placeItems(items []*gridItem, st *css.Style, nCols int) {
 	cursorR, cursorC := 0, 0
 	for _, it := range autoItems {
 		_, cSpan, cDef := resolveAxisPlacement(it.st.GridColumnStart, it.st.GridColumnEnd, nCols)
-		rStart, rSpan, rDef := resolveAxisPlacement(it.st.GridRowStart, it.st.GridRowEnd, -1)
+		rStart, rSpan, rDef := resolveAxisPlacement(it.st.GridRowStart, it.st.GridRowEnd, rowTracks)
 		if cSpan > nCols {
 			cSpan = nCols
 		}
@@ -471,8 +481,13 @@ func (l *layouter) columnContent(items []*gridItem, i int) float64 {
 	return w
 }
 
-// distributeFr grows flexible (fr) tracks to fill the leftover axis space,
-// respecting minmax upper caps; non-flexible tracks keep their base size.
+// distributeFr grows tracks to fill the leftover axis space, mirroring the
+// CSS Grid track-sizing algorithm's two growth steps in order: "Maximize
+// Tracks" first grows any non-flexible track with room below its max cap
+// (e.g. minmax(0,960px) — a fixed track never has a cap above its own base,
+// so it is untouched), splitting the free space among such tracks; then
+// "Expand Flexible Tracks" hands whatever is left to the fr tracks,
+// proportionally to their flex factor.
 func distributeFr(base, fr []float64, flexible []bool, maxCap []float64, axisSize, gap float64, n int) {
 	var sumBase, sumFr float64
 	for i := 0; i < n; i++ {
@@ -487,14 +502,52 @@ func distributeFr(base, fr []float64, flexible []bool, maxCap []float64, axisSiz
 		}
 	}
 	free := axisSize - sumBase - gap*float64(n-1)
-	if free <= 0 || sumFr <= 0 {
+	if free <= 0 {
 		return
 	}
-	for i := 0; i < n; i++ {
-		if flexible[i] {
-			base[i] += free * fr[i] / sumFr
+	free = growCappedTracks(base, flexible, maxCap, free, n)
+	if free > 0 && sumFr > 0 {
+		for i := 0; i < n; i++ {
+			if flexible[i] {
+				base[i] += free * fr[i] / sumFr
+			}
 		}
 	}
+}
+
+// growCappedTracks implements "Maximize Tracks": free space is split equally
+// among every non-flexible track that still has room below its max cap (a
+// plain fixed or auto track's cap is 0, i.e. no room, so it never grows
+// here). A track that saturates its cap frees its unused share for another
+// pass over the rest, so tracks with different caps still end up correct.
+// A non-flexible track's cap is always finite — an infinite cap only arises
+// from an fr max, which is marked flexible and so never reaches this
+// function. Returns the free space left over for the flexible (fr) tracks.
+func growCappedTracks(base []float64, flexible []bool, maxCap []float64, free float64, n int) float64 {
+	for free > 0 {
+		var room []int
+		for i := 0; i < n; i++ {
+			if !flexible[i] && maxCap[i] > base[i] {
+				room = append(room, i)
+			}
+		}
+		if len(room) == 0 {
+			break
+		}
+		// share is positive (free > 0) and every room entry has avail > 0 (by
+		// the filter above), so add is always positive: this loop always makes
+		// progress and free strictly decreases, guaranteeing termination.
+		share := free / float64(len(room))
+		for _, i := range room {
+			add := share
+			if avail := maxCap[i] - base[i]; add > avail {
+				add = avail
+			}
+			base[i] += add
+			free -= add
+		}
+	}
+	return free
 }
 
 // sizeRows resolves the pixel height of every row track from the template and

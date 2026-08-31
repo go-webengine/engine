@@ -65,6 +65,34 @@ func TestGridMinmaxFixedMaxClamps(t *testing.T) {
 	assertF(t, "mmc.B.X", g.Children[1].X, 150)
 }
 
+func TestGridMinmaxNonFrGrowsToFillFreeSpace(t *testing.T) {
+	// minmax(0,800px) (no fr unit) between two 40px fixed columns, over a
+	// 1024px grid: the CSS "Maximize Tracks" step must grow it to absorb the
+	// 944px of leftover space, same as a browser — this is the shape of a
+	// typical sidebar/content/sidebar layout (e.g. tailwindcss.com's own page
+	// shell), and a track with no fr unit was previously never grown past its
+	// base size, leaving the whole grid stuck at its 80px minimum and centred
+	// in the middle of the page.
+	src := `<html><body style="margin:0"><div style="display:grid;grid-template-columns:40px minmax(0,1536px) 40px;width:1024px">` +
+		`<div>A</div><div>B</div><div>C</div></div></body></html>`
+	g := findBox(layoutHTML(t, src, 1024), "div")
+	assertF(t, "mmg.A.W", g.Children[0].W, 40)
+	assertF(t, "mmg.B.X", g.Children[1].X, 40)
+	assertF(t, "mmg.B.W", g.Children[1].W, 944)
+	assertF(t, "mmg.C.X", g.Children[2].X, 984)
+	assertF(t, "mmg.C.W", g.Children[2].W, 40)
+}
+
+func TestGridMinmaxNonFrRespectsCap(t *testing.T) {
+	// Same shape, but the cap (300px) is narrower than the free space (944px):
+	// the track grows only up to its cap, and the remaining free space is
+	// simply left over (no fr track to absorb it).
+	src := `<html><body style="margin:0"><div style="display:grid;grid-template-columns:40px minmax(0,300px) 40px;width:1024px">` +
+		`<div>A</div><div>B</div><div>C</div></div></body></html>`
+	g := findBox(layoutHTML(t, src, 1024), "div")
+	assertF(t, "mmcap.B.W", g.Children[1].W, 300)
+}
+
 // ---- explicit placement + span --------------------------------------------
 
 func TestGridExplicitColumnSpan(t *testing.T) {
@@ -110,6 +138,31 @@ func TestGridRowSpan(t *testing.T) {
 	assertF(t, "rspan.B.Y", byText["B"].Y, 0)
 	assertF(t, "rspan.C.X", byText["C"].X, 100)
 	assertF(t, "rspan.C.Y", byText["C"].Y, 30) // second row
+}
+
+func TestGridRowSpanFullNegativeLineReservesOccupancy(t *testing.T) {
+	// `grid-row: 1 / -1` (Tailwind's row-span-full) in a 3-row explicit grid
+	// must span all 3 rows and reserve column 0 in every row, exactly like a
+	// browser. The row axis previously resolved a negative end line against
+	// an unknown track count, silently collapsing the span to zero rows: the
+	// item reserved no occupancy, so the next auto-placed item slid into
+	// column 0 instead of column 1 (this is what left tailwindcss.com's main
+	// content column stuck in its 40px decorative gutter track).
+	src := `<html><body style="margin:0"><div style="display:grid;grid-template-columns:40px 100px;grid-template-rows:20px 20px 20px">` +
+		`<div style="grid-row:1 / -1;grid-column:1">A</div>` +
+		`<div>B</div></div></body></html>`
+	g := findBox(layoutHTML(t, src, 400), "div")
+	byText := map[string]*Box{}
+	for _, c := range g.Children {
+		byText[boxText(c)] = c
+	}
+	assertF(t, "rsfull.A.X", byText["A"].X, 0)
+	assertF(t, "rsfull.A.W", byText["A"].W, 40)
+	assertF(t, "rsfull.A.H", byText["A"].H, 60) // spans all 3 rows: 3*20px
+	// B has no explicit placement; column 0 is occupied for every row by A,
+	// so B must land in column 1, not overlap A in column 0.
+	assertF(t, "rsfull.B.X", byText["B"].X, 40)
+	assertF(t, "rsfull.B.Y", byText["B"].Y, 0)
 }
 
 // ---- row sizing ------------------------------------------------------------
