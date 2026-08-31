@@ -36,8 +36,31 @@ func Cascade(root *dom.Node) StyleMap {
 // applying the user-agent stylesheet, author rules from every <style> element
 // plus any externalSheets (already-fetched CSS text, e.g. <link> stylesheets),
 // and inline style="" attributes, with proper specificity and inheritance.
-// @media width queries are evaluated against viewport width vw.
+// @media width queries are evaluated against viewport width vw. Every
+// @container rule is treated as not matching (see CascadeVWContainers) since
+// no container sizes are known yet — the caller re-cascades with
+// CascadeVWContainers once a layout pass has measured them.
 func CascadeVW(root *dom.Node, vw float64, externalSheets []string) StyleMap {
+	return CascadeVWContainers(root, vw, externalSheets, nil)
+}
+
+// CascadeVWContainers is CascadeVW extended with container-query support:
+// containers maps a query-container element (one whose computed style sets
+// container-type) to its size as measured by the most recent layout pass.
+// A nil/empty containers (as CascadeVW passes) makes every @container rule
+// evaluate to "not matching" — the correct, conservative behaviour before any
+// layout has run, and the reason this is a separate entry point rather than a
+// parameter CascadeVW always threads through: most callers (tests, the first
+// cascade of a render) have no layout yet and want exactly today's CascadeVW
+// behaviour with zero conceptual overhead.
+//
+// Resolving an @container condition against real geometry is inherently a
+// multi-pass affair — this single call only ever consults the containers map
+// it is given; iterating cascade→layout→re-measure to a fixpoint is the
+// caller's job (see engine's layoutWithContainers, which plays the same role
+// for container queries that dynamic.go's settle loop plays for JavaScript:
+// same shape, bounded passes, deterministic termination).
+func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, containers map[*dom.Node]ContainerSize) StyleMap {
 	// External <link> stylesheets precede in-document <style> rules (they load in
 	// the head), so they take lower precedence at equal specificity.
 	var rules []Rule
@@ -47,28 +70,39 @@ func CascadeVW(root *dom.Node, vw float64, externalSheets []string) StyleMap {
 	rules = append(rules, collectAuthorRules(root, vw)...)
 	sm := StyleMap{}
 	var counter int
-	var walk func(n *dom.Node, parent Style)
-	walk = func(n *dom.Node, parent Style) {
+	var walk func(n *dom.Node, parent Style, containerStack []containerFrame)
+	walk = func(n *dom.Node, parent Style, containerStack []containerFrame) {
 		if n.Type != dom.Element {
 			// Text/Document nodes have no computed style; recurse with parent.
 			for _, c := range n.Children {
-				walk(c, parent)
+				walk(c, parent, containerStack)
 			}
 			return
 		}
-		st := computeElement(n, parent, rules, &counter)
+		st := computeElement(n, parent, rules, &counter, containerStack, containers)
 		sm[n] = &st
+		childStack := containerStack
+		if st.ContainerType != ContainerNormal {
+			// A fresh backing array, not an append onto containerStack: two
+			// sibling subtrees must never share (and risk overwriting each
+			// other's view of) the same underlying array.
+			childStack = make([]containerFrame, len(containerStack)+1)
+			copy(childStack, containerStack)
+			childStack[len(containerStack)] = containerFrame{node: n, name: st.ContainerName, typ: st.ContainerType}
+		}
 		for _, c := range n.Children {
-			walk(c, st)
+			walk(c, st, childStack)
 		}
 	}
 	// The synthetic Document root has no style; seed children with initial.
-	walk(root, initialStyle())
+	walk(root, initialStyle(), nil)
 	return sm
 }
 
-// computeElement resolves the style of a single element.
-func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style {
+// computeElement resolves the style of a single element. containerStack is
+// the chain of ancestor query containers (nearest last) available to any
+// @container rule matched below; containers supplies their measured sizes.
+func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize) Style {
 	st := inheritFrom(parent)
 	// ownProps tracks whether st.CustomProps is this element's own (already
 	// cloned) map versus the parent's shared one, so we clone at most once.
@@ -124,6 +158,9 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int) Style
 			}
 		}
 		if spec >= 0 {
+			if r.Container != nil && !r.Container.satisfied(containerStack, containers) {
+				continue // selector matched, but its @container condition does not (yet, or ever)
+			}
 			add(r.Declarations, precAuthor, spec)
 		}
 	}

@@ -53,6 +53,15 @@ type Declaration struct {
 type Rule struct {
 	Selectors    []Selector
 	Declarations []Declaration
+
+	// Container is non-nil when this rule came from (directly, or via nested
+	// @media/@layer) an `@container` at-rule: its selectors only take effect
+	// for a matched element when the condition holds against that element's
+	// nearest qualifying ancestor container, evaluated at cascade time (see
+	// container.go — this is deferred, unlike @media, because it depends on
+	// per-element ancestor geometry rather than a single known viewport
+	// width).
+	Container *ContainerCondition
 }
 
 // stripComments removes /* ... */ comment spans.
@@ -90,9 +99,13 @@ func ParseStylesheet(src string) []Rule {
 // rules included as if the layer boundary were not there — this engine does
 // not model cross-layer cascade priority, but that is far less wrong than
 // dropping the content: Tailwind v4's default output, among many other
-// frameworks, puts nearly all of its CSS inside @layer). Other at-rules
-// (@font-face, @keyframes, @supports, @import, ...) are skipped wholesale.
-// Malformed rules are skipped defensively.
+// frameworks, puts nearly all of its CSS inside @layer). @container blocks are
+// always included, with their condition attached to each inner rule for the
+// cascade to evaluate per-element once real layout geometry is available (see
+// container.go) — @container style(...) queries are not supported and are
+// skipped wholesale, like any other unrecognised at-rule (@font-face,
+// @keyframes, @supports, @import, ...). Malformed rules are skipped
+// defensively.
 func ParseStylesheetVW(src string, vw float64) []Rule {
 	return parseRules(stripComments(src), vw)
 }
@@ -138,6 +151,24 @@ func parseRules(src string, vw float64) []Rule {
 				// width/media condition to test, only a cascade PRIORITY this
 				// engine does not model (see the doc comment above).
 				rules = append(rules, parseRules(body, vw)...)
+			case strings.HasPrefix(lower, "@container"):
+				// Unlike @media/@layer, an @container condition cannot be resolved
+				// here: it depends on an ANCESTOR ELEMENT's actual laid-out size,
+				// which is per-matched-element and only known once layout has run
+				// at least once. So the body is always parsed and included, with
+				// the condition attached to every rule that comes out of it (see
+				// container.go); the cascade evaluates it per-element, per-pass. A
+				// condition this engine cannot represent at all (@container
+				// style(...), a different, newer part of the spec) makes
+				// parseContainerCondition report ok=false, and the body is then
+				// dropped wholesale, like any other unrecognised at-rule.
+				if cond, ok := parseContainerCondition(prelude); ok {
+					inner := parseRules(body, vw)
+					for i := range inner {
+						inner[i].Container = mergeContainerCondition(inner[i].Container, cond)
+					}
+					rules = append(rules, inner...)
+				}
 			}
 			// Every other at-rule (@font-face, @keyframes, @supports, ...) is
 			// skipped wholesale, as before.
@@ -785,6 +816,21 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		applyEdge(&s.Padding.Bottom, v, emRef)
 	case "padding-left":
 		applyEdge(&s.Padding.Left, v, emRef)
+	case "container-type":
+		if ct, ok := containerTypeKeyword(lv); ok {
+			s.ContainerType = ct
+		}
+	case "container-name":
+		// container-name is a case-sensitive custom-ident (or a space-separated
+		// list of them, though this engine only ever compares against a single
+		// name — see ContainerCondition.Name); "none" clears it.
+		if lv == "none" {
+			s.ContainerName = ""
+		} else {
+			s.ContainerName = v
+		}
+	case "container":
+		applyContainerShorthand(s, v)
 	}
 }
 
