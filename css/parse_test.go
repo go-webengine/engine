@@ -247,6 +247,38 @@ func TestMediaMatches(t *testing.T) {
 	}
 }
 
+// TestMediaMatchesRemUnits covers Tailwind v4's default breakpoints, which are
+// expressed in rem, not px ("min-width:80rem" for its "xl" variant). Before
+// this, an unrecognised unit was silently ignored entirely rather than just
+// failing to convert — every rem-based breakpoint matched unconditionally
+// regardless of viewport width, so ALL of a page's responsive font-size/
+// spacing steps applied at once and the cascade fell back to picking
+// whichever was declared last (usually the largest). 1rem == 16px, matching
+// parseLength's own rem conversion.
+func TestMediaMatchesRemUnits(t *testing.T) {
+	// 1024px viewport == 64rem: exactly the Tailwind "lg" breakpoint.
+	if !mediaMatches("(min-width:64rem)", 1024) {
+		t.Error("min-width:64rem (1024px) should match at exactly 1024px")
+	}
+	if mediaMatches("(min-width:80rem)", 1024) {
+		t.Error("min-width:80rem (1280px) should NOT match at 1024px")
+	}
+	if !mediaMatches("(max-width:80rem)", 1024) {
+		t.Error("max-width:80rem (1280px) should match at 1024px")
+	}
+	if mediaMatches("(max-width:40rem)", 1024) {
+		t.Error("max-width:40rem (640px) should NOT match at 1024px")
+	}
+	// A narrower viewport sits below "lg" (64rem = 1024px) but at/above "sm"
+	// (40rem = 640px).
+	if mediaMatches("(min-width:64rem)", 800) {
+		t.Error("min-width:64rem (1024px) should not match at 800px")
+	}
+	if !mediaMatches("(min-width:40rem)", 800) {
+		t.Error("min-width:40rem (640px) should match at 800px")
+	}
+}
+
 func TestParseStylesheetEmptyAndNoBrace(t *testing.T) {
 	if r := ParseStylesheet(""); r != nil {
 		t.Errorf("empty = %v", r)

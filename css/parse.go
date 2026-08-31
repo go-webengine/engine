@@ -9,8 +9,16 @@ import (
 	"strings"
 )
 
-// mediaWidthRe captures min-width/max-width pixel features in a media query.
-var mediaWidthRe = regexp.MustCompile(`(min|max)-width\s*:\s*([0-9.]+)px`)
+// mediaWidthRe captures min-width/max-width features in a media query, in
+// either px or rem — Tailwind v4's default breakpoints (sm/md/lg/xl/2xl) are
+// all expressed in rem ("min-width:80rem"), not px, and rejecting the unit
+// entirely (rather than just failing to convert it) used to make mediaMatches
+// silently ignore every one of them, treating every responsive breakpoint as
+// permanently active — observed live as tailwindcss.com's hero headline
+// rendering far larger than any real viewport width should select, because
+// its "xl:text-8xl" breakpoint (min-width:80rem = 1280px) matched even at a
+// 1024px viewport.
+var mediaWidthRe = regexp.MustCompile(`(min|max)-width\s*:\s*([0-9.]+)(px|rem)`)
 
 // Declaration is a single property: value pair. Important marks a trailing
 // `!important` on the original declaration; it is consulted by the cascade,
@@ -138,6 +146,12 @@ func mediaMatches(cond string, vw float64) bool {
 		n, err := strconv.ParseFloat(m[2], 64)
 		if err != nil {
 			continue
+		}
+		if m[3] == "rem" {
+			// Same 16px root font-size approximation as length parsing elsewhere
+			// (see the "rem" case in parseLength) — kept consistent so a page's
+			// rem-based breakpoints and its rem-based element sizes agree.
+			n *= 16
 		}
 		if m[1] == "min" && vw < n {
 			return false
