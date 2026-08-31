@@ -6,7 +6,7 @@ require (
 	github.com/dop251/goja v0.0.0-20260723142020-b4aef50fa347
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
-	github.com/go-gfx/gfx v0.5.0
+	github.com/go-gfx/gfx v0.19.0
 	github.com/go-images/images v0.0.0-20260814204114-5f83e6345a72
 	github.com/go-opentype/fonts v0.5.0
 	github.com/go-opentype/opentype v0.5.0
@@ -18,6 +18,8 @@ require (
 )
 
 require (
+	github.com/ajroetker/go-highway v0.0.4 // indirect
+	github.com/ajroetker/go-jpeg2000 v0.0.2 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
@@ -27,6 +29,7 @@ require (
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/sergeymakinen/go-bmp v1.0.0 // indirect
 	github.com/sergeymakinen/go-ico v1.0.0 // indirect
+	github.com/tannevaled/gobig2 v0.1.0 // indirect
 	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
