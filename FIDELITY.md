@@ -18,6 +18,105 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-08-31 (cont. 4) — Shadow DOM: declarative shadow roots, `<slot>` projection, `:host` scoping
+
+Ships the largest single gap this engine had (comparable in scope to the
+original JS-engine work): declarative Shadow DOM attachment, `<slot>`
+distribution, and `:host`/`:host()` CSS scoping — engine#73, #75, #77, #78.
+
+- **`dom.Node.Shadow`/`ShadowHost`** (engine#73): a `<template
+  shadowrootmode="open"|"closed">` that is the first element child of its
+  host is hoisted out of the light DOM at parse time (matching real browser
+  parser timing — the `<template>` never becomes part of the live tree, only
+  its `.content` does, as the new shadow root's children) into
+  `Node.Shadow`, distinct from the host's ordinary `Children`. "open" and
+  "closed" render identically (the distinction is JS-introspection-only, out
+  of scope). No imperative `attachShadow()`/`customElements.define()` path —
+  see below for why that's the right call for now.
+- **Slot projection** (engine#75): `layout.renderedChildren(n)` is the one
+  substitution point every block/inline tree walk now goes through instead
+  of `n.Children` directly — a host with a shadow root renders that tree's
+  content instead of its own light children (unslotted light content
+  correctly renders NOWHERE, per spec, not even a fallback position); a
+  `<slot>` renders its assigned light-DOM nodes (recomputed fresh every
+  layout pass, so a settle-loop re-layout after a script mutation picks up
+  automatically) or, absent any, its own fallback content. No separate "flat
+  tree" structure was needed — a slotted node's box is simply built as part
+  of laying out the shadow tree it now sits inside, so box-index
+  (`getBoundingClientRect`) and paint needed zero changes.
+- **`:host`/`:host()` + shadow-scoped cascade** (engine#77): a new
+  `Selector.MatchesHost(n, host)` threads a host binding through the whole
+  combinator chain, so `:host(:not([open])) slot {display:none}` — the exact
+  idiom real custom elements use to hide slotted content until an
+  interactive state toggles — actually works; `Matches(n)` is exactly
+  `MatchesHost(n, nil)`, so every pre-existing call site is provably
+  unaffected. Cascade now recurses into an attached shadow root with a NEW
+  scope (that shadow's own `<style>` rules, host bound to it), so a shadow
+  tree's stylesheet applies only within that tree — never leaking in from,
+  or out to, the surrounding document — except via the sanctioned
+  `:host`/`:host()` escape onto the host itself. No caching: the settle
+  loop's ordinary re-cascade after a script toggles a host attribute (e.g.
+  `open`) picks up the visibility change with zero additional wiring,
+  verified directly (two sequential `Cascade()` calls over the same mutated
+  DOM, and an end-to-end settle-loop test where a `<script>` calls
+  `setAttribute('open', '')` on the host).
+
+**Live verification, done properly** (not "it compiles" — measured against
+real markup, per this repo's culture):
+
+- **developer.mozilla.org**: confirmed via a raw fetch of the exact page
+  (`curl`, no JS) that it uses declarative shadow DOM for real — 23
+  `<template shadowrootmode="open">` instances, one of them an
+  `<mdn-dropdown>` component whose own shadow `<style>` is *exactly*
+  `:host(:not([loaded],:focus-within)) slot[name=dropdown]{display:none}`,
+  i.e. the idiom this PR set out to support. Rendered the identical frozen
+  HTML snapshot through the engine before and after this work (same file,
+  only the code differs — controlled, not live-site noise): the page's
+  "Help improve MDN" feedback module goes from showing only "Learn how to
+  contribute" (before) to correctly also showing "Was this page helpful to
+  you?  Yes   No" (after) — light-DOM content that requires slot
+  distribution to reach its rendered position. Reproduced twice.
+- **github.com**: this is where the original diagnosis (recorded in the
+  previous "Known gaps" bullet below, now corrected) turned out to be
+  **wrong**. A raw fetch of `github.com/golang/go`'s markup shows **zero**
+  occurrences of `shadowrootmode` or `attachShadow` anywhere in the page —
+  its header is plain React (`MarketingHeader-module__*` CSS-module classes)
+  with the mega-menu dropdown gated by an ordinary class-conditional
+  selector pair,
+  `.NavDropdown-module__dropdown{visibility:hidden;position:fixed}` /
+  `.NavDropdown-module__container.open .NavDropdown-module__dropdown{visibility:visible}`.
+  There is no Shadow DOM anywhere in the path, so this PR set correctly does
+  not change github.com's render at all (confirmed: byte-identical header
+  region before/after) — and, more importantly, **could not have fixed it
+  regardless of how it was written**. github.com's permanently-expanded
+  header nav remains open as a real, distinct bug (see "Known gaps"), now
+  correctly attributed to something else — most likely this engine's
+  handling of `visibility` interacting with `position:fixed` and/or
+  multiple same-specificity conflicting declarations for one class, not
+  investigated further here since it is out of scope for Shadow DOM.
+- Re-rendered the first 6 pages of `bench/urls.txt` (Chrome was not
+  available in this environment for the full `cmd/compare` pixel-diff tool)
+  to sanity-check no regression: all six still render without error, at
+  materially unchanged content heights.
+
+**Scope / known gaps, precisely**: declarative shadow DOM only, not the
+imperative `attachShadow()`/`customElements.define()` JS API (both confirmed
+real sites use the declarative form exclusively, so this covers the actual
+need); `::slotted()` and `:host-context()` are parsed as unmodelled and
+safely dropped (a compound that is ONLY `:host-context(...)` drops its whole
+selector rather than ever matching too broadly — verified by test); no
+`display:contents` (so a shadow host that declares `:host{display:contents}`,
+as `<mdn-dropdown>` does, still generates its own wrapping box instead of
+being transparent to the layout — a real, separate, undramatic gap, not
+blocking the visibility mechanics above).
+
+New tests: `dom/shadow_test.go`, `layout/shadow_test.go`,
+`css/hostselector_test.go`, `css/shadowdom_test.go`,
+`shadowdom_test.go` (engine-level end-to-end, including the settle-loop
+attribute-toggle case). `dom` coverage 97.7% → 98.1%; `layout` stays 100%;
+`css` stays 99.5% (both gate floors maintained or improved). Full suite
+green throughout.
+
 ## 2026-08-31 (cont. 3) — a stale THIRD-PARTY dependency caught a real number-formatting bug
 
 Same audit as the entry below, extended past this org's own sibling
@@ -1047,15 +1146,29 @@ gradients/box-shadow/border-radius and real bold/italic fonts had all since
 shipped (Phase 1.5–2.0, and the font work logged in the org's project memory).
 Restated against what was actually verified that day:
 
-- **No Shadow DOM / custom-element upgrade / `<slot>` projection** (diagnosed
-  2026-08-30, confirmed on a second, unrelated site the same day). Declarative-
-  shadow `<template>` content is at least hidden rather than leaking into the
-  light DOM (engine#54), but a custom element's light-DOM children that are
-  meant to be distributed into a shadow `<slot>` — and hidden until
-  interaction by a `:host(...)`-scoped rule — still render unconditionally.
-  This is the confirmed cause of both MDN's mega-menu dropdowns
-  (Tools/References/Learn) and github.com's header nav (Platform/AI/
-  Enterprise/…) rendering permanently expanded.
+- **Shadow DOM: CLOSED for the declarative case** (2026-08-31, engine#73/#75/
+  #77 — see the log entry above for the full account). Declarative
+  `<template shadowrootmode>` attachment, `<slot>` distribution (default and
+  named, including correct non-rendering of unmatched/unslotted light
+  content), and `:host`/`:host()` CSS scoping all ship and are verified
+  against developer.mozilla.org's real markup (which uses exactly this
+  mechanism — confirmed via raw fetch, 23 declarative shadow roots). Two
+  real, narrower gaps remain: no imperative `attachShadow()`/
+  `customElements.define()` JS API (neither confirmed real site needed it),
+  and no `display:contents` (a shadow host that sets `:host{display:contents}`
+  still generates its own wrapping box rather than being layout-transparent).
+  `::slotted()` and `:host-context()` are parsed as unmodelled and safely
+  dropped rather than guessed at.
+  **Correction to the 2026-08-30 diagnosis above**: github.com's
+  permanently-expanded header nav (Platform/AI/Enterprise/…) is NOT a Shadow
+  DOM issue — confirmed by fetching its actual markup, which contains no
+  `shadowrootmode`/`attachShadow` anywhere. It is a plain React header whose
+  mega-menu visibility is gated by an ordinary class-conditional selector
+  (`.NavDropdown-module__container.open .NavDropdown-module__dropdown` vs. a
+  default `visibility:hidden;position:fixed`) that this engine is failing to
+  apply correctly for reasons unrelated to Shadow DOM — most likely
+  `visibility`/`position:fixed` interaction or same-specificity declaration
+  ordering. That remains open as its own, not-yet-diagnosed bug.
 - **No CSS `@container` queries** — the condition is never evaluated at all
   (unlike `@layer`, engine#56, which is unwrapped unconditionally). Real gap;
   tailwindcss.com uses it for some component-level breakpoints, though the two
