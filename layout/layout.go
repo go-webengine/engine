@@ -264,7 +264,7 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		b.y = bottom
 	}
 
-	for _, c := range node.Children {
+	for _, c := range renderedChildren(node) {
 		switch {
 		case c.Type == dom.Text:
 			if strings.TrimSpace(c.Text) == "" {
@@ -336,7 +336,7 @@ func isBlockLevel(d css.Display) bool {
 }
 
 func (l *layouter) hasBlockLevelChild(node *dom.Node) bool {
-	for _, c := range node.Children {
+	for _, c := range renderedChildren(node) {
 		if c.Type != dom.Element {
 			continue
 		}
@@ -480,7 +480,7 @@ func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool)
 }
 
 func (l *layouter) appendInline(node *dom.Node, st *css.Style, items *[]*InlineItem, pre bool) {
-	for _, c := range node.Children {
+	for _, c := range renderedChildren(node) {
 		if c.Type == dom.Text {
 			l.appendWords(c.Text, st, items, pre, node)
 			continue
