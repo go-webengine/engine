@@ -8,6 +8,7 @@ import (
 	"image"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -353,5 +354,92 @@ func TestModuleBundleAbandonedOnBudget(t *testing.T) {
 	}
 	if !strings.Contains(stats.firstErr, "abandoned") {
 		t.Errorf("stats.firstErr = %q, want it to mention the bundle was abandoned", stats.firstErr)
+	}
+}
+
+// TestEsbuildSandboxResolveDirIsIsolated proves the directory backing
+// esbuild's ResolveDir is a real, existing, empty directory distinct from the
+// filesystem root — the mechanism esbuildSandboxResolveDir relies on to make
+// a glob import resolve to nothing instead of walking real content.
+func TestEsbuildSandboxResolveDirIsIsolated(t *testing.T) {
+	dir := esbuildSandboxResolveDir()
+	if dir == "" || dir == "/" {
+		t.Fatalf("sandbox dir = %q, want a real non-root path", dir)
+	}
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("sandbox dir does not exist as a directory: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read sandbox dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("sandbox dir has %d entries, want empty", len(entries))
+	}
+	// Memoized for the process lifetime: a second call must return the same
+	// path, not mint a fresh temp directory every bundle.
+	if got := esbuildSandboxResolveDir(); got != dir {
+		t.Errorf("second call returned %q, want the memoized %q", got, dir)
+	}
+}
+
+// moduleGlobFixtureServer serves an entry module containing a dynamic import
+// with a template-literal glob pattern whose variable segment is the FIRST
+// path component (`./${id}/index.js`) — the shape of a common real-world
+// i18n idiom (one locale-named directory, then a fixed file), and the one
+// that actually reproduced the live bug: with no fixed literal directory
+// ahead of the wildcard, esbuild's glob starts scanning at ResolveDir itself
+// rather than some named subdirectory of it, so a real ResolveDir of "/"
+// recursively walked the host's entire real filesystem tree. A pattern with
+// a fixed leading directory (e.g. `./chunks/${id}.js`) does not reproduce
+// this: if "chunks" doesn't exist it fails fast as an unresolved import
+// instead, real bug or not.
+func moduleGlobFixtureServer() *httptest.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><script type="module" src="/entry.js"></script></body></html>`))
+	})
+	mux.HandleFunc("/entry.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		_, _ = w.Write([]byte("const id = 'a'; import(`./${id}/index.js`);"))
+	})
+	return httptest.NewServer(mux)
+}
+
+// TestModuleGlobImportDoesNotWalkRealFilesystem is the regression test for the
+// bug fixed by esbuildSandboxResolveDir: before it, every OnLoadResult (and
+// the Stdin entry) declared ResolveDir "/", so a page merely containing a
+// glob-shaped dynamic import made the engine recursively walk the host's real
+// root filesystem — observed live rendering a production MDN page, ~9s spent
+// almost entirely in readdir/symlink syscalls for a single render (pprof).
+// With an isolated, empty ResolveDir the glob resolves to zero matches
+// immediately, so this must complete well within a tight bound rather than
+// stall the bundle budget.
+func TestModuleGlobImportDoesNotWalkRealFilesystem(t *testing.T) {
+	srv := moduleGlobFixtureServer()
+	defer srv.Close()
+
+	e := New()
+	e.Client = srv.Client()
+	doc, err := e.Fetch(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	start := time.Now()
+	_, stats, ok := e.bundleModuleScripts(ctx, doc)
+	elapsed := time.Since(start)
+	if !ok {
+		t.Fatalf("bundle failed: %s", stats.firstErr)
+	}
+	if strings.Contains(stats.firstErr, "abandoned") {
+		t.Fatalf("bundle was abandoned (budget exhausted): %s", stats.firstErr)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("bundleModuleScripts took %s — a glob import likely walked real directories again", elapsed)
 	}
 }
