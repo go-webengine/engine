@@ -20,6 +20,26 @@ import (
 // 1024px viewport.
 var mediaWidthRe = regexp.MustCompile(`(min|max)-width\s*:\s*([0-9.]+)(px|rem)`)
 
+// mediaWidthCmpRe captures the CSS Media Queries Level 4 range-comparison
+// syntax for width ("width<=48rem", "width>=48rem", or the value-first order
+// "48rem<=width"), in px or rem. GitHub's Primer design system uses exactly
+// this form for its responsive PageLayout breakpoints; it was as invisible to
+// the old min-width:/max-width: colon-only matcher as the missing "rem" unit
+// was, for the same reason — falling through to "unknown feature, assume it
+// matches" made every one of these breakpoints permanently active regardless
+// of viewport width.
+var mediaWidthCmpRe = regexp.MustCompile(
+	`width\s*(<=|>=|<|>)\s*([0-9.]+)(px|rem)|([0-9.]+)(px|rem)\s*(<=|>=|<|>)\s*width`)
+
+// mediaCalcRe evaluates a simple two-term "calc(A ± B)" expression appearing
+// in a media feature value — e.g. GitHub's `calc(48rem - .02px)`, used to open
+// a hair's-width gap just below the next breakpoint up so two adjacent ranges
+// never both match the same viewport width. Both terms may be px or rem; more
+// complex calc() expressions (products, nesting, more than two terms) are left
+// as unparsed text, same as any other value this simplified matcher cannot
+// handle — mediaWidthRe/mediaWidthCmpRe then simply find no match there.
+var mediaCalcRe = regexp.MustCompile(`calc\(\s*([0-9.]+)(px|rem)\s*([+-])\s*([0-9.]+)(px|rem)\s*\)`)
+
 // Declaration is a single property: value pair. Important marks a trailing
 // `!important` on the original declaration; it is consulted by the cascade,
 // never by a property's value parser (Value never carries the marker).
@@ -135,24 +155,28 @@ func parseRules(src string, vw float64) []Rule {
 }
 
 // mediaMatches evaluates a simplified @media condition against viewport width
-// vw. print media never matches; min-width/max-width pixel features are honoured
-// (all must hold); anything else (screen/all/unknown features) matches
-// optimistically so desktop layout rules are applied.
+// vw. print media never matches; min-width/max-width pixel features (colon
+// syntax and the Level 4 comparison syntax) are honoured (all must hold);
+// anything else (screen/all/unknown features) matches optimistically so
+// desktop layout rules are applied.
 func mediaMatches(cond string, vw float64) bool {
 	if strings.Contains(cond, "print") {
 		return false
 	}
+	cond = mediaCalcRe.ReplaceAllStringFunc(cond, func(m string) string {
+		g := mediaCalcRe.FindStringSubmatch(m)
+		a, b := lengthToPx(g[1], g[2]), lengthToPx(g[4], g[5])
+		v := a + b
+		if g[3] == "-" {
+			v = a - b
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64) + "px"
+	})
 	for _, m := range mediaWidthRe.FindAllStringSubmatch(cond, -1) {
-		n, err := strconv.ParseFloat(m[2], 64)
-		if err != nil {
+		if _, err := strconv.ParseFloat(m[2], 64); err != nil {
 			continue
 		}
-		if m[3] == "rem" {
-			// Same 16px root font-size approximation as length parsing elsewhere
-			// (see the "rem" case in parseLength) — kept consistent so a page's
-			// rem-based breakpoints and its rem-based element sizes agree.
-			n *= 16
-		}
+		n := lengthToPx(m[2], m[3])
 		if m[1] == "min" && vw < n {
 			return false
 		}
@@ -160,7 +184,70 @@ func mediaMatches(cond string, vw float64) bool {
 			return false
 		}
 	}
+	for _, m := range mediaWidthCmpRe.FindAllStringSubmatch(cond, -1) {
+		var op, numStr, unit string
+		if m[1] != "" {
+			op, numStr, unit = m[1], m[2], m[3]
+		} else {
+			numStr, unit, op = m[4], m[5], flipCmp(m[6])
+		}
+		if _, err := strconv.ParseFloat(numStr, 64); err != nil {
+			continue
+		}
+		n := lengthToPx(numStr, unit)
+		switch op {
+		case "<":
+			if vw >= n {
+				return false
+			}
+		case "<=":
+			if vw > n {
+				return false
+			}
+		case ">":
+			if vw <= n {
+				return false
+			}
+		case ">=":
+			if vw < n {
+				return false
+			}
+		}
+	}
 	return true
+}
+
+// lengthToPx converts a numeric media-feature length to px, at the same 16px
+// root font-size approximation length parsing uses elsewhere (see the "rem"
+// case in parseLength) — kept consistent so a page's rem-based breakpoints and
+// its rem-based element sizes agree. numStr is assumed already validated by
+// the caller (via strconv.ParseFloat); a residual error here just yields 0,
+// which cannot spuriously satisfy either a min or a max comparison in a way
+// that hides content — it only ever narrows which viewports the condition
+// covers, never widens it.
+func lengthToPx(numStr, unit string) float64 {
+	n, _ := strconv.ParseFloat(numStr, 64)
+	if unit == "rem" {
+		n *= 16
+	}
+	return n
+}
+
+// flipCmp reverses a comparison operator, for normalising the value-first
+// media range form ("48rem<=width") to the width-first form mediaMatches
+// evaluates ("width>=48rem" — the two say the same thing).
+func flipCmp(op string) string {
+	switch op {
+	case "<":
+		return ">"
+	case "<=":
+		return ">="
+	case ">":
+		return "<"
+	case ">=":
+		return "<="
+	}
+	return op
 }
 
 // matchBrace returns the index of the '}' matching the '{' at open.

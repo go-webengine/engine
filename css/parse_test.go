@@ -279,6 +279,106 @@ func TestMediaMatchesRemUnits(t *testing.T) {
 	}
 }
 
+// TestMediaMatchesRangeComparisonSyntax covers the CSS Media Queries Level 4
+// range-comparison syntax ("width<=X", "width>=X", and the value-first order
+// "X<=width") GitHub's Primer design system uses for its PageLayout
+// breakpoints — as invisible to a colon-only min-width:/max-width: matcher as
+// the missing "rem" unit was, for the same reason (falls through to "unknown
+// feature, assume it matches").
+func TestMediaMatchesRangeComparisonSyntax(t *testing.T) {
+	if !mediaMatches("(width<=1024px)", 1024) {
+		t.Error("width<=1024px should match at exactly 1024px")
+	}
+	if mediaMatches("(width<=1024px)", 1025) {
+		t.Error("width<=1024px should NOT match at 1025px")
+	}
+	if !mediaMatches("(width>=1024px)", 1024) {
+		t.Error("width>=1024px should match at exactly 1024px")
+	}
+	if mediaMatches("(width>=1024px)", 1023) {
+		t.Error("width>=1024px should NOT match at 1023px")
+	}
+	if mediaMatches("(width<800px)", 1024) {
+		t.Error("width<800px should not match at 1024px")
+	}
+	if !mediaMatches("(width>800px)", 1024) {
+		t.Error("width>800px should match at 1024px")
+	}
+	// GitHub's actual breakpoints, in rem.
+	if mediaMatches("(width>=48rem)", 700) {
+		t.Error("width>=48rem (768px) should not match at 700px")
+	}
+	if !mediaMatches("(width>=48rem)", 1024) {
+		t.Error("width>=48rem (768px) should match at 1024px")
+	}
+	// Value-first order says the same thing as width-first, for every operator
+	// (each exercises a different flipCmp branch).
+	if !mediaMatches("(48rem<=width)", 1024) {
+		t.Error("48rem<=width should mean the same as width>=48rem")
+	}
+	if mediaMatches("(48rem<=width)", 700) {
+		t.Error("48rem<=width should not match at 700px")
+	}
+	if !mediaMatches("(1024px>=width)", 1024) {
+		t.Error("1024px>=width should mean the same as width<=1024px")
+	}
+	if mediaMatches("(1024px>=width)", 1025) {
+		t.Error("1024px>=width should not match at 1025px")
+	}
+	if mediaMatches("(1024px<width)", 1024) {
+		t.Error("1024px<width should mean the same as width>1024px: not at 1024px")
+	}
+	if !mediaMatches("(1024px<width)", 1025) {
+		t.Error("1024px<width should match at 1025px")
+	}
+	if !mediaMatches("(1024px>width)", 1023) {
+		t.Error("1024px>width should mean the same as width<1024px: matches at 1023px")
+	}
+}
+
+// TestMediaMatchesSimpleCalc covers GitHub's exact pattern: a "calc(A - B)"
+// media-feature value opening a hair's-width gap below the next breakpoint up,
+// so two adjacent responsive ranges never both match the same viewport width.
+func TestMediaMatchesSimpleCalc(t *testing.T) {
+	if !mediaMatches("(width<=calc(48rem - .02px))", 767) {
+		t.Error("width<=calc(48rem - .02px) (~767.98px) should match at 767px")
+	}
+	if mediaMatches("(width<=calc(48rem - .02px))", 1024) {
+		t.Error("width<=calc(48rem - .02px) should NOT match at 1024px")
+	}
+	if !mediaMatches("(width<=calc(1000px + 24px))", 1024) {
+		t.Error("width<=calc(1000px + 24px) (1024px) should match at exactly 1024px")
+	}
+	if mediaMatches("(width<=calc(1000px + 24px))", 1025) {
+		t.Error("width<=calc(1000px + 24px) should NOT match at 1025px")
+	}
+	// A more complex calc() (more than two terms) is left unparsed, same as any
+	// other value this simplified matcher cannot handle — the condition simply
+	// finds no width feature and matches optimistically, rather than panicking
+	// or matching incorrectly.
+	if !mediaMatches("(width<=calc(1px + 2px + 3px))", 999999) {
+		t.Error("an unparseable calc() should fall through to match optimistically")
+	}
+	// A value the regex's digit/dot character class accepts but strconv
+	// rejects (multiple dots, no actual digits) must not panic: the condition
+	// is simply left unevaluated (matches optimistically), same as any other
+	// unparseable value.
+	if !mediaMatches("(width<=...px)", 1024) {
+		t.Error("an unparseable numeric value should fall through to match optimistically")
+	}
+}
+
+// TestFlipCmp covers every operator flipCmp reverses, plus the defensive
+// default (an operator outside the four mediaWidthCmpRe can ever capture).
+func TestFlipCmp(t *testing.T) {
+	cases := map[string]string{"<": ">", "<=": ">=", ">": "<", ">=": "<=", "?": "?"}
+	for in, want := range cases {
+		if got := flipCmp(in); got != want {
+			t.Errorf("flipCmp(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestParseStylesheetEmptyAndNoBrace(t *testing.T) {
 	if r := ParseStylesheet(""); r != nil {
 		t.Errorf("empty = %v", r)
