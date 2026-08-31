@@ -129,6 +129,55 @@ investigated (a heavy-SPA module-bundle gate cutting off too aggressively is
 the first hypothesis, unconfirmed) — flagging honestly rather than folding
 it into the Shadow-DOM gap it is very unlikely to share a cause with.
 
+## 2026-08-31 — github.com's missing content ROOT-CAUSED and fixed; a genuine grid bug found
+
+Chased the github.com missing-repository-content finding from the entry above
+to ground instead of leaving it as an open hypothesis. Root cause, confirmed by
+tracing the real cascade against github.com's actual fetched CSS: a SECOND bug
+compounding the Shadow-DOM one, in a completely different part of the engine.
+
+- **Attribute selectors (`[attr]`, `[attr=value]`, …) were unconditionally
+  dropped** — "the constraint is not modelled, the compound reduces to its
+  tag/class/id prefix", the same simplification applied to genuinely unmodelled
+  pseudos, but wrong here because an attribute selector degrades a
+  *conditional* rule into an *unconditional* one. Concretely:
+  `.ContentWrapper:where([data-is-hidden-narrow=true])
+  {display:none}` degraded to plain `.ContentWrapper{display:none}` once the
+  attribute selector inside `:where()` was dropped — hiding the entire
+  repository content unconditionally, regardless of the real
+  (`data-is-hidden-narrow="false"`) value on the actual element. Fixed:
+  engine#60 (presence, `=`, `^=`, `$=`, `*=`, `~=`, `|=` all modelled; also
+  makes `:not([attr])` a real negation for the first time, rather than a
+  no-op that happened to give the right answer only when the attribute was
+  absent).
+- **`min-width`/`max-width` media features only recognised the colon syntax.**
+  GitHub's Primer design system expresses its PageLayout breakpoints with the
+  CSS Media Queries Level 4 range-comparison syntax instead
+  (`width<=48rem`/`width>=48rem`, plus a `calc(48rem - .02px)` value creating a
+  hair's-width gap between adjacent breakpoints) — invisible to the matcher for
+  the same reason the missing `rem` unit was (falls through to "unknown
+  feature, assume it matches"). Fixed: engine#61. Verified independent of the
+  attribute-selector fix (identical output built with and without it on both
+  github.com and tailwindcss.com) — it closes a real gap for range-syntax sites
+  that neither page in the corpus happens to need for its *current* rendering.
+
+**Measured: github.com/golang/go's contentHeight went from 535px (header + tab
+bar, then straight to the footer) to 3451px** (the full file listing, commit
+count, and README now render). The header mega-menu overlap (the Shadow-DOM
+gap) is unaffected by either fix and still present, as expected — this closes
+the *other*, unrelated defect on the same page.
+
+**A third, genuine finding, NOT caused by either fix above (bisected against
+the commit before attribute selectors landed — identical result either way):**
+tailwindcss.com's residual too-tall render is dominated by a CSS Grid bug, not
+`@container` queries as earlier suspected. A `grid-cols-1` container
+(`grid-template-columns: repeat(1, minmax(0, 1fr))`) laid out at 40px wide
+instead of its parent's full 1024px — `css/grid.go`'s track-list parser handles
+this track correctly (verified directly), so the bug is in the layout-time
+fr-distribution, not parsing. Not fixed this session — it needs work in a
+different subsystem (grid track sizing) than the selector/media-matching bugs
+above, and is flagged precisely rather than re-guessed at.
+
 ## Phase 2.6 — line-height inheritance + mixed-size line boxes (text-overlap fix)
 
 **Date: 2026-08-07.** A downstream consumer (the go-news-reader preview) reported
@@ -913,20 +962,24 @@ Restated against what was actually verified that day:
   This is the confirmed cause of both MDN's mega-menu dropdowns
   (Tools/References/Learn) and github.com's header nav (Platform/AI/
   Enterprise/…) rendering permanently expanded.
-- **No CSS `@container` queries.** Tailwind v4 ships `@container` alongside
-  `@layer`; unlike `@layer` (engine#56, unwrapped unconditionally) a container
-  query's condition is never evaluated, so this is an open hypothesis — not
-  yet confirmed — for tailwindcss.com's residual ~37%-too-tall render after
-  the 2026-08-30 `@layer`/`:where()`/rem-unit fixes.
+- **CSS Grid: a `repeat(1, minmax(0, 1fr))` track does not reliably expand to
+  fill its container** (diagnosed 2026-08-31, not yet fixed). Confirmed live on
+  tailwindcss.com: a single-column grid item using exactly this track
+  (Tailwind's `grid-cols-1`) laid out at 40px wide instead of its parent's full
+  1024px, collapsing the whole page's main column and forcing every heading
+  into one-word-per-line wrapping — the dominant remaining cause of the page's
+  residual too-tall render (`@container` queries, suspected earlier, were never
+  confirmed and are no longer the leading hypothesis; parseTrackList/
+  parseRepeat in `css/grid.go` parse this track correctly, so the bug is in the
+  layout-time fr-distribution, not the parser). Not yet root-caused further —
+  flagging precisely rather than re-guessing.
+- **No CSS `@container` queries** — the condition is never evaluated at all
+  (unlike `@layer`, engine#56, which is unwrapped unconditionally). Real gap,
+  but demoted from "leading hypothesis" now that the grid track-sizing issue
+  above was confirmed as tailwindcss.com's actual dominant cause.
 - **No CSS `transform`** (2D or 3D) and no `conic-gradient`. A slide-out drawer
   or carousel positioned via `transform: translateX(...)` renders at its
   untransformed in-flow position instead.
-- **github.com's actual repository content (file listing, README) does not
-  render at all** — the page jumps from the header/tab-bar straight to the
-  footer (diagnosed 2026-08-30, cause not yet identified; a heavy-SPA
-  module-bundle gate cutting off too aggressively is the first, unconfirmed
-  hypothesis). Unlikely to share a cause with the Shadow-DOM gap above —
-  don't assume it does without checking.
 - **Table `colspan`/`rowspan` and `border-collapse`** — not re-verified this
   audit; treat as unconfirmed rather than assume either way until measured.
 - **Fonts**: bundled Inter/Lora (+ Go Mono, regular-only) with real Bold/
