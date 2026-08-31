@@ -63,6 +63,40 @@ type compound struct {
 	// the entire repository content, on every page, regardless of the actual
 	// (false) attribute value.
 	Attrs []attrMatch
+	// Host is set by the ":host" pseudo-class (with or without a functional
+	// argument). Unlike every other compound field, it does NOT constrain
+	// which element n itself must be — it changes WHAT n is compared against:
+	// a Host compound matches only the enclosing shadow tree's host element
+	// (supplied out-of-band as the "host" parameter threaded through
+	// Selector.MatchesHost / compound.matchesHost), never an ordinary
+	// candidate reached by descending the tree. This is the shadow tree's one
+	// sanctioned way for its own scoped stylesheet to style the host from the
+	// inside (e.g. the `:host(:not([open])) slot {display:none}` idiom real
+	// custom elements use to hide slotted content until an interactive
+	// state toggles). See matchesHost and cascade.go's shadow-scoped walk.
+	Host bool
+	// HostHasArg records whether ":host(...)" carried a functional argument at
+	// all (true) versus bare ":host" (false). This can't be inferred from
+	// HostSelector alone: parseSimpleSelectorList drops any alternative that
+	// is unmodelled or always-false statically (":hover", an attribute-only
+	// selector it can't reduce, …) — mirroring ":not()" — so ":host(:hover)"
+	// ends up with an EMPTY HostSelector, same as bare ":host" would. The two
+	// must be treated oppositely: bare ":host" matches host unconditionally;
+	// ":host(<list>)" whose every alternative was dropped must NEVER match
+	// (mirroring how ":hover" alone never matches) — matching vacuously would
+	// be wrong the way ":not()" empty-after-filtering is (correctly) NOT wrong
+	// (":not(:hover)" IS always true statically — the negation of an
+	// always-false condition).
+	HostHasArg bool
+	// HostSelector holds the compound alternatives inside ":host(<selector-
+	// list>)" (nil for bare ":host", and possibly also nil/empty even with
+	// HostHasArg true — see above). The Host compound matches when the host
+	// element ALSO matches any one of these — parsed with the same "reduce,
+	// don't drop / skip anything unmodelled-or-always-false" logic as ":not()"
+	// (see parseSimpleSelectorList), since the argument grammar is the same
+	// shape (a list of simple/compound selectors, here to be MATCHED rather
+	// than negated).
+	HostSelector []compound
 }
 
 // attrOp is the comparison an attribute selector performs.
@@ -119,9 +153,17 @@ func (a attrMatch) matches(n *dom.Node) bool {
 	return false
 }
 
-// matches reports whether the compound matches an element node.
+// matches reports whether the compound matches an element node. It never
+// matches a Host compound — ":host" has no meaning without the enclosing
+// shadow tree's host element to compare against, which only matchesHost (via
+// an explicit host parameter) can supply. Every call site that might see a
+// Host compound without host context (a ":not()" argument, a plain
+// document-wide selector, querySelector) is therefore safe by construction.
 func (c compound) matches(n *dom.Node) bool {
 	if n.Type != dom.Element {
+		return false
+	}
+	if c.Host {
 		return false
 	}
 	// A dynamic pseudo-class can never match at static render time.
@@ -183,6 +225,33 @@ func (c compound) matches(n *dom.Node) bool {
 	return true
 }
 
+// matchesHost reports whether the compound matches n, evaluated with host as
+// the enclosing shadow tree's host element (nil outside any shadow tree). A
+// Host compound (":host"/":host(...)") matches only when n IS host itself
+// (never an ordinary descendant of it) and, for ":host(<selector-list>)",
+// only when host additionally matches one of HostSelector's alternatives.
+// Every other compound delegates to the ordinary matches(n), unaffected by
+// host — Selector.Matches(n) is exactly MatchesHost(n, nil), so a host of nil
+// makes a Host compound fail (via matches' own guard) and every other
+// compound behave exactly as before this existed.
+func (c compound) matchesHost(n, host *dom.Node) bool {
+	if !c.Host {
+		return c.matches(n)
+	}
+	if host == nil || n != host {
+		return false
+	}
+	if !c.HostHasArg {
+		return true
+	}
+	for i := range c.HostSelector {
+		if c.HostSelector[i].matches(host) {
+			return true
+		}
+	}
+	return false
+}
+
 // isChecked reports whether element n is in the checked state at static render
 // time: it carries the default "checked" attribute (checkbox/radio) or, for an
 // <option>, the "selected" attribute. Value-less HTML boolean attributes are
@@ -212,6 +281,9 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 	if c.Checked {
 		classCount++ // ":checked" is a pseudo-class (class-level weight)
 	}
+	if c.Host {
+		classCount++ // ":host" is itself a pseudo-class (class-level weight)
+	}
 	classCount += len(c.Attrs) // each attribute selector is class-level weight
 	if c.Tag != "" {
 		tagCount = 1
@@ -227,6 +299,18 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 	idCount += na
 	classCount += nb
 	tagCount += nc
+	// ":host(<selector>)" additionally contributes its most specific
+	// argument's specificity, same shape as ":not()" above.
+	var ha, hb, hc int
+	for i := range c.HostSelector {
+		id, cl, tg := c.HostSelector[i].specificity()
+		if id*10000+cl*100+tg > ha*10000+hb*100+hc {
+			ha, hb, hc = id, cl, tg
+		}
+	}
+	idCount += ha
+	classCount += hb
+	tagCount += hc
 	return
 }
 
@@ -252,22 +336,44 @@ func (s Selector) Specificity() int {
 }
 
 // Matches reports whether the selector matches element n, evaluating the
-// combinator chain from the key selector leftwards.
+// combinator chain from the key selector leftwards. It is exactly
+// MatchesHost(n, nil) — outside any shadow tree there is no host to bind
+// ":host" to, so a Host compound anywhere in the selector always fails.
 func (s Selector) Matches(n *dom.Node) bool {
+	return s.MatchesHost(n, nil)
+}
+
+// MatchesHost is Matches with host bound as the enclosing shadow tree's host
+// element (see cascade.go's shadow-scoped cascade walk), so ":host" and
+// ":host(<selector>)" compounds — the shadow tree's one sanctioned way to
+// style, or reach past, the host from inside its own scoped stylesheet — can
+// match. It is the ONLY way a Host compound ever matches; every other
+// compound is unaffected by host.
+func (s Selector) MatchesHost(n, host *dom.Node) bool {
 	if len(s.parts) == 0 {
 		return false
 	}
 	key := s.parts[len(s.parts)-1]
-	if !key.matches(n) {
+	if !key.matchesHost(n, host) {
 		return false
 	}
-	return s.matchLeft(len(s.parts)-2, n)
+	return s.matchLeft(len(s.parts)-2, n, host)
 }
 
 // matchLeft verifies that part index i (and everything to its left) is
-// satisfied relative to the already-matched node matched (which corresponds to
-// part i+1). i < 0 means the whole chain is satisfied.
-func (s Selector) matchLeft(i int, matched *dom.Node) bool {
+// satisfied relative to the already-matched node matched (which corresponds
+// to part i+1), with host bound as in MatchesHost. i < 0 means the whole
+// chain is satisfied. Ordinary ancestor/sibling combinators are unaffected by
+// host (elementParent/prevElementSibling walk the real DOM exactly as
+// before); the one addition is that when a combinator's real-DOM walk is
+// exhausted (p == nil: at the top of a shadow tree, since attaching one nils
+// out its top-level content's Parent — see dom.attachDeclarativeShadowRoots)
+// AND the part being tested there is a Host compound, it is tested against
+// host directly instead of failing — the CSS Scoping spec's one sanctioned
+// escape from a shadow tree's otherwise fully encapsulated combinator
+// matching (a plain, non-":host" compound still correctly finds no further
+// ancestor and fails, never leaking into the host's own light-DOM ancestry).
+func (s Selector) matchLeft(i int, matched, host *dom.Node) bool {
 	if i < 0 {
 		return true
 	}
@@ -275,21 +381,23 @@ func (s Selector) matchLeft(i int, matched *dom.Node) bool {
 	part := s.parts[i]
 	switch comb {
 	case combChild:
-		p := elementParent(matched)
-		return p != nil && part.matches(p) && s.matchLeft(i-1, p)
+		if p := elementParent(matched); p != nil {
+			return part.matchesHost(p, host) && s.matchLeft(i-1, p, host)
+		}
+		return part.Host && part.matchesHost(host, host) && s.matchLeft(i-1, host, host)
 	case combDescendant:
 		for p := elementParent(matched); p != nil; p = elementParent(p) {
-			if part.matches(p) && s.matchLeft(i-1, p) {
+			if part.matchesHost(p, host) && s.matchLeft(i-1, p, host) {
 				return true
 			}
 		}
-		return false
+		return part.Host && part.matchesHost(host, host) && s.matchLeft(i-1, host, host)
 	case combAdjacent:
 		prev := prevElementSibling(matched)
-		return prev != nil && part.matches(prev) && s.matchLeft(i-1, prev)
+		return prev != nil && part.matchesHost(prev, host) && s.matchLeft(i-1, prev, host)
 	case combSibling:
 		for prev := prevElementSibling(matched); prev != nil; prev = prevElementSibling(prev) {
-			if part.matches(prev) && s.matchLeft(i-1, prev) {
+			if part.matchesHost(prev, host) && s.matchLeft(i-1, prev, host) {
 				return true
 			}
 		}
@@ -664,7 +772,29 @@ func parseSimple(s string) (compound, bool) {
 			// to unknown pseudos. Attribute selectors inside ":not()" ARE modelled
 			// (see below), so `:not([data-theme])` is now a real negation, not a
 			// no-op.
-			c.Not = append(c.Not, parseNotArg(arg)...)
+			c.Not = append(c.Not, parseSimpleSelectorList(arg)...)
+		case "host":
+			// ":host" / ":host(<selector-list>)" — see compound.Host's doc
+			// comment. ":host-context(...)" is a real, related pseudo (matches
+			// when host OR any of its real light-DOM ancestors matches the
+			// argument) but is intentionally NOT modelled: it falls through to
+			// the generic unmodelled-pseudo case below rather than being
+			// confused with plain ":host" here. Per the "reduce, don't drop"
+			// rule applied to every unknown pseudo, a compound that ALSO
+			// carries a tag/class/id (e.g. "div:host-context(.dark)") keeps
+			// that constraint and silently ignores just the :host-context part;
+			// a compound that is ONLY ":host-context(...)" has nothing left to
+			// reduce to, so parseSimple's "reduces to nothing" check below
+			// fails it, which drops the WHOLE containing selector (see
+			// parseComplex) — never "matches everything". The confirmed
+			// real-world need (developer.mozilla.org's <mdn-dropdown>: see
+			// FIDELITY.md) only uses ":host"/":host()", so this is a
+			// documented gap, not a silent wrong answer either way.
+			c.Host = true
+			if arg != "" {
+				c.HostHasArg = true
+				c.HostSelector = parseSimpleSelectorList(arg)
+			}
 		default:
 			switch {
 			case isDynamicPseudo(name):
@@ -674,8 +804,8 @@ func parseSimple(s string) (compound, bool) {
 				// the compound must match nothing (see compound.PseudoElement).
 				c.PseudoElement = true
 			}
-			// Any other pseudo (e.g. :nth-child) is unmodelled and intentionally
-			// ignored — the compound degrades to matching its base.
+			// Any other pseudo (e.g. :nth-child, :host-context) is unmodelled and
+			// intentionally ignored — the compound degrades to matching its base.
 		}
 	}
 	s = base
@@ -699,11 +829,11 @@ func parseSimple(s string) (compound, bool) {
 	}
 	// A compound with no tag/class/id and no modelled pseudo/attribute reduces to
 	// nothing — a bare "::before" is dropped. A bare ":hover"/":checked"/
-	// ":not()"/"[attr]" is kept: a dynamic-only compound never matches statically
-	// (equivalent to being dropped), and ":checked"/":not(...)"/attribute
-	// selectors carry a real constraint on their own.
+	// ":not()"/"[attr]"/":host" is kept: a dynamic-only compound never matches
+	// statically (equivalent to being dropped), and ":checked"/":not(...)"/
+	// attribute/":host" selectors carry a real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && len(c.Not) == 0 && len(c.Attrs) == 0 {
+		!c.Root && !c.Dynamic && !c.Checked && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 {
 		return compound{}, false
 	}
 	return c, true
@@ -779,17 +909,22 @@ func pseudoNameArg(p string) (name, arg string) {
 	return strings.ToLower(p), ""
 }
 
-// parseNotArg parses the argument of a ":not(...)" into the compound selectors
-// the negation must test. The argument is a comma-separated list of simple
-// selectors (CSS Level 4 allows a list; the checkbox hack uses a single simple
-// selector such as ":checked" or ".foo"). It never fails the surrounding rule —
-// an alternative that is empty, dynamic (":hover", never matches statically), or
-// unmodelled (an attribute-only "[attr]" or a pseudo-element the parser can't
-// reduce to a real constraint) simply contributes no constraint. Only genuine,
-// modelled constraints (tag/class/id/:checked/nested :not) are returned, so
+// parseSimpleSelectorList parses a comma-separated list of simple selectors
+// shared by ":not(<selector-list>)" and ":host(<selector-list>)" — the two
+// functional pseudo-classes in this engine whose argument is that same
+// grammar (CSS Level 4 allows a list for both; a single simple selector, e.g.
+// ":checked", ".foo" or ":not([open])", is the common real-world case for
+// each). Only the compound alternatives are returned; how the caller USES the
+// list differs (":not()" negates — the compound fails if ANY matches;
+// ":host()" matches — the compound succeeds if ANY matches), but parsing is
+// identical. It never fails the surrounding rule — an alternative that is
+// empty, dynamic (":hover", never matches statically), or unmodelled (an
+// attribute-only "[attr]" or a pseudo-element the parser can't reduce to a
+// real constraint) simply contributes no constraint. Only genuine, modelled
+// constraints (tag/class/id/:checked/nested :not/:host) are returned, so
 // `:not(:checked)` is precise while `:root:not([data-theme])` degrades to
 // `:root` rather than dropping the rule.
-func parseNotArg(arg string) []compound {
+func parseSimpleSelectorList(arg string) []compound {
 	var out []compound
 	for _, alt := range splitSelectorCommas(arg) {
 		alt = strings.TrimSpace(alt)
