@@ -51,7 +51,7 @@ func (l *layouter) flex(box *Box, node *dom.Node, st *css.Style, cx, cw, top flo
 // CSS order property (stable within equal order, preserving document order).
 func (l *layouter) flexItems(node *dom.Node) []*flexItem {
 	var out []*flexItem
-	for _, c := range node.Children {
+	for _, c := range renderedChildren(node) {
 		if c.Type != dom.Element {
 			continue
 		}
