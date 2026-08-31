@@ -69,6 +69,59 @@ Speed× is `chrome_ms / webengine_ms`: >1 means webengine is faster.
 
 <!-- BEGIN ANALYSIS (hand-written, preserved across re-runs) -->
 
+## Honest analysis — 2026-08-30 chaos audit: widened corpus + five fixes
+
+**Date: 2026-08-30.** This report and FIDELITY.md had not been regenerated since
+Phase 2.2 (2026-08-05) despite ~40 PRs landing in the meantime — the corpus was
+still the same 5 URLs, and `developer.mozilla.org` could not even be added
+before now because rendering it hung indefinitely (engine#48). Widened to 10
+URLs (added Hacker News, MDN, GitHub, tailwindcss.com, caniuse.com — see
+`bench/urls.txt`'s own log) and fixed five concrete defects found by actually
+re-measuring rather than trusting the stale numbers: engine#46 (react.dev
+rendered fully blank — a script pass emptied an already-good render),
+engine#47 (pkg.go.dev 27.8s → 5.4s, a 5.2x fix for filter/opacity group buffers
+sized to the whole page canvas instead of each element), engine#48 (MDN never
+completed — `esbuild.api.Build` blocked minutes past its own budget), engine#50
+(`!important` was parsed and discarded), engine#54 (`<template>` content, and
+so declarative Shadow DOM markup, rendered as normal light-DOM markup).
+
+**Two of the five widened-corpus additions are badly rendered, precisely
+diagnosed, not yet fixed:**
+
+- **developer.mozilla.org: 0.114 SSIM, pixdiff 96.6%.** Root cause confirmed
+  live (see FIDELITY.md's "Known gaps"): the header's mega-menu dropdowns
+  (Tools/References/Learn) use real Shadow DOM `<slot>` projection — light-DOM
+  panels meant to be distributed into a shadow tree and hidden by a
+  `:host(...)  slot{display:none}` rule scoped to that shadow root. This engine
+  has no custom-element upgrade or slot distribution, so those panels render
+  permanently expanded, stacked at the top of the page. `<template>` content
+  itself is now correctly hidden (engine#54) — this is the *next* layer of the
+  same gap, not a regression from that fix.
+- **tailwindcss.com: 0.051 SSIM, pixdiff 97.2%, 1024×26453 vs Chrome's
+  1024×13280 (~2x taller).** Not yet root-caused — flagging honestly rather
+  than guessing. A page rendering at roughly double the real height points at
+  either a layout collapse (flex/grid tracks not sizing against each other) or
+  duplicated content, not a simple colour/style miss; worth a montage-driven
+  diagnosis pass before attempting a fix.
+- **github.com/golang/go: 0.114 SSIM, pixdiff 96.6%**, also not yet
+  root-caused. Its own heavy web-component usage (Primer/GitHub's design
+  system) makes the same Shadow-DOM gap a reasonable first hypothesis, but this
+  has not been confirmed by inspecting its DOM the way MDN's was — do not treat
+  it as diagnosed until it is.
+
+**Held / improved, honestly:** example.com, Wikipedia and go.dev/blog are flat
+(no regression from the five fixes above); Hacker News and caniuse.com are new
+data points, not previously measured, sitting mid-pack (0.59–0.65) as expected
+for their layout styles (old table-based chrome; a colour-coded data grid).
+react.dev's 0.256 looks like a regression from an earlier (undated, pre-audit)
+0.729 in this project's memory — it is not: the earlier number was measured
+against a page that, by the time of this audit, rendered fully blank
+(engine#46) and was scoring artificially high because the bench tool's
+`maxheight` cap compared only a blank dark background against Chrome's mostly-
+dark hero fold. 0.256 is the first honest number for this page since it started
+rendering its real ~10,900px of content; the gap is CSS/layout fidelity on a
+long page, not a fixed regression.
+
 ## Honest analysis — Phase 2.2 (dynamic rendering: layout↔JS feedback + settle-then-render)
 
 **Date: 2026-08-05.** This phase closes the "final visual state produced at
