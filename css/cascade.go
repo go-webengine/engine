@@ -70,16 +70,43 @@ func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, co
 	rules = append(rules, collectAuthorRules(root, vw)...)
 	sm := StyleMap{}
 	var counter int
-	var walk func(n *dom.Node, parent Style, containerStack []containerFrame)
-	walk = func(n *dom.Node, parent Style, containerStack []containerFrame) {
+	// walk's rules and host parameters together identify the current
+	// cascade SCOPE: outside any shadow tree, rules is always the document's
+	// (docRules, captured below) and host is nil. Descending into an attached
+	// shadow root's content (n.Shadow != nil) switches BOTH for that
+	// subtree's recursive calls only: rules becomes that shadow tree's own
+	// scoped stylesheet (never the document's — see shadowStylesheet) and
+	// host becomes n, so ":host"/":host(...)" compounds in it can bind (see
+	// Selector.MatchesHost). The host element's OWN style is computed in the
+	// unchanged outer scope (it is a light-DOM element), with its shadow's
+	// :host-keyed declarations folded in as an extra rule source — see
+	// filterHostSelectors below — so cascade order for the whole document is
+	// otherwise untouched by any of this: a page with no Shadow DOM never
+	// takes any of these branches (n.Shadow is nil, host stays nil, rules
+	// stays docRules throughout).
+	docRules := rules
+	var walk func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, host *dom.Node)
+	walk = func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, host *dom.Node) {
 		if n.Type != dom.Element {
 			// Text/Document nodes have no computed style; recurse with parent.
 			for _, c := range n.Children {
-				walk(c, parent, containerStack)
+				walk(c, parent, containerStack, rules, host)
 			}
 			return
 		}
-		st := computeElement(n, parent, rules, &counter, containerStack, containers)
+		var shadowRules, hostRules []Rule
+		if n.Shadow != nil {
+			shadowRules = shadowStylesheet(n.Shadow, vw)
+			hostRules = filterHostSelectors(shadowRules)
+		}
+		// hostRules — n's OWN shadow's ":host"/":host(...)" declarations, if
+		// any — are matched with host=n (self-referential: THIS is the
+		// element ":host" inside n's own <style> refers to), which is why
+		// they are a separate argument from rules/host: those reflect the
+		// AMBIENT scope n is being cascaded in (nil outside any shadow tree,
+		// or an OUTER shadow's host when n is itself shadow-tree content),
+		// an entirely different (and, for the host itself, unrelated) binding.
+		st := computeElement(n, parent, rules, hostRules, &counter, containerStack, containers, host)
 		sm[n] = &st
 		childStack := containerStack
 		if st.ContainerType != ContainerNormal {
@@ -90,19 +117,38 @@ func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, co
 			copy(childStack, containerStack)
 			childStack[len(containerStack)] = containerFrame{node: n, name: st.ContainerName, typ: st.ContainerType}
 		}
+		// n's own light-DOM children (if n has an attached shadow root, these
+		// still get a computed style here — layout simply never visits them
+		// directly, see layout.renderedChildren — so a slotted child's style
+		// is, correctly per spec, computed via the SAME outer scope as any
+		// other light-DOM element, never restyled by the shadow's rules).
 		for _, c := range n.Children {
-			walk(c, st, childStack)
+			walk(c, st, childStack, rules, host)
+		}
+		// n's shadow tree, if it has one: a NEW scope (shadowRules, host=n).
+		if n.Shadow != nil {
+			for _, c := range n.Shadow.Children {
+				walk(c, st, childStack, shadowRules, n)
+			}
 		}
 	}
 	// The synthetic Document root has no style; seed children with initial.
-	walk(root, initialStyle(), nil)
+	walk(root, initialStyle(), nil, docRules, nil)
 	return sm
 }
 
 // computeElement resolves the style of a single element. containerStack is
 // the chain of ancestor query containers (nearest last) available to any
 // @container rule matched below; containers supplies their measured sizes.
-func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize) Style {
+// host is the enclosing shadow tree's host element (nil outside one), bound
+// so ":host"/":host(...)" compounds in rules can match (see
+// Selector.MatchesHost) — nil makes every such compound fail, so this is a
+// no-op for every element outside a shadow tree. hostRules is n's OWN
+// attached shadow's ":host"-keyed declarations (nil if n has none), always
+// matched with n as its own host — an independent binding from rules/host,
+// which describe the scope n is being cascaded IN, not n's own shadow (an
+// element is never a member of the shadow tree it hosts).
+func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node) Style {
 	st := inheritFrom(parent)
 	// ownProps tracks whether st.CustomProps is this element's own (already
 	// cloned) map versus the parent's shared one, so we clone at most once.
@@ -148,22 +194,37 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, counter *int, conta
 	// cascade order precedes every matched author rule.
 	add(presentationalHints(n), precAuthor, 0)
 	// Author rules whose selectors match, each at its selector's specificity.
-	for _, r := range rules {
-		spec := -1
-		for _, sel := range r.Selectors {
-			if sel.Matches(n) {
-				if s := sel.Specificity(); s > spec {
-					spec = s
+	// MatchesHost (rather than plain Matches) is what lets a ":host"/
+	// ":host(...)" compound bind to host — everywhere outside a shadow scope
+	// host is nil, so this is identical to Matches(n) for every existing page.
+	addMatching := func(rs []Rule, matchHost *dom.Node) {
+		for _, r := range rs {
+			spec := -1
+			for _, sel := range r.Selectors {
+				if sel.MatchesHost(n, matchHost) {
+					if s := sel.Specificity(); s > spec {
+						spec = s
+					}
 				}
 			}
-		}
-		if spec >= 0 {
-			if r.Container != nil && !r.Container.satisfied(containerStack, containers) {
-				continue // selector matched, but its @container condition does not (yet, or ever)
+			if spec >= 0 {
+				if r.Container != nil && !r.Container.satisfied(containerStack, containers) {
+					continue // selector matched, but its @container condition does not (yet, or ever)
+				}
+				add(r.Declarations, precAuthor, spec)
 			}
-			add(r.Declarations, precAuthor, spec)
 		}
 	}
+	addMatching(rules, host)
+	// n's OWN shadow's ":host"-keyed rules (if any) — see computeElement's doc
+	// comment: always matched with n as its own host, independent of the
+	// ambient host binding above (an element is never inside the shadow tree
+	// it hosts). This runs after the ambient rules in cascade ORDER, so at
+	// equal specificity a component's own ":host" declaration wins over a
+	// same-specificity document rule that also happens to match the host —
+	// consistent with how this engine otherwise treats "later in the effective
+	// stylesheet" as winning ties.
+	addMatching(hostRules, n)
 	// Inline style attribute (highest origin).
 	if inline, ok := n.Attribute("style"); ok {
 		add(ParseDeclarations(inline), precInline, 0)
@@ -246,6 +307,19 @@ func cloneProps(m map[string]string) map[string]string {
 // collectAuthorRules parses every <style> element's text into rules, evaluating
 // @media width queries against viewport width vw.
 func collectAuthorRules(root *dom.Node, vw float64) []Rule {
+	return collectAuthorRulesFrom([]*dom.Node{root}, vw)
+}
+
+// collectAuthorRulesFrom is collectAuthorRules generalised to a list of
+// top-level nodes rather than a single root — used both for the whole
+// document (collectAuthorRules) and, scoped to one shadow tree's own content,
+// by shadowStylesheet (shadowdom.go). Neither walk descends into a NESTED
+// shadow root's content: attachDeclarativeShadowRoots already hoists it out
+// of the light-DOM Children this walks (into Node.Shadow instead), so a
+// nested shadow tree's <style> is automatically picked up only by its own,
+// separate collectAuthorRulesFrom(sr.Children, vw) call — never by this one,
+// and never by the document's — with no explicit check needed here.
+func collectAuthorRulesFrom(nodes []*dom.Node, vw float64) []Rule {
 	var sb strings.Builder
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
@@ -261,6 +335,8 @@ func collectAuthorRules(root *dom.Node, vw float64) []Rule {
 			walk(c)
 		}
 	}
-	walk(root)
+	for _, n := range nodes {
+		walk(n)
+	}
 	return ParseStylesheetVW(sb.String(), vw)
 }
