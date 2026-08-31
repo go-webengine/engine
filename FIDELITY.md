@@ -18,6 +18,56 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-08-31 (cont.) — the grid bug from the entry below fixed, plus a sandbox-escape and two dedupe wins
+
+Two real CSS Grid bugs, found by dumping the live box tree (a temporary
+white-box test, not committed) rather than guessing from a screenshot:
+
+- **The "Maximize Tracks" step of CSS Grid's track-sizing algorithm only grew
+  `fr` tracks.** A non-flexible track with room below its max cap — e.g.
+  `minmax(0,1536px)`, exactly tailwindcss.com's own page-shell content column
+  (`md:grid-cols-[var(--gutter-width)_minmax(0,var(--breakpoint-2xl))_var(--gutter-width)]`)
+  — never grew past its 0px base. Fixed: `growCappedTracks` in `layout/grid.go`
+  now splits free space among such tracks first, then hands whatever's left to
+  the `fr` step, engine#63.
+- **`grid-row: 1 / -1` (Tailwind's `row-span-full`) resolved to a zero-row
+  span**, because the row axis always resolved a negative end line against an
+  unknown track count, even though the explicit `grid-template-rows` count is
+  known before placement. The item (a decorative full-height background)
+  reserved no occupancy, so the page's actual content wrapper slid into the
+  gutter column instead. Fixed by threading the known row count through,
+  engine#63. **Together: tailwindcss.com's content column went from 40px wide
+  at ~22450px document height to 944px wide at ~12000px** — verified with the
+  same box-tree dump before/after.
+
+Separately, profiling the two slowest remaining pages (the performance half of
+this session's work) surfaced a genuine sandbox-escape, not just a slowdown:
+
+- **esbuild's module bundler used `ResolveDir: "/"` — the real filesystem
+  root — everywhere.** The `webengine-http` plugin fully intercepts ordinary
+  import resolution, but esbuild's bundler special-cases a *glob* dynamic
+  import (`import(\`./${lang}/index.js\`)`, ordinary bundler-emitted i18n/
+  route code-splitting) by resolving it directly against `ResolveDir` on the
+  real filesystem, entirely bypassing the plugin. A page merely containing
+  such an import made the engine recursively walk the host's entire real root
+  filesystem hunting for "matches" — independent of the cost, a remote page
+  should never cause this engine to read the host's real directory tree.
+  Fixed with an isolated, always-empty `os.MkdirTemp`'d directory, engine#65.
+  **developer.mozilla.org: ~14.7s → ~0.56s (26x).**
+- **`dom.Node.Classes()` had no caching and `css.compound.matches` allocated a
+  fresh map on every single selector check** — the hottest path in the
+  cascade, checked once per candidate rule per element. Fixed by memoizing
+  the class split and using a linear scan instead of a map (both lists are
+  tiny). engine#64. **tailwindcss.com: ~5.7s → ~2.2s.**
+- **A page's images were fetched twice within one render** — the settle loop
+  reloads images unconditionally after any script-driven relayout, with no
+  cache even though `e.ImageCache` (opt-in, nil by default) only ever governed
+  cross-render reuse. Fixed with an ephemeral per-render cache threaded via
+  `context.Context`. engine#66. **caniuse.com: 19 requests → 16, ~4.16s →
+  ~3.64s** (its remaining ~3.6s is server-side connection pacing on caniuse.com's
+  own origin, confirmed by reproducing the identical clustering with a bare
+  concurrent fetch outside the engine entirely — not a client bug).
+
 ## 2026-08-30 — chaos audit: two live regressions, a live hang, two conformance gaps
 
 This file and `bench/REPORT.md` had not been updated since Phase 2.6 (2026-08-05)
@@ -962,21 +1012,11 @@ Restated against what was actually verified that day:
   This is the confirmed cause of both MDN's mega-menu dropdowns
   (Tools/References/Learn) and github.com's header nav (Platform/AI/
   Enterprise/…) rendering permanently expanded.
-- **CSS Grid: a `repeat(1, minmax(0, 1fr))` track does not reliably expand to
-  fill its container** (diagnosed 2026-08-31, not yet fixed). Confirmed live on
-  tailwindcss.com: a single-column grid item using exactly this track
-  (Tailwind's `grid-cols-1`) laid out at 40px wide instead of its parent's full
-  1024px, collapsing the whole page's main column and forcing every heading
-  into one-word-per-line wrapping — the dominant remaining cause of the page's
-  residual too-tall render (`@container` queries, suspected earlier, were never
-  confirmed and are no longer the leading hypothesis; parseTrackList/
-  parseRepeat in `css/grid.go` parse this track correctly, so the bug is in the
-  layout-time fr-distribution, not the parser). Not yet root-caused further —
-  flagging precisely rather than re-guessing.
 - **No CSS `@container` queries** — the condition is never evaluated at all
-  (unlike `@layer`, engine#56, which is unwrapped unconditionally). Real gap,
-  but demoted from "leading hypothesis" now that the grid track-sizing issue
-  above was confirmed as tailwindcss.com's actual dominant cause.
+  (unlike `@layer`, engine#56, which is unwrapped unconditionally). Real gap;
+  tailwindcss.com uses it for some component-level breakpoints, though the two
+  CSS Grid track-sizing bugs fixed 2026-08-31 (engine#63, see below) were the
+  page's dominant fidelity cost, not this.
 - **No CSS `transform`** (2D or 3D) and no `conic-gradient`. A slide-out drawer
   or carousel positioned via `transform: translateX(...)` renders at its
   untransformed in-flow position instead.
