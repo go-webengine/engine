@@ -314,6 +314,27 @@ func expandFunctionalPseudos(sel string) []string {
 		if alt == "" {
 			continue
 		}
+		// prefix+alt+suffix textual concatenation is correct when alt is a bare
+		// compound (".dark" splices onto ".foo:where(...)" as ".foo.dark", the
+		// same element needing both classes) or when the wrapper stands alone
+		// (prefix=="", so alt's own combinator chain already means what it says).
+		// It is WRONG when the wrapper is compound-attached (prefix!="") AND alt
+		// itself ends in a combinator: "X <comb> *" — Tailwind's class-based
+		// variant strategy emits exactly this (`:where(.dark, .dark *)` attached
+		// to `.dark\:inline`) to mean "the tested element is .dark itself, OR the
+		// tested element has an ancestor .dark" (the trailing universal `*` is a
+		// no-op stand-in for "the tested element" — it is not "some other
+		// element"). Naive concatenation instead produces
+		// ".dark\:inline.dark *" — an entirely different selector: "any element
+		// with an ancestor matching BOTH classes at once" — silently matching a
+		// disjoint set of nodes (or usually nothing at all). See
+		// stripTrailingSelfCombinator.
+		if prefix != "" {
+			if head, comb, ok := stripTrailingSelfCombinator(alt); ok {
+				out = append(out, expandFunctionalPseudos(head+string(comb)+prefix+suffix)...)
+				continue
+			}
+		}
 		out = append(out, expandFunctionalPseudos(prefix+alt+suffix)...)
 	}
 	if len(out) == 0 {
@@ -322,6 +343,57 @@ func expandFunctionalPseudos(sel string) []string {
 		return expandFunctionalPseudos(prefix + suffix)
 	}
 	return out
+}
+
+// stripTrailingSelfCombinator recognises an alternative of the form
+// "X <comb> *" — a trailing universal compound standing in for "the tested
+// element itself", used to express "has an ancestor/sibling matching X"
+// relative to that element (see the comment at its call site for why this
+// needs special handling when compound-attached). It reports X (rejoined from
+// tokens, so already normalised) and the combinator that connected it to the
+// trailing "*", or ok=false when alt isn't shaped this way — a bare compound
+// alternative like ".dark" falls through unchanged.
+func stripTrailingSelfCombinator(alt string) (head string, comb byte, ok bool) {
+	toks := tokenizeSelector(alt)
+	if len(toks) < 2 {
+		return "", 0, false
+	}
+	last := toks[len(toks)-1]
+	if last.comb || strings.TrimSpace(last.text) != "*" {
+		return "", 0, false
+	}
+	sep := toks[len(toks)-2]
+	if !sep.comb {
+		return "", 0, false
+	}
+	var b strings.Builder
+	for _, t := range toks[:len(toks)-2] {
+		if t.comb {
+			b.WriteByte(combinatorChar(t.combKind))
+		} else {
+			b.WriteString(t.text)
+		}
+	}
+	if b.Len() == 0 {
+		return "", 0, false
+	}
+	return b.String(), combinatorChar(sep.combKind), true
+}
+
+// combinatorChar returns the literal selector character for k (a plain space
+// for the implicit descendant combinator, which tokenizeSelector parses the
+// same as any other whitespace run).
+func combinatorChar(k combinator) byte {
+	switch k {
+	case combChild:
+		return '>'
+	case combAdjacent:
+		return '+'
+	case combSibling:
+		return '~'
+	default:
+		return ' '
+	}
 }
 
 // findFunctionalPseudo returns the index of the ':' starting the first

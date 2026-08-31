@@ -471,3 +471,33 @@ func TestPseudoElementMatchesNothing(t *testing.T) {
 		t.Error("pseudo-elements must be classified as such")
 	}
 }
+
+// TestStripTrailingSelfCombinator covers stripTrailingSelfCombinator's own
+// branches directly: the "X <comb> *" shape it recognises (across all four
+// combinator kinds, since combinatorChar's non-descendant branches otherwise
+// have no other test exercising them), and the shapes it must reject —
+// nothing to strip, no combinator before the trailing "*", or a chain that
+// doesn't end in a bare "*" at all.
+func TestStripTrailingSelfCombinator(t *testing.T) {
+	cases := []struct {
+		alt      string
+		wantHead string
+		wantComb byte
+		wantOK   bool
+	}{
+		{".dark *", ".dark", ' ', true},
+		{".dark>*", ".dark", '>', true},
+		{".dark+*", ".dark", '+', true},
+		{".dark~*", ".dark", '~', true},
+		{".dark", "", 0, false},      // no combinator at all: bare compound
+		{".dark .foo", "", 0, false}, // trailing token is not "*"
+		{"*", "", 0, false},          // only one token, nothing to strip
+	}
+	for _, c := range cases {
+		head, comb, ok := stripTrailingSelfCombinator(c.alt)
+		if ok != c.wantOK || (ok && (head != c.wantHead || comb != c.wantComb)) {
+			t.Errorf("stripTrailingSelfCombinator(%q) = %q,%q,%v want %q,%q,%v",
+				c.alt, head, string(comb), ok, c.wantHead, string(c.wantComb), c.wantOK)
+		}
+	}
+}
