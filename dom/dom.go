@@ -36,6 +36,18 @@ type Node struct {
 	Text     string            // character data (Text only)
 	Parent   *Node
 	Children []*Node
+
+	// classCache/classCacheRaw memoize Classes()'s split of Attr["class"],
+	// keyed by the exact string it was split from — a scripted className/
+	// classList write goes through Attr["class"] directly with no dedicated
+	// setter to hook, so the cache self-invalidates by comparing the raw
+	// string on every call instead of relying on an explicit invalidation
+	// call site. Selector matching calls Classes() on every candidate rule
+	// for every element (O(rules x elements) on a class-heavy page), so a
+	// class list stayed a top CPU cost (strings.Fields, repeated per call)
+	// until this was measured with pprof against tailwindcss.com.
+	classCacheRaw string
+	classCache    []string
 }
 
 // Attribute returns the value of the named attribute (lowercased name) and
@@ -54,7 +66,12 @@ func (n *Node) Classes() []string {
 	if !ok {
 		return nil
 	}
-	return strings.Fields(c)
+	if c == n.classCacheRaw && n.classCache != nil {
+		return n.classCache
+	}
+	n.classCache = strings.Fields(c)
+	n.classCacheRaw = c
+	return n.classCache
 }
 
 // ID returns the element's id attribute (empty if absent).

@@ -145,13 +145,21 @@ func (c compound) matches(n *dom.Node) bool {
 	if c.ID != "" && c.ID != n.ID() {
 		return false
 	}
+	// Both lists are small (a handful of classes on each side even on a
+	// utility-class-heavy page), so a linear scan beats allocating and
+	// hashing into a map on every single match attempt — this runs once per
+	// candidate rule per element, the single hottest path in the cascade.
 	if len(c.Classes) > 0 {
-		have := map[string]bool{}
-		for _, cl := range n.Classes() {
-			have[cl] = true
-		}
+		have := n.Classes()
 		for _, want := range c.Classes {
-			if !have[want] {
+			found := false
+			for _, cl := range have {
+				if cl == want {
+					found = true
+					break
+				}
+			}
+			if !found {
 				return false
 			}
 		}

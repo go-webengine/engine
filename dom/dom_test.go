@@ -57,6 +57,28 @@ func TestClassesAndIDEmpty(t *testing.T) {
 	}
 }
 
+func TestClassesCacheTracksAttributeMutation(t *testing.T) {
+	// Classes() memoizes its split of Attr["class"] to avoid re-parsing on
+	// every selector match; a script rewriting the attribute directly (there
+	// is no dedicated setter to hook — see js/style.go) must still be picked
+	// up on the very next call, not serve the stale split.
+	n := &Node{Type: Element, Tag: "div", Attr: map[string]string{"class": "a b"}}
+	if cs := n.Classes(); len(cs) != 2 || cs[0] != "a" || cs[1] != "b" {
+		t.Fatalf("initial classes = %v", cs)
+	}
+	if cs := n.Classes(); len(cs) != 2 || cs[0] != "a" || cs[1] != "b" {
+		t.Fatalf("cached classes = %v", cs)
+	}
+	n.Attr["class"] = "c"
+	if cs := n.Classes(); len(cs) != 1 || cs[0] != "c" {
+		t.Fatalf("classes after mutation = %v", cs)
+	}
+	n.Attr["class"] = ""
+	if cs := n.Classes(); len(cs) != 0 {
+		t.Fatalf("classes after clearing = %v", cs)
+	}
+}
+
 func TestTitleAndFindMissing(t *testing.T) {
 	root, _ := Parse(`<html><body><div></div></body></html>`)
 	if Title(root) != "" {
