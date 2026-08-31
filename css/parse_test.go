@@ -28,6 +28,37 @@ func TestParseDeclarations(t *testing.T) {
 		if want[decl.Property] != decl.Value {
 			t.Errorf("decl %q = %q want %q", decl.Property, decl.Value, want[decl.Property])
 		}
+		// Only x carries !important; the marker must never leak into Value, and
+		// no other declaration should pick it up.
+		wantImportant := decl.Property == "x"
+		if decl.Important != wantImportant {
+			t.Errorf("decl %q Important = %v want %v", decl.Property, decl.Important, wantImportant)
+		}
+	}
+}
+
+// TestParseDeclarationsImportantCaseAndSpacing covers case-insensitivity and
+// whitespace around the !important marker, and that a plain declaration is
+// unaffected.
+func TestParseDeclarationsImportantCaseAndSpacing(t *testing.T) {
+	d := ParseDeclarations("a: 1 !IMPORTANT; b: 2  !important  ; c: 3")
+	want := map[string]struct {
+		val       string
+		important bool
+	}{
+		"a": {"1", true},
+		"b": {"2", true},
+		"c": {"3", false},
+	}
+	if len(d) != len(want) {
+		t.Fatalf("got %d decls: %v", len(d), d)
+	}
+	for _, decl := range d {
+		w := want[decl.Property]
+		if decl.Value != w.val || decl.Important != w.important {
+			t.Errorf("decl %q = %q,important=%v want %q,important=%v",
+				decl.Property, decl.Value, decl.Important, w.val, w.important)
+		}
 	}
 }
 
@@ -137,7 +168,7 @@ func TestParseStylesheetEmptyAndNoBrace(t *testing.T) {
 
 func TestApplyProperties(t *testing.T) {
 	s := initialStyle()
-	apply := func(p, v string, em float64) { s.apply(Declaration{p, v}, em) }
+	apply := func(p, v string, em float64) { s.apply(Declaration{Property: p, Value: v}, em) }
 	apply("display", "none", 16)
 	if s.Display != DisplayNone {
 		t.Error("display none")

@@ -12,10 +12,13 @@ import (
 // mediaWidthRe captures min-width/max-width pixel features in a media query.
 var mediaWidthRe = regexp.MustCompile(`(min|max)-width\s*:\s*([0-9.]+)px`)
 
-// Declaration is a single property: value pair.
+// Declaration is a single property: value pair. Important marks a trailing
+// `!important` on the original declaration; it is consulted by the cascade,
+// never by a property's value parser (Value never carries the marker).
 type Declaration struct {
-	Property string
-	Value    string
+	Property  string
+	Value     string
+	Important bool
 }
 
 // Rule is a parsed style rule: a list of selectors sharing a declaration block.
@@ -160,14 +163,17 @@ func ParseDeclarations(body string) []Declaration {
 			prop = strings.ToLower(prop)
 		}
 		val := strings.TrimSpace(chunk[colon+1:])
-		// Strip a trailing !important marker (its precedence is not modelled).
+		// A trailing !important is not part of the value — strip it here, once,
+		// so no property parser downstream ever has to know about it.
+		important := false
 		if idx := strings.LastIndex(strings.ToLower(val), "!important"); idx >= 0 {
 			val = strings.TrimSpace(val[:idx])
+			important = true
 		}
 		if prop == "" || val == "" {
 			continue
 		}
-		out = append(out, Declaration{Property: prop, Value: val})
+		out = append(out, Declaration{Property: prop, Value: val, Important: important})
 	}
 	return out
 }
