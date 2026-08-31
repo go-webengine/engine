@@ -359,6 +359,24 @@ func TestMediaMatchesSimpleCalc(t *testing.T) {
 	if !mediaMatches("(width<=calc(1px + 2px + 3px))", 999999) {
 		t.Error("an unparseable calc() should fall through to match optimistically")
 	}
+	// A value the regex's digit/dot character class accepts but strconv
+	// rejects (multiple dots, no actual digits) must not panic: the condition
+	// is simply left unevaluated (matches optimistically), same as any other
+	// unparseable value.
+	if !mediaMatches("(width<=...px)", 1024) {
+		t.Error("an unparseable numeric value should fall through to match optimistically")
+	}
+}
+
+// TestFlipCmp covers every operator flipCmp reverses, plus the defensive
+// default (an operator outside the four mediaWidthCmpRe can ever capture).
+func TestFlipCmp(t *testing.T) {
+	cases := map[string]string{"<": ">", "<=": ">=", ">": "<", ">=": "<=", "?": "?"}
+	for in, want := range cases {
+		if got := flipCmp(in); got != want {
+			t.Errorf("flipCmp(%q) = %q, want %q", in, got, want)
+		}
+	}
 }
 
 func TestParseStylesheetEmptyAndNoBrace(t *testing.T) {
