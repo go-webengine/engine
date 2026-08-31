@@ -1,21 +1,76 @@
 # Fidelity Report
 
-**Date: 2026-08-05**
+**Date: 2026-08-05, audited 2026-08-30 (see the first log entry below)**
 
 Honest assessment of the renderer on five pages. Phase 0 shipped a static
 HTML→CSS→block/inline→paint→PNG pipeline that **linearised every page to one
 column**. It has since grown a full box model (floats, flexbox, CSS grid, tables,
 `position`), broad CSS (`var()`, `@media`, dark-mode, gradients, box-shadow,
-border-radius, opacity), SVG rasterisation, and **JavaScript execution** (goja +
-a real DOM + a settle-then-render loop). The renderer is **no longer static**:
-script-driven DOM mutations are reflected in the output; render with `DisableJS`
-to get the static, no-JavaScript document. Where a page still diverges from a
-browser it is stated below, not hidden. The phase-by-phase log runs newest-first,
-from Phase 2.4 down to Phase 0.
+border-radius, opacity, `!important`), SVG rasterisation, and **JavaScript
+execution** (goja + a real DOM + a settle-then-render loop). The renderer is
+**no longer static**: script-driven DOM mutations are reflected in the output;
+render with `DisableJS` to get the static, no-JavaScript document. Where a page
+still diverges from a browser it is stated below, not hidden. The phase-by-phase
+log runs newest-first; see "Known gaps" for the current, audited scope boundary
+rather than trusting any single phase entry in isolation.
 
 The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
+
+## 2026-08-30 — chaos audit: two live regressions, a live hang, two conformance gaps
+
+This file and `bench/REPORT.md` had not been updated since Phase 2.6 (2026-08-05)
+despite ~40 PRs landing in the meantime — the numbers and gap list below had gone
+stale relative to the code. Re-measuring against real, live pages (not the
+committed renders) surfaced five concrete, independently verified defects rather
+than a vague "it's probably fine":
+
+- **react.dev rendered fully blank** (`contentHeight=0`) — a client-side router
+  failing to load its own error route unmounted the whole app tree mid-settle,
+  and the settle loop accepted the empty result over the good pre-script layout.
+  The bench tool's `maxheight`-capped SSIM scored the blank page a **0.729→0.903
+  "win"** by comparing only its dark background against Chrome's dark hero fold
+  — a regression that a naive metric read as an improvement. Fixed: engine#46.
+- **pkg.go.dev/net/http took 27.8s — 5x slower than headless Chrome.** 11 small
+  (16–23px) `filter`/`opacity` elements each allocated a group buffer the size
+  of the whole 1024×88631 page canvas and ran the filter math over all 90M
+  pixels. Fixed by bounding the buffer to each box's own ink bounds: **27.85s →
+  5.38s (5.2x)**, byte-identical output verified. Fixed: engine#47.
+- **developer.mozilla.org never completed rendering** (120s+, still confirmed
+  stuck inside `esbuild.api.Build` by a `SIGQUIT` goroutine dump). `api.Build`
+  is synchronous and uncancellable; the existing budget bounded `OnLoad` but not
+  `OnResolve`, so a large import graph kept being enumerated long past the
+  bundle stage's own deadline. Fixed by running the call in its own goroutine
+  and abandoning the *wait* (not the call) once the budget expires: **never
+  completing → 15.8s**. Fixed: engine#48.
+- **`!important` was parsed and discarded.** A real site's forced state
+  (`.left-sidebar{display:none!important}`, MDN's default-collapsed drawer)
+  could be — and was — overridden by an unrelated, later, higher-specificity
+  rule meant for a different responsive state. Now modelled as its own cascade
+  tier above every non-important declaration, regardless of origin/specificity.
+  Fixed: engine#50.
+- **`<template>` content rendered as normal markup.** A `<template>`'s children
+  are inert per the HTML spec (they live in `.content`, never the document
+  tree); this engine parsed them straight into the light DOM. Concretely, MDN's
+  23 `<template shadowrootmode="open">` declarative-shadow-DOM blocks (its
+  header/menu web components) painted their shadow markup inline, unstyled and
+  unscoped. Fixed: engine#54 (adds `template` to the tag-keyed `display:none`
+  UA-default list). This does **not** implement Shadow DOM — see "Known gaps".
+
+**Diagnosed but not fixed — the next real lever:** MDN still overlaps after all
+five fixes above, because its mega-menu dropdowns (Tools/References/Learn) use
+genuine Shadow DOM `<slot>` projection: light-DOM children (`<div slot="dropdown">`)
+are meant to be distributed into a shadow tree and hidden by a `:host(...)
+slot{display:none}` rule scoped to that shadow root. This engine has no custom-
+element upgrade, no shadow-root attachment, and no slot distribution at all, so
+those panels render permanently expanded rather than hidden-until-interaction.
+Implementing this is a materially bigger feature (comparable in scope to Phase 2's
+JS engine) than any of the five fixes above — deliberately not attempted here;
+tracked as the next major gap below rather than papered over.
+
+Refreshed corpus and numbers: [`bench/REPORT.md`](bench/REPORT.md),
+`bench/urls.txt` (widened from 5 to 10 URLs the same day — see its own log).
 
 ## Phase 2.6 — line-height inheritance + mixed-size line boxes (text-overlap fix)
 
@@ -784,24 +839,32 @@ two-column** body where a fixed-width sidebar (`flex-shrink:0`) sits beside a
 content, with a styled header row, per-cell borders and right-aligned numeric
 columns.
 
-## Known gaps (unchanged scope boundaries)
+## Known gaps (updated 2026-08-30 — see the note above on why this drifted)
 
-- **No JavaScript** — SPA / script-rendered content is blank or skeletal
-  (Phase 2 / goja).
-- **No external stylesheets** — only in-document `<style>` and inline `style=`
-  are applied. Layout rules that live in a site's external CSS (e.g. Wikipedia's
-  top nav/sidebar collapse) are therefore not honoured, so that chrome
-  linearises. In-document `@media` rules *are* now applied. (`css.CascadeVW`
-  already accepts external sheets; wiring the fetch is a Phase-2 follow-up.)
-- **No `overflow` clipping, transforms, `border-radius`, `box-shadow`,
-  gradients, web fonts.** Percentage and viewport heights, and `vh`, are
-  approximated. Table `colspan`/`rowspan` and `border-collapse` are not modelled.
-  CSS grid is supported (Phase 1.7) and `position:relative/absolute/fixed` plus
-  dynamic-pseudo suppression are supported (Phase 1.8); the deliberate
-  simplifications of each are listed in their sections above (`sticky` ≈
-  `relative`, approximate z-index stacking).
-- **Fonts**: only bundled Inter/Lora/Go-Mono (regular); bold is faux-bold and
-  italic is not rendered.
+Several bullets that stood here since Phase 0/1 were flatly wrong by the time of
+the 2026-08-30 audit — JavaScript, external stylesheets, `overflow` clipping,
+gradients/box-shadow/border-radius and real bold/italic fonts had all since
+shipped (Phase 1.5–2.0, and the font work logged in the org's project memory).
+Restated against what was actually verified that day:
+
+- **No Shadow DOM / custom-element upgrade / `<slot>` projection** (diagnosed
+  2026-08-30, see above). Declarative-shadow `<template>` content is at least
+  hidden rather than leaking into the light DOM (engine#54), but a custom
+  element's light-DOM children that are meant to be distributed into a shadow
+  `<slot>` — and hidden until interaction by a `:host(...)`-scoped rule — still
+  render unconditionally. This is the concrete cause of MDN's mega-menu
+  dropdowns (Tools/References/Learn) rendering permanently expanded.
+- **No CSS `transform`** (2D or 3D) and no `conic-gradient`. A slide-out drawer
+  or carousel positioned via `transform: translateX(...)` renders at its
+  untransformed in-flow position instead.
+- **Table `colspan`/`rowspan` and `border-collapse`** — not re-verified this
+  audit; treat as unconfirmed rather than assume either way until measured.
+- **Fonts**: bundled Inter/Lora (+ Go Mono, regular-only) with real Bold/
+  Italic/BoldItalic instances (no faux-bold/upright-italic); no web font
+  (`@font-face`) loading, so a page's own custom typeface always falls back to
+  these.
+- **`sticky` ≈ `relative`, approximate z-index stacking** — the deliberate
+  simplifications from Phase 1.8, unchanged.
 
 ## Reproduce
 
