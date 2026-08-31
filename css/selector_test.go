@@ -284,12 +284,13 @@ func TestNotPseudo(t *testing.T) {
 }
 
 func TestNotUnmodelledDoesNotDropRule(t *testing.T) {
-	// A :not() whose argument is empty or UNMODELLED (attribute-only, a
-	// pseudo-element) must NOT drop the rule — it degrades to "no constraint" so
-	// the compound keeps matching its base. This is the regression that would
-	// otherwise disable dark themes gated on `:root:not([data-theme])`.
+	// A :not() whose argument is empty or genuinely UNMODELLED (a pseudo-
+	// element) must NOT drop the rule — it degrades to "no constraint" so the
+	// compound keeps matching its base. Attribute selectors are NOT in this
+	// list any more: they are modelled (see TestNotAttributeSelector below),
+	// so `:not([data-x])` is a real negation now, not a no-op.
 	div := el("div", "", "")
-	for _, s := range []string{"div:not()", "div:not(   )", `div:not([data-x])`, "div:not(::before)"} {
+	for _, s := range []string{"div:not()", "div:not(   )", "div:not(::before)"} {
 		sel, ok := parseComplex(s)
 		if !ok {
 			t.Errorf("parseComplex(%q) should parse (unmodelled :not = no constraint)", s)
@@ -304,11 +305,20 @@ func TestNotUnmodelledDoesNotDropRule(t *testing.T) {
 	}
 
 	// The dark-theme shape that regressed go.dev/pkg.go.dev: `:root:not([attr])`
-	// must still select the document root (so its dark custom properties apply).
+	// must still select the document root (so its dark custom properties apply)
+	// when the attribute is genuinely absent — this is now a REAL attribute
+	// check, not a no-op, so also prove the negative: it must NOT match once
+	// the attribute is present, which the old "no constraint" behaviour could
+	// never have distinguished.
 	root := el("html", "", "")
 	sel, ok := parseComplex(`:root:not([data-theme])`)
 	if !ok || !sel.Matches(root) {
 		t.Errorf(":root:not([data-theme]) should match the root element; ok=%v", ok)
+	}
+	rootThemed := el("html", "", "")
+	rootThemed.Attr = map[string]string{"data-theme": "dark"}
+	if sel.Matches(rootThemed) {
+		t.Error(":root:not([data-theme]) should NOT match once data-theme is present")
 	}
 
 	// A comma-separated list is always fully preserved (nothing dropped).
@@ -348,17 +358,19 @@ func TestSplitPseudos(t *testing.T) {
 		t.Errorf("splitPseudos escaped-colon = %q %v", base, ps)
 	}
 	// A bracketed argument nested inside :not() tokenizes as one compound
-	// (exercises the depth-tracking of nested [] and () in tokenizeSelector); the
-	// modelled tag prefix survives while the unmodelled attribute is dropped.
+	// (exercises the depth-tracking of nested [] and () in tokenizeSelector);
+	// both the tag prefix AND the attribute selector are modelled.
 	if sel, ok := parseComplex("a:not(b[c])"); !ok || len(sel.parts) != 1 ||
-		len(sel.parts[0].Not) != 1 || sel.parts[0].Not[0].Tag != "b" {
+		len(sel.parts[0].Not) != 1 || sel.parts[0].Not[0].Tag != "b" ||
+		len(sel.parts[0].Not[0].Attrs) != 1 || sel.parts[0].Not[0].Attrs[0].Name != "c" {
 		t.Errorf("a:not(b[c]) = %+v ok=%v", sel, ok)
 	}
-	// An attribute-ONLY :not() argument is unmodelled, so it imposes no
-	// constraint — the compound keeps its modelled base ("input") and still
-	// parses (the rule is NOT dropped). See TestNotUnmodelledDoesNotDropRule.
+	// An attribute-only :not() argument IS modelled (a real negation), so the
+	// compound keeps its base ("input") AND records the attribute constraint —
+	// it is not dropped, and not a no-op either. See TestNotUnmodelledDoesNotDropRule.
 	if sel, ok := parseComplex(`input:not([type="x"])`); !ok ||
-		len(sel.parts[0].Not) != 0 || sel.parts[0].Tag != "input" {
+		len(sel.parts[0].Not) != 1 || sel.parts[0].Tag != "input" ||
+		len(sel.parts[0].Not[0].Attrs) != 1 || sel.parts[0].Not[0].Attrs[0] != (attrMatch{Name: "type", Op: attrEqual, Value: "x"}) {
 		t.Errorf(`input:not([type="x"]) = %+v ok=%v`, sel, ok)
 	}
 	// pseudoNameArg forms.
@@ -367,6 +379,107 @@ func TestSplitPseudos(t *testing.T) {
 	}
 	if n, a := pseudoNameArg("checked"); n != "checked" || a != "" {
 		t.Errorf("pseudoNameArg plain = %q %q", n, a)
+	}
+}
+
+// TestAttributeSelectorOperators covers every attribute-selector operator this
+// engine models, both positive and negative cases, plus attribute-name
+// case-insensitivity (HTML attribute names always compare case-insensitively)
+// and specificity (each attribute selector is one class-level unit).
+func TestAttributeSelectorOperators(t *testing.T) {
+	withAttr := func(tag string, attrs map[string]string) *dom.Node {
+		return &dom.Node{Type: dom.Element, Tag: tag, Attr: attrs}
+	}
+	cases := []struct {
+		sel    string
+		attrs  map[string]string
+		want   bool
+		reason string
+	}{
+		{"[hidden]", map[string]string{"hidden": ""}, true, "presence: attribute set (even empty)"},
+		{"[hidden]", map[string]string{}, false, "presence: attribute absent"},
+		{"[data-x=1]", map[string]string{"data-x": "1"}, true, "exact match"},
+		{"[data-x=1]", map[string]string{"data-x": "2"}, false, "exact mismatch"},
+		{`[data-x="1"]`, map[string]string{"data-x": "1"}, true, "exact match, double-quoted"},
+		{"[data-x='1']", map[string]string{"data-x": "1"}, true, "exact match, single-quoted"},
+		{"[href^=https]", map[string]string{"href": "https://x.test"}, true, "prefix match"},
+		{"[href^=https]", map[string]string{"href": "http://x.test"}, false, "prefix mismatch"},
+		{"[href$=.pdf]", map[string]string{"href": "doc.pdf"}, true, "suffix match"},
+		{"[href$=.pdf]", map[string]string{"href": "doc.txt"}, false, "suffix mismatch"},
+		{"[title*=llo]", map[string]string{"title": "hello world"}, true, "substring match"},
+		{"[title*=zzz]", map[string]string{"title": "hello world"}, false, "substring mismatch"},
+		{"[class~=b]", map[string]string{"class": "a b c"}, true, "word match: exact word present"},
+		{"[class~=bc]", map[string]string{"class": "a b c"}, false, "word match: substring is not a whole word"},
+		{"[lang|=en]", map[string]string{"lang": "en"}, true, "dash match: exact"},
+		{"[lang|=en]", map[string]string{"lang": "en-US"}, true, "dash match: prefix-then-hyphen"},
+		{"[lang|=en]", map[string]string{"lang": "eng"}, false, "dash match: prefix without hyphen"},
+		{"[DATA-X=1]", map[string]string{"data-x": "1"}, true, "attribute NAME is case-insensitive"},
+	}
+	for _, c := range cases {
+		sel, ok := parseComplex(c.sel)
+		if !ok {
+			t.Errorf("%s: parseComplex failed", c.sel)
+			continue
+		}
+		if got := sel.Matches(withAttr("div", c.attrs)); got != c.want {
+			t.Errorf("%s vs %v = %v, want %v (%s)", c.sel, c.attrs, got, c.want, c.reason)
+		}
+	}
+
+	// Empty-value ^=/$=/*= never match, per spec.
+	empty := withAttr("div", map[string]string{"data-x": "anything"})
+	for _, sel := range []string{`[data-x^=""]`, `[data-x$=""]`, `[data-x*=""]`} {
+		s, ok := parseComplex(sel)
+		if !ok {
+			t.Errorf("%s: parseComplex failed", sel)
+			continue
+		}
+		if s.Matches(empty) {
+			t.Errorf("%s should never match (empty value)", sel)
+		}
+	}
+
+	// Specificity: an attribute selector is one class-level unit, same as a
+	// plain class — "a[b]" and "a.c" must have equal specificity.
+	withAttrSel, _ := parseComplex("a[b]")
+	withClassSel, _ := parseComplex("a.c")
+	if withAttrSel.Specificity() != withClassSel.Specificity() {
+		t.Errorf("a[b] specificity=%d, a.c specificity=%d, want equal",
+			withAttrSel.Specificity(), withClassSel.Specificity())
+	}
+
+	// A trailing case-sensitivity flag ("i"/"s") is stripped, not treated as
+	// part of the value, and must not break parsing.
+	flagged, ok := parseComplex(`[data-x="1" i]`)
+	if !ok {
+		t.Fatal(`[data-x="1" i] should parse`)
+	}
+	if !flagged.Matches(withAttr("div", map[string]string{"data-x": "1"})) {
+		t.Error(`[data-x="1" i] should match data-x="1" (flag stripped, not compared)`)
+	}
+}
+
+// TestAttributeSelectorGitHubDarkModeBug is the exact shape that hid
+// github.com's entire repository content: a compound-attached :where() over
+// an attribute selector, gating visibility on a boolean-as-string
+// data-attribute. Before attribute selectors were modelled, "[data-is-hidden-
+// narrow=true]" was dropped entirely, degrading the rule to an unconditional
+// ".ContentWrapper{display:none}" that fired regardless of the attribute's
+// real (false) value.
+func TestAttributeSelectorGitHubDarkModeBug(t *testing.T) {
+	rule := `.ContentWrapper:where([data-is-hidden=true]){display:none}`
+	shown := cascadeHTML(t, `<html><head><style>`+rule+`</style></head><body>`+
+		`<div class="ContentWrapper" data-is-hidden="false">real repo content</div>`+
+		`</body></html>`)
+	if st := findStyleClass(t, shown, "ContentWrapper"); st.Display == DisplayNone {
+		t.Error(`data-is-hidden="false" must NOT be hidden — this is the github.com content-loss bug`)
+	}
+
+	hidden := cascadeHTML(t, `<html><head><style>`+rule+`</style></head><body>`+
+		`<div class="ContentWrapper" data-is-hidden="true">should be hidden</div>`+
+		`</body></html>`)
+	if st := findStyleClass(t, hidden, "ContentWrapper"); st.Display != DisplayNone {
+		t.Error(`data-is-hidden="true" should be hidden — the rule must still work when the attribute genuinely matches`)
 	}
 }
 
@@ -426,14 +539,18 @@ func TestParseComplexEdgeCases(t *testing.T) {
 		t.Errorf("p. = %+v %v", c, ok)
 	}
 	attr, ok := parseComplex("input[type=text]")
-	if !ok || attr.parts[0].Tag != "input" {
+	if !ok || attr.parts[0].Tag != "input" ||
+		len(attr.parts[0].Attrs) != 1 || attr.parts[0].Attrs[0] != (attrMatch{Name: "type", Op: attrEqual, Value: "text"}) {
 		t.Errorf("attr selector = %+v %v", attr, ok)
 	}
 	if _, ok := parseSimple(""); ok {
 		t.Error("empty simple should fail")
 	}
-	if _, ok := parseSimple("[x]"); ok {
-		t.Error("bare attribute compound should fail")
+	// A bare attribute compound (no tag/class/id) is a real, modelled
+	// constraint on its own — e.g. the "[hidden]" idiom — so it must parse,
+	// not be dropped as "reduces to nothing".
+	if c, ok := parseSimple("[x]"); !ok || len(c.Attrs) != 1 || c.Attrs[0] != (attrMatch{Name: "x", Op: attrPresence}) {
+		t.Errorf("bare attribute compound = %+v %v, want a presence check on \"x\"", c, ok)
 	}
 }
 
@@ -478,6 +595,39 @@ func TestPseudoElementMatchesNothing(t *testing.T) {
 // have no other test exercising them), and the shapes it must reject —
 // nothing to strip, no combinator before the trailing "*", or a chain that
 // doesn't end in a bare "*" at all.
+// TestExtractAttrSelectorsEdgeCases covers the parsing edge cases direct
+// end-to-end tests don't reach: an escaped bracket that must not be mistaken
+// for an attribute selector's boundary, a quoted value containing a literal
+// "]" (must not end the selector early), an unterminated "[" (kept literally
+// rather than eating the rest of the compound), an empty attribute name
+// (rejected), and the "s" case-sensitivity flag (the "i" flag's sibling).
+func TestExtractAttrSelectorsEdgeCases(t *testing.T) {
+	if rest, attrs := extractAttrSelectors(`a\[b`); rest != `a\[b` || attrs != nil {
+		t.Errorf(`extractAttrSelectors(a\[b) = %q,%v, want the escaped bracket left untouched`, rest, attrs)
+	}
+	// An escaped quote INSIDE the brackets must not toggle the quote-tracking
+	// state (only an unescaped matching quote closes the value).
+	if rest, attrs := extractAttrSelectors(`a[data-x="a\"]b"]`); rest != "a" || len(attrs) != 1 {
+		t.Errorf(`extractAttrSelectors(a[data-x="a\"]b"]) = %q,%+v`, rest, attrs)
+	}
+	rest, attrs := extractAttrSelectors(`a[data-x="a]b"]`)
+	if rest != "a" || len(attrs) != 1 || attrs[0] != (attrMatch{Name: "data-x", Op: attrEqual, Value: "a]b"}) {
+		t.Errorf(`extractAttrSelectors(a[data-x="a]b"]) = %q,%+v`, rest, attrs)
+	}
+	if rest, attrs := extractAttrSelectors("a[unterminated"); rest != "a[unterminated" || attrs != nil {
+		t.Errorf("extractAttrSelectors(a[unterminated) = %q,%v, want kept literally", rest, attrs)
+	}
+	if _, ok := parseAttrSelector("=x"); ok {
+		t.Error(`parseAttrSelector("=x") should fail: empty attribute name`)
+	}
+	if _, ok := parseAttrSelector("   "); ok {
+		t.Error(`parseAttrSelector("   ") should fail: empty (bare presence with no name)`)
+	}
+	if am, ok := parseAttrSelector(`data-x=1 s`); !ok || am != (attrMatch{Name: "data-x", Op: attrEqual, Value: "1"}) {
+		t.Errorf(`parseAttrSelector("data-x=1 s") = %+v,%v, want the "s" flag stripped`, am, ok)
+	}
+}
+
 func TestStripTrailingSelfCombinator(t *testing.T) {
 	cases := []struct {
 		alt      string

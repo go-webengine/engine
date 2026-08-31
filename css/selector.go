@@ -53,6 +53,70 @@ type compound struct {
 	// pseudo-element's declarations to the real element — e.g. a clearfix
 	// `.wrap::after{height:0;overflow:hidden}` would collapse the actual `.wrap`.
 	PseudoElement bool
+	// Attrs holds every "[attr]"/"[attr=value]"/… constraint attached to this
+	// compound. ALL must match. These used to be dropped entirely ("the
+	// constraint is not modelled, the compound reduces to its tag/class/id
+	// prefix") — which is the "reduce, don't drop" philosophy applied everywhere
+	// else in this file, but is actively WRONG for an attribute selector: on
+	// github.com, `.ContentWrapper:where([data-is-hidden-narrow=true])
+	// {display:none}` degraded to plain `.ContentWrapper{display:none}` and hid
+	// the entire repository content, on every page, regardless of the actual
+	// (false) attribute value.
+	Attrs []attrMatch
+}
+
+// attrOp is the comparison an attribute selector performs.
+type attrOp byte
+
+const (
+	attrPresence  attrOp = iota // [attr]
+	attrEqual                   // [attr=value]
+	attrPrefix                  // [attr^=value]
+	attrSuffix                  // [attr$=value]
+	attrSubstring               // [attr*=value]
+	attrWordMatch               // [attr~=value] — value is one of a space-separated list
+	attrDashMatch               // [attr|=value] — value, or value followed by "-"
+)
+
+// attrMatch is one parsed "[...]" attribute selector.
+type attrMatch struct {
+	Name  string
+	Op    attrOp
+	Value string
+}
+
+// matches reports whether element n's attribute satisfies this constraint.
+// Attribute NAME matching is case-insensitive (HTML attribute names always
+// are); VALUE matching is case-sensitive — this engine does not model the
+// `i`/`s` case-sensitivity flag some selectors carry, only strips its syntax
+// so parsing does not choke on it (see parseAttrSelector).
+func (a attrMatch) matches(n *dom.Node) bool {
+	v, ok := n.Attribute(a.Name)
+	if !ok {
+		return false
+	}
+	switch a.Op {
+	case attrPresence:
+		return true
+	case attrEqual:
+		return v == a.Value
+	case attrPrefix:
+		return a.Value != "" && strings.HasPrefix(v, a.Value)
+	case attrSuffix:
+		return a.Value != "" && strings.HasSuffix(v, a.Value)
+	case attrSubstring:
+		return a.Value != "" && strings.Contains(v, a.Value)
+	case attrWordMatch:
+		for _, w := range strings.Fields(v) {
+			if w == a.Value {
+				return true
+			}
+		}
+		return false
+	case attrDashMatch:
+		return v == a.Value || strings.HasPrefix(v, a.Value+"-")
+	}
+	return false
 }
 
 // matches reports whether the compound matches an element node.
@@ -97,6 +161,11 @@ func (c compound) matches(n *dom.Node) bool {
 	if c.Checked && !isChecked(n) {
 		return false
 	}
+	for _, am := range c.Attrs {
+		if !am.matches(n) {
+			return false
+		}
+	}
 	// ":not(...)" — the compound fails as soon as any negated selector matches.
 	for i := range c.Not {
 		if c.Not[i].matches(n) {
@@ -135,6 +204,7 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 	if c.Checked {
 		classCount++ // ":checked" is a pseudo-class (class-level weight)
 	}
+	classCount += len(c.Attrs) // each attribute selector is class-level weight
 	if c.Tag != "" {
 		tagCount = 1
 	}
@@ -581,12 +651,11 @@ func parseSimple(s string) (compound, bool) {
 		case "checked":
 			c.Checked = true
 		case "not":
-			// An unmodelled or empty ":not()" argument imposes NO constraint
-			// rather than dropping the rule — the same "reduce, don't drop"
-			// philosophy applied to unknown pseudos and bare "[attr]". This is
-			// essential: sites gate their dark theme on rules like
-			// `:root:not([data-theme]) { … }`; dropping such a rule (because the
-			// attribute negation is unmodelled) would silently disable the theme.
+			// An unmodelled ":not()" argument imposes NO constraint rather than
+			// dropping the rule — the same "reduce, don't drop" philosophy applied
+			// to unknown pseudos. Attribute selectors inside ":not()" ARE modelled
+			// (see below), so `:not([data-theme])` is now a real negation, not a
+			// no-op.
 			c.Not = append(c.Not, parseNotArg(arg)...)
 		default:
 			switch {
@@ -602,11 +671,7 @@ func parseSimple(s string) (compound, bool) {
 		}
 	}
 	s = base
-	// Drop attribute selectors ("[type=text]"): the constraint is not modelled,
-	// so the compound reduces to its tag/class/id prefix.
-	if base, _, ok := splitUnescaped(s, '['); ok {
-		s = base
-	}
+	s, c.Attrs = extractAttrSelectors(s)
 	if s == "*" {
 		c.Univ = true
 		return c, true
@@ -624,12 +689,13 @@ func parseSimple(s string) (compound, bool) {
 			c.ID = p.name
 		}
 	}
-	// A compound with no tag/class/id and no modelled pseudo reduces to nothing —
-	// a bare "::before" is dropped. A bare ":hover"/":checked"/":not()" is kept:
-	// a dynamic-only compound never matches statically (equivalent to being
-	// dropped), and ":checked"/":not(...)" carry a real constraint on their own.
+	// A compound with no tag/class/id and no modelled pseudo/attribute reduces to
+	// nothing — a bare "::before" is dropped. A bare ":hover"/":checked"/
+	// ":not()"/"[attr]" is kept: a dynamic-only compound never matches statically
+	// (equivalent to being dropped), and ":checked"/":not(...)"/attribute
+	// selectors carry a real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && len(c.Not) == 0 {
+		!c.Root && !c.Dynamic && !c.Checked && len(c.Not) == 0 && len(c.Attrs) == 0 {
 		return compound{}, false
 	}
 	return c, true
@@ -731,20 +797,110 @@ func parseNotArg(arg string) []compound {
 	return out
 }
 
-// splitUnescaped splits s at the first occurrence of sep that is not preceded by
-// a backslash escape, returning the text before it, the text from sep onward,
-// and whether a separator was found.
-func splitUnescaped(s string, sep byte) (before, after string, found bool) {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' {
-			i++ // skip the escaped character
+// extractAttrSelectors removes every top-level "[...]" attribute selector from
+// s, parsing each into an attrMatch, and returns the residual string (the
+// compound's tag/class/id portion) with those spans removed. A quote inside
+// the brackets (single or double) is tracked so a literal ']' in a quoted
+// value ("[data-foo=\"a]b\"]") does not end the selector early.
+func extractAttrSelectors(s string) (rest string, attrs []attrMatch) {
+	var out strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == '\\' && i+1 < len(s) {
+			out.WriteByte(s[i])
+			out.WriteByte(s[i+1])
+			i += 2
 			continue
 		}
-		if s[i] == sep {
-			return s[:i], s[i:], true
+		if s[i] != '[' {
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		j := i + 1
+		var quote byte
+		for j < len(s) {
+			switch {
+			case s[j] == '\\' && j+1 < len(s):
+				j += 2
+				continue
+			case quote != 0:
+				if s[j] == quote {
+					quote = 0
+				}
+			case s[j] == '\'' || s[j] == '"':
+				quote = s[j]
+			case s[j] == ']':
+				// Falls through to the break below.
+			}
+			if quote == 0 && s[j] == ']' {
+				break
+			}
+			j++
+		}
+		if j >= len(s) {
+			// Unterminated "[": not valid CSS: keep it literally rather than
+			// silently eating the rest of the compound.
+			out.WriteByte(s[i])
+			i++
+			continue
+		}
+		if am, ok := parseAttrSelector(s[i+1 : j]); ok {
+			attrs = append(attrs, am)
+		}
+		i = j + 1
+	}
+	return out.String(), attrs
+}
+
+// parseAttrSelector parses the text between "[" and "]" of one attribute
+// selector: a bare name ("[hidden]", a presence check), or name+operator+value
+// ("[data-state=open]", "[href^=https]", …). The value may be quoted (single
+// or double) or bare; a trailing case-sensitivity flag ("... i" / "... s") is
+// stripped so it does not become part of the value — this engine always
+// compares case-sensitively, so the flag's effect itself is not modelled.
+func parseAttrSelector(body string) (attrMatch, bool) {
+	body = strings.TrimSpace(body)
+	if n := len(body); n > 2 && body[n-2] == ' ' {
+		switch body[n-1] {
+		case 'i', 'I', 's', 'S':
+			body = strings.TrimSpace(body[:n-2])
 		}
 	}
-	return s, "", false
+	ops := []struct {
+		tok string
+		op  attrOp
+	}{
+		{"^=", attrPrefix}, {"$=", attrSuffix}, {"*=", attrSubstring},
+		{"~=", attrWordMatch}, {"|=", attrDashMatch}, {"=", attrEqual},
+	}
+	for _, o := range ops {
+		idx := strings.Index(body, o.tok)
+		if idx < 0 {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(body[:idx]))
+		if name == "" {
+			return attrMatch{}, false
+		}
+		val := unquoteAttrValue(strings.TrimSpace(body[idx+len(o.tok):]))
+		return attrMatch{Name: name, Op: o.op, Value: val}, true
+	}
+	name := strings.ToLower(strings.TrimSpace(body))
+	if name == "" {
+		return attrMatch{}, false
+	}
+	return attrMatch{Name: name, Op: attrPresence}, true
+}
+
+// unquoteAttrValue strips one layer of matching single or double quotes.
+func unquoteAttrValue(v string) string {
+	if len(v) >= 2 {
+		if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
+			return v[1 : len(v)-1]
+		}
+	}
+	return v
 }
 
 type compoundPart struct {
