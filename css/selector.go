@@ -786,10 +786,10 @@ func parseSimple(s string) (compound, bool) {
 			// a compound that is ONLY ":host-context(...)" has nothing left to
 			// reduce to, so parseSimple's "reduces to nothing" check below
 			// fails it, which drops the WHOLE containing selector (see
-			// parseComplex) — never "matches everything". Both confirmed
-			// real-world uses of this idiom (developer.mozilla.org,
-			// github.com) only need ":host"/":host()", so this is a documented
-			// gap (FIDELITY.md), not a silent wrong answer either way.
+			// parseComplex) — never "matches everything". The confirmed
+			// real-world need (developer.mozilla.org's <mdn-dropdown>: see
+			// FIDELITY.md) only uses ":host"/":host()", so this is a
+			// documented gap, not a silent wrong answer either way.
 			c.Host = true
 			if arg != "" {
 				c.HostHasArg = true
