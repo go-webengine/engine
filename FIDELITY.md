@@ -18,7 +18,7 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
-## 2026-08-31 (cont. 4) — Shadow DOM: declarative shadow roots, `<slot>` projection, `:host` scoping
+## 2026-08-31 (cont. 5) — Shadow DOM: declarative shadow roots, `<slot>` projection, `:host` scoping
 
 Ships the largest single gap this engine had (comparable in scope to the
 original JS-engine work): declarative Shadow DOM attachment, `<slot>`
@@ -116,6 +116,85 @@ New tests: `dom/shadow_test.go`, `layout/shadow_test.go`,
 attribute-toggle case). `dom` coverage 97.7% → 98.1%; `layout` stays 100%;
 `css` stays 99.5% (both gate floors maintained or improved). Full suite
 green throughout.
+
+## 2026-08-31 (cont. 4) — CSS Container Queries (`@container`) implemented
+
+Closed the "No CSS `@container` queries" gap flagged in the entry below (and
+in "Known gaps"): the at-rule was previously unrecognised and fell into
+`parseRules`' wholesale-skip bucket, the same class of bug `@layer` had before
+engine#56 — any rule gated behind `@container` was silently dropped in full,
+regardless of its condition.
+
+Landed as two PRs. The first (engine#74) is parsing + cascade-time evaluation
+only: `container-type` (`normal`/`inline-size`/`size`), `container-name`, and
+the `container` shorthand parse into new `Style` fields; `@container`'s body
+is always included (like `@layer`) but, unlike `@media` — resolved once
+against the viewport at parse time — each inner rule carries a
+`ContainerCondition` evaluated per matched element during cascade, because a
+container's size is per-ancestor-element and only known once layout has run.
+The size-feature syntax (width/min-width/max-width, the Level 4 range-
+comparison operators, `calc()`) is reused near-verbatim from this session's
+`@media` work (engine#58/#61), generalised to height features for a
+`container-type: size` container (both axes; querying an axis without
+containment always fails, matching spec). Named lookup walks past a nearer
+ancestor container with the wrong name to find a qualifying one further out;
+an unnamed query uses the nearest container of any name.
+
+The second PR wires this into the render pipeline: a `@container` condition
+cannot be resolved by a single cascade+layout pass the way `@media` can,
+because the size it depends on doesn't exist until AFTER layout. This mirrors
+the chicken-and-egg problem `dynamic.go`'s JS settle loop already solves for
+script-driven geometry feedback — same shape, same discipline: a new
+`layoutWithContainers` loop (measure every query container's real laid-out
+size → re-cascade with that information → re-layout → repeat) runs after the
+first real (post-image-load) layout, bounded by `maxContainerPasses` (4) so it
+can never hang, converging to a fixpoint (or accepting the last pass if the
+cap is hit) the same way `maxSettlePasses` does. It also re-runs inside the JS
+settle loop itself (a script's class/DOM mutation can change which elements
+are containers or their sizes) and after the settle loop's final image
+reload. A crafted fixture in the new top-level `container_test.go`
+(`TestLayoutWithContainersMultiPassConvergence`) proves this genuinely needs
+more than one pass: an ancestor container's condition widens a nested
+container's own measured size, which only then satisfies a SECOND condition
+keyed on that nested container — deterministic, no live network or JS
+involved, same pattern as `TestSettleFixpointCap` for the JS case.
+
+**Verified live on tailwindcss.com** (1024px viewport, `DisableJS` off):
+`contentHeight` went from 14113px to 11858px (−16%). Visually confirmed this
+is real, not incidental — Tailwind's own homepage includes a live "container
+queries" demo (a property listing card grid): before this fix it rendered
+permanently in its narrow/single-column fallback state (images stacked full-
+width, one per row); after, it correctly reflows into the multi-column card
+layout its container's real width qualifies it for. Screenshots of both
+states are in this PR's description.
+
+Checked the other two `@container`-relevant pages `bench/urls.txt` names:
+MDN's CSS index page rendered **pixel-identical** before/after (no `@container`-
+gated content visible at this viewport/width, so correctly a no-op — verified
+by diffing the two PNGs, not just eyeballing). github.com/golang/go's
+`contentHeight` was unchanged; a pixel diff found one small, unrelated, and
+strictly *positive* difference — a pre-existing ghost/overlap text-rendering
+artifact on the repo's file-tab labels (README/Code of conduct/Contributing/…)
+is gone after this change, most likely because a tab component's markup is
+itself conditioned on a `@container` rule that previously left a stale
+duplicate in place. Did not re-run the Chrome-based SSIM comparison
+(`bench/cmd/compare`) this session — the `bench/` module's `go.sum` needs a
+`go mod tidy` unrelated to this change (a pre-existing drift, not caused or
+fixed here) and `go run` refuses to proceed without it; the tailwindcss.com
+height delta and the direct pixel diffs above stand in for it.
+
+**Known, honestly-scoped gaps** (also reflected below in "Known gaps"):
+`@container style(...)` ("container style queries", a separate/newer part of
+the spec) is not supported and its body is dropped wholesale, like any other
+unrecognised at-rule — this was a deliberate scope cut, not an oversight.
+Container query length units (`cqw`/`cqh`/`cqi`/`cqb`/…) are a different,
+related CSS feature (using a container's size as a *unit basis* rather than a
+*condition*) and are not implemented. `container-name` only ever compares as
+a single token (no space-separated multiple names per element). The measured
+container size is the element's border-box (matching how this engine already
+reports geometry elsewhere, e.g. `getBoundingClientRect`); a browser measures
+the content box, so a container with a non-trivial border/padding could
+resolve a boundary condition slightly differently than Chrome.
 
 ## 2026-08-31 (cont. 3) — a stale THIRD-PARTY dependency caught a real number-formatting bug
 
@@ -1169,11 +1248,20 @@ Restated against what was actually verified that day:
   apply correctly for reasons unrelated to Shadow DOM — most likely
   `visibility`/`position:fixed` interaction or same-specificity declaration
   ordering. That remains open as its own, not-yet-diagnosed bug.
-- **No CSS `@container` queries** — the condition is never evaluated at all
-  (unlike `@layer`, engine#56, which is unwrapped unconditionally). Real gap;
-  tailwindcss.com uses it for some component-level breakpoints, though the two
-  CSS Grid track-sizing bugs fixed 2026-08-31 (engine#63, see below) were the
-  page's dominant fidelity cost, not this.
+- **CSS `@container` queries are implemented** (2026-08-31, engine#74 +
+  follow-up engine integration — see the log entry above): `container-type`/
+  `container-name`/the `container` shorthand, named and unnamed lookup,
+  width/height size features with the same range-comparison syntax as
+  `@media`, resolved against real post-layout geometry via a bounded
+  cascade↔layout convergence loop (mirroring `dynamic.go`'s JS settle loop).
+  Remaining, deliberate scope cuts: `@container style(...)` ("container style
+  queries", a separate/newer spec feature) is not supported and its content is
+  dropped wholesale; container query length units (`cqw`/`cqh`/`cqi`/`cqb`/…)
+  are a different feature and are not implemented; `container-name` compares
+  as a single token only (no space-separated multiple names); the measured
+  container size is the border-box, not the content box a browser uses, so a
+  container with substantial border/padding could resolve a boundary
+  condition slightly differently than Chrome.
 - **No CSS `transform`** (2D or 3D) and no `conic-gradient`. A slide-out drawer
   or carousel positioned via `transform: translateX(...)` renders at its
   untransformed in-flow position instead.

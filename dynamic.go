@@ -312,6 +312,11 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 		newSm := css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
 		start := time.Now()
 		newBox, newHeight := layout.LayoutDocument(doc.Root, newSm, float64(vpW), fonts, rp.imgSize)
+		// A script's DOM/class mutation can change which elements are query
+		// containers, or their sizes, so @container queries need the same
+		// bounded re-resolution here that the initial (pre-settle) layout gets
+		// in renderCoreStaged.
+		newSm, newBox, newHeight = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), fonts, rp.imgSize, newSm, newBox, newHeight)
 		layoutDur = time.Since(start)
 
 		// Never let a script pass erase an already-good render: a client-side
@@ -354,6 +359,7 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 		rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, vpW)
 		rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
 		rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
+		rp.sm, rp.box, rp.height = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), fonts, rp.imgSize, rp.sm, rp.box, rp.height)
 	}
 }
 

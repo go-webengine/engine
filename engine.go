@@ -378,6 +378,14 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 
 	start := time.Now()
 	rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
+	// Resolve @container queries against real geometry: rp.sm above necessarily
+	// had every @container rule inactive (CascadeVW passes no container sizes),
+	// so re-cascade/re-layout to a bounded fixpoint now that a real layout
+	// exists to measure query containers from. A page with no container-type
+	// anywhere returns immediately after one cheap BuildIndex walk. This runs
+	// BEFORE the JS settle loop (like the image load above) so a script reading
+	// geometry back already sees the container-query-resolved layout.
+	rp.sm, rp.box, rp.height = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), fonts, rp.imgSize, rp.sm, rp.box, rp.height)
 	initialLayout := time.Since(start)
 
 	// Refinement frame: the same styled page WITH images placed. The caller dedups
