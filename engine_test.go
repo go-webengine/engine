@@ -340,3 +340,27 @@ func TestRenderHTMLParseError(t *testing.T) {
 		t.Fatalf("RenderHTML minimal doc: %v", err)
 	}
 }
+
+// TestTemplateContentNotRendered proves a <template>'s children never lay out
+// or paint, end to end. Per the HTML spec they live in the element's own
+// .content DocumentFragment, never the normal document tree — no browser
+// renders them. This engine has no separate content-fragment concept and no
+// Shadow DOM, so a real page's declarative-shadow-DOM markup
+// (<template shadowrootmode="open">, used throughout developer.mozilla.org's
+// header/menu web components) would otherwise be parsed straight into the
+// light-DOM tree and painted inline: live on MDN this showed up as 23 unstyled
+// nav trees stacked on top of the article text. A huge font-size inside the
+// template makes the failure mode unmissable: if it ever laid out, the page
+// would be thousands of pixels taller than the two real paragraphs around it.
+func TestTemplateContentNotRendered(t *testing.T) {
+	src := `<html><body><p>before</p>` +
+		`<template><p style="font-size:400px">SHOULD-NOT-RENDER</p></template>` +
+		`<p>after</p></body></html>`
+	_, info, err := New().RenderHTML(context.Background(), src, "https://demo.test/", image.Rect(0, 0, 400, 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ContentHeight > 100 {
+		t.Fatalf("template content appears to have been laid out: contentHeight=%d, want roughly two paragraphs' worth", info.ContentHeight)
+	}
+}

@@ -104,6 +104,20 @@ func uaDeclarations(tag string) []Declaration {
 		return []Declaration{{Property: "display", Value: "inline"}}
 	case "head", "title", "style", "script", "meta", "link", "base", "noscript":
 		return []Declaration{{Property: "display", Value: "none"}}
+	case "template":
+		// A <template>'s children are inert: per the HTML spec they live in the
+		// element's .content DocumentFragment, never in the normal document tree,
+		// so no browser lays them out — CSS cannot make them visible (unlike the
+		// other display:none defaults above, this one is not really author-
+		// overridable, it just happens to be modelled the same way). This engine
+		// has no separate content-fragment concept and no Shadow DOM, so a real
+		// page's <template shadowrootmode="open"> (declarative shadow DOM) would
+		// otherwise have its shadow markup parsed straight into the light-DOM
+		// tree and painted inline — observed live on developer.mozilla.org: 23
+		// declarative-shadow templates rendered as unstyled, unscoped nav trees
+		// stacked on top of the article text. Hiding the subtree is honest about
+		// the gap (no content) rather than rendering something broken.
+		return []Declaration{{Property: "display", Value: "none"}}
 	default:
 		return nil
 	}
