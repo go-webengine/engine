@@ -72,6 +72,63 @@ tracked as the next major gap below rather than papered over.
 Refreshed corpus and numbers: [`bench/REPORT.md`](bench/REPORT.md),
 `bench/urls.txt` (widened from 5 to 10 URLs the same day — see its own log).
 
+## 2026-08-30 (cont.) — three more conformance bugs, found chasing tailwindcss.com's 0.051
+
+The widened corpus's worst score (tailwindcss.com, 0.051 SSIM, rendering at
+~2x Chrome's height) was flagged above as "not yet root-caused." Following it
+through the actual cascade — not guessing from the screenshot — turned up
+three independent, unrelated CSS-parsing bugs, each verified in isolation
+before being confirmed live:
+
+- **`@layer` content was dropped wholesale.** The parser recursed into
+  `@media` but treated every other at-rule, `@layer` included, as opaque.
+  Tailwind v4's default output puts nearly all of its CSS inside
+  `@layer utilities` — on tailwindcss.com, one such block held 94% of the
+  690KB stylesheet. Only 181 of 5334 real rules were ever reaching the
+  cascade. Fixed: engine#56 (`@layer` bodies are now unwrapped and included,
+  the same way `@media` bodies are — cross-layer cascade *priority* is not
+  modelled, which is a materially smaller gap than dropping the content).
+- **A common `:is()`/`:where()` idiom expanded to the wrong selector.**
+  `PREFIX:where(X, X *)` — "the tested element is X itself, OR has an
+  ancestor X", Tailwind's class-based dark-mode variant strategy
+  (`.dark\:hidden:where(.dark,.dark *)`) — was spliced by naive text
+  concatenation into `PREFIX X *` ("some element with an ancestor matching
+  BOTH X and PREFIX at once"), an almost-never-matching selector. A
+  light/dark caption pair rendered both halves simultaneously regardless of
+  theme. Fixed: engine#57 (`stripTrailingSelfCombinator` re-roots the chain
+  onto the real prefix instead of concatenating text).
+- **`min-width`/`max-width` media features only recognised `px`.** Tailwind
+  v4's default breakpoints are all in `rem` (`min-width:80rem` for `xl`).
+  An unrecognised unit wasn't just left unconverted, it made the whole
+  feature invisible to the matcher, which then defaulted to "assume it
+  matches" — so every responsive breakpoint was permanently active at once,
+  and the cascade fell back to picking whichever was declared last (usually
+  the largest). The hero headline's `xl:text-8xl` applied at a 1024px render
+  width, nowhere near its real 1280px breakpoint. Fixed: engine#58 (`rem`
+  parsed and converted at the same 16px root font-size `parseLength` already
+  assumes elsewhere).
+
+**Measured result: tailwindcss.com 0.051 → 0.699 SSIM (13.7x), pixdiff 97.2%
+→ 11.2%, height 26453px → 18154px (Chrome: 13280px — still ~37% taller,
+residual not yet root-caused; likely `@container` queries, which Tailwind v4
+also uses and this engine does not evaluate at all, or a flex/grid track-
+sizing gap).** None of the three fixes are Tailwind-specific — `@layer` and
+`:where()`'s self-or-descendant idiom are used by many frameworks, and any
+site with rem-based breakpoints was equally affected.
+
+**github.com/golang/go's mega-menu overlap is confirmed the same Shadow-DOM
+gap as MDN**, not a hypothesis anymore: its header ("Platform", "AI",
+"Enterprise", …) renders as one long permanently-expanded block for the
+identical reason (light-DOM panels meant to be slotted into a shadow tree
+and hidden until interaction). SSIM held flat (0.114→0.058) rather than
+improving, for an unrelated, NEW, undiagnosed reason found while checking
+this: **the actual repository content — file listing, README — never
+renders at all.** After the header and the Code/Issues/PRs tab bar, the page
+jumps straight to the footer; contentHeight is just 535px. Not yet
+investigated (a heavy-SPA module-bundle gate cutting off too aggressively is
+the first hypothesis, unconfirmed) — flagging honestly rather than folding
+it into the Shadow-DOM gap it is very unlikely to share a cause with.
+
 ## Phase 2.6 — line-height inheritance + mixed-size line boxes (text-overlap fix)
 
 **Date: 2026-08-07.** A downstream consumer (the go-news-reader preview) reported
@@ -848,15 +905,28 @@ shipped (Phase 1.5–2.0, and the font work logged in the org's project memory).
 Restated against what was actually verified that day:
 
 - **No Shadow DOM / custom-element upgrade / `<slot>` projection** (diagnosed
-  2026-08-30, see above). Declarative-shadow `<template>` content is at least
-  hidden rather than leaking into the light DOM (engine#54), but a custom
-  element's light-DOM children that are meant to be distributed into a shadow
-  `<slot>` — and hidden until interaction by a `:host(...)`-scoped rule — still
-  render unconditionally. This is the concrete cause of MDN's mega-menu
-  dropdowns (Tools/References/Learn) rendering permanently expanded.
+  2026-08-30, confirmed on a second, unrelated site the same day). Declarative-
+  shadow `<template>` content is at least hidden rather than leaking into the
+  light DOM (engine#54), but a custom element's light-DOM children that are
+  meant to be distributed into a shadow `<slot>` — and hidden until
+  interaction by a `:host(...)`-scoped rule — still render unconditionally.
+  This is the confirmed cause of both MDN's mega-menu dropdowns
+  (Tools/References/Learn) and github.com's header nav (Platform/AI/
+  Enterprise/…) rendering permanently expanded.
+- **No CSS `@container` queries.** Tailwind v4 ships `@container` alongside
+  `@layer`; unlike `@layer` (engine#56, unwrapped unconditionally) a container
+  query's condition is never evaluated, so this is an open hypothesis — not
+  yet confirmed — for tailwindcss.com's residual ~37%-too-tall render after
+  the 2026-08-30 `@layer`/`:where()`/rem-unit fixes.
 - **No CSS `transform`** (2D or 3D) and no `conic-gradient`. A slide-out drawer
   or carousel positioned via `transform: translateX(...)` renders at its
   untransformed in-flow position instead.
+- **github.com's actual repository content (file listing, README) does not
+  render at all** — the page jumps from the header/tab-bar straight to the
+  footer (diagnosed 2026-08-30, cause not yet identified; a heavy-SPA
+  module-bundle gate cutting off too aggressively is the first, unconfirmed
+  hypothesis). Unlikely to share a cause with the Shadow-DOM gap above —
+  don't assume it does without checking.
 - **Table `colspan`/`rowspan` and `border-collapse`** — not re-verified this
   audit; treat as unconfirmed rather than assume either way until measured.
 - **Fonts**: bundled Inter/Lora (+ Go Mono, regular-only) with real Bold/
