@@ -540,6 +540,13 @@ type Style struct {
 	// element's rendered output (its box plus subtree) as a group. Nil == no
 	// filter. Not inherited (`filter` is a non-inherited property).
 	Filters []Filter
+
+	// ContainerType and ContainerName are `container-type`/`container-name`
+	// (or the `container` shorthand): whether this element establishes a
+	// query container for descendant `@container` rules, and under what
+	// name. Neither is inherited; the initial value is ContainerNormal / "".
+	ContainerType ContainerType
+	ContainerName string
 }
 
 // BoxShadow is one box-shadow layer.
@@ -665,6 +672,12 @@ func inheritFrom(parent Style) Style {
 		GridColumnEnd:   GridLine{Auto: true},
 		GridRowStart:    GridLine{Auto: true},
 		GridRowEnd:      GridLine{Auto: true},
+
+		// container-type/container-name are not inherited: every element
+		// resets to the initial value (ContainerNormal / "") here, which is
+		// also the Go zero value, so this is a no-op left explicit for
+		// documentation alongside the rest of this reset list.
+		ContainerType: ContainerNormal,
 	}
 }
 
