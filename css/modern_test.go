@@ -210,6 +210,73 @@ func TestEscapedVariantClasses(t *testing.T) {
 	}
 }
 
+// TestWhereSelfOrDescendantIdiom covers Tailwind v4's class-based dark-mode
+// variant strategy as actually emitted: `.dark\:hidden:where(.dark,.dark *)`
+// — a compound-attached :where() whose second alternative ends in a trailing
+// descendant-combinator "*". Naive text splicing of "prefix"+"alt" turns this
+// into ".dark\:hidden.dark *" (any element with an ancestor matching BOTH
+// classes at once — a disjoint, almost-never-matching selector) instead of
+// the intended ".dark .dark\:hidden" (the tested element itself, which has an
+// ancestor .dark). Observed live on tailwindcss.com: a light/dark caption
+// pair (`<span class="inline dark:hidden">text-gray-950</span><span
+// class="hidden dark:inline">text-white</span>`) rendered BOTH spans
+// simultaneously regardless of theme, because dark:hidden never actually
+// fired.
+func TestWhereSelfOrDescendantIdiom(t *testing.T) {
+	css := `
+	.hidden{display:none}
+	.inline{display:inline}
+	.dark\:hidden:where(.dark,.dark *){display:none}
+	.dark\:inline:where(.dark,.dark *){display:inline}
+	`
+	html := `<html class="dark"><head><style>` + css + `</style></head><body>` +
+		`<span class="inline dark:hidden">a</span>` +
+		`<span class="hidden dark:inline">b</span>` +
+		`</body></html>`
+	sm := cascadeHTML(t, html)
+	if st := findStyleClass(t, sm, "dark:hidden"); st.Display != DisplayNone {
+		t.Errorf("dark:hidden under a .dark ancestor should compute display:none, got %v", st.Display)
+	}
+	if st := findStyleClass(t, sm, "dark:inline"); st.Display != DisplayInline {
+		t.Errorf("dark:inline under a .dark ancestor should compute display:inline, got %v", st.Display)
+	}
+
+	// Without a .dark ancestor, neither variant's condition is met: the base
+	// (non-variant) classes decide instead — "inline" and "hidden" respectively.
+	htmlLight := `<html><head><style>` + css + `</style></head><body>` +
+		`<span class="inline dark:hidden">a</span>` +
+		`<span class="hidden dark:inline">b</span>` +
+		`</body></html>`
+	smLight := cascadeHTML(t, htmlLight)
+	if st := findStyleClass(t, smLight, "dark:hidden"); st.Display != DisplayInline {
+		t.Errorf("outside .dark, the base .inline class should decide, got %v", st.Display)
+	}
+	if st := findStyleClass(t, smLight, "dark:inline"); st.Display != DisplayNone {
+		t.Errorf("outside .dark, the base .hidden class should decide, got %v", st.Display)
+	}
+}
+
+// TestWhereSelfOrDescendantChildCombinator covers the same idiom with an
+// explicit child combinator (">") instead of the implicit descendant
+// (whitespace) one, proving stripTrailingSelfCombinator generalises beyond
+// the one form Tailwind happens to emit.
+func TestWhereSelfOrDescendantChildCombinator(t *testing.T) {
+	sels := ParseSelectorList(".x:where(.p>*)")
+	if len(sels) != 1 {
+		t.Fatalf("expected 1 expanded selector, got %d: %+v", len(sels), sels)
+	}
+	html := `<div class="p"><em class="x">a</em></div><i class="x">b</i>`
+	root, _ := dom.Parse(html)
+	child := dom.Find(root, "em")
+	other := dom.Find(root, "i")
+	if !sels[0].Matches(child) {
+		t.Error(".x:where(.p>*) should match a direct child of .p carrying .x")
+	}
+	if sels[0].Matches(other) {
+		t.Error(".x:where(.p>*) should not match .x outside of .p")
+	}
+}
+
 func TestIsWhereExpansion(t *testing.T) {
 	// :is() with a comma list distributes; :where() likewise.
 	sels := ParseSelectorList(":is(h1, h2).title")
