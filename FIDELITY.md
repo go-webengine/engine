@@ -18,6 +18,24 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-08-31 (cont. 3) — a stale THIRD-PARTY dependency caught a real number-formatting bug
+
+Same audit as the entry below, extended past this org's own sibling
+repos to the JS engine itself (`dop251/goja`, third-party, no local
+checkout to read — checked its GitHub commit log for the gap since this
+engine's pinned version instead). Found `ftoa`'s shortest-mode digit
+rounding incrementing the current digit BEFORE checking whether it had
+become `'9'` (the carry case) instead of after, corrupting the decimal
+tail for specific doubles. **Confirmed live, not just from the diff:**
+`(0.7016570306969449).toString()` rendered as `"0.701657030696945"`
+(missing a digit) before the bump, correct after. engine#71.
+
+Also attempted bumping `dop251/goja_nodejs` (pinned since 2021, ~4.5
+years stale) alongside it — `go mod tidy` correctly dropped it entirely
+instead: nothing in this engine actually imports it, so it was dead
+weight in `go.sum`, not a real dependency worth the risk of such a large
+jump.
+
 ## 2026-08-31 (cont. 2) — two stale sibling-org dependencies caught unclaimed perf fixes
 
 Bumping `go-widgets/painter` from its very first tagged release (v0.2.0) to
