@@ -104,7 +104,7 @@ func (l *layouter) grid(box *Box, node *dom.Node, st *css.Style, cx, cw, top flo
 // gridItems collects the element children acting as grid items.
 func (l *layouter) gridItems(node *dom.Node) []*gridItem {
 	var out []*gridItem
-	for _, c := range node.Children {
+	for _, c := range renderedChildren(node) {
 		if c.Type != dom.Element {
 			continue
 		}

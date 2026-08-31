@@ -219,7 +219,7 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	if node.Type == dom.Element && st.Display == css.DisplayFlex && st.FlexDirection == css.FlexRow {
 		var sum float64
 		n := 0
-		for _, c := range node.Children {
+		for _, c := range renderedChildren(node) {
 			if c.Type != dom.Element {
 				continue
 			}
@@ -237,7 +237,7 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	}
 	if l.hasBlockLevelChild(node) {
 		var max float64
-		for _, c := range node.Children {
+		for _, c := range renderedChildren(node) {
 			if c.Type != dom.Element {
 				continue
 			}
