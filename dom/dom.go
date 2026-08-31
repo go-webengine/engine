@@ -37,6 +37,20 @@ type Node struct {
 	Parent   *Node
 	Children []*Node
 
+	// Shadow is the shadow root attached to this element (a declarative
+	// <template shadowrootmode> hoisted out at parse time — see
+	// attachDeclarativeShadowRoots), or nil for a plain element. When set,
+	// cascade and layout render Shadow.Children in place of this element's
+	// own Children — the light-DOM Children above are NOT rendered directly;
+	// they are visible only where a <slot> inside the shadow tree projects
+	// them (see layout.renderedChildren / assignedSlotNodes).
+	Shadow *ShadowRoot
+	// ShadowHost is set on every node belonging to a shadow tree (recursively,
+	// via markShadowHost) to that tree's host element; nil for an ordinary
+	// light-DOM node. A <slot> element uses its own ShadowHost to find the
+	// host whose light-DOM children it may project.
+	ShadowHost *Node
+
 	// classCache/classCacheRaw memoize Classes()'s split of Attr["class"],
 	// keyed by the exact string it was split from — a scripted className/
 	// classList write goes through Attr["class"] directly with no dedicated
@@ -89,6 +103,7 @@ func Parse(htmlSrc string) (*Node, error) {
 	}
 	doc := &Node{Type: Document}
 	convertChildren(root, doc)
+	attachDeclarativeShadowRoots(doc)
 	return doc, nil
 }
 
