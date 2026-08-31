@@ -406,10 +406,24 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 	if !ok || !(strings.HasPrefix(abs, "http://") || strings.HasPrefix(abs, "https://")) {
 		return nil, false
 	}
+	// The per-render cache (see withImgByteCache) is checked first: it is always
+	// present here (renderCoreStaged installs one unconditionally) and catches a
+	// URL already fetched earlier in THIS render — most commonly the same image
+	// reloaded after a settle pass — with no network call and no e.ImageCache
+	// dispatch either.
+	render := imgByteCacheFrom(ctx)
+	if render != nil {
+		if data, ok := render.get(abs); ok {
+			return data, true
+		}
+	}
 	// A configured cache serves a previously-fetched image with no network, so a
 	// re-render (or another page using the same asset) is instant.
 	if e.ImageCache != nil {
 		if data, ok := e.ImageCache.Get(abs); ok {
+			if render != nil {
+				render.put(abs, data)
+			}
 			return data, true
 		}
 	}
@@ -433,7 +447,55 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 	if e.ImageCache != nil {
 		e.ImageCache.Put(abs, data)
 	}
+	if render != nil {
+		render.put(abs, data)
+	}
 	return data, true
+}
+
+// imgByteCache is an ephemeral, in-memory, per-render cache of fetched image
+// bytes keyed by absolute URL. It exists purely to dedupe repeat fetches
+// WITHIN one render (e.g. the settle loop reloading images after a script
+// mutates the DOM) — it is created fresh per render (see renderCoreStaged)
+// and never stored on Engine, which is shared and used concurrently across
+// unrelated renders. Safe for concurrent use: loadImages/loadBackgroundImages
+// fetch concurrently via parallelDo.
+type imgByteCache struct {
+	mu sync.Mutex
+	m  map[string][]byte
+}
+
+func newImgByteCache() *imgByteCache { return &imgByteCache{m: map[string][]byte{}} }
+
+func (c *imgByteCache) get(url string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	data, ok := c.m[url]
+	return data, ok
+}
+
+func (c *imgByteCache) put(url string, data []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.m[url] = data
+}
+
+type imgByteCacheKey struct{}
+
+// withImgByteCache returns a context carrying c for fetchImageBytes to find via
+// imgByteCacheFrom. ctx already threads unchanged through every image-fetching
+// call in a render (the initial pass, the settle loop, the meta-fallback
+// path), so installing it once at the top of renderCoreStaged reaches all of
+// them with no signature change at each call site.
+func withImgByteCache(ctx context.Context, c *imgByteCache) context.Context {
+	return context.WithValue(ctx, imgByteCacheKey{}, c)
+}
+
+// imgByteCacheFrom returns the render-scoped cache installed by
+// withImgByteCache, or nil if none was (e.g. a direct unit test call).
+func imgByteCacheFrom(ctx context.Context) *imgByteCache {
+	c, _ := ctx.Value(imgByteCacheKey{}).(*imgByteCache)
+	return c
 }
 
 // decodeDataURI decodes a base64 data: URI's payload.

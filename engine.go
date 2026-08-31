@@ -327,6 +327,21 @@ func (e *Engine) renderCore(ctx context.Context, doc *Document, vpW, vpH int, fo
 // single images-then-layout pass, no wasted pre-image layout), so RenderDocument
 // / RenderDocumentWithLinks are byte-identical to before.
 func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, onStage func(stage string, rp *renderPass)) *renderPass {
+	// A page's images are loaded once here and again after every settle pass
+	// that mutates the DOM (a script may add/swap images), each time re-fetching
+	// unconditionally — e.ImageCache is opt-in and nil by default, so without
+	// this a page whose script re-triggers a load (observed live: caniuse.com
+	// re-fetched 3 images a second time within the SAME render) pays a second
+	// network round trip for bytes it already has. This ephemeral cache is
+	// scoped to just this one render (created fresh per call, never a field on
+	// Engine, which is shared/concurrent across renders) and sits in front of
+	// e.ImageCache, so cross-render behaviour (nil = fetch every render) is
+	// unchanged — only a redundant fetch WITHIN one render is eliminated. ctx
+	// carries it because it already threads unchanged through every image-
+	// fetching call below, including the settle loop and the meta-fallback
+	// path, without a signature change at each of those call sites.
+	ctx = withImgByteCache(ctx, newImgByteCache())
+
 	// Set the JS-enabled signal (client-nojs → client-js on <html>) BEFORE the
 	// initial cascade so the first layout — the geometry scripts read back — is
 	// already the JS-enabled one. DisableJS leaves the no-JS fallback in place.
