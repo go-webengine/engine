@@ -10,6 +10,7 @@ require (
 	github.com/go-images/images v0.0.0-20260814204114-5f83e6345a72
 	github.com/go-opentype/fonts v0.5.0
 	github.com/go-opentype/opentype v0.5.0
+	github.com/go-webengine/esbuildsandbox v0.1.0
 	github.com/go-widgets/painter v0.12.0
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
