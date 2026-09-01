@@ -7,11 +7,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"image"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -362,5 +364,99 @@ func TestTemplateContentNotRendered(t *testing.T) {
 	}
 	if info.ContentHeight > 100 {
 		t.Fatalf("template content appears to have been laid out: contentHeight=%d, want roughly two paragraphs' worth", info.ContentHeight)
+	}
+}
+
+// TestMaxExternalSheetsCoversAModernComponentStyledSite is the regression
+// guard for a live bug: github.com/golang/go ships 38 separate
+// <link rel=stylesheet> tags (per-component CSS modules plus several
+// mutually-exclusive colour-scheme variants), and the one sheet holding its
+// header's hide/sr-only rules happened to be 38th — past the old cap of 20,
+// so it was silently dropped and the header's mega-menu markup rendered
+// fully unstyled and visible. This serves exactly that many stylesheets (one
+// past the OLD cap, several past it) and asserts a rule from the LAST one is
+// still applied.
+func TestMaxExternalSheetsCoversAModernComponentStyledSite(t *testing.T) {
+	const totalSheets = 38 // github.com/golang/go's real count, the live repro
+	if totalSheets > maxExternalSheets {
+		t.Fatalf("test setup: totalSheets=%d exceeds maxExternalSheets=%d — the regression this test guards would no longer be exercised", totalSheets, maxExternalSheets)
+	}
+	if totalSheets <= 20 {
+		t.Fatalf("test setup: totalSheets=%d must exceed the OLD cap of 20 to actually exercise the fix", totalSheets)
+	}
+
+	mux := http.NewServeMux()
+	var links strings.Builder
+	for i := 0; i < totalSheets; i++ {
+		i := i
+		path := fmt.Sprintf("/sheet%d.css", i)
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/css")
+			fmt.Fprintf(w, ".mark%d{color:rgb(%d,0,0)}", i, i%256)
+		})
+		fmt.Fprintf(&links, `<link rel="stylesheet" href="%s">`, path)
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><head>%s</head><body><div class="mark%d">last-sheet-rule</div></body></html>`, links.String(), totalSheets-1)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	e := New()
+	e.Client = srv.Client()
+	doc, err := e.Fetch(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sheets := e.fetchExternalSheets(context.Background(), doc, 1024)
+	if len(sheets) != totalSheets {
+		t.Fatalf("fetched %d sheets, want all %d", len(sheets), totalSheets)
+	}
+	lastRule := fmt.Sprintf(".mark%d{color:rgb(%d,0,0)}", totalSheets-1, (totalSheets-1)%256)
+	found := false
+	for _, s := range sheets {
+		if strings.Contains(s, lastRule) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("the last (38th) stylesheet's rule was not fetched/applied — the exact shape of the live github.com bug")
+	}
+}
+
+// TestMaxExternalSheetsStillBoundsAPathologicalPage proves the cap still
+// exists: a page with far more stylesheets than maxExternalSheets does not
+// fetch them all (this engine bounds per-render work; a browser has no such
+// limit, but this one deliberately does).
+func TestMaxExternalSheetsStillBoundsAPathologicalPage(t *testing.T) {
+	total := maxExternalSheets + 20
+	mux := http.NewServeMux()
+	var links strings.Builder
+	for i := 0; i < total; i++ {
+		path := fmt.Sprintf("/sheet%d.css", i)
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/css")
+			w.Write([]byte("body{}"))
+		})
+		fmt.Fprintf(&links, `<link rel="stylesheet" href="%s">`, path)
+	}
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, `<html><head>%s</head><body>x</body></html>`, links.String())
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	e := New()
+	e.Client = srv.Client()
+	doc, err := e.Fetch(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sheets := e.fetchExternalSheets(context.Background(), doc, 1024)
+	if len(sheets) != maxExternalSheets {
+		t.Fatalf("fetched %d sheets, want exactly the cap (%d)", len(sheets), maxExternalSheets)
 	}
 }
