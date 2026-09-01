@@ -33,6 +33,28 @@ func TestApplyDisplayValues(t *testing.T) {
 	}
 }
 
+func TestApplyVisibilityValues(t *testing.T) {
+	cases := map[string]Visibility{
+		"visible": VisibilityVisible, "hidden": VisibilityHidden, "collapse": VisibilityCollapse,
+	}
+	for v, want := range cases {
+		s := newStyle()
+		applyOn(s, "visibility", v, 16)
+		if s.Visibility != want {
+			t.Errorf("visibility:%s = %v want %v", v, s.Visibility, want)
+		}
+	}
+	// An unrecognised value leaves the current value untouched (matches how
+	// every other property in this switch is handled: an invalid declaration
+	// is silently ignored rather than resetting to the initial value).
+	s := newStyle()
+	applyOn(s, "visibility", "hidden", 16)
+	applyOn(s, "visibility", "nonsense", 16)
+	if s.Visibility != VisibilityHidden {
+		t.Errorf("invalid value changed visibility to %v, want it left at VisibilityHidden", s.Visibility)
+	}
+}
+
 func TestApplyBoxSizing(t *testing.T) {
 	s := newStyle()
 	applyOn(s, "box-sizing", "border-box", 16)

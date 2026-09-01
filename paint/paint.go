@@ -95,7 +95,14 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 // child boxes are additionally confined to descendantClip, which intersects clip
 // with this box's padding box on any axis whose overflow is not visible.
 func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, clip image.Rectangle) {
-	drawable := box.Style != nil && box.W > 0 && box.H > 0
+	// visibility:hidden paints nothing of this box's OWN background/border/
+	// shadows/marker/inline content, but — unlike opacity<=0 or display:none —
+	// still reserves its layout space, and a descendant box may re-show itself
+	// with its own visibility:visible (visibility is inherited but overridable
+	// per element). So children (step 7 below) are never skipped here; only
+	// this box's own visual parts are.
+	hidden := box.Style != nil && box.Style.Visibility != css.VisibilityVisible
+	drawable := !hidden && box.Style != nil && box.W > 0 && box.H > 0
 	rad := 0
 	if drawable {
 		rad = boxRadius(box)
@@ -130,7 +137,7 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 		}
 	}
 	// 5. Borders (real element boxes only; anonymous boxes carry no border).
-	if box.Style != nil && !box.Anonymous && box.W > 0 && box.H > 0 {
+	if !hidden && box.Style != nil && !box.Anonymous && box.W > 0 && box.H > 0 {
 		paintBorders(pp, box, clip)
 	}
 	// A box's own inline content and children are clipped to its padding box when
@@ -139,14 +146,16 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 	// to its 1×1 box instead of painting it at full size.
 	inner := descendantClip(clip, box)
 	// 5.5 List-item marker (bullet or ordinal) in the indent left of the content.
-	if box.Marker != nil {
+	if !hidden && box.Marker != nil {
 		paintMarker(dst, pp, box.Marker, f, inner)
 	}
 	// 6. Inline content.
-	for _, line := range box.Lines {
-		for i, it := range line.Items {
-			paintInlineBackground(pp, box, line, i, inner)
-			paintItem(dst, it, f, imgs, inner)
+	if !hidden {
+		for _, line := range box.Lines {
+			for i, it := range line.Items {
+				paintInlineBackground(pp, box, line, i, inner)
+				paintItem(dst, it, f, imgs, inner)
+			}
 		}
 	}
 	// 7. Children.
