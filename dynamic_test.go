@@ -251,6 +251,79 @@ func TestSettleKeepsGoodRenderOnScriptWipe(t *testing.T) {
 	}
 }
 
+// TestSettleWipeGuardReskinsWithNewStyle covers a live regression on top of the
+// guard tested above: react.dev's dark-mode toggle (classList.add('dark') on
+// <html>, driven by an ordinary matchMedia listener, nothing to do with
+// hydration) ran in the SAME script pass as an unrelated client-side router
+// failure that emptied the tree. The wipe guard correctly kept the pre-script
+// geometry, but discarding the whole pass ALSO discarded the harmless class
+// toggle's style change, so the page stayed on its light-mode background
+// forever even though the DOM plainly showed <html class="dark">. The pass's
+// style-only change must still land on the preserved box tree.
+func TestSettleWipeGuardReskinsWithNewStyle(t *testing.T) {
+	src := `<html><head><style>
+			body{background-color:rgb(255,255,255)}
+			.dark body{background-color:rgb(35,39,47)}
+		</style></head><body>
+		<p>Real, visible article content long enough to lay out well above the
+		empty-render threshold, exactly like a page's initial static HTML.</p>
+		<script>
+			document.documentElement.classList.add('dark');
+			document.body.innerHTML = '';
+		</script>
+	</body></html>`
+	_, info := renderDoc(t, New(), src, context.Background(), image.Rect(0, 0, 400, 200))
+	if info.ContentHeight < emptyRenderHeight {
+		t.Fatalf("script wipe emptied the page: contentHeight=%d, want the pre-script layout kept", info.ContentHeight)
+	}
+
+	// RenderDocument does not expose the settled box tree, so drive settle
+	// directly (as TestSettleBudgetGuard does) to inspect body's Style after
+	// the wipe-guard's re-skin.
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &Document{URL: "https://demo.test/", Root: root}
+	jsengine.MarkJSEnabled(doc.Root)
+	fonts := paint.NewFonts()
+	rp := &renderPass{}
+	rp.sm = css.CascadeVW(doc.Root, 400, nil)
+	rp.imgSize = map[*dom.Node][2]float64{}
+	rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, 400, fonts, rp.imgSize)
+	e := New()
+	e.settle(context.Background(), doc, 400, 200, fonts, rp, time.Millisecond, nil)
+
+	if rp.height < emptyRenderHeight {
+		t.Fatalf("settle rp.height = %v, want the pre-wipe geometry kept", rp.height)
+	}
+	body := dom.Find(doc.Root, "body")
+	if body == nil {
+		t.Fatal("body not found")
+	}
+	var found *css.Style
+	var walk func(b *layout.Box)
+	walk = func(b *layout.Box) {
+		if b == nil {
+			return
+		}
+		if b.Node == body {
+			found = b.Style
+		}
+		for _, c := range b.Children {
+			walk(c)
+		}
+	}
+	walk(rp.box)
+	if found == nil {
+		t.Fatal("body box not found in settled tree")
+	}
+	want := css.Color{R: 35, G: 39, B: 47, A: 255}
+	if found.Background != want {
+		t.Errorf("body background after settle = %+v, want %+v (dark mode should have been adopted)", found.Background, want)
+	}
+}
+
 // TestSettleNoMutationEarlyReturn covers the branch where the scripts change
 // nothing layout-relevant: the initial layout stands, no re-layout happens.
 func TestSettleNoMutationEarlyReturn(t *testing.T) {
