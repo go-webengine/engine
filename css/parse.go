@@ -325,7 +325,20 @@ func ParseDeclarations(body string) []Declaration {
 			val = strings.TrimSpace(val[:idx])
 			important = true
 		}
-		if prop == "" || val == "" {
+		// An empty VALUE is meaningless for an ordinary property (there is
+		// nothing to apply) but is a real, spec-valid, and load-bearing state
+		// for a CUSTOM property: `--foo: ;` explicitly sets --foo to the empty
+		// token stream, which is how the widespread "CSS toggle" pattern
+		// (postcss-preset-env's light-dark() polyfill, seen live on
+		// developer.mozilla.org) switches themes — one selector sets a guard
+		// variable to `initial`, another (e.g. inside `@media
+		// (prefers-color-scheme:dark)`) sets the SAME variable to empty to
+		// flip every var() chain that reads it. Dropping the empty
+		// declaration here left the guard stuck at its non-empty branch
+		// forever, regardless of which media/attribute condition actually
+		// applied — collapsing the page's entire colour system to its
+		// pre-JS/light default.
+		if prop == "" || (val == "" && !isCustomProperty(prop)) {
 			continue
 		}
 		out = append(out, Declaration{Property: prop, Value: val, Important: important})

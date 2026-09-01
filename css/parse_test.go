@@ -37,6 +37,33 @@ func TestParseDeclarations(t *testing.T) {
 	}
 }
 
+// TestParseDeclarationsEmptyCustomPropertyKept covers a real regression: an
+// ORDINARY property with an empty value ("prop: ;") is correctly meaningless
+// and skipped (see TestParseDeclarations above), but a CUSTOM property set to
+// empty ("--foo: ;") is a real, spec-valid, load-bearing CSS construct — the
+// widely-used "CSS toggle" pattern (postcss-preset-env's light-dark()
+// polyfill, seen live on developer.mozilla.org) sets a guard variable to
+// `initial` for one theme and to EMPTY for the other, so var() fallback
+// chains flip between them. Dropping the empty declaration here left every
+// such guard stuck at its non-empty branch forever.
+func TestParseDeclarationsEmptyCustomPropertyKept(t *testing.T) {
+	d := ParseDeclarations("--set: red; --empty: ; prop: ")
+	if len(d) != 2 {
+		t.Fatalf("got %d decls: %v, want 2 (--set, --empty)", len(d), d)
+	}
+	want := map[string]string{"--set": "red", "--empty": ""}
+	for _, decl := range d {
+		v, ok := want[decl.Property]
+		if !ok {
+			t.Errorf("unexpected decl %q", decl.Property)
+			continue
+		}
+		if decl.Value != v {
+			t.Errorf("decl %q = %q want %q", decl.Property, decl.Value, v)
+		}
+	}
+}
+
 // TestParseDeclarationsImportantCaseAndSpacing covers case-insensitivity and
 // whitespace around the !important marker, and that a plain declaration is
 // unaffected.

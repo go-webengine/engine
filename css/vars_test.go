@@ -110,6 +110,32 @@ func TestSubstituteVarsInvalidNestedNoFallback(t *testing.T) {
 	}
 }
 
+// TestSubstituteVarsInvalidNestedFallsBackToOwnFallback covers a real
+// regression: a var() whose referenced custom property EXISTS but is itself
+// invalid at computed-value time (its own raw value fails to resolve) must
+// still try the REFERENCING var()'s own fallback, per the CSS Custom
+// Properties spec's "the guaranteed-invalid value substitutes as though the
+// property were unset" rule — not fail outright the way an actually-unset
+// property with no fallback does (TestSubstituteVarsInvalidNestedNoFallback,
+// unchanged, covers that separate case: no fallback anywhere to try).
+//
+// This is the real-world "CSS toggle" pattern (postcss-preset-env's
+// light-dark() polyfill, seen live on developer.mozilla.org): a guard custom
+// property is deliberately left unset for the non-matching theme, an
+// intermediate property built from it has no fallback of its own, and only
+// the OUTER consumer's var() carries the safe fallback that is meant to win.
+func TestSubstituteVarsInvalidNestedFallsBackToOwnFallback(t *testing.T) {
+	props := map[string]string{"--toggle": "var(--guard) blue"}
+	got, ok := resolveDeclValue("var(--toggle, green)", props)
+	if !ok || got != "green" {
+		t.Fatalf("resolveDeclValue = %q,%v want %q,true", got, ok, "green")
+	}
+	// Still correctly invalid when NEITHER level has a fallback to fall back to.
+	if _, ok := resolveDeclValue("var(--toggle)", props); ok {
+		t.Fatal("no fallback anywhere should still be invalid")
+	}
+}
+
 func TestFindVarFuncIdentifierBoundary(t *testing.T) {
 	// "var(" preceded by an identifier char (e.g. inside "myvar(") is not a real
 	// var() token, so the scan skips past it and finds none.
@@ -242,6 +268,33 @@ func TestCascadeCustomPropertyCaseSensitive(t *testing.T) {
 		`<p style="color:var(--main, #654321)">x</p></body></html>`, "p")
 	if st.Color != (Color{0x65, 0x43, 0x21, 255}) {
 		t.Errorf("case-sensitive miss should use fallback, got %v", st.Color)
+	}
+}
+
+// TestCascadeCSSToggleThroughMediaGuard reproduces the exact real-world
+// pattern found live on developer.mozilla.org (postcss-preset-env's
+// light-dark() polyfill): a guard custom property is set unconditionally,
+// then overridden to EMPTY inside an @media (prefers-color-scheme:dark)
+// block, and an intermediate property threads the guard into a real value.
+// An unrecognised @media feature like prefers-color-scheme is matched
+// optimistically (see mediaMatches), mirroring the "assume dark" convention
+// this engine's JS side already uses for matchMedia — so the dark override
+// should win here. Before the empty-custom-property-value parsing fix, that
+// override's "--guard: " declaration was silently dropped (empty value ==
+// "nothing to apply", true for an ordinary property but not for a custom
+// one), leaving --guard stuck at its unconditional non-empty value forever
+// and the intermediate property permanently built from the WRONG branch.
+func TestCascadeCSSToggleThroughMediaGuard(t *testing.T) {
+	st := styleOf(t, `<html><head><style>
+		html{--guard:initial}
+		@media (prefers-color-scheme:dark){html{--guard: }}
+		p{--toggle:var(--guard) navy; color:var(--toggle, red)}
+	</style></head><body><p>x</p></body></html>`, "p")
+	// The dark override empties --guard, so --toggle substitutes to (empty)+
+	// "navy" — a VALID, set value — and color uses it rather than falling
+	// back to red.
+	if st.Color != (Color{0, 0, 128, 255}) {
+		t.Errorf("colour = %v, want navy (dark media override took effect)", st.Color)
 	}
 }
 

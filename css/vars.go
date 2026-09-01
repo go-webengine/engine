@@ -21,16 +21,22 @@ func isCustomProperty(prop string) bool {
 }
 
 // resolveDeclValue substitutes any var() references in a declaration value using
-// the element's resolved custom-property map, returning the substituted value.
-// It reports false when the value contains a var() that cannot be resolved and
-// has no usable fallback (or forms a cycle): such a declaration is invalid at
-// computed-value time and must be dropped by the caller (so the property keeps
-// its inherited/initial value). Values without any var() are returned unchanged.
+// the element's resolved custom-property map, then resolves any light-dark()
+// call the substitution exposed (see resolveLightDark), returning the final
+// value. It reports false when a var() cannot be resolved and has no usable
+// fallback (or forms a cycle), or a light-dark() is malformed: such a
+// declaration is invalid at computed-value time and must be dropped by the
+// caller (so the property keeps its inherited/initial value). A value with
+// neither construct is returned unchanged.
 func resolveDeclValue(value string, props map[string]string) (string, bool) {
-	if findVarFunc(value, 0) < 0 {
-		return value, true
+	if findVarFunc(value, 0) >= 0 {
+		v, ok := substituteVars(value, props, 0)
+		if !ok {
+			return "", false
+		}
+		value = v
 	}
-	return substituteVars(value, props, 0)
+	return resolveLightDark(value)
 }
 
 // substituteVars replaces every var() function in value with the referenced
@@ -71,11 +77,38 @@ func substituteVars(value string, props map[string]string, depth int) (string, b
 }
 
 // resolveOneVar resolves a single var(name[, fallback]) to its substitution
-// text. It prefers the custom property's own value; when that property is unset
-// it uses the fallback; with neither available the reference is invalid.
+// text. It prefers the custom property's own value; when that property is
+// unset OR its own value is itself invalid at computed-value time (it
+// recursively references another var() that cannot resolve) it uses the
+// fallback; with neither available the reference is invalid.
+//
+// The "itself invalid" case is not a hypothetical: it is the entire mechanism
+// behind the "CSS toggle" pattern real-world CSS ships (postcss-preset-env's
+// light-dark() polyfill, seen live on developer.mozilla.org, is exactly this).
+// It declares one custom property per theme, only ONE of which a selector
+// like html[data-theme=dark] actually sets — the other is simply never
+// declared for this element — then threads it through an intermediate
+// property with no fallback of its own:
+//
+//	--toggle: var(--scheme-light) var(--gray-40);   // no fallback here
+//	--color:  var(--toggle, var(--gray-60));        // fallback HERE
+//
+// When html carries neither data-theme attribute (the page's pre-JS SSR
+// state), --scheme-light is unset, so --toggle is invalid at computed-value
+// time — and per the CSS Custom Properties spec that makes it behave as
+// UNSET for any var() that references it, not as a hard failure: --color
+// must still resolve via its own fallback (--gray-60). Treating this the same
+// as "the reference is invalid" instead (the previous behaviour here) drops
+// EVERY declaration built this way — on MDN, effectively the whole design
+// token system (colours, borders, spacing) collapses at once.
 func resolveOneVar(name, fallback string, hasFallback bool, props map[string]string, depth int) (string, bool) {
 	if raw, found := props[name]; found {
-		return substituteVars(raw, props, depth+1)
+		if v, ok := substituteVars(raw, props, depth+1); ok {
+			return v, true
+		}
+		// raw is invalid at computed-value time — fall through as if name
+		// were never declared, so the reference's OWN fallback (if any)
+		// still gets a chance below, instead of failing outright.
 	}
 	if hasFallback {
 		r, ok := substituteVars(fallback, props, depth+1)
