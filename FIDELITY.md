@@ -18,6 +18,35 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-01 — github.com's header nav CLOSED: two independent real fixes, neither was Shadow DOM
+
+Followed up on the correction below (github.com's permanently-expanded header
+was reattributed away from Shadow DOM but left undiagnosed). Root-caused it
+properly by fetching the real page's actual `<link>` tags and CSS instead of
+guessing:
+
+- **`visibility` was completely unimplemented** — no parsing, no `Style`
+  field, no paint-time effect, and `getComputedStyle('visibility')` hardcoded
+  `"visible"` regardless of the real CSS (engine#80). Genuine, independent
+  gap: github.com's dropdown menus and full-viewport backdrop both pair
+  `visibility:hidden` with `opacity:0`, so opacity alone happened to already
+  cover them here, but a real site relying on `visibility` alone would have
+  rendered incorrectly. Implemented properly (inherited, but overridable per
+  descendant, unlike `display:none`/`opacity:0`).
+- **The actual root cause: `maxExternalSheets` was 20; github.com/golang/go
+  ships 38 `<link rel=stylesheet>` tags** (per-component CSS modules plus
+  several mutually-exclusive colour-scheme variants), and the ONE sheet
+  holding the header's hide/sr-only rules (a `visuallyHidden` utility class,
+  the mega-menu's visibility/position:fixed toggle) happened to be 38th —
+  dropped past the old cap. Without it, the header's raw markup — every
+  dropdown menu's full text, concatenated — rendered fully unstyled and
+  visible at the top of the page. Raised to 64 (engine#81).
+
+**Verified live:** github.com/golang/go's header now renders as a compact
+"Platform / Solutions / Resources / Open Source / Enterprise / Pricing" bar,
+matching a real browser, instead of a multi-line wall of every menu's
+contents dumped at the top of the page.
+
 ## 2026-08-31 (cont. 5) — Shadow DOM: declarative shadow roots, `<slot>` projection, `:host` scoping
 
 Ships the largest single gap this engine had (comparable in scope to the
@@ -1238,16 +1267,16 @@ Restated against what was actually verified that day:
   still generates its own wrapping box rather than being layout-transparent).
   `::slotted()` and `:host-context()` are parsed as unmodelled and safely
   dropped rather than guessed at.
-  **Correction to the 2026-08-30 diagnosis above**: github.com's
-  permanently-expanded header nav (Platform/AI/Enterprise/…) is NOT a Shadow
-  DOM issue — confirmed by fetching its actual markup, which contains no
-  `shadowrootmode`/`attachShadow` anywhere. It is a plain React header whose
-  mega-menu visibility is gated by an ordinary class-conditional selector
-  (`.NavDropdown-module__container.open .NavDropdown-module__dropdown` vs. a
-  default `visibility:hidden;position:fixed`) that this engine is failing to
-  apply correctly for reasons unrelated to Shadow DOM — most likely
-  `visibility`/`position:fixed` interaction or same-specificity declaration
-  ordering. That remains open as its own, not-yet-diagnosed bug.
+  **Correction to the 2026-08-30 diagnosis above, and now CLOSED (2026-09-01,
+  engine#80/#81)**: github.com's permanently-expanded header nav was never a
+  Shadow DOM issue — confirmed by fetching its actual markup, which contains
+  no `shadowrootmode`/`attachShadow` anywhere. It was two independent bugs:
+  `visibility` was completely unimplemented (fixed, engine#80 — see the
+  dated log entry above), and `maxExternalSheets` (20) silently dropped the
+  38th of github.com's 38 `<link rel=stylesheet>` tags, which happened to be
+  the one holding the header's hide/sr-only rules (fixed, raised to 64,
+  engine#81). Verified live: the header now renders as a compact nav bar,
+  matching a real browser.
 - **CSS `@container` queries are implemented** (2026-08-31, engine#74 +
   follow-up engine integration — see the log entry above): `container-type`/
   `container-name`/the `container` shorthand, named and unnamed lookup,
