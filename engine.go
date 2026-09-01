@@ -571,7 +571,20 @@ func pageBackground(root *dom.Node, sm css.StyleMap) (css.Color, bool) {
 
 // External-stylesheet fetch limits (safety: bounded work per page).
 const (
-	maxExternalSheets    = 20
+	// maxExternalSheets was 20 until a live render of github.com/golang/go
+	// showed exactly why that undercounts a real modern site: it ships 38
+	// separate <link rel=stylesheet> tags (per-component CSS modules plus
+	// several mutually-exclusive colour-scheme variants), and the ONE sheet
+	// holding its header's hide/sr-only rules (visibility, clip-path,
+	// position:fixed for its mega-menu dropdowns) happened to be 38th —
+	// dropped past the old cap, so that markup rendered fully unstyled and
+	// visible: the raw text of every dropdown menu, all concatenated at the
+	// top of the page. The cap is not "how many sheets can a page have" (a
+	// browser has no such limit) but "how much network/memory work is this
+	// engine willing to do per render" — 64 comfortably covers a
+	// component-styled site like this one while still bounding a
+	// pathological page's fetch fan-out.
+	maxExternalSheets    = 64
 	maxSheetBytes        = 4 << 20 // 4 MB per sheet
 	maxImportDepth       = 2       // @import nesting levels honoured
 	externalSheetTimeout = 10 * time.Second
