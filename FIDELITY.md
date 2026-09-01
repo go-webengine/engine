@@ -18,6 +18,43 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-01 (cont.) — react.dev's white background ROOT-CAUSED and fixed: the empty-render guard was throwing away good styles along with bad geometry
+
+react.dev was the worst score in the bench corpus (93.1% pixdiff, SSIM 0.256):
+it rendered with a white/light background instead of its real dark navy theme,
+even though the final DOM plainly showed `<html class="client-js dark
+platform-win">` — the site's own dark-mode toggle had visibly worked.
+
+Root cause was in the `settle()` loop's empty-render guard (added by the
+engine#46 fix for react.dev's *other* bug, a client-side router failing to
+mount and unmounting the whole app tree while leaving the DOM "changed"). That
+guard is still correct to keep the PRE-SCRIPT geometry when a later pass
+empties the page — but on this page, the SAME script batch that emptied the
+tree also ran the harmless, unrelated `matchMedia('(prefers-color-scheme:
+dark)')` + `classList.add('dark')` theme toggle. The guard rejected the whole
+pass to protect the geometry, and in doing so also discarded that pass's
+entirely correct, entirely harmless dark-theme cascade — so the page stayed on
+its pre-JS light background forever, independent of what the DOM said.
+
+Confirmed via a from-scratch `css.CascadeVW` against the final (post-wipe) DOM
+that the cascade/selector logic itself has no bug: it correctly computes the
+dark background. The guard's granularity — "accept the whole pass or reject
+the whole pass" — was the actual defect.
+
+Fixed (engine#84) by adding `reskin()`: when the guard fires, it now walks the
+PRESERVED (good) box tree and swaps each box's, marker's, and inline text
+run's `Style` to the rejected pass's freshly computed value, touching no
+geometry (`X/Y/W/H/Children/Lines` untouched). Safe because DOM node identity
+survives an in-place mutation like `classList.add` — only the style lookup
+needs to catch up, not the tree shape. Inline text color needed its own
+handling since it lives on `InlineItem.Style`, not the enclosing box's.
+
+**Verified live:** react.dev's dark navy background and code-block panels now
+render correctly end to end; `bench/cmd/compare` shows pixdiff 93.1% → 49.5%,
+SSIM 0.256 → 0.587 (`bench/REPORT.md`). Remaining diff on this page is
+unrelated pre-existing gaps (video thumbnail `<img>`s render blank, some
+code-block syntax-highlight colour contrast) — not this bug.
+
 ## 2026-09-01 — github.com's header nav CLOSED: two independent real fixes, neither was Shadow DOM
 
 Followed up on the correction below (github.com's permanently-expanded header

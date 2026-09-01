@@ -334,7 +334,25 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 		// almost certainly a broken script re-render, not an intentional wipe —
 		// keep the last good layout and stop, rather than settling on blank.
 		if !renderedEmpty(rp.box, rp.height) && renderedEmpty(newBox, newHeight) {
-			e.jslog("settle: script pass emptied an already-rendered page; keeping prior layout")
+			// Keeping the prior GEOMETRY is right (see above), but discarding this
+			// pass wholesale also throws away any harmless, unrelated style-only
+			// mutation that happened in the SAME script batch as whatever emptied
+			// the render — observed live on react.dev: its dark-mode toggle script
+			// (an ordinary matchMedia('(prefers-color-scheme: dark)') + classList.
+			// add('dark') on <html>, and nothing to do with hydration) runs in the
+			// same pass as a client-side router that fails to mount and empties the
+			// tree. Both mutations land in one signature check; rejecting the pass
+			// rejected the good class-toggle style change along with the bad
+			// content wipe, so the page silently stayed in its pre-JS light theme
+			// forever even though <html class="dark"> was correctly present in the
+			// final DOM. Node identity survives a script pass (mutation is in
+			// place, not a replacement), so re-skinning the PRESERVED box tree with
+			// the freshly cascaded styles is safe: geometry (X/Y/W/H/children)
+			// stays exactly as before, only each box's Style pointer is swapped to
+			// its up-to-date computed value.
+			e.jslog("settle: script pass emptied an already-rendered page; keeping prior layout, re-skinning with its styles")
+			reskin(rp.box, newSm)
+			rp.sm = newSm
 			break
 		}
 		rp.sm, rp.box, rp.height = newSm, newBox, newHeight
@@ -367,6 +385,44 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 		rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
 		rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
 		rp.sm, rp.box, rp.height = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), fonts, rp.imgSize, rp.sm, rp.box, rp.height)
+	}
+}
+
+// reskin walks a PRESERVED box tree (geometry already final and not to be
+// touched) and swaps each box's, marker's, and inline text run's Style to its
+// up-to-date computed value from sm, leaving X/Y/W/H/Children/Lines/Items
+// themselves untouched. It is the settle loop's way of adopting a rejected
+// pass's style-only changes (see the renderedEmpty guard above) without
+// adopting that pass's broken geometry. Inline text color (and other
+// per-InlineItem style) is carried on InlineItem.Style rather than the
+// enclosing box's Style, so line items need the same treatment as boxes for a
+// dark-mode class toggle to actually recolor rendered text. A node with no
+// entry in sm (e.g. an anonymous box, or a synthetic item with no originating
+// element) keeps its current Style.
+func reskin(box *layout.Box, sm css.StyleMap) {
+	if box == nil {
+		return
+	}
+	if box.Node != nil {
+		if st, ok := sm[box.Node]; ok {
+			box.Style = st
+			if box.Marker != nil {
+				box.Marker.Style = st
+			}
+		}
+	}
+	for _, line := range box.Lines {
+		for _, item := range line.Items {
+			if item.Node == nil {
+				continue
+			}
+			if st, ok := sm[item.Node]; ok {
+				item.Style = st
+			}
+		}
+	}
+	for _, child := range box.Children {
+		reskin(child, sm)
 	}
 }
 
