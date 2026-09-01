@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
+	"github.com/go-webengine/esbuildsandbox"
 
 	"github.com/go-webengine/engine/dom"
 )
@@ -203,14 +203,14 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 					mu.Lock()
 					failed++
 					mu.Unlock()
-					return api.OnLoadResult{Contents: &empty, Loader: api.LoaderJS, ResolveDir: esbuildSandboxResolveDir()}, nil
+					return api.OnLoadResult{Contents: &empty, Loader: api.LoaderJS, ResolveDir: esbuildsandbox.ResolveDir()}, nil
 				}
 				mu.Lock()
 				fetched++
 				bytesIn += len(src)
 				mu.Unlock()
 				contents := src
-				return api.OnLoadResult{Contents: &contents, Loader: api.LoaderJS, ResolveDir: esbuildSandboxResolveDir()}, nil
+				return api.OnLoadResult{Contents: &contents, Loader: api.LoaderJS, ResolveDir: esbuildsandbox.ResolveDir()}, nil
 			})
 		},
 	}
@@ -228,7 +228,7 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 		return api.Build(api.BuildOptions{
 			Stdin: &api.StdinOptions{
 				Contents:   entrySrc.String(),
-				ResolveDir: esbuildSandboxResolveDir(),
+				ResolveDir: esbuildsandbox.ResolveDir(),
 				Sourcefile: doc.URL,
 				Loader:     api.LoaderJS,
 			},
@@ -268,44 +268,6 @@ func (e *Engine) bundleModuleScripts(ctx context.Context, doc *Document) (string
 	out := string(res.OutputFiles[0].Contents)
 	stats.bytesOut = len(out)
 	return out, stats, true
-}
-
-// esbuildSandboxDir and esbuildSandboxOnce back esbuildSandboxResolveDir.
-var (
-	esbuildSandboxOnce sync.Once
-	esbuildSandboxDir  string
-)
-
-// esbuildSandboxResolveDir returns a directory that stays empty for the life
-// of the process, used as esbuild's Stdin.ResolveDir instead of the real
-// filesystem root.
-//
-// The webengine-http plugin above intercepts ordinary import resolution, but
-// esbuild's bundler special-cases a glob import — `import(`./locales/${lang}
-// .js`)`, ordinary output from many bundlers' locale/route code-splitting, no
-// wrongdoing needed on the page's part — by resolving it directly against
-// ResolveDir on the REAL filesystem, entirely bypassing OnResolve. A page's
-// entry script runs with Stdin.ResolveDir as its own directory, so serving
-// that as "/" (as this used to) let a page merely containing such an import
-// make the engine recursively walk the host's real root filesystem: observed
-// live on a production MDN page, ~9s spent almost entirely in readdir/
-// symlink syscalls (github.com/evanw/esbuild/internal/fs, via pprof) for a
-// single render, and — independent of the cost — the host's real directory
-// tree is not something a remote page should ever cause this engine to read.
-// An isolated, always-empty directory makes every such glob resolve to zero
-// matches immediately instead, like a browser's own sandboxed module loader.
-func esbuildSandboxResolveDir() string {
-	esbuildSandboxOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "webengine-esbuild-sandbox-")
-		if err != nil {
-			// The OS temp directory is not guaranteed empty, but it is still a
-			// vastly smaller, more contained tree than the real root — better
-			// degraded behaviour than reintroducing the original bug.
-			dir = os.TempDir()
-		}
-		esbuildSandboxDir = dir
-	})
-	return esbuildSandboxDir
 }
 
 // resolveModuleSpecifier resolves an import specifier against its importer (or

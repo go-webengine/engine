@@ -8,7 +8,6 @@ import (
 	"image"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -357,33 +356,6 @@ func TestModuleBundleAbandonedOnBudget(t *testing.T) {
 	}
 }
 
-// TestEsbuildSandboxResolveDirIsIsolated proves the directory backing
-// esbuild's ResolveDir is a real, existing, empty directory distinct from the
-// filesystem root — the mechanism esbuildSandboxResolveDir relies on to make
-// a glob import resolve to nothing instead of walking real content.
-func TestEsbuildSandboxResolveDirIsIsolated(t *testing.T) {
-	dir := esbuildSandboxResolveDir()
-	if dir == "" || dir == "/" {
-		t.Fatalf("sandbox dir = %q, want a real non-root path", dir)
-	}
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() {
-		t.Fatalf("sandbox dir does not exist as a directory: %v", err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read sandbox dir: %v", err)
-	}
-	if len(entries) != 0 {
-		t.Errorf("sandbox dir has %d entries, want empty", len(entries))
-	}
-	// Memoized for the process lifetime: a second call must return the same
-	// path, not mint a fresh temp directory every bundle.
-	if got := esbuildSandboxResolveDir(); got != dir {
-		t.Errorf("second call returned %q, want the memoized %q", got, dir)
-	}
-}
-
 // moduleGlobFixtureServer serves an entry module containing a dynamic import
 // with a template-literal glob pattern whose variable segment is the FIRST
 // path component (`./${id}/index.js`) — the shape of a common real-world
@@ -409,14 +381,19 @@ func moduleGlobFixtureServer() *httptest.Server {
 }
 
 // TestModuleGlobImportDoesNotWalkRealFilesystem is the regression test for the
-// bug fixed by esbuildSandboxResolveDir: before it, every OnLoadResult (and
-// the Stdin entry) declared ResolveDir "/", so a page merely containing a
-// glob-shaped dynamic import made the engine recursively walk the host's real
-// root filesystem — observed live rendering a production MDN page, ~9s spent
-// almost entirely in readdir/symlink syscalls for a single render (pprof).
-// With an isolated, empty ResolveDir the glob resolves to zero matches
-// immediately, so this must complete well within a tight bound rather than
-// stall the bundle budget.
+// bug fixed by using github.com/go-webengine/esbuildsandbox's ResolveDir:
+// before it, every OnLoadResult (and the Stdin entry) in this file declared
+// ResolveDir "/", so a page merely containing a glob-shaped dynamic import
+// made the engine recursively walk the host's real root filesystem —
+// observed live rendering a production MDN page, ~9s spent almost entirely
+// in readdir/symlink syscalls for a single render (pprof). This test is
+// integration-level on purpose: esbuildsandbox's own package tests prove its
+// ResolveDir itself is safe, but only this test proves bundleModuleScripts
+// actually WIRES it into every ResolveDir esbuild sees here, so a future edit
+// reintroducing a stray "/" at one of the three call sites in modules.go
+// would still be caught. With the sandbox in place the glob resolves to zero
+// matches immediately, so this must complete well within a tight bound
+// rather than stall the bundle budget.
 func TestModuleGlobImportDoesNotWalkRealFilesystem(t *testing.T) {
 	srv := moduleGlobFixtureServer()
 	defer srv.Close()
