@@ -18,6 +18,65 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-01 (cont. 2) — MDN's whole design-token system ROOT-CAUSED and fixed: a spec-valid empty custom-property value was being silently dropped at parse time
+
+developer.mozilla.org was the worst score in the bench corpus after the
+react.dev fix below (SSIM 0.128, pixdiff 95.9%): the page rendered as plain
+unstyled HTML — no colours, no card borders, default browser typography —
+even though all 17 of its external stylesheets fetched successfully and their
+selectors (confirmed directly: `.page-layout{display:grid}` really did match
+`<body class="page-layout">`) were being applied.
+
+Root-caused by reading MDN's real, live CSS rather than guessing from the
+screenshot. MDN's build (`postcss-preset-env`'s `light-dark()` polyfill) ships
+nearly its entire colour system as a "CSS toggle": a guard custom property is
+set unconditionally to `initial`, then overridden to **empty** inside
+`@media (prefers-color-scheme:dark)`; an intermediate property threads the
+guard through `var(--guard) var(--gray-40)`, and the real colour property
+reads that intermediate with a fallback: `var(--toggle, var(--gray-60))`. This
+"initial vs. empty" pair is real, common CSS — the same mechanism a plain
+`color-scheme: light dark` + `light-dark()` pair compiles down to for browsers
+needing the fallback path — not something exotic to MDN.
+
+The declaration parser's `ParseDeclarations` dropped **any** declaration with
+an empty value (`prop == "" || val == ""`) to skip meaningless input like
+`color: ;`. That rule is correct for an ordinary property but wrong for a
+**custom** property: `--guard: ;` is a real, spec-valid, load-bearing value,
+different from `--guard` being unset. Dropping it left every guard variable
+stuck at its unconditional (`initial`) branch forever, regardless of which
+`@media`/attribute condition should have overridden it — collapsing MDN's
+entire colour, border, and spacing token system at once. Fixed: an empty
+value is now kept for custom properties, dropped only for ordinary ones
+(engine#85).
+
+Two smaller, genuinely real but NOT independently load-bearing for this page
+were found and fixed in the same investigation:
+- **`var(--a, fallback)` failed outright when `--a` existed but was itself
+  invalid** (recursively referenced another unresolvable var()), instead of
+  trying `fallback` — the CSS Custom Properties spec treats a
+  guaranteed-invalid referenced property as equivalent to unset for this
+  purpose. Real and independently useful (a different arrangement of the same
+  toggle pattern depends on it), verified via `git stash`-isolated bisection
+  to NOT be what fixed MDN itself, since MDN's guard resolves to *empty*
+  (valid-but-blank), not invalid, once the parser fix lands.
+- **The CSS Color Module 5 `light-dark(light, dark)` function was entirely
+  unimplemented.** Added (always resolves to the dark branch, matching the
+  same "assume dark" convention `js/window.go`'s `matchMedia` already uses for
+  the bench suite's real dark-appearance reference Chromium). Also not
+  load-bearing for MDN specifically: its native `light-dark()` usage sits
+  behind `@supports (color: light-dark(...))`, which this engine still skips
+  wholesale like every other unrecognised at-rule — a separate, larger,
+  not-yet-attempted gap (see "Known gaps").
+
+**Verified live:** developer.mozilla.org now renders MDN's real dark theme —
+dark navy background, purple headings, correctly-coloured nav/breadcrumb bars
+— matching the Chrome reference's overall look (residual diff is a real,
+separate gap: the two-column sidebar layout collapses to one column at this
+viewport width, `bench/REPORT.md` has detail). `bench/cmd/compare`: SSIM
+0.128→0.596, pixdiff 95.9%→17.6% — the worst page in the corpus is now
+comfortably mid-pack, with zero regressions elsewhere in the 10-page corpus
+(confirmed by a full before/after run, not a single-page spot check).
+
 ## 2026-09-01 (cont.) — react.dev's white background ROOT-CAUSED and fixed: the empty-render guard was throwing away good styles along with bad geometry
 
 react.dev was the worst score in the bench corpus (93.1% pixdiff, SSIM 0.256):
@@ -1331,6 +1390,30 @@ Restated against what was actually verified that day:
 - **No CSS `transform`** (2D or 3D) and no `conic-gradient`. A slide-out drawer
   or carousel positioned via `transform: translateX(...)` renders at its
   untransformed in-flow position instead.
+- **`@supports` is entirely unimplemented — its body is always skipped**, the
+  same "unrecognised at-rule" treatment as `@font-face`/`@keyframes`. Unlike
+  `@layer`'s "include unconditionally" fallback, `@supports` genuinely
+  *gates* content, so this can drop real declarations no other mechanism
+  reaches — confirmed live on developer.mozilla.org, whose native
+  `light-dark()` colours (this engine does implement the function itself,
+  2026-09-01, engine#85) sit behind `@supports (color: light-dark(...))` and
+  so never get parsed at all; the page instead worked from its
+  unconditionally-shipped polyfill fallback path (a *different* real bug in
+  that path was the one actually fixed — see the log entry above). A page
+  relying on `@supports` to pick between two INCOMPATIBLE rulesets (not a
+  progressive-enhancement pair with a working fallback) would render however
+  the always-skipped choice happens to fall.
+- **`html[data-theme]`-style CSS toggles depend on `@media
+  (prefers-color-scheme:*)` matching optimistically for BOTH `light` and
+  `dark`** (`mediaMatches` has no dedicated case for this feature, so it
+  falls through to "assume applies" for either value) — cascade order alone
+  then decides which wins, which happens to match "assume dark" only when the
+  dark block is declared after the light one, not by any actual preference
+  model. This has been correct on every real page measured so far (a `dark`
+  block declared last is the overwhelmingly common source order for a
+  progressive-enhancement dark-mode addition) but is not a genuine feature
+  match — treat it as coincidental, not load-bearing, if it stops working on
+  some future page.
 - **Table `colspan`/`rowspan` and `border-collapse`** — not re-verified this
   audit; treat as unconfirmed rather than assume either way until measured.
 - **Fonts**: bundled Inter/Lora (+ Go Mono, regular-only) with real Bold/
