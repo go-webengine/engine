@@ -85,6 +85,29 @@ func TestCascadeImageRenderingInherits(t *testing.T) {
 	}
 }
 
+func TestCascadeVisibilityInheritsAndIsOverridable(t *testing.T) {
+	// visibility is inherited: a hidden ancestor's descendant is hidden too if it
+	// never declares its own value.
+	hidden := styleOf(t, `<html><body style="visibility:hidden">`+
+		`<div><span>x</span></div></body></html>`, "span")
+	if hidden.Visibility != VisibilityHidden {
+		t.Errorf("inherited visibility = %v, want VisibilityHidden", hidden.Visibility)
+	}
+	// Unlike display:none, a descendant can override visibility back to visible
+	// — this is the exact idiom real sites use for a "reveal on interaction"
+	// element nested inside a permanently visibility:hidden wrapper.
+	reshown := styleOf(t, `<html><body style="visibility:hidden">`+
+		`<div><span style="visibility:visible">x</span></div></body></html>`, "span")
+	if reshown.Visibility != VisibilityVisible {
+		t.Errorf("overridden visibility = %v, want VisibilityVisible", reshown.Visibility)
+	}
+	// The initial value is visible when nobody sets it.
+	def := styleOf(t, `<html><body><span>x</span></body></html>`, "span")
+	if def.Visibility != VisibilityVisible {
+		t.Errorf("default visibility = %v, want VisibilityVisible", def.Visibility)
+	}
+}
+
 func TestCascadeUnitlessLineHeightInheritsAsFactor(t *testing.T) {
 	// A unitless line-height set on an ancestor must inherit as the NUMBER, so a
 	// larger-font descendant resolves to factor × its OWN font-size — not the

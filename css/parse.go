@@ -401,6 +401,15 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		case "none":
 			s.Display = DisplayNone
 		}
+	case "visibility":
+		switch lv {
+		case "visible":
+			s.Visibility = VisibilityVisible
+		case "hidden":
+			s.Visibility = VisibilityHidden
+		case "collapse":
+			s.Visibility = VisibilityCollapse
+		}
 	case "color":
 		if c, ok := parseColor(v); ok {
 			s.Color = c

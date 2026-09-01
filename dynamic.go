@@ -142,7 +142,14 @@ func (m *layoutMetrics) Computed(n *dom.Node, prop string) (string, bool) {
 		}
 		return strconv.Itoa(st.ZIndex), true
 	case "visibility":
-		return "visible", true
+		switch st.Visibility {
+		case css.VisibilityHidden:
+			return "hidden", true
+		case css.VisibilityCollapse:
+			return "collapse", true
+		default:
+			return "visible", true
+		}
 	case "top":
 		return lengthUsed(st.Top), true
 	case "right":

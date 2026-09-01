@@ -22,6 +22,24 @@ type Color struct{ R, G, B, A uint8 }
 // Transparent is the fully-transparent colour (the initial background-color).
 var Transparent = Color{}
 
+// Visibility is the visibility property: unlike Display, it is INHERITED, and
+// hiding an ancestor still reserves its layout space and does not stop a
+// descendant that resets `visibility:visible` from painting. `collapse` (its
+// real effect is table-row-specific: the row's space is reclaimed) is treated
+// identically to VisibilityHidden — a documented simplification, not a bug.
+type Visibility uint8
+
+const (
+	// VisibilityVisible is the initial value.
+	VisibilityVisible Visibility = iota
+	// VisibilityHidden paints nothing for this box (background, border,
+	// shadows, inline content) while still occupying its layout space; a
+	// descendant box may re-show itself with its own `visibility:visible`.
+	VisibilityHidden
+	// VisibilityCollapse is treated the same as VisibilityHidden (see above).
+	VisibilityCollapse
+)
+
 // Display is the subset of the display property the engine understands.
 type Display uint8
 
@@ -411,6 +429,7 @@ func (l Length) Resolve(containing float64) float64 {
 // Style is the fully-computed style of an element, after cascade + inheritance.
 type Style struct {
 	Display    Display
+	Visibility Visibility // inherited; see the Visibility doc comment
 	Color      Color
 	Background Color
 	FontSize   float64 // px
@@ -638,6 +657,7 @@ func initialStyle() Style {
 func inheritFrom(parent Style) Style {
 	return Style{
 		Display:        DisplayInline, // reset (non-inherited)
+		Visibility:     parent.Visibility,
 		Color:          parent.Color,
 		Background:     Transparent, // reset
 		FontSize:       parent.FontSize,

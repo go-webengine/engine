@@ -403,6 +403,36 @@ func TestPaintNestedChildBoxes(t *testing.T) {
 	}
 }
 
+func TestPaintVisibilityHiddenSkipsOwnPaintButNotChildren(t *testing.T) {
+	// visibility:hidden must paint none of the box's OWN background/border,
+	// but — unlike display:none or opacity:0 — must still recurse into
+	// children: a descendant may reset visibility:visible and paint normally.
+	// This is the exact mechanism a real site's `:host(...) slot{visibility:
+	// hidden}` / sr-only idiom relies on to hide a wrapper while still
+	// allowing a nested element to opt back in.
+	f := NewFonts()
+	dst := white(30, 30)
+	parent := &layout.Box{
+		Node:  &dom.Node{Type: dom.Element, Tag: "div"},
+		Style: &css.Style{Visibility: css.VisibilityHidden, Background: css.Color{R: 240, G: 240, B: 240, A: 255}},
+		X:     0, Y: 0, W: 30, H: 30,
+		Children: []*layout.Box{{
+			Node:  &dom.Node{Type: dom.Element, Tag: "div"},
+			Style: &css.Style{Visibility: css.VisibilityVisible, Background: css.Color{R: 10, G: 120, B: 200, A: 255}},
+			X:     5, Y: 5, W: 10, H: 10,
+		}},
+	}
+	Paint(dst, parent, f, nil)
+	// The hidden parent's grey background does NOT show.
+	if c := dst.RGBAAt(20, 20); c.R != 255 {
+		t.Errorf("hidden parent painted its background: %+v want untouched white", c)
+	}
+	// The child, which reset visibility back to visible, still paints.
+	if c := dst.RGBAAt(9, 9); c.B < 150 || c.R > 60 {
+		t.Errorf("visible child inside a hidden parent = %+v want blue", c)
+	}
+}
+
 func TestPaintSubPixelBorderNotDrawn(t *testing.T) {
 	// A sub-pixel border width rounds to 0 px; the zero-size fill guard skips it
 	// without panicking or painting.
