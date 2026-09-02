@@ -315,7 +315,12 @@ func viewportSize(viewport image.Rectangle) (vpW, vpH int) {
 // anchor hit-map always describe the exact same JS-settled DOM and geometry. On
 // return doc.Title reflects any document.title a script set.
 func (e *Engine) renderCore(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts) *renderPass {
-	return e.renderCoreStaged(ctx, doc, vpW, vpH, fonts, nil)
+	rp, sess, stopHeap := e.renderCoreStaged(ctx, doc, vpW, vpH, fonts, nil)
+	stopHeap()
+	if sess != nil {
+		sess.Close()
+	}
+	return rp
 }
 
 // renderCoreStaged is renderCore with an optional per-stage hook that drives
@@ -326,7 +331,16 @@ func (e *Engine) renderCore(ctx context.Context, doc *Document, vpW, vpH int, fo
 // returned pass. onStage==nil reproduces the original batch pipeline exactly (a
 // single images-then-layout pass, no wasted pre-image layout), so RenderDocument
 // / RenderDocumentWithLinks are byte-identical to before.
-func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, onStage func(stage string, rp *renderPass)) *renderPass {
+//
+// The returned Session is nil when DisableJS is set (settle never ran) and
+// otherwise LIVE — the caller decides whether to close it immediately (every
+// existing caller does, preserving today's one-shot-render behavior) or keep
+// it open across later interactions (Engine.Open, interactive.go). The
+// returned func releases the heap-watchdog goroutine that guarded the settle
+// stage (a no-op when DisableJS); call it at the same point the Session is
+// closed — see the doc comment on settle for why it must not be called
+// early on a Session kept alive past this function's return.
+func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, onStage func(stage string, rp *renderPass)) (*renderPass, *js.Session, func()) {
 	// A page's images are loaded once here and again after every settle pass
 	// that mutates the DOM (a script may add/swap images), each time re-fetching
 	// unconditionally — e.ImageCache is opt-in and nil by default, so without
@@ -403,10 +417,19 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// script) once memory balloons past MaxJSHeapBytes, so a page like GitHub's
 	// huge module graph falls back to its already-good pre-script layout instead
 	// of driving the process toward OOM.
+	// stopHeap releases the heap watchdog goroutine (and cancels sctx, which the
+	// live Session's execute() loop watches to interrupt a runaway script). It is
+	// returned rather than called here: a one-shot caller (renderCore,
+	// buildProgressive) calls it right away, same as before; Engine.Open keeps
+	// it uncalled until the caller is done interacting with the page (calling it
+	// early would cancel sctx and permanently poison every later script run on
+	// this same live Session — see js ctx-cancel handling in js/js.go).
+	var sess *js.Session
+	stopHeap := func() {}
 	if !e.DisableJS {
-		sctx, stop := e.heapGuardedContext(ctx)
-		e.settle(sctx, doc, vpW, vpH, fonts, rp, initialLayout, onStage)
-		stop()
+		var sctx context.Context
+		sctx, stopHeap = e.heapGuardedContext(ctx)
+		sess = e.settle(sctx, doc, vpW, vpH, fonts, rp, initialLayout, onStage)
 	}
 
 	// A script may have set document.title; re-derive it so RenderInfo reports the
@@ -425,7 +448,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 			rp = fb
 		}
 	}
-	return rp
+	return rp, sess, stopHeap
 }
 
 // heapGuardedContext derives a context from parent that is cancelled once the

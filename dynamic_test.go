@@ -292,7 +292,7 @@ func TestSettleWipeGuardReskinsWithNewStyle(t *testing.T) {
 	rp.imgSize = map[*dom.Node][2]float64{}
 	rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, 400, fonts, rp.imgSize)
 	e := New()
-	e.settle(context.Background(), doc, 400, 200, fonts, rp, time.Millisecond, nil)
+	e.settle(context.Background(), doc, 400, 200, fonts, rp, time.Millisecond, nil).Close()
 
 	if rp.height < emptyRenderHeight {
 		t.Fatalf("settle rp.height = %v, want the pre-wipe geometry kept", rp.height)
@@ -380,7 +380,7 @@ func TestSettleBudgetGuard(t *testing.T) {
 	defer cancel()
 	// A huge claimed initial-layout duration forces the 2*layoutDur > remaining
 	// guard to trip on the first re-layout.
-	e.settle(ctx, doc, 400, 300, fonts, rp, time.Hour, nil)
+	e.settle(ctx, doc, 400, 300, fonts, rp, time.Hour, nil).Close()
 
 	if !strings.Contains(strings.Join(logs, "\n"), "re-layout skipped") {
 		t.Fatalf("expected the deadline guard to skip re-layout; logs:\n%s", strings.Join(logs, "\n"))

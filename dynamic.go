@@ -262,9 +262,13 @@ func domSignature(root *dom.Node) uint64 {
 // onStage (when non-nil, from a progressive render) is called with "settle"
 // after each pass that re-laid-out the document; the caller dedups against the
 // previous emitted frame's geometry.
-func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, initialLayout time.Duration, onStage func(stage string, rp *renderPass)) {
+//
+// settle returns the live Session rather than closing it: a one-shot render
+// (renderCoreStaged) closes it immediately after, byte-identical to before;
+// Engine.Open keeps it alive instead, across separate later interactions, via
+// LiveDocument (interactive.go) — the only reason the return value exists.
+func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, initialLayout time.Duration, onStage func(stage string, rp *renderPass)) *js.Session {
 	sess := js.Begin(doc.Root, e.jsOptions(ctx, doc, vpW, vpH))
-	defer sess.Close()
 
 	sess.SetMetrics(newLayoutMetrics(rp.box, rp.sm, vpW, vpH))
 	// Signature of the DOM the INITIAL layout was computed from (client-js already
@@ -386,6 +390,7 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 		rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
 		rp.sm, rp.box, rp.height = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), fonts, rp.imgSize, rp.sm, rp.box, rp.height)
 	}
+	return sess
 }
 
 // reskin walks a PRESERVED box tree (geometry already final and not to be
