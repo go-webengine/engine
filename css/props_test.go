@@ -11,7 +11,7 @@ func newStyle() *Style {
 }
 
 func applyOn(s *Style, prop, val string, em float64) {
-	s.apply(Declaration{Property: prop, Value: val}, em)
+	s.apply(Declaration{Property: prop, Value: val}, em, nil)
 }
 
 func TestApplyDisplayValues(t *testing.T) {
@@ -411,5 +411,103 @@ func TestApplyOverflow(t *testing.T) {
 	// Clips() helper.
 	if OverflowVisible.Clips() || !OverflowHidden.Clips() {
 		t.Errorf("Clips() wrong")
+	}
+}
+
+// TestApplyInset covers a real regression: the `inset` shorthand (and its
+// logical-axis siblings inset-inline/inset-block) was entirely unimplemented,
+// so top/right/bottom/left all stayed at their initial `auto` — confirmed
+// live on tailwindcss.com, where an `inset-0` (`inset:0`), absolutely
+// positioned `<img>` meant to fill a `relative` ancestor card instead fell
+// back to its static in-flow position, landing at the top of the whole
+// document instead of nested inside its card.
+func TestApplyInset(t *testing.T) {
+	auto := Length{Auto: true}
+	zero := Length{Px: 0}
+
+	// 1 value: all four sides.
+	s := &Style{Top: auto, Right: auto, Bottom: auto, Left: auto}
+	applyOn(s, "inset", "0", 16)
+	if s.Top != zero || s.Right != zero || s.Bottom != zero || s.Left != zero {
+		t.Errorf("inset:0 => top=%+v right=%+v bottom=%+v left=%+v", s.Top, s.Right, s.Bottom, s.Left)
+	}
+
+	// 2 values: vertical horizontal (the same expansion order as margin/padding).
+	s = &Style{Top: auto, Right: auto, Bottom: auto, Left: auto}
+	applyOn(s, "inset", "10px 20px", 16)
+	want := Length{Px: 10}
+	if s.Top != want || s.Bottom != want {
+		t.Errorf("inset 2-value top/bottom = %+v/%+v, want 10px", s.Top, s.Bottom)
+	}
+	want = Length{Px: 20}
+	if s.Left != want || s.Right != want {
+		t.Errorf("inset 2-value left/right = %+v/%+v, want 20px", s.Left, s.Right)
+	}
+
+	// 3 values: top, left/right, bottom.
+	s = &Style{Top: auto, Right: auto, Bottom: auto, Left: auto}
+	applyOn(s, "inset", "1px 2px 3px", 16)
+	if s.Top != (Length{Px: 1}) || s.Right != (Length{Px: 2}) || s.Bottom != (Length{Px: 3}) || s.Left != (Length{Px: 2}) {
+		t.Errorf("inset 3-value = top=%+v right=%+v bottom=%+v left=%+v", s.Top, s.Right, s.Bottom, s.Left)
+	}
+
+	// 4 values: top right bottom left.
+	s = &Style{Top: auto, Right: auto, Bottom: auto, Left: auto}
+	applyOn(s, "inset", "1px 2px 3px 4px", 16)
+	if s.Top != (Length{Px: 1}) || s.Right != (Length{Px: 2}) || s.Bottom != (Length{Px: 3}) || s.Left != (Length{Px: 4}) {
+		t.Errorf("inset 4-value = top=%+v right=%+v bottom=%+v left=%+v", s.Top, s.Right, s.Bottom, s.Left)
+	}
+
+	// Empty value: zero fields parsed — a no-op, not a panic.
+	s = &Style{Top: zero, Right: zero, Bottom: zero, Left: zero}
+	applyOn(s, "inset", "", 16)
+	if s.Top != zero || s.Right != zero || s.Bottom != zero || s.Left != zero {
+		t.Errorf("empty inset should be a no-op, got top=%+v right=%+v bottom=%+v left=%+v", s.Top, s.Right, s.Bottom, s.Left)
+	}
+
+	// auto and percentages must be PRESERVED, not collapsed to 0 like
+	// margin/padding's parseEdges does — position resolution depends on
+	// telling auto/percentage/fixed apart.
+	s = &Style{Top: zero, Right: zero, Bottom: zero, Left: zero}
+	applyOn(s, "inset", "auto 50%", 16)
+	if !s.Top.Auto || !s.Bottom.Auto {
+		t.Errorf("inset auto should be preserved as Auto, got top=%+v bottom=%+v", s.Top, s.Bottom)
+	}
+	if !s.Left.IsPercent || s.Left.Percent != 0.5 {
+		t.Errorf("inset 50%% should be preserved as a percentage, got left=%+v", s.Left)
+	}
+
+	// inset-inline: logical axis, 1-or-2-value (start[, end]), NOT the 4-side
+	// box-edge expansion — a 2-value form assigns start/end independently,
+	// unlike inset's "vertical horizontal" pairing.
+	s = &Style{Left: auto, Right: auto}
+	applyOn(s, "inset-inline", "4px 8px", 16)
+	if s.Left != (Length{Px: 4}) || s.Right != (Length{Px: 8}) {
+		t.Errorf("inset-inline 4px 8px => left=%+v right=%+v, want 4px/8px", s.Left, s.Right)
+	}
+	s = &Style{Left: auto, Right: auto}
+	applyOn(s, "inset-inline", "6px", 16)
+	if s.Left != (Length{Px: 6}) || s.Right != (Length{Px: 6}) {
+		t.Errorf("inset-inline 6px (1-value) => left=%+v right=%+v, want both 6px", s.Left, s.Right)
+	}
+
+	// inset-block: same shape, top/bottom.
+	s = &Style{Top: auto, Bottom: auto}
+	applyOn(s, "inset-block", "5px 9px", 16)
+	if s.Top != (Length{Px: 5}) || s.Bottom != (Length{Px: 9}) {
+		t.Errorf("inset-block 5px 9px => top=%+v bottom=%+v, want 5px/9px", s.Top, s.Bottom)
+	}
+
+	// A malformed value (too many fields for the logical shorthands, or an
+	// unparseable token) leaves the fields unchanged rather than panicking.
+	s = &Style{Top: zero, Bottom: zero}
+	applyOn(s, "inset-block", "1px 2px 3px", 16)
+	if s.Top != zero || s.Bottom != zero {
+		t.Errorf("malformed inset-block should be a no-op, got top=%+v bottom=%+v", s.Top, s.Bottom)
+	}
+	s = &Style{Top: zero, Right: zero, Bottom: zero, Left: zero}
+	applyOn(s, "inset", "bogus", 16)
+	if s.Top != zero || s.Right != zero || s.Bottom != zero || s.Left != zero {
+		t.Errorf("unparseable inset should be a no-op, got top=%+v right=%+v bottom=%+v left=%+v", s.Top, s.Right, s.Bottom, s.Left)
 	}
 }

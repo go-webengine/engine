@@ -421,7 +421,7 @@ func TestParseStylesheetEmptyAndNoBrace(t *testing.T) {
 
 func TestApplyProperties(t *testing.T) {
 	s := initialStyle()
-	apply := func(p, v string, em float64) { s.apply(Declaration{Property: p, Value: v}, em) }
+	apply := func(p, v string, em float64) { s.apply(Declaration{Property: p, Value: v}, em, nil) }
 	apply("display", "none", 16)
 	if s.Display != DisplayNone {
 		t.Error("display none")

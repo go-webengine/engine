@@ -233,6 +233,73 @@ func TestCascadeAuthorOverridesUA(t *testing.T) {
 	}
 }
 
+// TestCascadeInheritKeywordCancelsUADefault covers the real regression this
+// engine had: `inherit` was not understood as a value AT ALL, so
+// `a{color:inherit}` (Tailwind's, and most modern frameworks', preflight
+// reset — confirmed live on tailwindcss.com) failed to parse and was
+// dropped, leaving the UA default `a{color:#0000ee}` (browser-default link
+// blue) as the only surviving declaration. Every `fill="currentColor"` SVG
+// icon inside such a reset anchor (a very common pattern for a linked logo)
+// inherited that wrong blue too. `color` is already inherited BY DEFAULT
+// (TestCascadeCustomPropertyInherited-style), but that default alone is not
+// enough here: the UA rule runs earlier in the very same cascade and
+// overwrites it, so `inherit` must explicitly copy the parent's value again
+// to cancel that override, not merely no-op.
+func TestCascadeInheritKeywordCancelsUADefault(t *testing.T) {
+	src := `<html><head><style>a{color:inherit}</style></head>` +
+		`<body style="color:green"><a>x</a></body></html>`
+	if st := styleOf(t, src, "a"); st.Color != (Color{0, 128, 0, 255}) {
+		t.Errorf("a{color:inherit} should cancel the UA blue default and use the parent's green, got %v", st.Color)
+	}
+}
+
+func TestCascadeInheritKeywordOtherProperties(t *testing.T) {
+	// visibility, font-weight and text-align are not overridden by any UA
+	// default the way color is, but inherit must still work for them.
+	src := `<html><body style="visibility:hidden;font-weight:700;text-align:center">` +
+		`<p style="visibility:inherit;font-weight:inherit;text-align:inherit">x</p></body></html>`
+	st := styleOf(t, src, "p")
+	if st.Visibility != VisibilityHidden {
+		t.Errorf("visibility:inherit = %v, want hidden", st.Visibility)
+	}
+	if st.FontWeight != 700 {
+		t.Errorf("font-weight:inherit = %v, want 700", st.FontWeight)
+	}
+	if st.TextAlign != AlignCenter {
+		t.Errorf("text-align:inherit = %v, want center", st.TextAlign)
+	}
+}
+
+func TestCascadeInheritKeywordRemainingProperties(t *testing.T) {
+	src := `<html><body style="white-space:pre;line-height:2;list-style-type:square;list-style-position:inside">` +
+		`<p style="white-space:inherit;line-height:inherit;list-style-type:inherit;list-style-position:inherit">x</p></body></html>`
+	st := styleOf(t, src, "p")
+	if st.WhiteSpace != WSPre {
+		t.Errorf("white-space:inherit = %v, want WSPre", st.WhiteSpace)
+	}
+	if st.LineHeight != (LineHeight{Factor: 2}) {
+		t.Errorf("line-height:inherit = %+v, want Factor 2", st.LineHeight)
+	}
+	if st.ListStyleType != ListSquare {
+		t.Errorf("list-style-type:inherit = %v, want ListSquare", st.ListStyleType)
+	}
+	if st.ListStylePosition != ListInside {
+		t.Errorf("list-style-position:inherit = %v, want ListInside", st.ListStylePosition)
+	}
+}
+
+func TestCascadeInheritUnknownPropertyIsNoop(t *testing.T) {
+	// background-color is NOT inherited per spec (transparent resets it), and
+	// this engine does not implement `inherit` for it — the declaration must
+	// be silently dropped rather than panic or corrupt the style.
+	src := `<html><body style="background-color:red">` +
+		`<p style="background-color:inherit">x</p></body></html>`
+	st := styleOf(t, src, "p")
+	if st.Background != Transparent {
+		t.Errorf("background-color:inherit (unsupported) = %v, want the reset default transparent", st.Background)
+	}
+}
+
 func TestCascadeFontSizeEm(t *testing.T) {
 	// font-size:2em on a child is relative to the parent's font-size (20px→40px);
 	// a margin in em is relative to the element's own computed font-size.

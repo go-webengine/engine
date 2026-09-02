@@ -275,7 +275,7 @@ func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter 
 			return
 		}
 		d.Value = v
-		st.apply(d, emRef)
+		st.apply(d, emRef, &parent)
 	}
 
 	// Pass 1: resolve font-size first (its em is relative to the parent).

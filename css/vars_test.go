@@ -17,6 +17,19 @@ func TestResolveDeclValueNoVar(t *testing.T) {
 	}
 }
 
+func TestResolveDeclValueCalcFailurePropagates(t *testing.T) {
+	// A calc() this engine cannot resolve (percentage-mixed) must invalidate
+	// the whole declaration, the same as an unresolvable var().
+	if _, ok := resolveDeclValue("calc(50% - 10px)", nil); ok {
+		t.Fatal("unresolvable calc() should invalidate the declaration")
+	}
+	// Through a var(): the calc() only appears after substitution.
+	props := map[string]string{"--w": "50%"}
+	if _, ok := resolveDeclValue("calc(var(--w) - 10px)", props); ok {
+		t.Fatal("unresolvable calc() reached via var() should invalidate the declaration")
+	}
+}
+
 func TestSubstituteVarsBasic(t *testing.T) {
 	props := map[string]string{"--c": "#336699", "--bg": "white"}
 	cases := []struct {
