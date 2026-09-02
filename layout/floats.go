@@ -216,6 +216,18 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	// space that flex-shrink collapses the items with, overlapping them
 	// horizontally (the GitHub repo-nav "Code / Issues / Pull requests / …"
 	// jumble).
+	// This only covers a flex row with at least one ELEMENT child: a flex
+	// container whose content is bare text (no wrapping element — e.g.
+	// `<h1 style="display:flex">React</h1>`, confirmed live on react.dev's
+	// hero heading and its two CTA buttons) forms a single anonymous flex
+	// item from that text per spec, which this sum-of-element-children loop
+	// cannot see at all (it skips every non-Element child), so n stays 0 and
+	// this returned a bare `0 + edges` — collapsing the element to zero
+	// width, which then collapses its actual layout (laid out at that zero
+	// content width) to zero height too, since there is no room left to wrap
+	// even one line of text. Falling through to the inline-measurement path
+	// below (the same one a plain, non-flex text-only element already uses)
+	// measures the text correctly.
 	if node.Type == dom.Element && st.Display == css.DisplayFlex && st.FlexDirection == css.FlexRow {
 		var sum float64
 		n := 0
@@ -230,10 +242,12 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 			sum += l.preferredWidth(c, cs) + cs.Margin.Left + cs.Margin.Right
 			n++
 		}
-		if n > 1 {
-			sum += gapLen(st.ColumnGap) * float64(n-1)
+		if n > 0 {
+			if n > 1 {
+				sum += gapLen(st.ColumnGap) * float64(n-1)
+			}
+			return sum + edges
 		}
-		return sum + edges
 	}
 	if l.hasBlockLevelChild(node) {
 		var max float64

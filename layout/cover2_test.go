@@ -21,6 +21,40 @@ func TestFlexSkipsTextAndHidden(t *testing.T) {
 	}
 }
 
+// TestFlexContainerBareTextOnly covers a real regression: flexItems only
+// ever collects ELEMENT children, so a `display:flex` element whose content
+// is bare text with NO element children at all (e.g.
+// `<h1 style="display:flex">React</h1>`, confirmed live on react.dev's hero
+// heading and its two CTA buttons) collected ZERO flex items and flex()
+// returned immediately having laid out nothing — collapsing the whole
+// element to zero width AND height. It must fall back to the same
+// inline-formatting-context path a plain, non-flex, no-block-child element
+// already uses.
+func TestFlexContainerBareTextOnly(t *testing.T) {
+	src := `<html><body style="margin:0">` +
+		`<h1 style="display:flex;font-size:20px">React</h1>` +
+		`</body></html>`
+	h1 := findBox(layoutHTML(t, src, 300), "h1")
+	if h1.W <= 0 || h1.H <= 0 {
+		t.Fatalf("bare-text flex container = W=%v H=%v, want both > 0", h1.W, h1.H)
+	}
+	if len(h1.Lines) != 1 || len(h1.Lines[0].Items) != 1 || h1.Lines[0].Items[0].Text != "React" {
+		t.Fatalf("bare-text flex container lines = %+v, want one line with the text", h1.Lines)
+	}
+}
+
+// TestFlexContainerEmptyStaysCollapsed covers that the bare-text fallback
+// does not paper over a GENUINELY empty flex container (no element children
+// AND no text either) — it must still collapse to zero, not synthesize
+// content that was never there.
+func TestFlexContainerEmptyStaysCollapsed(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex"></div></body></html>`
+	d := findBox(layoutHTML(t, src, 300), "div")
+	if d.W != 0 && d.H != 0 {
+		t.Errorf("genuinely empty flex container = W=%v H=%v, want both 0", d.W, d.H)
+	}
+}
+
 func TestFlexItemAutoBasisPreferred(t *testing.T) {
 	// A flex item with no width/basis uses its max-content width ("xxx" = 30).
 	src := `<html><body style="margin:0"><div style="display:flex">` +

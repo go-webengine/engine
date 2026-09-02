@@ -18,6 +18,60 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-02 (cont. 3) — a real flexbox layout bug fixed: a `display:flex` element with bare text content collapsed to zero size
+
+react.dev held the corpus's highest pixdiff for a while: its hero `<h1>React</h1>`
+and both CTA buttons ("Learn React", "API Reference") rendered as empty
+space — not hidden, not the wrong colour, simply ABSENT, with none of their
+layout space reserved either.
+
+Root-caused as a genuine flexbox layout engine bug, confirmed with a live
+box-tree dump then isolated to a minimal repro
+(`<h1 style="display:flex">React</h1>`) BEFORE touching any code — two
+compounding gaps, both in code that only ever expected a flex container's
+content to be wrapped in element children:
+
+- **`preferredWidth`'s flex-row branch summed only `Element` children's
+  widths**, so a flex container whose content is bare text with no wrapping
+  element at all (forming a single anonymous flex item per spec — a very
+  common Tailwind/utility-CSS pattern: `display:flex` added to an element
+  purely for `align-items`/`gap`, with nothing else inside) counted zero
+  children and returned a bare `0`, collapsing the element's shrink-to-fit
+  width to zero.
+- **`flexItems` has the identical Element-only blind spot**, so `flex()`
+  itself collected zero items for such a container and returned immediately
+  having laid out nothing at all — collapsing height to zero too, independent
+  of the width bug.
+
+Fixed both by falling back to the SAME inline-formatting-context path
+`contents()` already uses for a plain, non-flex, no-block-child element:
+correct for the common single-line case (there is only ever one synthetic
+item, so justify-content/align-items/gap have nothing to distribute across,
+and are not modelled for it — a genuinely empty container, no element AND no
+text, still correctly collapses to zero, unaffected by this fix).
+
+**Verified live:** the "Learn React" button now renders with its real text
+and pill shape at the correct size. The `<h1>` and "API Reference" button
+now ALSO occupy correct, non-zero layout space with the right text content —
+but remain visually invisible for a SEPARATE, already-diagnosed reason:
+react.dev's client-side router failure (the same failure `reskin()`,
+engine#84, already guards against) removes these specific DOM nodes from the
+live tree in the same script pass that ALSO toggles dark mode; `reskin`
+correctly preserves such an orphaned node's PRE-failure style (its node is
+no longer in the newly-cascaded style map at all, so there's nothing for it
+to update to), which for these ones predates the dark-mode class add,
+leaving them stuck in `text-primary`'s light-mode colour on a dark
+background. This is a real, narrower limitation of the reskin mechanism
+(fixing it well would need diffing the DOM before/after a rejected pass
+rather than a single before/after style map) — noted here rather than
+chased into a much larger redesign this round.
+
+**Measured:** `bench/cmd/compare`: SSIM 0.587→0.605, pixdiff 49.5%→47.6%.
+Confirmed via the full 10-page bench corpus that go.dev/blog ALSO improved as
+an unplanned side effect (pixdiff 31.1%→28.1%) — this bug was never specific
+to react.dev, and likely affects any page using the same common
+`display:flex`-on-a-text-only-element pattern.
+
 ## 2026-09-02 (cont. 2) — CSS `mask-image` implemented, and background/mask SVG sources now actually decode
 
 en.wikipedia.org held the corpus's lowest SSIM (0.422) since long before this
@@ -1525,6 +1579,23 @@ content, with a styled header row, per-cell borders and right-aligned numeric
 columns.
 
 ## Known gaps (updated 2026-08-30 — see the note above on why this drifted)
+
+- **The settle loop's empty-render guard (`reskin()`, engine#84) cannot
+  restyle a node that a rejected script pass REMOVED from the DOM** —
+  confirmed live on react.dev (2026-09-02, engine#92): its hero `<h1>` and
+  one CTA button are removed by the same router-failure script pass that
+  also toggles dark mode, and since a removed node is absent from that
+  pass's freshly-cascaded style map, `reskin` has nothing to update it TO —
+  it correctly keeps the node's pre-failure style rather than guessing, but
+  that style can predate the dark-mode class add, leaving such content
+  stuck in its light-mode colour on a dark background even though its
+  geometry and text content are preserved correctly. A general fix would
+  need to diff the DOM before/after a rejected pass (to distinguish "removed
+  and needs its last-known style" from "still present, re-cascade
+  normally") rather than a single before/after style-map lookup — not
+  attempted, since the narrower geometry-preserving behaviour `reskin`
+  already has covers the more common case (surviving content that only
+  changed style, not content that was removed outright).
 
 Several bullets that stood here since Phase 0/1 were flatly wrong by the time of
 the 2026-08-30 audit — JavaScript, external stylesheets, `overflow` clipping,

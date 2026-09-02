@@ -170,6 +170,42 @@ func TestPreferredWidthNestedBlocks(t *testing.T) {
 	}
 }
 
+// TestPreferredWidthFlexRowBareText covers a real regression: preferredWidth's
+// flex-row branch only ever summed ELEMENT children, so a `display:flex`
+// element whose content is bare text (no wrapping element at all — e.g.
+// `<h1 style="display:flex">React</h1>`, confirmed live on react.dev's hero
+// heading and its two CTA buttons) fell through the loop with zero element
+// children counted and returned a bare 0, collapsing the whole element to
+// zero width (and, via layoutIsolated laying it out at that zero content
+// width, zero height too).
+func TestPreferredWidthFlexRowBareText(t *testing.T) {
+	l := &layouter{m: fakeMeasurer{}, floats: &floatCtx{}}
+	root, _ := dom.Parse(`<html><body><h1 id="h" style="display:flex">React</h1></body></html>`)
+	l.sm = css.Cascade(root)
+	h1 := dom.Find(root, "h1")
+	// "React" = 5 chars = 50 under fakeMeasurer, same convention as the pre
+	// case above — NOT 0.
+	if got := l.preferredWidth(h1, l.sm[h1]); got != 50 {
+		t.Errorf("flex-row bare-text preferred = %v, want 50", got)
+	}
+}
+
+// TestPreferredWidthFlexRowMixedTextAndElement covers that the fix's
+// text-only fallback does not regress the ORIGINAL element-summing case this
+// branch exists for (a flex row with real element children still sums their
+// widths, not falls back to treating the whole node as one inline run).
+func TestPreferredWidthFlexRowMixedTextAndElement(t *testing.T) {
+	l := &layouter{m: fakeMeasurer{}, floats: &floatCtx{}}
+	root, _ := dom.Parse(`<html><body><div id="d" style="display:flex">` +
+		`<span style="margin:0">xx</span><span style="margin:0">xxxxx</span></div></body></html>`)
+	l.sm = css.Cascade(root)
+	d := dom.Find(root, "div")
+	// Sum of the two spans' preferred widths = 20 + 50 = 70 (no gap set).
+	if got := l.preferredWidth(d, l.sm[d]); got != 70 {
+		t.Errorf("flex-row element-sum preferred = %v, want 70 (unchanged by the bare-text fallback)", got)
+	}
+}
+
 // ---- table: caption skip, cellStyle fallback -------------------------------
 
 func TestTableIgnoresNonRows(t *testing.T) {
