@@ -306,6 +306,36 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 				b.removeAttr(n, "checked")
 			}
 		})
+	if n.Tag == "option" {
+		b.accessor(o, "selected",
+			func() goja.Value { _, ok := n.Attribute("selected"); return b.vm.ToValue(ok) },
+			func(v goja.Value) {
+				if !v.ToBoolean() {
+					b.removeAttr(n, "selected")
+					return
+				}
+				b.setAttr(n, "selected", "")
+				// A single-select <select> holds at most one selected
+				// option: marking this one selected implicitly deselects
+				// its siblings, matching real <option>.selected semantics.
+				// <select multiple> is left alone (opting in another option
+				// does not, and should not, clear the others).
+				if sel := ancestorSelect(n); sel != nil {
+					if _, multiple := sel.Attribute("multiple"); !multiple {
+						for _, opt := range byTag(sel, "option") {
+							if opt != n {
+								b.removeAttr(opt, "selected")
+							}
+						}
+					}
+				}
+			})
+	}
+	if n.Tag == "select" {
+		b.accessor(o, "selectedIndex",
+			func() goja.Value { return b.vm.ToValue(selectedOptionIndex(n)) },
+			func(v goja.Value) { b.selectOptionAt(n, int(v.ToInteger())) })
+	}
 	b.accessor(o, "href",
 		func() goja.Value { v, _ := n.Attribute("href"); return b.vm.ToValue(v) },
 		func(v goja.Value) { b.setAttr(n, "href", v.String()) })
@@ -316,6 +346,49 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		func() goja.Value { v, _ := n.Attribute("title"); return b.vm.ToValue(v) },
 		func(v goja.Value) { b.setAttr(n, "title", v.String()) })
 	b.accessor(o, "isConnected", func() goja.Value { return b.vm.ToValue(rooted(n, b.root)) }, nil)
+}
+
+// ancestorSelect walks up from an <option> (possibly through an <optgroup>)
+// to its owning <select>, or nil if it is not inside one.
+func ancestorSelect(n *dom.Node) *dom.Node {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if p.Type == dom.Element && p.Tag == "select" {
+			return p
+		}
+	}
+	return nil
+}
+
+// selectedOptionIndex returns the index (in document order, descending into
+// <optgroup>) of the first <option> descendant of sel carrying a "selected"
+// attribute, or 0 if sel has options but none is marked (the HTML default:
+// the first option is selected unless another explicitly is), or -1 if sel
+// has no <option> descendants at all.
+func selectedOptionIndex(sel *dom.Node) int {
+	opts := byTag(sel, "option")
+	for i, opt := range opts {
+		if _, ok := opt.Attribute("selected"); ok {
+			return i
+		}
+	}
+	if len(opts) > 0 {
+		return 0
+	}
+	return -1
+}
+
+// selectOptionAt marks the i-th <option> descendant (document order) of sel
+// as selected, clearing "selected" from every other option. An out-of-range
+// i (matching how selectedIndex=-1 or an overlarge index behaves in a real
+// browser: no option ends up selected) just clears every option.
+func (b *binder) selectOptionAt(sel *dom.Node, i int) {
+	for idx, opt := range byTag(sel, "option") {
+		if idx == i {
+			b.setAttr(opt, "selected", "")
+		} else {
+			b.removeAttr(opt, "selected")
+		}
+	}
 }
 
 // setAttr/removeAttr mutate the attribute map (creating it as needed).

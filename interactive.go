@@ -100,6 +100,20 @@ func (d *LiveDocument) Frame() (*image.RGBA, *RenderInfo, error) {
 	return img, renderInfo(d.doc, d.rp), nil
 }
 
+// Elements returns the CURRENT general element hit-map (every element's used
+// border-box rect, in the same full-page image pixel space Frame's image
+// uses) — call it fresh after Open or any Interact, since a mutation can
+// move or resize anything. ElementAt resolves a specific point against it.
+func (d *LiveDocument) Elements() map[*dom.Node]layout.Rect {
+	return ElementsFromBox(d.rp.box)
+}
+
+// ElementAt is ElementAt(d.Elements(), pt) — the convenience a caller
+// translating one click coordinate reaches for.
+func (d *LiveDocument) ElementAt(pt image.Point) (*dom.Node, bool) {
+	return ElementAt(d.Elements(), pt)
+}
+
 // Interact runs fn — which mutates the live DOM directly, or (in a later
 // phase) dispatches a synthetic event through the live Session — and then
 // resettles: re-cascades and re-lays-out from whatever fn changed, WITHOUT
