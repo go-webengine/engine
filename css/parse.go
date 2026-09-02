@@ -701,6 +701,25 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if n, err := strconv.Atoi(lv); err == nil {
 			s.ZIndex, s.ZIndexAuto = n, false
 		}
+	case "transform":
+		// This engine has no general CSS transform support (see FIDELITY.md's
+		// Known gaps) — but `translate`/`translateX`/`translateY` is the one
+		// subset worth pulling out on its own: a pure 2D offset, applied like
+		// a relative-position shift with no layout-flow effect, unlike
+		// rotate/scale/skew/matrix which would need real coordinate-transform
+		// support in paint. Confirmed load-bearing live: pkg.go.dev's mobile
+		// nav drawer hides itself off-screen via `transform:translate(100%)`
+		// (only overridden to `translate(0)` by a JS-toggled `.is-active`
+		// class) — without this, the drawer's real `display:block` (its
+		// media-query-gated `display:none` correctly does not apply at this
+		// engine's 1024px test viewport, matching a real browser) rendered it
+		// fully in place, overlapping the page. A value naming any OTHER
+		// function, or mixing one in among translate calls, is left
+		// unsupported entirely (both fields reset to zero) rather than
+		// applying a partial, wrong composition.
+		if tx, ty, ok := parseTransformTranslate(v, emRef); ok {
+			s.TranslateX, s.TranslateY = tx, ty
+		}
 	case "flex-direction":
 		switch lv {
 		case "row", "row-reverse":
@@ -1007,6 +1026,105 @@ func parseLengthPair(v string, emRef float64) (start, end Length, ok bool) {
 		return l0, l1, ok0 && ok1
 	}
 	return Length{}, Length{}, false
+}
+
+// parseTransformTranslate parses a `transform` value that consists ENTIRELY
+// of translate/translateX/translateY function calls (whitespace-separated,
+// per the CSS transform-list grammar), summing their contributions onto the
+// X/Y axes — translations commute, so composing several this way is exact.
+// `none` resolves to (0,0). Any OTHER function name (rotate, scale, skew,
+// matrix, translateZ, perspective, …), or a malformed call, reports ok=false
+// and the caller must leave the style's translate fields untouched — this
+// engine has no general transform support, so a value mixing an
+// unsupported function among translate calls must not apply a partial,
+// wrong composition.
+func parseTransformTranslate(v string, emRef float64) (tx, ty Length, ok bool) {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, "none") || v == "" {
+		return Length{}, Length{}, true
+	}
+	i := 0
+	for i < len(v) {
+		// The leading TrimSpace guarantees v's last character is non-space, so
+		// this can never run past len(v): the loop condition above already
+		// ensures i < len(v) on entry, and skipping only whitespace can reach
+		// len(v) only if everything from here to the end were whitespace,
+		// which the trim rules out everywhere in v, not just at its end.
+		for i < len(v) && isCSSSpace(v[i]) {
+			i++
+		}
+		nameStart := i
+		for i < len(v) && v[i] != '(' {
+			i++
+		}
+		if i >= len(v) {
+			return Length{}, Length{}, false // a function name with no '('
+		}
+		name := strings.ToLower(strings.TrimSpace(v[nameStart:i]))
+		closeIdx, matched := matchParen(v, i)
+		if !matched {
+			return Length{}, Length{}, false
+		}
+		args := strings.Split(v[i+1:closeIdx], ",")
+		i = closeIdx + 1
+
+		switch name {
+		case "translate":
+			x, okx := parseLength(strings.TrimSpace(args[0]), emRef)
+			if !okx {
+				return Length{}, Length{}, false
+			}
+			tx = addLength(tx, x)
+			if len(args) > 1 {
+				y, oky := parseLength(strings.TrimSpace(args[1]), emRef)
+				if !oky {
+					return Length{}, Length{}, false
+				}
+				ty = addLength(ty, y)
+			}
+		case "translatex":
+			x, okx := parseLength(strings.TrimSpace(args[0]), emRef)
+			if !okx {
+				return Length{}, Length{}, false
+			}
+			tx = addLength(tx, x)
+		case "translatey":
+			y, oky := parseLength(strings.TrimSpace(args[0]), emRef)
+			if !oky {
+				return Length{}, Length{}, false
+			}
+			ty = addLength(ty, y)
+		default:
+			return Length{}, Length{}, false
+		}
+	}
+	return tx, ty, true
+}
+
+// addLength sums two same-axis translate contributions. When both are the
+// same kind (both px-resolved or both percentages) the sum is exact; a page
+// mixing units across multiple translate calls on the SAME axis (e.g.
+// `translateX(10px) translateX(5%)`) cannot be represented by this engine's
+// Length type (either an absolute px value or a percentage, never both) —
+// the later call wins outright rather than silently dropping one
+// contribution. This is a rare combination in practice; the common
+// single-function case (the only shape this engine's own live regression
+// needed) is always exact.
+func addLength(a, b Length) Length {
+	switch {
+	case a.IsPercent && b.IsPercent:
+		return Length{IsPercent: true, Percent: a.Percent + b.Percent}
+	case !a.IsPercent && !b.IsPercent:
+		return Length{Px: a.Px + b.Px}
+	default:
+		return b
+	}
+}
+
+// isCSSSpace reports whether c is CSS whitespace, for scanning a
+// space-separated transform-function list.
+func isCSSSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 func parseFontFamily(lv string) FontFamily {

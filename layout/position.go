@@ -91,9 +91,12 @@ func indexBoxes(box *Box, nb map[*dom.Node]*Box) {
 }
 
 // applyRelative walks the in-flow tree and shifts each relative/sticky box (and
-// its subtree) by its resolved offset. cbW/cbH are the containing block (the
-// parent content box) dimensions used to resolve percentage offsets. Children
-// are visited with this box's content box as their containing block.
+// its subtree) by its resolved offset, THEN applies any `transform: translate`
+// shift (see applyTransformTranslate) — every box, regardless of position,
+// since transform is independent of positioning. cbW/cbH are the containing
+// block (the parent content box) dimensions used to resolve percentage
+// offsets. Children are visited with this box's content box as their
+// containing block.
 func applyRelative(box *Box, cbW, cbH float64) {
 	for _, ch := range box.Children {
 		applyRelative(ch, box.ContentW, box.ContentH)
@@ -104,6 +107,22 @@ func applyRelative(box *Box, cbW, cbH float64) {
 		dx, dy := relativeOffset(box.Style, cbW, cbH)
 		translateBox(box, dx, dy)
 	}
+	applyTransformTranslate(box)
+}
+
+// applyTransformTranslate shifts box by its own `transform: translate(...)`
+// offset (see css.Style.TranslateX/Y, parseTransformTranslate) — a percentage
+// resolves against the box's OWN border-box size, per the CSS Transforms spec
+// (the default reference box), unlike a position offset's containing-block
+// percentage. A box built via the `&Box{}` empty-document fallback in
+// layout.go carries no Style; skip it rather than dereference nil.
+func applyTransformTranslate(box *Box) {
+	if box.Style == nil {
+		return
+	}
+	tx := box.Style.TranslateX.Resolve(box.W)
+	ty := box.Style.TranslateY.Resolve(box.H)
+	translateBox(box, tx, ty)
 }
 
 // relativeOffset resolves the paint shift of a relatively positioned box. The
@@ -200,6 +219,12 @@ func (l *layouter) placeAbsolute(n *dom.Node, st *css.Style, cb cbRect, item out
 	}
 
 	translateBox(box, x-box.X, y-box.Y)
+	// The box's OWN transform must be applied AFTER this final placement, not
+	// via the applyRelative call above: that call runs before x/y are known,
+	// so any shift it applied there would be exactly cancelled by the
+	// x-box.X/y-box.Y delta above (transform is meant to compose ON TOP of
+	// the box's normal position, not be absorbed into computing it).
+	applyTransformTranslate(box)
 	return box
 }
 

@@ -496,6 +496,19 @@ type Style struct {
 	ZIndex     int
 	ZIndexAuto bool // true == "auto" (the initial value)
 
+	// TranslateX/TranslateY are the ONE subset of the `transform` property
+	// this engine understands: a pure 2D translate (see parseTransformTranslate
+	// in parse.go). They are a paint-time offset applied like a relative
+	// position shift, not a layout input — the initial/reset value (Length's
+	// Go zero value, IsPercent false and Px 0) is exactly "no translation", so
+	// unlike most other reset-not-inherited fields there is nothing to list
+	// explicitly in inheritFrom. Any OTHER transform function (rotate, scale,
+	// skew, matrix, 3D, or a mix including translate) is unsupported and
+	// leaves both fields at zero, same as before this property was understood
+	// at all — see FIDELITY.md's Known gaps.
+	TranslateX Length
+	TranslateY Length
+
 	// Flex container properties (meaningful when Display == DisplayFlex).
 	FlexDirection  FlexDirection
 	FlexWrap       FlexWrap

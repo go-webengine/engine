@@ -85,6 +85,67 @@ func TestAbsoluteAgainstPositionedAncestorPaddingBox(t *testing.T) {
 	}
 }
 
+// TestTransformTranslateRelative covers a real regression: `transform` was
+// entirely unimplemented, so an off-canvas element hidden via
+// `transform: translate(...)` rendered fully in place. This covers the
+// simplest case: a plain in-flow (here also relative, to prove the two
+// shifts COMPOSE rather than one overwriting the other) box.
+func TestTransformTranslateRelative(t *testing.T) {
+	src := `<html><body style="margin:0;padding:0">` +
+		`<div id="box" style="position:relative;top:10px;left:5px;transform:translate(3px,4px);width:40px;height:20px"></div>` +
+		`</body></html>`
+	root := layoutHTML(t, src, 400)
+	box := findBoxByID(root, "box")
+	// Static position (0,0) + relative offset (5,10) + transform (3,4).
+	assertF(t, "box.X", box.X, 8)
+	assertF(t, "box.Y", box.Y, 14)
+}
+
+// TestTransformTranslatePercentAgainstOwnBox covers that a translate()
+// percentage resolves against the box's OWN border-box size, per the CSS
+// Transforms spec's default reference box — a DIFFERENT rule from a position
+// offset's percentage, which resolves against the containing block.
+func TestTransformTranslatePercentAgainstOwnBox(t *testing.T) {
+	src := `<html><body style="margin:0;padding:0">` +
+		`<div id="box" style="width:40px;height:20px;transform:translate(50%,50%)"></div>` +
+		`</body></html>`
+	root := layoutHTML(t, src, 400)
+	box := findBoxByID(root, "box")
+	assertF(t, "box.X", box.X, 20) // 50% of the box's OWN 40px width
+	assertF(t, "box.Y", box.Y, 10) // 50% of the box's OWN 20px height
+}
+
+// TestApplyTransformTranslateNilStyle covers the one box this engine ever
+// produces with no Style at all (layout.go's empty-document fallback,
+// &Box{}) — applyTransformTranslate must skip it rather than panic.
+func TestApplyTransformTranslateNilStyle(t *testing.T) {
+	box := &Box{}
+	applyTransformTranslate(box) // must not panic
+	assertF(t, "box.X", box.X, 0)
+}
+
+// TestTransformTranslateOnAbsoluteBoxNotCancelled is the exact live
+// regression this engine's own settle/placement math could have silently
+// re-introduced: an absolutely-positioned box's transform must compose ON
+// TOP of its resolved (inset-based) position, not be applied before that
+// position is computed and so get exactly cancelled by it. Confirmed live
+// on pkg.go.dev: a `position:fixed` off-canvas nav drawer hides itself with
+// `transform:translate(100%)` — computing the transform too early here
+// silently erased it, rendering the drawer fully in place.
+func TestTransformTranslateOnAbsoluteBoxNotCancelled(t *testing.T) {
+	src := `<html><body style="margin:0;padding:0">` +
+		`<div id="rel" style="position:relative;width:200px;height:100px">` +
+		`<div id="abs" style="position:absolute;top:10px;left:15px;width:40px;height:20px;transform:translate(100%,0)"></div>` +
+		`</div></body></html>`
+	root := layoutHTML(t, src, 400)
+	abs := findBoxByID(root, "abs")
+	// Resolved position (15,10) relative to rel's padding box, PLUS a
+	// translate(100%) of the box's own 40px width — not (15,10) alone, which
+	// is what an "applied too early, then overwritten" bug would produce.
+	assertF(t, "abs.X", abs.X, 55)
+	assertF(t, "abs.Y", abs.Y, 10)
+}
+
 // TestAbsoluteSkipsStaticAncestorToPositionedOne covers the walk that steps past
 // a static ancestor to the nearest positioned one.
 func TestAbsoluteSkipsStaticAncestorToPositionedOne(t *testing.T) {

@@ -18,6 +18,58 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-02 (cont.) — pkg.go.dev's header overlay closed: `transform: translate()` and native `<details>`/`<summary>` hiding
+
+pkg.go.dev/net/http had the corpus's highest pixdiff (47.1%) after the
+tailwindcss.com fix below. Chased visually: a mobile navigation drawer
+rendered permanently expanded across the whole page, overlapping the header
+and content, and a help tooltip's real text rendered permanently visible in
+a bordered box at the very top-left of the page. Two separate, unrelated
+root causes:
+
+- **This engine had NO CSS `transform` support at all** (still true in
+  general — see Known gaps below), but pulled out ONE well-scoped subset:
+  `translate`/`translateX`/`translateY`, a pure 2D offset with no layout-flow
+  effect, applied exactly like a relative-position shift. pkg.go.dev's
+  mobile nav drawer hides itself off-screen with
+  `transform: translate(100%)` (only brought into view by a JS-toggled
+  `.is-active` class setting `translate(0)`); its OWN `display:none` is
+  gated behind `@media (width >= 65rem)`, which correctly does NOT apply at
+  this engine's 1024px (64rem) test viewport — matching a real browser,
+  which relies on the transform, not `display`, to hide it there. Without
+  transform support, the drawer's real `display:block` at this viewport
+  rendered it fully in place instead of pushed off-screen. Implemented in
+  `css/parse.go` (`parseTransformTranslate`) + `layout/position.go`
+  (`applyTransformTranslate`, threaded through the existing relative-offset
+  pass and, separately, applied AFTER an absolutely/fixed-positioned box's
+  final placement — applying it any earlier gets exactly cancelled by the
+  placement math, caught by a dedicated regression test). A `transform`
+  naming any OTHER function (rotate, scale, skew, matrix, 3D, or a mix
+  including translate) is left entirely unsupported, same as before.
+- **Native `<details>`/`<summary>` disclosure semantics were entirely
+  unimplemented** — a closed `<details>` (the default; no `open` attribute)
+  rendered ALL its content, not just the `<summary>`. pkg.go.dev's help
+  tooltips are exactly `<details class="go-Tooltip"><summary>...</summary>
+  <p role="tooltip">the tooltip text</p></details>`, only ever opened by a
+  click a static render never triggers. Fixed as a genuine UA-stylesheet
+  rule (`details:not([open]) > :not(summary) { display: none }`, added to
+  `uaDescendantRules` — expressible directly with this engine's existing
+  attribute-selector and `:not()` support, no new selector feature needed),
+  matching a real browser's own native rendering rule for the element,
+  applied at UA precedence so any author rule targeting the hidden content
+  still overrides it.
+
+**Verified live:** the nav drawer and every tooltip are gone from the
+rendered page; `bench/cmd/compare`: pixdiff 47.1%→45.4%, SSIM roughly held
+(0.539→0.534, within this page's already-documented live-content-drift
+noise band). The improvement is real but modest in the AGGREGATE score
+because a separate, larger, NOT-yet-chased issue dominates this page's
+remaining diff: its genuine "Index" section (an always-visible, real content
+list of every exported symbol) appears to render at a different vertical
+position than Chrome's, most likely from a deeper multi-column grid/flex
+layout difference in the page shell — flagged for a future session rather
+than guessed at further this round.
+
 ## 2026-09-02 — tailwindcss.com's whole layout ROOT-CAUSED and fixed: THREE independent, foundational CSS gaps (calc(), `inherit`, `inset`)
 
 tailwindcss.com was the worst score in the bench corpus after the MDN fix
@@ -1462,9 +1514,17 @@ Restated against what was actually verified that day:
   container size is the border-box, not the content box a browser uses, so a
   container with substantial border/padding could resolve a boundary
   condition slightly differently than Chrome.
-- **No CSS `transform`** (2D or 3D) and no `conic-gradient`. A slide-out drawer
-  or carousel positioned via `transform: translateX(...)` renders at its
-  untransformed in-flow position instead. Also means a `transform`/
+- **No CSS `transform`** (2D or 3D) and no `conic-gradient`, EXCEPT
+  `translate`/`translateX`/`translateY` (added 2026-09-02, engine#87, for
+  pkg.go.dev's off-canvas nav drawer — see FIDELITY.md's log entry above): a
+  pure 2D offset applied like a relative-position shift, with no
+  layout-flow effect, is the one function pulled out on its own since it
+  needs no real coordinate-transform machinery in paint. `rotate`, `scale`,
+  `skew`, `matrix`, any 3D function, and a `transform` value that MIXES one
+  of those in among translate calls are all still entirely unsupported — a
+  carousel positioned via `transform: translateX(...) rotate(...)` renders
+  at its untransformed in-flow position, same as before this carve-out.
+  Also means a `transform`/
   `perspective` on an ancestor never establishes a new containing block for an
   absolutely-positioned descendant the way the spec says it should — that
   descendant's containing block resolution climbs straight past it to the
