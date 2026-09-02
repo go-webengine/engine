@@ -205,6 +205,57 @@ func TestAttributes(t *testing.T) {
 		"hid=true", "hid2=false", "id=newid", "cn=x y", "val=v", "chk=true", "chk2=false", "props=hsti")
 }
 
+func TestSelectOptions(t *testing.T) {
+	_, logs, _ := runJS(t, `<html><body><select id="s">
+		<option value="a">A</option>
+		<option value="b">B</option>
+		<option value="c" selected>C</option>
+	</select><script>
+		var s = document.getElementById('s');
+		var opts = s.getElementsByTagName('option');
+		console.log('initial=' + s.selectedIndex);
+		console.log('sel0=' + opts[0].selected + ' sel2=' + opts[2].selected);
+		s.selectedIndex = 0;
+		console.log('after=' + s.selectedIndex);
+		console.log('sel0b=' + opts[0].selected + ' sel2b=' + opts[2].selected);
+		opts[1].selected = true;
+		console.log('viaOption=' + s.selectedIndex);
+	</script></body></html>`)
+	mustHave(t, logs,
+		"initial=2", "sel0=false sel2=true",
+		"after=0", "sel0b=true sel2b=false",
+		"viaOption=1")
+}
+
+func TestSelectDefaultsToFirstOptionWithNoneMarked(t *testing.T) {
+	_, logs, _ := runJS(t, `<html><body><select id="s">
+		<option value="a">A</option>
+		<option value="b">B</option>
+	</select><script>
+		console.log('idx=' + document.getElementById('s').selectedIndex);
+	</script></body></html>`)
+	mustHave(t, logs, "idx=0")
+}
+
+func TestSelectWithNoOptionsReportsNegativeOne(t *testing.T) {
+	_, logs, _ := runJS(t, `<html><body><select id="s"></select><script>
+		console.log('idx=' + document.getElementById('s').selectedIndex);
+	</script></body></html>`)
+	mustHave(t, logs, "idx=-1")
+}
+
+// TestOptionSelectedOutsideSelect covers an <option> with no owning <select>
+// (malformed markup, or one detached by a script) — setting .selected must
+// still just set the attribute, not panic walking a nil ancestor chain.
+func TestOptionSelectedOutsideSelect(t *testing.T) {
+	_, logs, _ := runJS(t, `<html><body><option id="o">O</option><script>
+		var o = document.getElementById('o');
+		o.selected = true;
+		console.log('sel=' + o.selected);
+	</script></body></html>`)
+	mustHave(t, logs, "sel=true")
+}
+
 func TestTextAndHTML(t *testing.T) {
 	root, logs, _ := runJS(t, page(`
 		var d=document.getElementById('d');
