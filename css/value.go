@@ -560,6 +560,22 @@ type Style struct {
 	BackgroundPosition []BgPosition
 	BackgroundRepeat   []BgRepeat
 
+	// MaskImage is the resolved absolute URL of a `mask-image`/
+	// `-webkit-mask-image: url(...)` — empty means no mask (the common case).
+	// Unlike background-image, a mask does not paint its own pixels: it is an
+	// alpha stencil applied over everything the ELEMENT ITSELF paints (colour,
+	// background, borders, text, children), stretched to fill the element's
+	// border box (this engine's one deliberate simplification — the real
+	// mask-size/mask-position/mask-repeat grammar is not modelled, matching
+	// how far this engine narrowly scoped `transform: translate()`). Confirmed
+	// load-bearing live: modern MediaWiki (Wikipedia's Vector-2022 skin, and
+	// most of its UI icon systems generally) renders EVERY toolbar icon —
+	// hamburger menu, search, language switcher — as an empty, solid-coloured
+	// <span> cut into shape by exactly this mechanism, so the icon recolours
+	// for dark mode without needing a second image asset. A gradient or other
+	// non-url() mask value is not modelled and leaves this empty.
+	MaskImage string
+
 	// BoxShadows are the element's box-shadow layers (first-listed paints on top).
 	BoxShadows []BoxShadow
 

@@ -253,21 +253,31 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 // returning intrinsic bitmaps keyed by their raw url() token (the same key the
 // paint layer stores). Gradient layers need no bitmap. Failures (fetch/decode)
 // are skipped; the count is bounded by MaxImages, and each distinct URL is
-// fetched at most once.
+// fetched at most once. A `mask-image: url(...)` shares this exact fetch
+// path and the returned map — paint applies it as an alpha stencil rather
+// than painting it directly (see css.Style.MaskImage), but it is the SAME
+// kind of resource (a bitmap or SVG named by a url() token) with no reason to
+// duplicate the fetch/decode/budget machinery for it.
 func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css.StyleMap) map[string]image.Image {
 	// Collect distinct raw url() tokens in document order.
 	seen := map[string]bool{}
 	var urls []string
+	add := func(u string) {
+		if u != "" && !seen[u] {
+			seen[u] = true
+			urls = append(urls, u)
+		}
+	}
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
 		if n.Type == dom.Element {
 			if st := sm[n]; st != nil {
 				for _, layer := range st.BackgroundImages {
-					if layer.Kind == css.BgURL && layer.URL != "" && !seen[layer.URL] {
-						seen[layer.URL] = true
-						urls = append(urls, layer.URL)
+					if layer.Kind == css.BgURL {
+						add(layer.URL)
 					}
 				}
+				add(st.MaskImage)
 			}
 		}
 		for _, c := range n.Children {
@@ -321,7 +331,8 @@ func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css
 	return out
 }
 
-// loadOneBackground fetches and decodes one accepted background-image url,
+// loadOneBackground fetches and decodes one accepted background-image (or
+// mask-image, which shares this cache — see loadBackgroundImages) url,
 // returning nil on a cancelled context, a failed fetch, or an undecodable /
 // zero-size payload. Safe to run concurrently for distinct urls.
 func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw string) image.Image {
@@ -331,6 +342,23 @@ func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw strin
 	data, ok := e.fetchImageBytes(ctx, doc.URL, raw)
 	if !ok {
 		return nil
+	}
+	// An SVG source (by URL extension or, since a `mask-image`/background-image
+	// icon service commonly serves SVG from an extensionless query-string URL —
+	// confirmed live: Wikipedia's Vector-2022 skin's whole icon set works this
+	// way — sniffed content) rasterises via the same SVG path <img>/inline <svg>
+	// use. There is no single consuming element here (a background/mask image is
+	// cached per-URL, shared across however many elements reference it), so
+	// there is no CSS size or `currentColor` to bind to: svgToBitmap's element
+	// params are all zero/empty, falling back to the SVG's own intrinsic
+	// viewBox/root size — paint's scaleTile resamples to whatever the actual
+	// consumer draws it at.
+	if looksLikeSVG(data, raw) {
+		b, w, h, ok := e.svgToBitmap(data, nil, 0, 0, 0, "")
+		if !ok || w <= 0 || h <= 0 {
+			return nil
+		}
+		return b
 	}
 	img, err := codec.Decode(data)
 	if err != nil {

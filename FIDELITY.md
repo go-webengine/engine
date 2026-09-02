@@ -18,6 +18,61 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-02 (cont. 2) — CSS `mask-image` implemented, and background/mask SVG sources now actually decode
+
+en.wikipedia.org held the corpus's lowest SSIM (0.422) since long before this
+week's fixes. Chased visually: the entire top toolbar's icons (hamburger
+menu, search, language switcher, user/notification icons) rendered as plain
+solid-coloured squares instead of their real shapes.
+
+- **CSS `mask-image` (and `-webkit-mask-image`) was entirely unimplemented.**
+  Modern MediaWiki's Vector-2022 skin — like a great many icon systems across
+  the web — renders EVERY toolbar icon as an empty `<span>`, sized to a small
+  square, painted with a solid `background-color`, and cut into its real
+  shape by `mask-image: url(...)` (an alpha stencil over everything the
+  element paints, not a second background layer) — precisely so the icon can
+  recolour for dark mode from CSS alone, with no second image asset. Without
+  mask support, the `<span>` simply painted as a solid square. Implemented:
+  `css.Style.MaskImage` (only a single `url()` mask is modelled — a gradient
+  or multi-layer mask is left unsupported, this engine's one deliberate
+  simplification, matching how narrowly `transform: translate()` was scoped
+  two entries above), and `paint.applyMask`, which reuses the SAME
+  offscreen-group-buffer mechanism `opacity`/`filter` already use (render the
+  element's subtree into an isolated buffer, then multiply its alpha by the
+  mask's alpha before compositing) rather than inventing new paint
+  machinery. The mask is stretched to fill the element's own border box —
+  the real `mask-size`/`mask-position`/`mask-repeat` grammar is not modelled
+  — and anything a child paints OUTSIDE that border box is fully masked out,
+  matching the spec's "mask affects the whole element" rule.
+- **Found and fixed a SECOND, deeper bug the first one exposed: `mask-image`
+  (and, it turns out, ordinary `background-image`) URLs pointing at an SVG
+  document never actually decoded — at all, regardless of this fix.**
+  `loadOneBackground` only ever called the raster-only `codec.Decode`; the
+  `<img>`/inline-`<svg>` path's own SVG rasteriser (`svgToBitmap`) was never
+  wired in for background/mask sources. Worse: even the URL-based
+  vector/raster BUDGET check (`srcLooksLikeSVG`) matches only a literal
+  `.svg` path or an `image/svg` string in the URL — Wikipedia's icon service
+  serves SVG from an extensionless, query-string-driven URL
+  (`load.php?...&image=menu&format=original`, `Content-Type: image/svg+xml`
+  only in the HTTP response), which that heuristic cannot see. Fixed by
+  routing `loadOneBackground` through `looksLikeSVG` (the SAME helper
+  `<img>` loading already uses, which falls back to sniffing an `<svg`
+  tag in the fetched bytes when the URL gives no hint) before falling back
+  to raster decode.
+- **Verified live:** every toolbar icon (hamburger menu, search, language
+  switcher, and more) now renders its real shape.
+- **Honest measurement note:** the aggregate SSIM/pixdiff for
+  en.wikipedia.org barely moved (0.422 unchanged, 22.4%→22.4%) despite this
+  real, visually-confirmed fix — the icons affected are a tiny fraction of a
+  very tall (24818px), extremely text-dense page, and the region comparison
+  is dominated by inherent font-rasteriser variance between this engine and
+  Chrome across that dense body text (a long-documented, expected,
+  never-reaches-zero source of "difference" on prose-heavy pages — see this
+  file's `Reproduce`/`Visual-fidelity protocol` sections). `mask-image` and
+  SVG background/mask decoding are real, general capabilities confirmed to
+  matter for at least one live site's entire icon system, independent of
+  whether they moved this specific page's score.
+
 ## 2026-09-02 (cont.) — pkg.go.dev's header overlay closed: `transform: translate()` and native `<details>`/`<summary>` hiding
 
 pkg.go.dev/net/http had the corpus's highest pixdiff (47.1%) after the
@@ -1533,6 +1588,18 @@ Restated against what was actually verified that day:
   real-world case, confirmed live on tailwindcss.com's 3D-transforms card,
   2026-09-02) but would be wrong for a page relying on `transform` ALONE to
   scope absolute children.
+- **`mask-image`/`-webkit-mask-image` only understands a single `url()`
+  mask, stretched to fill the element's own border box** (added 2026-09-02,
+  engine#88, confirmed load-bearing live: Wikipedia's Vector-2022 skin
+  renders its ENTIRE toolbar icon set this way). The real `mask-size`/
+  `mask-position`/`mask-repeat`/`mask-origin` grammar is not modelled, and a
+  gradient mask or a multi-layer `mask` shorthand is left unsupported
+  entirely. As a side effect of fixing this, `background-image`/`mask-image`
+  URLs pointing at an SVG document now actually decode (previously they
+  silently rendered nothing, regardless of mask support — `loadOneBackground`
+  only ever tried a raster decoder); an SVG source is detected either by its
+  URL or by sniffing the fetched bytes, matching how `<img src=*.svg>`
+  already worked.
 - **`calc()` only understands pure arithmetic over lengths and bare numbers**
   (`+`/`-`/`*`/`/`, nested parens — added 2026-09-02, engine#86, for
   Tailwind v4's `calc(var(--spacing) * N)` spacing scale). A `calc()` mixing

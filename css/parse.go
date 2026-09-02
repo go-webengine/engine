@@ -457,6 +457,17 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if strings.EqualFold(lv, "none") {
 			s.BackgroundImages = nil
 		}
+	case "mask-image", "-webkit-mask-image":
+		// Only a single url() mask is modelled (see the field's doc comment on
+		// Style.MaskImage) — a gradient or any other mask value is left as a
+		// no-op, same as an unrecognised value everywhere else in this switch.
+		if lv == "none" {
+			s.MaskImage = ""
+		} else if strings.HasPrefix(lv, "url(") {
+			if u, ok := parseURLToken(v); ok {
+				s.MaskImage = u
+			}
+		}
 	case "background-size":
 		if sz, ok := parseBackgroundSizeList(v, emRef); ok {
 			s.BackgroundSize = sz

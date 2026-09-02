@@ -18,6 +18,45 @@ func TestApplyBackgroundImageProperty(t *testing.T) {
 	}
 }
 
+// TestApplyMaskImage covers a real regression: `mask-image` was entirely
+// unimplemented, so an empty `<span>` icon cut into shape by a mask (rather
+// than painted via background-image — confirmed load-bearing live: every
+// toolbar icon on Wikipedia's Vector-2022 skin works this way) never got the
+// URL it needs fetched, and rendered as a plain solid-coloured square.
+func TestApplyMaskImage(t *testing.T) {
+	s := &Style{}
+	s.apply(Declaration{Property: "mask-image", Value: "url(icon.svg)"}, 16, nil)
+	if s.MaskImage != "icon.svg" {
+		t.Errorf("mask-image url = %q, want icon.svg", s.MaskImage)
+	}
+	// The -webkit- prefixed form (what real sites emit for wider browser
+	// support) sets the SAME field.
+	s = &Style{}
+	s.apply(Declaration{Property: "-webkit-mask-image", Value: "url(icon2.svg)"}, 16, nil)
+	if s.MaskImage != "icon2.svg" {
+		t.Errorf("-webkit-mask-image url = %q, want icon2.svg", s.MaskImage)
+	}
+	// A quoted url() argument is unquoted, matching background-image's url().
+	s = &Style{}
+	s.apply(Declaration{Property: "mask-image", Value: `url("quoted.svg")`}, 16, nil)
+	if s.MaskImage != "quoted.svg" {
+		t.Errorf("quoted mask-image url = %q, want quoted.svg", s.MaskImage)
+	}
+	// none resets it.
+	s = &Style{MaskImage: "icon.svg"}
+	s.apply(Declaration{Property: "mask-image", Value: "none"}, 16, nil)
+	if s.MaskImage != "" {
+		t.Errorf("mask-image:none did not reset: %q", s.MaskImage)
+	}
+	// A gradient or any other non-url() mask value is not modelled — left
+	// unchanged, same as every other unrecognised value in this switch.
+	s = &Style{MaskImage: "icon.svg"}
+	s.apply(Declaration{Property: "mask-image", Value: "linear-gradient(black, transparent)"}, 16, nil)
+	if s.MaskImage != "icon.svg" {
+		t.Errorf("gradient mask-image should be a no-op, got %q", s.MaskImage)
+	}
+}
+
 func TestApplyBackgroundShorthandGradient(t *testing.T) {
 	s := &Style{}
 	s.apply(Declaration{Property: "background", Value: "#222 linear-gradient(to bottom, rgba(0,0,0,1), rgba(0,0,0,0))"}, 16, nil)

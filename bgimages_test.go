@@ -74,6 +74,102 @@ func TestLoadBackgroundImagesNoneAndGradient(t *testing.T) {
 	}
 }
 
+// TestLoadBackgroundImagesSVG covers a real regression: background-image
+// (and mask-image, which shares this loader) never actually decoded an SVG
+// source — codec.Decode is raster-only — so any SVG background silently
+// rendered as nothing, regardless of whether the URL was even correctly
+// classified as vector. This case is the easy one: the data URI's own
+// "image/svg" media type identifies it without needing to look at the bytes.
+func TestLoadBackgroundImagesSVG(t *testing.T) {
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" viewBox="0 0 4 4"><rect width="4" height="4" fill="#ff0000"/></svg>`
+	uri := "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg))
+	html := `<html><body><div style="background-image: url('` + uri + `')">x</div></body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &Document{URL: "https://example.com/", Root: root}
+	sm := css.CascadeVW(root, 1024, nil)
+	got := New().loadBackgroundImages(context.Background(), doc, sm)
+	img, ok := got[uri]
+	if !ok {
+		t.Fatalf("no entry for the SVG data URI; keys=%v", keys(got))
+	}
+	if img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
+		t.Errorf("SVG decoded to an empty image: %v", img.Bounds())
+	}
+}
+
+// TestLoadBackgroundImagesSVGSniffedFromBytes covers the harder, real-world
+// case that motivated this fix: a `mask-image`/background-image URL that
+// looks nothing like SVG at all — no ".svg" path, no "image/svg" anywhere in
+// the URL string — because the server decides the content type dynamically.
+// Confirmed live: EVERY icon in Wikipedia's Vector-2022 skin is served this
+// way (an extensionless MediaWiki `load.php?...&image=menu&format=original`
+// URL, `Content-Type: image/svg+xml` only in the HTTP response). Only
+// sniffing the fetched BYTES (looksLikeSVG's fallback) can identify this.
+func TestLoadBackgroundImagesSVGSniffedFromBytes(t *testing.T) {
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4" viewBox="0 0 4 4"><rect width="4" height="4" fill="#00ff00"/></svg>`
+	// A generic media type carries no "svg" hint at all; only content-sniffing
+	// the decoded bytes (not the data: URI string) can identify this as SVG.
+	uri := "data:application/octet-stream;base64," + base64.StdEncoding.EncodeToString([]byte(svg))
+	html := `<html><body><div style="mask-image: url('` + uri + `')">x</div></body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &Document{URL: "https://example.com/", Root: root}
+	sm := css.CascadeVW(root, 1024, nil)
+	got := New().loadBackgroundImages(context.Background(), doc, sm)
+	img, ok := got[uri]
+	if !ok {
+		t.Fatalf("no entry for the sniffed SVG mask; keys=%v", keys(got))
+	}
+	if img.Bounds().Dx() <= 0 || img.Bounds().Dy() <= 0 {
+		t.Errorf("sniffed SVG decoded to an empty image: %v", img.Bounds())
+	}
+}
+
+// TestLoadBackgroundImagesMaskImageURL covers that mask-image shares the
+// SAME fetch/decode/dedup path as background-image (see loadBackgroundImages
+// and loadOneBackground's doc comments) — a real regression, since
+// `mask-image` URLs were never collected here at all before this fix.
+func TestLoadBackgroundImagesMaskImageURL(t *testing.T) {
+	uri := pngDataURI(t, 3, 3, color.RGBA{4, 5, 6, 255})
+	html := `<html><body><div style="mask-image: url('` + uri + `')">x</div></body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &Document{URL: "https://example.com/", Root: root}
+	sm := css.CascadeVW(root, 1024, nil)
+	got := New().loadBackgroundImages(context.Background(), doc, sm)
+	if _, ok := got[uri]; !ok {
+		t.Fatalf("no entry for the mask-image url; keys=%v", keys(got))
+	}
+}
+
+// TestLoadBackgroundImagesBackgroundAndMaskDedup covers that a background-
+// image and a mask-image sharing the exact same URL fetch/decode it only
+// once — they share one cache, keyed by URL alone.
+func TestLoadBackgroundImagesBackgroundAndMaskDedup(t *testing.T) {
+	uri := pngDataURI(t, 2, 2, color.RGBA{7, 8, 9, 255})
+	html := `<html><body>` +
+		`<div style="background-image: url('` + uri + `')">a</div>` +
+		`<div style="mask-image: url('` + uri + `')">b</div>` +
+		`</body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &Document{URL: "https://example.com/", Root: root}
+	sm := css.CascadeVW(root, 1024, nil)
+	got := New().loadBackgroundImages(context.Background(), doc, sm)
+	if len(got) != 1 {
+		t.Errorf("dedup across background-image/mask-image failed: %d entries, keys=%v", len(got), keys(got))
+	}
+}
+
 func TestLoadBackgroundImagesUndecodable(t *testing.T) {
 	// A data URI whose payload is not a valid image fails to decode and is skipped.
 	bad := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("not a png"))
