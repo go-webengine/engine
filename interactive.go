@@ -45,6 +45,14 @@ type LiveDocument struct {
 	vpW, vpH int
 	stopHeap func()
 	closed   bool
+	// focused is the node synthetic.go's Focus most recently moved input
+	// focus to (nil if none), and focusedValue is that node's value at the
+	// moment it was focused — the baseline Blur compares against to decide
+	// whether a real "change" event is due, matching a browser firing
+	// change only when a focused control's value actually differs at blur,
+	// not on every keystroke (that is what "input" is for).
+	focused      *dom.Node
+	focusedValue string
 	// prevLinks is the stylesheet <link> set digest AS OF THE LAST SETTLED
 	// FRAME — carried across Interact calls (unlike settle's own prevLinks,
 	// which is scoped to one render). resettle compares against this to

@@ -107,6 +107,49 @@ func Begin(root *dom.Node, opt Options) *Session {
 // binding reads back. Call it after each layout pass, before running scripts.
 func (s *Session) SetMetrics(m Metrics) { s.b.metrics = m }
 
+// EventInit carries the extra fields a synthetic event needs beyond
+// type/target — which ones matter depends on typ, mirroring the real DOM
+// (Key for keydown/keyup, Data/InputType for input). Bubbles/Cancelable
+// default to false; a caller sets them per the real event's own defaults
+// (e.g. click/keydown/keyup/input/change/submit all bubble in a real
+// browser — Dispatch does not assume this for you, since it also serves
+// dispatchEvent-style callers that want an exact, spec-shaped event).
+type EventInit struct {
+	Bubbles    bool
+	Cancelable bool
+	Key        string // keydown / keyup
+	Data       string // input
+	InputType  string // input
+}
+
+// Dispatch fires a synthetic DOM event of type typ on n — the seam a host
+// outside this package uses to synthesize real user interaction (focus, a
+// keystroke, a click) against the live session, exactly as if the page's
+// own script had called element.dispatchEvent(). It bubbles per init.
+// Bubbles (see binder.dispatch) and reports whether a listener called
+// preventDefault(), so a caller (e.g. native form submission) can honor it.
+// Contained against a listener panic, like every other script execution
+// path in this package.
+func (s *Session) Dispatch(n *dom.Node, typ string, init EventInit) (defaultPrevented bool) {
+	var ev *goja.Object
+	s.guard(func() {
+		ev = s.b.newEvent(typ)
+		ev.Set("bubbles", init.Bubbles)
+		ev.Set("cancelable", init.Cancelable)
+		if init.Key != "" {
+			ev.Set("key", init.Key)
+		}
+		if init.Data != "" {
+			ev.Set("data", init.Data)
+		}
+		if init.InputType != "" {
+			ev.Set("inputType", init.InputType)
+		}
+		s.b.dispatch(n, typ, ev)
+	})
+	return ev != nil && ev.Get("defaultPrevented").ToBoolean()
+}
+
 // RunInitial executes every page <script> in document order, then dispatches
 // DOMContentLoaded/load, draining queued timers/promises/XHR callbacks to
 // quiescence within the budget. Contained against panics.
