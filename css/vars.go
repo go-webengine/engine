@@ -20,14 +20,15 @@ func isCustomProperty(prop string) bool {
 	return strings.HasPrefix(prop, "--")
 }
 
-// resolveDeclValue substitutes any var() references in a declaration value using
-// the element's resolved custom-property map, then resolves any light-dark()
-// call the substitution exposed (see resolveLightDark), returning the final
-// value. It reports false when a var() cannot be resolved and has no usable
-// fallback (or forms a cycle), or a light-dark() is malformed: such a
-// declaration is invalid at computed-value time and must be dropped by the
-// caller (so the property keeps its inherited/initial value). A value with
-// neither construct is returned unchanged.
+// resolveDeclValue substitutes any var() references in a declaration value
+// using the element's resolved custom-property map, then resolves any
+// calc()/light-dark() call the substitution exposed (see resolveCalc,
+// resolveLightDark), returning the final value. It reports false when a
+// var() cannot be resolved and has no usable fallback (or forms a cycle), or
+// a calc()/light-dark() is malformed or outside what this engine evaluates:
+// such a declaration is invalid at computed-value time and must be dropped
+// by the caller (so the property keeps its inherited/initial value). A value
+// with none of these constructs is returned unchanged.
 func resolveDeclValue(value string, props map[string]string) (string, bool) {
 	if findVarFunc(value, 0) >= 0 {
 		v, ok := substituteVars(value, props, 0)
@@ -36,7 +37,11 @@ func resolveDeclValue(value string, props map[string]string) (string, bool) {
 		}
 		value = v
 	}
-	return resolveLightDark(value)
+	v, ok := resolveCalc(value)
+	if !ok {
+		return "", false
+	}
+	return resolveLightDark(v)
 }
 
 // substituteVars replaces every var() function in value with the referenced

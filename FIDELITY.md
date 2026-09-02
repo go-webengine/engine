@@ -18,6 +18,81 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-02 — tailwindcss.com's whole layout ROOT-CAUSED and fixed: THREE independent, foundational CSS gaps (calc(), `inherit`, `inset`)
+
+tailwindcss.com was the worst score in the bench corpus after the MDN fix
+below (SSIM 0.364, pixdiff 55.2%). Chased it visually rather than guessing
+from the number: a decorative avatar image rendered many times too large, a
+whole row of sponsor logos rendered in plain browser-default link blue
+instead of their real colours, and an unrelated feature-card photo rendered
+at the very top of the page, overlapping the hero title, instead of inside
+its own card far below. Three separate, unrelated root causes, each
+confirmed live by dumping the actual box tree and computed styles (not
+guessed from the screenshot):
+
+- **`calc()` was entirely unimplemented — every `calc(...)` value failed to
+  parse and its declaration was dropped.** Tailwind v4 compiles its ENTIRE
+  numeric spacing scale this way (`--spacing: .25rem` once at `:root`, then
+  every sized/spaced utility — `size-48`, `h-48`, `p-4`, `gap-4`, `mt-4`, …
+  — as `calc(var(--spacing) * 48)`), so this single gap broke width, height,
+  padding, margin, and gap on nearly every utility-classed element on the
+  page. An `<img class="size-48">` (meant to be a 192×192px avatar) fell back
+  to its raw intrinsic pixel size instead. Implemented (`css/calc.go`): a
+  small recursive-descent evaluator for `+`/`-`/`*`/`/` over lengths and bare
+  numbers, with nested parens — run after var() substitution, so
+  `calc(var(--spacing) * 48)` is plain arithmetic by the time it evaluates. A
+  calc() mixing a percentage (or `vw`/`vh`, approximated as a percentage
+  elsewhere in this package) with an absolute length is deliberately left
+  unresolved — percentages resolve only against a containing block at LAYOUT
+  time, which this text-level pass has no access to — dropping the
+  declaration exactly as before calc() was understood at all, not a
+  regression for that subset.
+- **The CSS-wide `inherit` keyword was not understood at all.** Tailwind's
+  (and virtually every modern framework's) preflight reset ships
+  `a{color:inherit}` to cancel the browser's default link-blue — but `color`
+  being inherited BY DEFAULT was not enough to fix this: this engine's own
+  UA stylesheet declares `a{color:#0000ee}` at lower cascade precedence, so
+  by the time the author's `inherit` declaration runs, the field has already
+  been overwritten and needs to be explicitly copied from the parent again.
+  Every `fill="currentColor"` SVG icon inside such a reset anchor (a common
+  pattern for a linked logo — confirmed live: every sponsor-logo `<svg>` on
+  tailwindcss.com sits inside exactly such an anchor) inherited that wrong
+  blue too. Fixed (`inheritProperty` in `css/parse.go`, threaded a `parent
+  *Style` into `Style.apply`): covers the properties this engine already
+  gives explicit inheritance semantics to in `inheritFrom` — `color`,
+  `visibility`, `font-weight`, `text-align`, `white-space`, `line-height`,
+  `list-style-type`, `list-style-position`. `inherit` on any other property
+  is a no-op (unchanged from before), not a guess.
+- **The `inset` shorthand (and its logical-axis siblings `inset-inline`/
+  `inset-block`) was entirely unimplemented** — only the `top`/`right`/
+  `bottom`/`left` longhands were. `inset-0` (`inset:0`) is Tailwind's, and
+  most modern CSS's, standard way to pin an absolutely-positioned element to
+  fill its containing block; without it, `top`/`right`/`bottom`/`left` all
+  stayed at their initial `auto`, so the box fell back to CSS's "static
+  position" rule (roughly, "where it would have landed in normal flow") —
+  landing at the very top of the whole document instead of inside its
+  intended card. Confirmed via `resolveContainingBlock`/`placeAbsolute`
+  tracing that containing-block RESOLUTION was already correct (the nearest
+  `position:relative` ancestor was found and used correctly every time) — the
+  bug was purely that `inset` never populated the offset fields it resolves
+  against. Fixed: the 1-to-4-value box-edge shorthand for `inset` (same
+  expansion order as margin/padding, but preserving `auto`/percentage rather
+  than collapsing them to 0 the way margin/padding's shorthand does — position
+  resolution depends on telling them apart), plus the 1-or-2-value
+  `inset-inline`/`inset-block` logical shorthands (mapped directly to
+  left/right and top/bottom respectively — this engine has no bidi/vertical
+  writing-mode support anywhere, matching every other physical-only
+  assumption it already makes).
+
+**Verified live:** the avatar renders at its correct size, every sponsor logo
+renders in its real colour, and the previously-misplaced feature photo now
+sits correctly inside its own card. `bench/cmd/compare`: SSIM 0.364→0.646,
+pixdiff 55.2%→15.0%, page height 12958px vs Chrome's 13280px (up from
+11858px). Confirmed via a full 10-page bench corpus re-run that nothing else
+regressed — developer.mozilla.org even improved slightly further as a side
+effect (0.596→0.613 SSIM), plausibly from the same `inherit`/`calc()` fixes
+applying elsewhere on that page too.
+
 ## 2026-09-01 (cont. 2) — MDN's whole design-token system ROOT-CAUSED and fixed: a spec-valid empty custom-property value was being silently dropped at parse time
 
 developer.mozilla.org was the worst score in the bench corpus after the
@@ -1389,7 +1464,32 @@ Restated against what was actually verified that day:
   condition slightly differently than Chrome.
 - **No CSS `transform`** (2D or 3D) and no `conic-gradient`. A slide-out drawer
   or carousel positioned via `transform: translateX(...)` renders at its
-  untransformed in-flow position instead.
+  untransformed in-flow position instead. Also means a `transform`/
+  `perspective` on an ancestor never establishes a new containing block for an
+  absolutely-positioned descendant the way the spec says it should — that
+  descendant's containing block resolution climbs straight past it to the
+  nearest genuinely `position:`ed ancestor (or the viewport), which happens
+  to be correct whenever a `relative` wrapper is also present (the common
+  real-world case, confirmed live on tailwindcss.com's 3D-transforms card,
+  2026-09-02) but would be wrong for a page relying on `transform` ALONE to
+  scope absolute children.
+- **`calc()` only understands pure arithmetic over lengths and bare numbers**
+  (`+`/`-`/`*`/`/`, nested parens — added 2026-09-02, engine#86, for
+  Tailwind v4's `calc(var(--spacing) * N)` spacing scale). A `calc()` mixing
+  a percentage (or `vw`/`vh`) with an absolute length cannot be resolved —
+  percentages depend on a containing block only known at layout time, which
+  this text-level, pre-layout pass has no access to — and drops the whole
+  declaration, same as before `calc()` was understood at all. `min()`,
+  `max()`, and `clamp()` are not implemented.
+- **The CSS-wide `inherit` keyword only works for the properties this engine
+  already gives explicit inheritance semantics to** (`color`, `visibility`,
+  `font-weight`, `text-align`, `white-space`, `line-height`,
+  `list-style-type`, `list-style-position` — added 2026-09-02, engine#86,
+  confirmed load-bearing live: Tailwind's/most frameworks' `a{color:inherit}`
+  preflight reset). `inherit` on any other property (e.g.
+  `background-color:inherit`, which is not even inherited by default per
+  spec) is silently dropped rather than resolved. `initial`, `unset`, and
+  `revert` are not implemented at all.
 - **`@supports` is entirely unimplemented — its body is always skipped**, the
   same "unrecognised at-rule" treatment as `@font-face`/`@keyframes`. Unlike
   `@layer`'s "include unconditionally" fallback, `@supports` genuinely

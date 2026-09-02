@@ -11,7 +11,7 @@ import (
 func TestParseFilterListNoneAndDispatch(t *testing.T) {
 	// The `filter` shorthand dispatches through Style.apply.
 	s := &Style{}
-	s.apply(Declaration{Property: "filter", Value: "grayscale(50%) blur(3px)"}, 16)
+	s.apply(Declaration{Property: "filter", Value: "grayscale(50%) blur(3px)"}, 16, nil)
 	if len(s.Filters) != 2 {
 		t.Fatalf("filter chain = %+v", s.Filters)
 	}
@@ -22,13 +22,13 @@ func TestParseFilterListNoneAndDispatch(t *testing.T) {
 		t.Errorf("second = %+v", s.Filters[1])
 	}
 	// `none` clears the chain.
-	s.apply(Declaration{Property: "filter", Value: "none"}, 16)
+	s.apply(Declaration{Property: "filter", Value: "none"}, 16, nil)
 	if s.Filters != nil {
 		t.Errorf("none did not clear: %+v", s.Filters)
 	}
 	// A malformed chain leaves the property untouched (does not overwrite).
 	s2 := &Style{Filters: []Filter{{Kind: FilterInvert, Amount: 1}}}
-	s2.apply(Declaration{Property: "filter", Value: "blur(3px) bogus(2)"}, 16)
+	s2.apply(Declaration{Property: "filter", Value: "blur(3px) bogus(2)"}, 16, nil)
 	if len(s2.Filters) != 1 || s2.Filters[0].Kind != FilterInvert {
 		t.Errorf("malformed chain overwrote: %+v", s2.Filters)
 	}

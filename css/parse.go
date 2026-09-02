@@ -381,10 +381,17 @@ func splitDeclChunks(body string) []string {
 
 // apply mutates s by applying one declaration. Unknown properties and
 // unparseable values are ignored. emRef is the font-size used to resolve em
-// lengths (the element's own computed font-size).
-func (s *Style) apply(d Declaration, emRef float64) {
+// lengths (the element's own computed font-size). parent is the element's
+// already-computed parent style, needed only for the CSS-wide `inherit`
+// keyword (see inheritProperty) — every other declaration value is
+// self-contained.
+func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 	v := strings.TrimSpace(d.Value)
 	lv := strings.ToLower(v)
+	if lv == "inherit" {
+		s.inheritProperty(d.Property, parent)
+		return
+	}
 	switch d.Property {
 	case "display":
 		// A non-list display clears the list-item flag; `list-item` sets it (it is
@@ -663,6 +670,31 @@ func (s *Style) apply(d Declaration, emRef float64) {
 		if l, ok := parseLength(v, emRef); ok {
 			s.Left = l
 		}
+	case "inset":
+		// The 1-to-4-value physical-offset shorthand (top/right/bottom/left, the
+		// same expansion order as margin/padding). Confirmed live on
+		// tailwindcss.com: `inset-0` (`inset:0`) positions a `size-82` image
+		// meant to fill an ancestor `relative` card — with this case absent,
+		// top/right/bottom/left all stayed at their initial `auto`, so the box
+		// fell back to its (very wrong) static-flow position instead. Unlike
+		// parseEdges (margin/padding), auto and percentages must be preserved,
+		// not collapsed to 0 — placeAbsolute's static-position fallback and
+		// percentage-of-containing-block resolution both depend on them.
+		if ls, ok := parseLengthEdges(v, emRef); ok {
+			s.Top, s.Right, s.Bottom, s.Left = ls[0], ls[1], ls[2], ls[3]
+		}
+	case "inset-inline":
+		// Logical inline-axis shorthand (1 or 2 values: start[, end]); this
+		// engine has no bidi/vertical writing-mode support anywhere, so
+		// inline-start/end map directly to left/right as in every other
+		// physical-only assumption it already makes.
+		if start, end, ok := parseLengthPair(v, emRef); ok {
+			s.Left, s.Right = start, end
+		}
+	case "inset-block":
+		if start, end, ok := parseLengthPair(v, emRef); ok {
+			s.Top, s.Bottom = start, end
+		}
 	case "z-index":
 		if lv == "auto" {
 			s.ZIndexAuto = true
@@ -856,6 +888,43 @@ func (s *Style) apply(d Declaration, emRef float64) {
 	}
 }
 
+// inheritProperty implements the CSS-wide `inherit` keyword for the
+// properties this engine gives explicit inheritance semantics to in
+// inheritFrom. It exists because a property already inherited by default
+// (color, for instance) can still have been overridden by an EARLIER,
+// lower-precedence declaration in the very same cascade — most commonly this
+// engine's own user-agent default `a{color:#0000ee}` — before an author rule
+// explicitly asks to inherit again. Confirmed live: Tailwind's (and most
+// modern frameworks') preflight reset ships exactly `a{color:inherit}` to
+// cancel that default, which a plain no-op for "inherit" would not undo,
+// leaving every reset anchor (and, transitively, every `fill="currentColor"`
+// SVG icon inside one — a very common pattern for a linked logo/icon) stuck
+// in browser-default link blue regardless of the page's real design.
+// Properties with no inheritance behaviour to restore here (background-color
+// included — it resets to transparent, not the parent's background, per
+// spec) leave the field exactly as prior declarations left it, same as
+// before this keyword was understood at all.
+func (s *Style) inheritProperty(prop string, parent *Style) {
+	switch prop {
+	case "color":
+		s.Color = parent.Color
+	case "visibility":
+		s.Visibility = parent.Visibility
+	case "font-weight":
+		s.FontWeight = parent.FontWeight
+	case "text-align":
+		s.TextAlign = parent.TextAlign
+	case "white-space":
+		s.WhiteSpace = parent.WhiteSpace
+	case "line-height":
+		s.LineHeight = parent.LineHeight
+	case "list-style-type":
+		s.ListStyleType = parent.ListStyleType
+	case "list-style-position":
+		s.ListStylePosition = parent.ListStylePosition
+	}
+}
+
 func applyEdge(dst *float64, v string, emRef float64) {
 	if l, ok := parseLength(v, emRef); ok && !l.Auto && !l.IsPercent {
 		*dst = l.Px
@@ -889,6 +958,55 @@ func parseEdges(v string, emRef float64) (Edges, bool) {
 		return Edges{px[0], px[1], px[2], px[3]}, true
 	}
 	return Edges{}, false
+}
+
+// parseLengthEdges parses the 1-to-4 value box-edge shorthand (the same
+// expansion order as margin/padding) into [top, right, bottom, left],
+// preserving each Length in full — unlike parseEdges (used for margin/
+// padding, which collapse auto/percentage to a flat 0), a position-offset
+// shorthand like `inset` must keep auto and percentage intact: placeAbsolute's
+// static-position fallback and containing-block-relative percentage
+// resolution both depend on the distinction.
+func parseLengthEdges(v string, emRef float64) ([4]Length, bool) {
+	fields := strings.Fields(v)
+	ls := make([]Length, 0, len(fields))
+	for _, f := range fields {
+		l, ok := parseLength(f, emRef)
+		if !ok {
+			return [4]Length{}, false
+		}
+		ls = append(ls, l)
+	}
+	switch len(ls) {
+	case 1:
+		return [4]Length{ls[0], ls[0], ls[0], ls[0]}, true
+	case 2:
+		return [4]Length{ls[0], ls[1], ls[0], ls[1]}, true
+	case 3:
+		return [4]Length{ls[0], ls[1], ls[2], ls[1]}, true
+	case 4:
+		return [4]Length{ls[0], ls[1], ls[2], ls[3]}, true
+	}
+	return [4]Length{}, false
+}
+
+// parseLengthPair parses a 1-or-2-value axis shorthand (inset-inline,
+// inset-block: `<start> [<end>]`) into (start, end). A single value applies
+// to both ends, matching the CSS shorthand's own 1-value rule (distinct from
+// the 4-side box-edge expansion parseLengthEdges implements — an axis only
+// has two ends, not four).
+func parseLengthPair(v string, emRef float64) (start, end Length, ok bool) {
+	fields := strings.Fields(v)
+	switch len(fields) {
+	case 1:
+		l, ok := parseLength(fields[0], emRef)
+		return l, l, ok
+	case 2:
+		l0, ok0 := parseLength(fields[0], emRef)
+		l1, ok1 := parseLength(fields[1], emRef)
+		return l0, l1, ok0 && ok1
+	}
+	return Length{}, Length{}, false
 }
 
 func parseFontFamily(lv string) FontFamily {

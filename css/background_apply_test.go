@@ -7,12 +7,12 @@ import "testing"
 
 func TestApplyBackgroundImageProperty(t *testing.T) {
 	s := &Style{}
-	s.apply(Declaration{Property: "background-image", Value: "linear-gradient(to right, red, blue)"}, 16)
+	s.apply(Declaration{Property: "background-image", Value: "linear-gradient(to right, red, blue)"}, 16, nil)
 	if len(s.BackgroundImages) != 1 || s.BackgroundImages[0].Kind != BgGradient {
 		t.Fatalf("background-image = %+v", s.BackgroundImages)
 	}
 	// `none` resets the image list.
-	s.apply(Declaration{Property: "background-image", Value: "none"}, 16)
+	s.apply(Declaration{Property: "background-image", Value: "none"}, 16, nil)
 	if s.BackgroundImages != nil {
 		t.Errorf("background-image none did not reset: %+v", s.BackgroundImages)
 	}
@@ -20,7 +20,7 @@ func TestApplyBackgroundImageProperty(t *testing.T) {
 
 func TestApplyBackgroundShorthandGradient(t *testing.T) {
 	s := &Style{}
-	s.apply(Declaration{Property: "background", Value: "#222 linear-gradient(to bottom, rgba(0,0,0,1), rgba(0,0,0,0))"}, 16)
+	s.apply(Declaration{Property: "background", Value: "#222 linear-gradient(to bottom, rgba(0,0,0,1), rgba(0,0,0,0))"}, 16, nil)
 	if s.Background != (Color{0x22, 0x22, 0x22, 255}) {
 		t.Errorf("shorthand colour = %+v", s.Background)
 	}
@@ -31,23 +31,23 @@ func TestApplyBackgroundShorthandGradient(t *testing.T) {
 
 func TestApplyBackgroundSizePositionRepeat(t *testing.T) {
 	s := &Style{}
-	s.apply(Declaration{Property: "background-size", Value: "cover"}, 16)
+	s.apply(Declaration{Property: "background-size", Value: "cover"}, 16, nil)
 	if len(s.BackgroundSize) != 1 || s.BackgroundSize[0].Kind != SizeCover {
 		t.Errorf("size = %+v", s.BackgroundSize)
 	}
-	s.apply(Declaration{Property: "background-position", Value: "center top"}, 16)
+	s.apply(Declaration{Property: "background-position", Value: "center top"}, 16, nil)
 	if len(s.BackgroundPosition) != 1 || s.BackgroundPosition[0].Y.Percent != 0 {
 		t.Errorf("position = %+v", s.BackgroundPosition)
 	}
-	s.apply(Declaration{Property: "background-repeat", Value: "no-repeat"}, 16)
+	s.apply(Declaration{Property: "background-repeat", Value: "no-repeat"}, 16, nil)
 	if len(s.BackgroundRepeat) != 1 || s.BackgroundRepeat[0] != NoRepeat {
 		t.Errorf("repeat = %+v", s.BackgroundRepeat)
 	}
 	// Invalid values leave the property unset.
 	s2 := &Style{}
-	s2.apply(Declaration{Property: "background-size", Value: "bogus"}, 16)
-	s2.apply(Declaration{Property: "background-position", Value: ""}, 16)
-	s2.apply(Declaration{Property: "background-repeat", Value: "bogus"}, 16)
+	s2.apply(Declaration{Property: "background-size", Value: "bogus"}, 16, nil)
+	s2.apply(Declaration{Property: "background-position", Value: ""}, 16, nil)
+	s2.apply(Declaration{Property: "background-repeat", Value: "bogus"}, 16, nil)
 	if s2.BackgroundSize != nil || s2.BackgroundPosition != nil || s2.BackgroundRepeat != nil {
 		t.Errorf("invalid values set something: %+v", s2)
 	}
@@ -55,28 +55,28 @@ func TestApplyBackgroundSizePositionRepeat(t *testing.T) {
 
 func TestApplyBoxShadowAndOpacity(t *testing.T) {
 	s := &Style{}
-	s.apply(Declaration{Property: "box-shadow", Value: "0 4px 8px rgba(0,0,0,0.3)"}, 16)
+	s.apply(Declaration{Property: "box-shadow", Value: "0 4px 8px rgba(0,0,0,0.3)"}, 16, nil)
 	if len(s.BoxShadows) != 1 || s.BoxShadows[0].Blur != 8 {
 		t.Errorf("box-shadow = %+v", s.BoxShadows)
 	}
-	s.apply(Declaration{Property: "opacity", Value: "0.5"}, 16)
+	s.apply(Declaration{Property: "opacity", Value: "0.5"}, 16, nil)
 	if !s.HasOpacity || s.Opacity != 0.5 {
 		t.Errorf("opacity = %v,%v", s.Opacity, s.HasOpacity)
 	}
 	// Clamping below 0 and above 1.
 	lo := &Style{}
-	lo.apply(Declaration{Property: "opacity", Value: "-2"}, 16)
+	lo.apply(Declaration{Property: "opacity", Value: "-2"}, 16, nil)
 	if lo.Opacity != 0 {
 		t.Errorf("opacity -2 = %v want 0", lo.Opacity)
 	}
 	hi := &Style{}
-	hi.apply(Declaration{Property: "opacity", Value: "3"}, 16)
+	hi.apply(Declaration{Property: "opacity", Value: "3"}, 16, nil)
 	if hi.Opacity != 1 {
 		t.Errorf("opacity 3 = %v want 1", hi.Opacity)
 	}
 	// A non-numeric opacity is ignored.
 	bad := &Style{}
-	bad.apply(Declaration{Property: "opacity", Value: "half"}, 16)
+	bad.apply(Declaration{Property: "opacity", Value: "half"}, 16, nil)
 	if bad.HasOpacity {
 		t.Error("non-numeric opacity should be ignored")
 	}
