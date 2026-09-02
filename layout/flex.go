@@ -39,7 +39,27 @@ type flexLine struct {
 func (l *layouter) flex(box *Box, node *dom.Node, st *css.Style, cx, cw, top float64, b *bfc) float64 {
 	items := l.flexItems(node)
 	if len(items) == 0 {
-		return top
+		// flexItems only ever collects ELEMENT children, but a flex container
+		// whose content is bare text (no wrapping element at all — e.g.
+		// `<h1 style="display:flex">React</h1>`, confirmed live on
+		// react.dev's hero heading and its two CTA buttons) forms a single
+		// anonymous flex item from that text per spec. Previously this
+		// returned immediately having laid out nothing, collapsing the whole
+		// element to zero width AND height. Falling back to the same
+		// inline-formatting-context path contents() already uses for a
+		// plain, non-flex, no-block-child element correctly sizes the
+		// common single-line case (there is only ever one synthetic item
+		// here, so justify-content/align-items/gap have nothing to
+		// distribute across, and are not modelled for it).
+		b.commit()
+		pre := st.WhiteSpace == css.WSPre
+		inline := l.collectInline(node, st, pre)
+		if len(inline) == 0 {
+			return top
+		}
+		lines, bottom := l.layoutInline(inline, st, cx, cw, top, pre)
+		box.Lines = lines
+		return bottom
 	}
 	if st.FlexDirection == css.FlexColumn {
 		return l.flexColumn(box, items, st, cx, cw, top)
