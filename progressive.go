@@ -91,9 +91,13 @@ func (e *Engine) RenderDocumentProgressive(ctx context.Context, doc *Document, v
 		})
 	}
 
-	rp := e.renderCoreStaged(ctx, doc, vpW, vpH, fonts, func(stage string, rp *renderPass) {
+	rp, sess, stopHeap := e.renderCoreStaged(ctx, doc, vpW, vpH, fonts, func(stage string, rp *renderPass) {
 		emit(stage, rp, false)
 	})
+	stopHeap()
+	if sess != nil {
+		sess.Close()
+	}
 	// The fully-settled frame. Byte-identical to RenderWithLinks (same rp, same
 	// newCanvas + PaintFull + LinksFromBox), always emitted and always last.
 	emit("final", rp, true)
