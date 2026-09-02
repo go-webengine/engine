@@ -12,7 +12,18 @@ package css
 // still overrides them.
 var uaDescendantRules = ParseStylesheet(
 	"ul ul { list-style-type: circle }\n" +
-		"ul ul ul { list-style-type: square }\n")
+		"ul ul ul { list-style-type: square }\n" +
+		// A closed <details> (no "open" attribute) shows only its <summary>;
+		// every OTHER direct child is native browser behaviour, not a CSS
+		// property an author sets — confirmed load-bearing live: pkg.go.dev's
+		// help tooltips are <details class="go-Tooltip"><summary>...</summary>
+		// <p role="tooltip">the tooltip text</p></details>, toggled open only
+		// by a click (a static render never triggers one); without this rule
+		// every such tooltip's real text rendered permanently visible,
+		// overlapping the page. An `open`-attributed <details> (or any author
+		// rule targeting its children) is unaffected — this selector simply
+		// never matches one.
+		"details:not([open]) > :not(summary) { display: none }\n")
 
 // uaDeclarations returns the user-agent default declarations for a tag, as
 // property:value pairs. These mirror a browser's default stylesheet for the

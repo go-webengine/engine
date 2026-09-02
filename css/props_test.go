@@ -3,7 +3,10 @@
 
 package css
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 func newStyle() *Style {
 	s := initialStyle()
@@ -509,5 +512,116 @@ func TestApplyInset(t *testing.T) {
 	applyOn(s, "inset", "bogus", 16)
 	if s.Top != zero || s.Right != zero || s.Bottom != zero || s.Left != zero {
 		t.Errorf("unparseable inset should be a no-op, got top=%+v right=%+v bottom=%+v left=%+v", s.Top, s.Right, s.Bottom, s.Left)
+	}
+}
+
+// TestApplyTransformTranslate covers a real regression: `transform` was
+// entirely unimplemented, so an off-canvas element hidden via
+// `transform: translate(100%)` (confirmed live on pkg.go.dev: its mobile nav
+// drawer, `position:fixed` and `display:block` at this engine's 1024px test
+// viewport — its media-query-gated `display:none` correctly does not apply
+// there, matching a real browser) rendered fully in place instead of pushed
+// off-screen, since this engine ignored the translate entirely.
+func TestApplyTransformTranslate(t *testing.T) {
+	s := &Style{}
+	applyOn(s, "transform", "translate(10px, 20px)", 16)
+	if s.TranslateX != (Length{Px: 10}) || s.TranslateY != (Length{Px: 20}) {
+		t.Errorf("translate(10px,20px) => %+v/%+v", s.TranslateX, s.TranslateY)
+	}
+
+	// A single argument only moves the X axis (Y defaults to 0, per spec).
+	s = &Style{TranslateY: Length{Px: 99}}
+	applyOn(s, "transform", "translate(50%)", 16)
+	if !s.TranslateX.IsPercent || s.TranslateX.Percent != 0.5 {
+		t.Errorf("translate(50%%) x = %+v, want 50%%", s.TranslateX)
+	}
+	if s.TranslateY != (Length{}) {
+		t.Errorf("translate(50%%) y = %+v, want reset to 0", s.TranslateY)
+	}
+
+	// translateX/translateY longhand-style functions.
+	s = &Style{}
+	applyOn(s, "transform", "translateX(5px)", 16)
+	if s.TranslateX != (Length{Px: 5}) || s.TranslateY != (Length{}) {
+		t.Errorf("translateX(5px) => x=%+v y=%+v", s.TranslateX, s.TranslateY)
+	}
+	s = &Style{}
+	applyOn(s, "transform", "translateY(7px)", 16)
+	if s.TranslateY != (Length{Px: 7}) || s.TranslateX != (Length{}) {
+		t.Errorf("translateY(7px) => x=%+v y=%+v", s.TranslateX, s.TranslateY)
+	}
+
+	// Multiple translate calls in one value compose additively (translations
+	// commute, unlike rotate/scale).
+	s = &Style{}
+	applyOn(s, "transform", "translateX(3px) translateY(4px)", 16)
+	if s.TranslateX != (Length{Px: 3}) || s.TranslateY != (Length{Px: 4}) {
+		t.Errorf("composed translateX+translateY => x=%+v y=%+v", s.TranslateX, s.TranslateY)
+	}
+	s = &Style{}
+	applyOn(s, "transform", "translateX(3px) translateX(4px)", 16)
+	if s.TranslateX != (Length{Px: 7}) {
+		t.Errorf("composed translateX+translateX => x=%+v, want 7px", s.TranslateX)
+	}
+
+	// Multiple spaces between two function calls are a well-formed
+	// separator, not a malformed token.
+	s = &Style{}
+	applyOn(s, "transform", "translateX(3px)   translateY(4px)", 16)
+	if s.TranslateX != (Length{Px: 3}) || s.TranslateY != (Length{Px: 4}) {
+		t.Errorf("multi-space separator => x=%+v y=%+v", s.TranslateX, s.TranslateY)
+	}
+
+	// none / empty resets to zero.
+	s = &Style{TranslateX: Length{Px: 1}, TranslateY: Length{Px: 2}}
+	applyOn(s, "transform", "none", 16)
+	if s.TranslateX != (Length{}) || s.TranslateY != (Length{}) {
+		t.Errorf("transform:none => x=%+v y=%+v, want both reset", s.TranslateX, s.TranslateY)
+	}
+
+	// Any OTHER function, alone or mixed with translate, is unsupported —
+	// this engine has no general transform support, so it must not apply a
+	// partial, wrong composition. The fields are left as they were.
+	cases := []string{
+		"rotate(10deg)",
+		"scale(2)",
+		"translateX(5px) rotate(10deg)",
+		"matrix(1,0,0,1,0,0)",
+		"translateZ(5px)",
+		"translate(",            // malformed: unterminated
+		"bogus(5px)",            // unknown function name
+		"5px",                   // not a function call at all
+		"translate(bogus)",      // unparseable X
+		"translate(5px, bogus)", // valid X, unparseable Y
+		"translateX(bogus)",     // unparseable single arg
+		"translateY(bogus)",     // unparseable single arg
+	}
+	for _, c := range cases {
+		s = &Style{TranslateX: Length{Px: 42}, TranslateY: Length{Px: 42}}
+		applyOn(s, "transform", c, 16)
+		if s.TranslateX != (Length{Px: 42}) || s.TranslateY != (Length{Px: 42}) {
+			t.Errorf("transform:%q should be a no-op, got x=%+v y=%+v", c, s.TranslateX, s.TranslateY)
+		}
+	}
+
+	// Empty value: same as none.
+	s = &Style{TranslateX: Length{Px: 1}}
+	applyOn(s, "transform", "", 16)
+	if s.TranslateX != (Length{}) {
+		t.Errorf("transform:'' => x=%+v, want reset", s.TranslateX)
+	}
+
+	// addLength's other two branches: both-percent sums exactly; a mixed
+	// px/percent pair on the same axis (a rare combination this engine's
+	// Length type cannot represent as a single value) takes the later call.
+	s = &Style{}
+	applyOn(s, "transform", "translateX(10%) translateX(20%)", 16)
+	if !s.TranslateX.IsPercent || math.Abs(s.TranslateX.Percent-0.3) > 1e-9 {
+		t.Errorf("translateX(10%%)+translateX(20%%) => %+v, want 30%%", s.TranslateX)
+	}
+	s = &Style{}
+	applyOn(s, "transform", "translateX(10px) translateX(50%)", 16)
+	if !s.TranslateX.IsPercent || s.TranslateX.Percent != 0.5 {
+		t.Errorf("translateX(10px)+translateX(50%%) => %+v, want the later call (50%%)", s.TranslateX)
 	}
 }

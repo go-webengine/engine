@@ -378,3 +378,57 @@ func TestCascadeHiddenAttribute(t *testing.T) {
 		t.Errorf(`<div hidden="until-found"> = %v, want block (not hidden)`, d)
 	}
 }
+
+// TestCascadeClosedDetailsHidesNonSummaryChildren covers a real regression:
+// <details>/<summary> semantics were entirely unimplemented, so a closed
+// <details> (the default — no "open" attribute) rendered ALL its content,
+// not just the <summary>. Confirmed load-bearing live: pkg.go.dev's help
+// tooltips are <details class="go-Tooltip"><summary>...</summary>
+// <p role="tooltip">the tooltip text</p></details>, only ever opened by a
+// click a static render never triggers — every such tooltip's real text
+// rendered permanently visible, overlapping the page.
+func TestCascadeClosedDetailsHidesNonSummaryChildren(t *testing.T) {
+	src := `<html><body><details>` +
+		`<summary>Toggle</summary>` +
+		`<p>hidden body</p>` +
+		`</details></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := Cascade(root)
+	summary := dom.Find(root, "summary")
+	p := dom.Find(root, "p")
+	if sm[summary].Display == DisplayNone {
+		t.Error("a closed <details>'s <summary> must stay visible")
+	}
+	if sm[p].Display != DisplayNone {
+		t.Errorf("a closed <details>'s non-summary child must be hidden, got display=%v", sm[p].Display)
+	}
+}
+
+func TestCascadeOpenDetailsShowsEverything(t *testing.T) {
+	src := `<html><body><details open>` +
+		`<summary>Toggle</summary>` +
+		`<p>visible body</p>` +
+		`</details></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := Cascade(root)
+	p := dom.Find(root, "p")
+	if sm[p].Display == DisplayNone {
+		t.Error("an OPEN <details>'s children must not be hidden")
+	}
+}
+
+func TestCascadeDetailsAuthorOverride(t *testing.T) {
+	// An author rule targeting the hidden child still beats the UA default,
+	// same as [hidden] does — origin, not specificity, decides first.
+	src := `<html><head><style>p{display:block}</style></head>` +
+		`<body><details><summary>Toggle</summary><p>x</p></details></body></html>`
+	if d := styleOf(t, src, "p"); d.Display != DisplayBlock {
+		t.Errorf("author p{display:block} inside closed <details> = %v, want block (author wins)", d.Display)
+	}
+}
