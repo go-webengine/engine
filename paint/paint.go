@@ -44,6 +44,7 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	}
 	op := 1.0
 	hasFilter := false
+	hasMask := false
 	if box.Style != nil {
 		if box.Style.HasOpacity {
 			op = box.Style.Opacity
@@ -52,12 +53,16 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 			}
 		}
 		hasFilter = len(box.Style.Filters) > 0
+		hasMask = box.Style.MaskImage != "" && bgImgs[box.Style.MaskImage] != nil
 	}
 	// A group pass (render to an offscreen buffer, then composite) is needed when
-	// the box has a `filter` chain and/or a fractional opacity. Filters are
-	// applied to the group's rendered output before it is composited, so blur /
-	// drop-shadow spread and colour transforms see the whole subtree at once.
-	if hasFilter || op < 1 {
+	// the box has a `filter` chain, a fractional opacity, and/or a `mask-image`.
+	// Filters are applied to the group's rendered output before it is
+	// composited, so blur/drop-shadow spread and colour transforms see the
+	// whole subtree at once; a mask is applied the same way (see applyMask) so
+	// it stencils everything the box paints — background, borders, text,
+	// children — not just its own background layer.
+	if hasFilter || op < 1 || hasMask {
 		// The group buffer only needs to cover the rows this box's subtree can
 		// actually paint into (its ink bounds, expanded for any blur/drop-shadow
 		// spread), not the whole page: a page has a fixed, modest width but can be
@@ -82,6 +87,9 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 		group := copyRows(tmp, y0, y1)
 		if hasFilter {
 			group = applyFilters(group, box.Style.Filters, box.Style.Color)
+		}
+		if hasMask {
+			applyMask(group, box, bgImgs[box.Style.MaskImage], y0)
 		}
 		compositeGroupAt(dst, group, op, y0)
 		return
@@ -789,6 +797,59 @@ func compositeGroupAt(dst, src *image.RGBA, opacity float64, yOffset int) {
 			}
 			blendPixel(dst, x, y+yOffset, css.Color{R: src.Pix[i+0], G: src.Pix[i+1], B: src.Pix[i+2], A: a}, cov)
 		}
+	}
+}
+
+// applyMask stencils group (a zero-origin buffer whose row 0 is canvas row
+// yOffset, X aligned 1:1 with the canvas — see copyRows/compositeGroupAt) by
+// mask, an alpha template for box's `mask-image`. Everything OUTSIDE box's
+// own border box is fully masked out (mask-image affects the whole element,
+// including any overflowing shadow/child content) — a page with such an
+// element would need real mask-position/mask-repeat/mask-origin support to
+// render correctly, which this engine does not model, so cutting it entirely
+// is the honest choice over guessing. Inside the border box, mask is
+// stretched to fill it (this engine's one deliberate simplification of the
+// mask-size/mask-position grammar — see the doc comment on
+// css.Style.MaskImage) and each pixel's alpha is scaled by the mask's alpha
+// there. group's Pix is alpha-premultiplied (matching image.RGBA and every
+// other group-buffer consumer in this file), so R/G/B must be scaled down by
+// the SAME fraction as A to keep representing the same underlying colour at
+// lower opacity, not to darken it.
+func applyMask(group *image.RGBA, box *layout.Box, mask image.Image, yOffset int) {
+	bx := rectOf(box)
+	bw, bh := bx.Dx(), bx.Dy()
+	if bw <= 0 || bh <= 0 {
+		clearAlpha(group)
+		return
+	}
+	scaled := scaleTile(mask, bw, bh, bgMode(box.Style))
+	for y := group.Rect.Min.Y; y < group.Rect.Max.Y; y++ {
+		canvasY := y + yOffset
+		inRow := canvasY >= bx.Min.Y && canvasY < bx.Max.Y
+		for x := group.Rect.Min.X; x < group.Rect.Max.X; x++ {
+			i := group.PixOffset(x, y)
+			if group.Pix[i+3] == 0 {
+				continue
+			}
+			if !inRow || x < bx.Min.X || x >= bx.Max.X {
+				group.Pix[i+0], group.Pix[i+1], group.Pix[i+2], group.Pix[i+3] = 0, 0, 0, 0
+				continue
+			}
+			_, _, _, ma := scaled.At(x-bx.Min.X, canvasY-bx.Min.Y).RGBA()
+			f := ma >> 8 // 0..255
+			group.Pix[i+0] = uint8(uint32(group.Pix[i+0]) * f / 255)
+			group.Pix[i+1] = uint8(uint32(group.Pix[i+1]) * f / 255)
+			group.Pix[i+2] = uint8(uint32(group.Pix[i+2]) * f / 255)
+			group.Pix[i+3] = uint8(uint32(group.Pix[i+3]) * f / 255)
+		}
+	}
+}
+
+// clearAlpha fully masks a group buffer (used when box has no border box to
+// mask into — a degenerate 0-sized element).
+func clearAlpha(group *image.RGBA) {
+	for i := 3; i < len(group.Pix); i += 4 {
+		group.Pix[i] = 0
 	}
 }
 
