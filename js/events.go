@@ -43,22 +43,60 @@ func (b *binder) removeListener(n *dom.Node, typ string, handler goja.Value) {
 	}
 }
 
-// dispatch fires every listener registered for typ on n, invoking each with the
-// event as argument and n as `this`. Handler errors/panics are contained.
+// dispatch fires every listener registered for typ on n (the target phase),
+// then — when event.bubbles is true and no handler called stopPropagation/
+// stopImmediatePropagation — continues up n's ancestor chain doing the same,
+// matching real DOM event bubbling (needed for delegation: a handler
+// registered on a container rather than the specific button/input a
+// synthetic click/keystroke targets). event.target and .currentTarget are
+// kept live across the walk. Handler errors/panics are contained per node,
+// same as before this walked more than one node.
+//
+// Scope: does not continue past the document root to a window-level
+// listener (window has no place in n's Parent chain) — document-level
+// delegation, the common real-world case, works; window-level does not yet.
 func (b *binder) dispatch(n *dom.Node, typ string, event goja.Value) {
-	m := b.listeners[n]
-	if m == nil {
-		return
+	obj, _ := event.(*goja.Object)
+	// stopped halts moving to an ancestor; stoppedImmediate ALSO halts the
+	// remaining listeners on the CURRENT node — the real distinction between
+	// stopPropagation (later listeners on this same node still run) and
+	// stopImmediatePropagation (they don't) that a single flag would blur.
+	stopped, stoppedImmediate := false, false
+	bubbles := false
+	if obj != nil {
+		obj.Set("target", b.wrap(n))
+		obj.Set("stopPropagation", func(goja.FunctionCall) goja.Value { stopped = true; return goja.Undefined() })
+		obj.Set("stopImmediatePropagation", func(goja.FunctionCall) goja.Value {
+			stopped, stoppedImmediate = true, true
+			return goja.Undefined()
+		})
+		if bv := obj.Get("bubbles"); bv != nil {
+			bubbles = bv.ToBoolean()
+		}
 	}
-	self := b.wrap(n)
-	if n == b.windowNode || n == b.docNode {
-		self = b.vm.GlobalObject()
-	}
-	// Copy so a handler that mutates the list mid-dispatch is safe.
-	hs := append([]goja.Value(nil), m[typ]...)
-	for _, h := range hs {
-		fn := b.handlerFunc(h)
-		b.callSafely(fn, self, event)
+
+	for cur := n; cur != nil; cur = cur.Parent {
+		if m := b.listeners[cur]; m != nil {
+			self := b.wrap(cur)
+			if cur == b.windowNode || cur == b.docNode {
+				self = b.vm.GlobalObject()
+			}
+			if obj != nil {
+				obj.Set("currentTarget", self)
+			}
+			// Copy so a handler that mutates the list mid-dispatch is safe.
+			hs := append([]goja.Value(nil), m[typ]...)
+			for _, h := range hs {
+				fn := b.handlerFunc(h)
+				b.callSafely(fn, self, event)
+				if stoppedImmediate {
+					break
+				}
+			}
+		}
+		if stopped || !bubbles {
+			break
+		}
 	}
 }
 

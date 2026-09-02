@@ -586,6 +586,88 @@ func TestEvents(t *testing.T) {
 	}
 }
 
+func TestEventBubbling(t *testing.T) {
+	// Three independent subtrees (not one reused tree) so each scenario's
+	// listeners can't accumulate onto another's nodes.
+	const src = `<html><body>
+		<div id="a-grandparent"><div id="a-parent"><div id="a-child"></div></div></div>
+		<div id="b-grandparent"><div id="b-parent"><div id="b-child"></div></div></div>
+		<div id="c-parent"><div id="c-child"></div></div>
+		<script>
+			var log = [];
+			document.getElementById('a-grandparent').addEventListener('click', function(){ log.push('grandparent'); });
+			document.getElementById('a-parent').addEventListener('click', function(){ log.push('parent'); });
+			document.getElementById('a-child').addEventListener('click', function(){ log.push('child'); });
+			document.getElementById('a-child').dispatchEvent(new Event('click', {bubbles: true}));
+			console.log('bubbled=' + log.join(','));
+
+			log = [];
+			document.getElementById('b-grandparent').addEventListener('click', function(){ log.push('grandparent'); });
+			document.getElementById('b-parent').addEventListener('click', function(e){ log.push('parent'); e.stopPropagation(); });
+			document.getElementById('b-child').addEventListener('click', function(){ log.push('child'); });
+			document.getElementById('b-child').dispatchEvent(new Event('click', {bubbles: true}));
+			console.log('stopped=' + log.join(','));
+
+			log = [];
+			document.getElementById('c-parent').addEventListener('click', function(){ log.push('parent'); });
+			document.getElementById('c-child').addEventListener('click', function(){ log.push('child'); });
+			document.getElementById('c-child').dispatchEvent(new Event('click', {bubbles: false}));
+			console.log('nonbubbling=' + log.join(','));
+		</script>
+	</body></html>`
+	_, logs, _ := runJS(t, src)
+	mustHave(t, logs,
+		"bubbled=child,parent,grandparent",
+		// child's own (target-phase) listener still fires, parent's fires
+		// and calls stopPropagation — grandparent's must NOT.
+		"stopped=child,parent",
+		// bubbles:false must not even reach parent.
+		"nonbubbling=child")
+}
+
+// TestStopPropagationVsStopImmediate covers the real distinction: plain
+// stopPropagation still lets LATER listeners on the SAME node run (only
+// ancestors are skipped); stopImmediatePropagation does not.
+func TestStopPropagationVsStopImmediate(t *testing.T) {
+	const src = `<html><body>
+		<div id="a-parent"><div id="a-child"></div></div>
+		<div id="b-parent"><div id="b-child"></div></div>
+		<script>
+			var log = [];
+			document.getElementById('a-child').addEventListener('click', function(e){ log.push('first'); e.stopPropagation(); });
+			document.getElementById('a-child').addEventListener('click', function(){ log.push('second'); });
+			document.getElementById('a-parent').addEventListener('click', function(){ log.push('parent'); });
+			document.getElementById('a-child').dispatchEvent(new Event('click', {bubbles: true}));
+			console.log('stopProp=' + log.join(','));
+
+			log = [];
+			document.getElementById('b-child').addEventListener('click', function(e){ log.push('first'); e.stopImmediatePropagation(); });
+			document.getElementById('b-child').addEventListener('click', function(){ log.push('second'); });
+			document.getElementById('b-parent').addEventListener('click', function(){ log.push('parent'); });
+			document.getElementById('b-child').dispatchEvent(new Event('click', {bubbles: true}));
+			console.log('stopImmediate=' + log.join(','));
+		</script>
+	</body></html>`
+	_, logs, _ := runJS(t, src)
+	mustHave(t, logs,
+		"stopProp=first,second", // second same-node listener still ran; parent did not
+		"stopImmediate=first")   // second same-node listener did NOT run
+}
+
+func TestEventCurrentTargetTracksBubblePhase(t *testing.T) {
+	const src = `<html><body>
+		<div id="parent"><div id="child"></div></div>
+		<script>
+			document.getElementById('parent').addEventListener('click', function(e){
+				console.log('ct=' + e.currentTarget.id + ' target=' + e.target.id);
+			});
+			document.getElementById('child').dispatchEvent(new Event('click', {bubbles: true}));
+		</script>
+	</body></html>`
+	_, logs, _ := runJS(t, src)
+	mustHave(t, logs, "ct=parent target=child")
+}
+
 func TestScriptErrorContained(t *testing.T) {
 	root, logs, res := runJS(t, `<html><head><title>T</title></head><body>
 		<script>throw new Error('boom')</script>
