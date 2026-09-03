@@ -18,6 +18,73 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont.) — quirks mode implemented (scoped to the one confirmed-load-bearing rule): a `<table>` no longer inherits centered text from a `<center>` ancestor (engine#103)
+
+news.ycombinator.com's story subtext ("N points by user … | hide | N
+comments") rendered CENTERED under each title instead of left-aligned like
+Chrome. Root-caused live: HN's whole page is `<html lang="en" op="news">` —
+**no `<!DOCTYPE>` at all** — wrapped in `<center><table id="hnmain" ...>`,
+the classic legacy pattern for horizontally centering a fixed-width table on
+the page. A missing doctype triggers real browsers' "quirks mode", whose UA
+stylesheet resets `table { text-align: initial; … }` — WITHOUT this, this
+engine's normal (correct, standards-mode) inheritance carried `<center>`'s
+centered-text-align all the way down into every `<td>`, centering content
+the page never intended to center.
+
+This engine had **zero quirks-mode concept anywhere** — `dom.Parse` (per its
+own doc comment) discarded any `DoctypeNode` outright. Added the minimum
+needed, scoped narrowly rather than implementing the HTML spec's full quirks
+algorithm: `dom.Node` gained a `Quirks bool`, set true when the source has
+NO `<!DOCTYPE ...>` at all (the single most common real-world trigger; the
+spec's rarer legacy-doctype-identifier triggers are not modelled — a page
+reaching this engine either has `<!DOCTYPE html>` or none at all in
+practice). `css.CascadeVW` reads it once and threads it into `uaDeclarations`,
+which now adds `text-align:left` to `<table>`'s UA default in quirks mode —
+only that one property, of the several the spec's quirks-mode `table{...}`
+rule actually resets (font-weight/style/variant/size/line-height/white-space
+too), since only `text-align` has a confirmed live defect to fix; adding the
+others would be guessing, not fixing.
+
+**This interacted with an existing mechanism and needed care to get right**:
+`AlignCenterBlocks` (this engine's value for legacy `<center>`/`align=center`)
+already does double duty — it both centers a definite-width block/table AS
+A BLOCK within its container (`layout.go`'s width-resolution switch) AND
+centers INLINE TEXT like ordinary `text-align:center` (`alignOffset`). My
+first attempt (a bare UA-level `text-align:left` on `<table>`) broke
+`TestTableFixedWidthCentredInCenter`: overriding the table's OWN TextAlign
+also destroyed the "am I inside a `<center>`, so should I be block-centered"
+signal the width-resolution code read from that SAME field, un-centering
+the table itself. Real browsers keep the two questions independent (a
+`<table>`'s own computed `text-align` genuinely does become `start` in
+quirks mode per spec, yet the table still visually centers) — so this
+engine now does too: `Style.CenterAsBlock` is `TextAlign==AlignCenterBlocks`
+for every element EXCEPT a quirks-mode `<table>`, which also stays true
+when its PARENT (the `parent Style` cascade already passes in, unaffected
+by the table's own reset) is centered. Layout's
+block-centering check now reads `CenterAsBlock`, not `TextAlign` directly.
+
+**Verified live: HN's subtext now renders left-aligned under each title,
+matching Chrome**, while a table-in-`<center>` still centers correctly
+(confirmed both live and via the pre-existing test that first caught the
+regression). Measured: news.ycombinator.com SSIM 0.598→0.596, pixdiff
+12.9%→13.1% — a small, WITHIN-NOISE move in the "wrong" direction, honestly
+reported: Hacker News is a live, constantly-updating front page (its story
+list, points, and comment counts differ between the two measurement runs,
+confirmed by the differing page heights: 2261px vs 2280px) — this is the
+SAME live-content-drift category already documented for tailwindcss.com and
+others this session, not a regression from the fix itself (confirmed
+separately, directly, via the two dedicated before/after screenshots this
+entry is based on).
+
+New regression tests: `TestParseQuirksMode` (`dom/dom_test.go` — a document
+with no doctype is flagged `Quirks`; one with `<!DOCTYPE html>` is not) and
+`TestQuirksTableCellTextNotCentered` (`layout/table_pres_test.go` — a `<td>`
+inside a quirks-mode `<center><table>` must NOT have its text centered).
+Both confirmed to fail with the exact wrong (missing `Quirks` field /
+centered-not-left-aligned) result before this fix, via a temporary revert of
+`dom/dom.go`, `css/cascade.go`, `css/ua.go`, `css/value.go`, and
+`layout/layout.go` together.
+
 ## 2026-09-03 (cont.) — a list-item marker inside a flex/grid/table/float item was left at its pre-layout position (engine#102)
 
 caniuse.com's "Most searched features" numbered list (`<ol style="list-

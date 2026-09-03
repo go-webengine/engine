@@ -450,6 +450,24 @@ type Style struct {
 	WhiteSpace WhiteSpace
 	LineHeight LineHeight
 
+	// CenterAsBlock is TextAlign == AlignCenterBlocks for every element,
+	// EXCEPT it stays true for a <table> whose PARENT has TextAlign ==
+	// AlignCenterBlocks even in quirks mode, where the table's OWN TextAlign
+	// is separately reset to AlignLeft (see css/ua.go's quirks-mode table
+	// rule) so its cells' text is correctly left-, not centre-, aligned.
+	// Layout's "centre a definite-width block within its container" rule
+	// (the legacy <center>/align=center effect) reads THIS field rather than
+	// TextAlign directly, because real browsers keep the two questions
+	// (should MY OWN text be centred vs. should I, as a block, be centred
+	// within my parent) independent for exactly this one quirks-mode case —
+	// confirmed against the HTML standard, whose quirks-mode reset is scoped
+	// to the `table` selector alone. Every other element (including a
+	// <center> with its own definite width, which must centre ITSELF using
+	// its own AlignCenterBlocks default regardless of its parent) is
+	// unaffected: CenterAsBlock and TextAlign==AlignCenterBlocks always
+	// agree for it.
+	CenterAsBlock bool
+
 	// ImageRendering selects the scaling filter for raster images (inherited).
 	// The initial value IRAuto means high-quality (bicubic); IRPixelated asks
 	// for nearest-neighbour (pixel art).

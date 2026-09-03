@@ -61,6 +61,10 @@ func CascadeVW(root *dom.Node, vw float64, externalSheets []string) StyleMap {
 // for container queries that dynamic.go's settle loop plays for JavaScript:
 // same shape, bounded passes, deterministic termination).
 func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, containers map[*dom.Node]ContainerSize) StyleMap {
+	// root is the synthetic Document node dom.Parse returns, which is where
+	// Node.Quirks is set (see its doc comment) — read it once here rather
+	// than re-deriving it per element.
+	quirks := root.Type == dom.Document && root.Quirks
 	// External <link> stylesheets precede in-document <style> rules (they load in
 	// the head), so they take lower precedence at equal specificity.
 	var rules []Rule
@@ -106,7 +110,7 @@ func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, co
 		// AMBIENT scope n is being cascaded in (nil outside any shadow tree,
 		// or an OUTER shadow's host when n is itself shadow-tree content),
 		// an entirely different (and, for the host itself, unrelated) binding.
-		st := computeElement(n, parent, rules, hostRules, &counter, containerStack, containers, host)
+		st := computeElement(n, parent, rules, hostRules, &counter, containerStack, containers, host, quirks)
 		sm[n] = &st
 		childStack := containerStack
 		if st.ContainerType != ContainerNormal {
@@ -147,8 +151,10 @@ func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, co
 // attached shadow's ":host"-keyed declarations (nil if n has none), always
 // matched with n as its own host — an independent binding from rules/host,
 // which describe the scope n is being cascaded IN, not n's own shadow (an
-// element is never a member of the shadow tree it hosts).
-func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node) Style {
+// element is never a member of the shadow tree it hosts). quirks is the
+// document's quirks-mode flag (see dom.Node.Quirks), consulted by
+// uaDeclarations for the handful of UA defaults that differ in quirks mode.
+func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node, quirks bool) Style {
 	st := inheritFrom(parent)
 	// ownProps tracks whether st.CustomProps is this element's own (already
 	// cloned) map versus the parent's shared one, so we clone at most once.
@@ -165,7 +171,7 @@ func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter 
 	// User-agent defaults: the per-tag declarations (specificity 0) plus the few
 	// descendant UA rules (matched at their real specificity, still at UA origin)
 	// that alternate the nested-list marker glyph disc→circle→square by depth.
-	add(uaDeclarations(n.Tag), precUA, 0)
+	add(uaDeclarations(n.Tag, quirks), precUA, 0)
 	// The HTML `hidden` attribute maps to `display:none` via the UA rule
 	// `[hidden]{display:none}`. It is added at UA origin so any author `display`
 	// (even a low-specificity or normal one) still wins per the cascade — matching
@@ -290,6 +296,14 @@ func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter 
 			applyResolved(c.decl, st.FontSize)
 		}
 	}
+	// See CenterAsBlock's doc comment: every element uses its own final
+	// TextAlign, except a quirks-mode <table> also inherits its PARENT's
+	// AlignCenterBlocks-ness — its own TextAlign was just reset to AlignLeft
+	// by the quirks-mode UA rule above, which must not also erase the
+	// separate "am I inside a <center>, so should I be centred as a block"
+	// signal.
+	st.CenterAsBlock = st.TextAlign == AlignCenterBlocks ||
+		(quirks && n.Tag == "table" && parent.TextAlign == AlignCenterBlocks)
 	return st
 }
 

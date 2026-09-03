@@ -5,6 +5,32 @@ package layout
 
 import "testing"
 
+// TestQuirksTableCellTextNotCentered covers a real regression: a document
+// with no <!DOCTYPE> (quirks mode — every layoutHTML test fixture in this
+// package qualifies, matching news.ycombinator.com, which ships no doctype
+// at all) wraps its whole page in `<center><table>...</table></center>` to
+// centre the TABLE on the page — but that must not also inherit centered
+// TEXT into every cell, exactly like a real browser's quirks-mode UA
+// stylesheet (`table{text-align:initial}`). TestTableFixedWidthCentredInCenter
+// (below) confirms the table itself STILL centres correctly even though its
+// own text-align is reset — the two behaviours are meant to coexist.
+func TestQuirksTableCellTextNotCentered(t *testing.T) {
+	box := layoutHTML(t, `<html><body style="margin:0"><center>`+
+		`<table width="200"><tr><td>x</td></tr></table></center></body></html>`, 500)
+	td := findBox(box, "td")
+	if td == nil {
+		t.Fatal("no td box")
+	}
+	if len(td.Lines) == 0 || len(td.Lines[0].Items) == 0 {
+		t.Fatal("td has no inline content")
+	}
+	// Left-aligned: the item starts at the cell's own content edge, not
+	// centered somewhere in the middle of the (200px wide, mostly empty) cell.
+	if got, want := td.Lines[0].Items[0].X, td.ContentX; got != want {
+		t.Errorf("td text X = %v, want %v (left-aligned at the content edge, not centered)", got, want)
+	}
+}
+
 // A fixed-width table is narrowed to its width and centred inside a <center>
 // (legacy centre-including-blocks alignment).
 func TestTableFixedWidthCentredInCenter(t *testing.T) {

@@ -37,6 +37,23 @@ type Node struct {
 	Parent   *Node
 	Children []*Node
 
+	// Quirks is set on the Document (root) node when the source had no
+	// `<!DOCTYPE ...>` at all — the single most common real-world trigger for
+	// "quirks mode" (a page that never opted into standards mode). It is the
+	// scoped case this engine detects; the HTML spec's fuller algorithm also
+	// triggers quirks mode for specific legacy PUBLIC/SYSTEM doctype
+	// identifiers (e.g. HTML 4.01 Transitional without a system ID), which
+	// are vanishingly rare on real pages that reach this engine and are not
+	// modelled — a page with ANY doctype is treated as standards mode here.
+	// Confirmed load-bearing live: news.ycombinator.com ships no doctype at
+	// all (`<html lang="en" op="news">` directly), and real browsers'
+	// quirks-mode UA stylesheet resets `table{text-align:initial}` — without
+	// which its `<center><table>...</table></center>` page shell (used only
+	// to centre the table AS A BLOCK on the page) inherits centered text
+	// into every cell, visibly wrong for cells the real page never intended
+	// to centre (see css/ua.go's quirks-mode table rule).
+	Quirks bool
+
 	// Shadow is the shadow root attached to this element (a declarative
 	// <template shadowrootmode> hoisted out at parse time — see
 	// attachDeclarativeShadowRoots), or nil for a plain element. When set,
@@ -101,10 +118,22 @@ func Parse(htmlSrc string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	doc := &Node{Type: Document}
+	doc := &Node{Type: Document, Quirks: !hasDoctype(root)}
 	convertChildren(root, doc)
 	attachDeclarativeShadowRoots(doc)
 	return doc, nil
+}
+
+// hasDoctype reports whether the parsed tree's top-level children include a
+// `<!DOCTYPE ...>` — see Node.Quirks for what this scoped check does and does
+// not cover.
+func hasDoctype(root *html.Node) bool {
+	for c := root.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.DoctypeNode {
+			return true
+		}
+	}
+	return false
 }
 
 // convertChildren walks h's children, converting element and text nodes and

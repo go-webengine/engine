@@ -418,9 +418,12 @@ func resolveWidths(st *css.Style, cw float64) (contentW, ml, mr float64) {
 		ml, mr = leftover, mrFixed
 	case st.MarginRightAuto:
 		ml, mr = mlFixed, leftover
-	case st.TextAlign == css.AlignCenterBlocks && mlFixed == 0 && mrFixed == 0:
+	case st.CenterAsBlock && mlFixed == 0 && mrFixed == 0:
 		// Legacy <center> / align="center": centre a definite-width block within
-		// its container when no explicit margins constrain it.
+		// its container when no explicit margins constrain it. CenterAsBlock,
+		// not a direct TextAlign check, so a quirks-mode <table> (whose OWN
+		// TextAlign is separately reset to AlignLeft — see css/ua.go) still
+		// centres correctly when ITS parent is the <center>.
 		if leftover > 0 {
 			ml = leftover / 2
 			mr = leftover - ml
