@@ -672,6 +672,10 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		if o, ok := parseOverflowKeyword(lv); ok {
 			s.OverflowY = o
 		}
+	case "clip":
+		if r, ok := parseClipRect(lv, emRef); ok {
+			s.HasClip, s.ClipRect = true, r
+		}
 	case "line-height":
 		if lh, ok := parseLineHeight(v, emRef); ok {
 			s.LineHeight = lh

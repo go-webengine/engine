@@ -77,6 +77,33 @@ func TestOverflowClipsSrOnlyText(t *testing.T) {
 	}
 }
 
+// TestClipRectHidesContent is a real regression, found live on pkg.go.dev:
+// its own "skip to main content" link uses the LEGACY clip:rect(0 0 0 0)
+// sr-only idiom (position:absolute, no explicit small width/height — unlike
+// TestOverflowClipsSrOnlyText's overflow:hidden variant, so that mechanism
+// never engaged here at all) rather than the modern width:1px/height:1px one.
+// Before `clip` was parsed, the link's real text rendered at full size,
+// overlapping the page's real search box.
+func TestClipRectHidesContent(t *testing.T) {
+	img := renderFixture(t, "clip_rect_sronly.html", 300, 200)
+	// The clipped link sits at y≈100 (after the 100px spacer). Its text, if
+	// not clipped away, would paint a wide dark band there.
+	if hasInk(img, 0, 96, 260, 130) {
+		t.Error("clip:rect(0 0 0 0) content painted instead of being clipped to nothing")
+	}
+}
+
+// TestClipRectIgnoredWithoutPositioning guards the spec scoping: clip:rect()
+// applies only to position:absolute/fixed, so on a statically-positioned
+// element (the common case a bare "clip" declaration on the wrong element
+// should never accidentally erase) it must have no effect at all.
+func TestClipRectIgnoredWithoutPositioning(t *testing.T) {
+	img := renderFixture(t, "clip_rect_static_ignored.html", 300, 200)
+	if !hasInk(img, 0, 96, 260, 130) {
+		t.Error("clip:rect() on a statically-positioned element wrongly hid its content")
+	}
+}
+
 // TestOverflowVisiblePaintsOverflow guards the opposite: with the default
 // overflow:visible, content past the container's own box still paints.
 func TestOverflowVisiblePaintsOverflow(t *testing.T) {
