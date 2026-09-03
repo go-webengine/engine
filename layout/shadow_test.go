@@ -104,7 +104,7 @@ func TestRenderedChildrenPlainElementPassthrough(t *testing.T) {
 		t.Fatal(err)
 	}
 	div := dom.Find(root, "div")
-	got := renderedChildren(div)
+	got := (&layouter{}).renderedChildren(div)
 	if !reflect.DeepEqual(got, div.Children) {
 		t.Errorf("renderedChildren(plain div) = %v, want div.Children (%v)", got, div.Children)
 	}

@@ -101,7 +101,7 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 // collectRows gathers the table's rows, descending into row groups.
 func (l *layouter) collectRows(node *dom.Node) []tableRow {
 	var rows []tableRow
-	for _, c := range renderedChildren(node) {
+	for _, c := range l.renderedChildren(node) {
 		if c.Type != dom.Element {
 			continue
 		}
@@ -113,7 +113,7 @@ func (l *layouter) collectRows(node *dom.Node) []tableRow {
 		case css.DisplayTableRow:
 			rows = append(rows, l.makeRow(c, cs))
 		case css.DisplayTableRowGroup:
-			for _, r := range renderedChildren(c) {
+			for _, r := range l.renderedChildren(c) {
 				if r.Type != dom.Element {
 					continue
 				}
@@ -130,7 +130,7 @@ func (l *layouter) collectRows(node *dom.Node) []tableRow {
 // makeRow collects the table-cell children of a row.
 func (l *layouter) makeRow(node *dom.Node, st *css.Style) tableRow {
 	row := tableRow{node: node, style: st}
-	for _, c := range renderedChildren(node) {
+	for _, c := range l.renderedChildren(node) {
 		if c.Type != dom.Element {
 			continue
 		}

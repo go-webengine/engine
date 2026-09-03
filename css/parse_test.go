@@ -272,6 +272,13 @@ func TestMediaMatches(t *testing.T) {
 	if !mediaMatches("(min-width: abc)", 1024) {
 		t.Error("unparseable width feature is ignored (matches)")
 	}
+	// mediaWidthRe's [0-9.]+ character class accepts a value with more than
+	// one '.' (e.g. multiple decimal points), which strconv.ParseFloat then
+	// rejects — must not panic, just skip this feature like any other
+	// unparseable one.
+	if !mediaMatches("(min-width: 1.2.3px)", 1024) {
+		t.Error("a malformed numeric width (multiple dots) should be skipped, matching")
+	}
 }
 
 // TestMediaMatchesRemUnits covers Tailwind v4's default breakpoints, which are
@@ -379,12 +386,31 @@ func TestMediaMatchesSimpleCalc(t *testing.T) {
 	if mediaMatches("(width<=calc(1000px + 24px))", 1025) {
 		t.Error("width<=calc(1000px + 24px) should NOT match at 1025px")
 	}
-	// A more complex calc() (more than two terms) is left unparsed, same as any
-	// other value this simplified matcher cannot handle — the condition simply
-	// finds no width feature and matches optimistically, rather than panicking
-	// or matching incorrectly.
-	if !mediaMatches("(width<=calc(1px + 2px + 3px))", 999999) {
-		t.Error("an unparseable calc() should fall through to match optimistically")
+	// evalMediaCalcs (calc.go's general evaluator, shared with ordinary
+	// property values) resolves a calc() with more than two terms and a
+	// multiplication by a bare scalar just as well as a plain two-term one —
+	// MDN's real reference-layout breakpoint is exactly this shape
+	// (`calc(1rem * 2 + 15rem + 2rem + 31rem)`, five terms including one
+	// product): a two-term-only evaluator left it unparsed, silently making a
+	// MOBILE-ONLY breakpoint match at every viewport (see FIDELITY.md).
+	if mediaMatches("(width<=calc(1px + 2px + 3px))", 999999) {
+		t.Error("calc(1px + 2px + 3px) = 6px: width<=6px should NOT match at 999999px")
+	}
+	if !mediaMatches("(width<=calc(1px + 2px + 3px))", 6) {
+		t.Error("calc(1px + 2px + 3px) = 6px: width<=6px should match at exactly 6px")
+	}
+	if !mediaMatches("(width<calc(1rem * 2 + 15rem + 2rem + 31rem))", 799) {
+		t.Error("MDN's real breakpoint (800px): width<800px should match at 799px")
+	}
+	if mediaMatches("(width<calc(1rem * 2 + 15rem + 2rem + 31rem))", 1024) {
+		t.Error("MDN's real breakpoint (800px): width<800px should NOT match at 1024px — the bug this covers")
+	}
+	// A construct genuinely outside what evalCalcExpr resolves (a percentage,
+	// which needs layout-time context this text-level pass never has) is
+	// left unparsed: the condition finds no width feature and matches
+	// optimistically, same as any other value this matcher cannot handle.
+	if !mediaMatches("(width<=calc(50% + 24px))", 999999) {
+		t.Error("a calc() containing a percentage should fall through to match optimistically")
 	}
 	// A value the regex's digit/dot character class accepts but strconv
 	// rejects (multiple dots, no actual digits) must not panic: the condition
@@ -392,6 +418,11 @@ func TestMediaMatchesSimpleCalc(t *testing.T) {
 	// unparseable value.
 	if !mediaMatches("(width<=...px)", 1024) {
 		t.Error("an unparseable numeric value should fall through to match optimistically")
+	}
+	// An unterminated "calc(" (no matching close paren anywhere) must not
+	// panic or hang: evalMediaCalcs leaves the rest of the string untouched.
+	if !mediaMatches("(width<=calc(48rem - .02px", 1024) {
+		t.Error("an unterminated calc( should fall through to match optimistically")
 	}
 }
 

@@ -3,7 +3,10 @@
 
 package layout
 
-import "github.com/go-webengine/engine/dom"
+import (
+	"github.com/go-webengine/engine/css"
+	"github.com/go-webengine/engine/dom"
+)
 
 // renderedChildren returns the nodes layout should treat as n's children when
 // walking the tree to build boxes: n's attached shadow tree's top-level
@@ -11,24 +14,70 @@ import "github.com/go-webengine/engine/dom"
 // visited directly — they render only if pulled in through a <slot>, see
 // below), a <slot>'s assigned light-DOM nodes when it has any (else the
 // slot's own Children, its fallback content), or n's Children unchanged
-// otherwise.
+// otherwise — with any `display:contents` element in that list replaced by
+// ITS OWN rendered children (recursively), per flattenContents.
 //
 // This is the ONE substitution point every shadow-aware render walk goes
-// through instead of reading n.Children directly, so slot projection is
-// transparent to the rest of the block/inline layout algorithms (contents,
-// hasBlockLevelChild, appendInline) without duplicating any of them: a page
-// with no Shadow DOM at all takes the final `return n.Children` on every
-// call, byte-identical to before this existed.
-func renderedChildren(n *dom.Node) []*dom.Node {
+// through instead of reading n.Children directly, so slot projection AND
+// display:contents are transparent to the rest of the block/inline layout
+// algorithms (contents, hasBlockLevelChild, appendInline, flexItems,
+// gridItems, table row/cell collection) without duplicating either of them: a
+// page with neither Shadow DOM nor display:contents anywhere takes the final
+// `return n.Children` on every call, byte-identical to before either existed.
+func (l *layouter) renderedChildren(n *dom.Node) []*dom.Node {
 	if n.Shadow != nil {
-		return n.Shadow.Children
+		return l.flattenContents(n.Shadow.Children)
 	}
 	if n.Tag == "slot" {
 		if assigned := assignedSlotNodes(n); len(assigned) > 0 {
-			return assigned
+			return l.flattenContents(assigned)
 		}
 	}
-	return n.Children
+	return l.flattenContents(n.Children)
+}
+
+// flattenContents replaces any `display:contents` element in children with
+// its own rendered children (recursively via renderedChildren, so a
+// display:contents element nested inside another is handled too), so it
+// never itself reaches box placement — CSS's real behaviour: the element
+// generates no box, its children act as if they were direct children of ITS
+// parent instead. Confirmed load-bearing live on developer.mozilla.org,
+// whose reference-article layout wraps the actual header/body content in
+// `<main class="layout__content">` with exactly `display:contents`, solely
+// to keep `<main>` out of the enclosing CSS Grid's item list while letting
+// its children still receive their OWN `grid-area` placement — without this,
+// `<main>` (which has no grid-area of its own) became an unnamed grid item,
+// auto-placed into the wrong cell, while its real children's `grid-area`
+// assignments were silently ignored (grid-area only matters on a direct
+// grid item), corrupting the whole layout's column placement.
+//
+// The common case (no display:contents anywhere in children) returns the
+// slice unchanged — no allocation, no scan cost beyond the one Display check
+// per element.
+func (l *layouter) flattenContents(children []*dom.Node) []*dom.Node {
+	hasContents := false
+	for _, c := range children {
+		if c.Type == dom.Element {
+			if cs := l.sm[c]; cs != nil && cs.Display == css.DisplayContents {
+				hasContents = true
+				break
+			}
+		}
+	}
+	if !hasContents {
+		return children
+	}
+	out := make([]*dom.Node, 0, len(children))
+	for _, c := range children {
+		if c.Type == dom.Element {
+			if cs := l.sm[c]; cs != nil && cs.Display == css.DisplayContents {
+				out = append(out, l.renderedChildren(c)...)
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 // assignedSlotNodes returns the host's light-DOM children assigned to slot (a

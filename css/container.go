@@ -181,15 +181,7 @@ var containerFeatureCmpRe = regexp.MustCompile(
 // either regex and so does not affect the result, matching mediaMatches'
 // existing "unknown feature: match optimistically" stance for @media.
 func containerConditionMatches(cond string, typ ContainerType, sz ContainerSize) bool {
-	cond = mediaCalcRe.ReplaceAllStringFunc(cond, func(m string) string {
-		g := mediaCalcRe.FindStringSubmatch(m)
-		a, b := lengthToPx(g[1], g[2]), lengthToPx(g[4], g[5])
-		v := a + b
-		if g[3] == "-" {
-			v = a - b
-		}
-		return strconv.FormatFloat(v, 'f', -1, 64) + "px"
-	})
+	cond = evalMediaCalcs(cond)
 	axisValue := func(axis string) (float64, bool) {
 		if axis == "width" {
 			return sz.InlineSize, true
