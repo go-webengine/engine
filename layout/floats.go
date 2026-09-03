@@ -290,6 +290,24 @@ func translateBox(box *Box, dx, dy float64) {
 	box.Y += dy
 	box.ContentX += dx
 	box.ContentY += dy
+	// A list-item's marker is computed once, in attachMarker, from the box's
+	// ContentX/first-line Y at the time layout ran — absolute coordinates, like
+	// everything else in this package. Any box translated AFTER that (a flex
+	// row/column item repositioned from its temporary local-origin layout,
+	// flex.go:251/359; a grid item, grid.go; a table cell, table.go; a float,
+	// placeFloat above) left its marker's X/Y stuck at the PRE-translation
+	// position — observed live on caniuse.com: a `display:flex` 3-column
+	// section's numbered list (`<ol style="list-style:decimal">`, a flex
+	// child) had every marker's absolute X computed against its local,
+	// near-zero pre-flex-placement ContentX, so after the real ~370px flex
+	// shift the "1."/"2."/… markers rendered off in the gutter of column one
+	// instead of beside their own list items — invisible in this specific
+	// page's cramped indent, but wrong regardless of what happens to sit
+	// there.
+	if box.Marker != nil {
+		box.Marker.X += dx
+		box.Marker.Y += dy
+	}
 	for _, line := range box.Lines {
 		line.X += dx
 		line.Y += dy
