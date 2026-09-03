@@ -784,12 +784,34 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 		return
 	}
 
-	bg := formFieldBg
+	// The background/border PAINTED here comes from the element's own cascaded
+	// style (css/ua.go gives button/select/input/textarea a real UA-default
+	// background-color+border, exactly like a real browser) rather than a
+	// hardcoded colour — so an author reset (`background:0 0;border:0`, the
+	// exact rule github.com's own top-nav <button>s use to look like plain
+	// text links) is honoured instead of overridden by fake generic chrome.
+	// formFieldBg/formButtonBg/formBorder below are only the defensive
+	// fallback for the pathological case of a nil Style (never real for an
+	// actual page element, but paintControl's own unit-test helper can
+	// construct one).
+	bg, borderCol, drawBorder := formFieldBg, formBorder, true
 	if kind == controlButtonLike || kind == controlSelect {
 		bg = formButtonBg
 	}
-	fillRectClipped(pp, r, bg, clip)
-	strokeRect1px(pp, r, formBorder, clip)
+	if it.Style != nil {
+		bg = it.Style.Background
+		side := it.Style.Border.Top
+		drawBorder = side.Width > 0 && side.Style != css.BorderNone && side.Color.A > 0
+		if drawBorder {
+			borderCol = side.Color
+		}
+	}
+	if bg.A > 0 {
+		fillRectClipped(pp, r, bg, clip)
+	}
+	if drawBorder {
+		strokeRect1px(pp, r, borderCol, clip)
+	}
 
 	text, muted := formControlDisplayText(n)
 	if text == "" || it.Style == nil {

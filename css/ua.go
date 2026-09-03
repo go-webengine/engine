@@ -23,7 +23,20 @@ var uaDescendantRules = ParseStylesheet(
 		// overlapping the page. An `open`-attributed <details> (or any author
 		// rule targeting its children) is unaffected — this selector simply
 		// never matches one.
-		"details:not([open]) > :not(summary) { display: none }\n")
+		"details:not([open]) > :not(summary) { display: none }\n" +
+			// <input>'s tag-level default (uaDeclarations, above) is the
+			// text-field look; these attribute-selector overrides narrow that
+			// for the subtypes that need something else. A button-like input
+			// gets the SAME grey button chrome a real <button>/<select> gets
+			// (attribute selectors outrank the bare-tag rule they override,
+			// same specificity ordering as any real stylesheet). Checkbox/
+			// radio get no generic background/border at all — paint's own
+			// checkbox-square renderer never consults Style.Background/Border
+			// for them, so a leftover white field-coloured value would only
+			// ever be a trap for some future consumer (e.g. a JS
+			// getComputedStyle) reading a colour that is never actually drawn.
+			"input[type=button], input[type=submit], input[type=reset] { background-color: #efefef }\n" +
+			"input[type=checkbox], input[type=radio] { background-color: transparent; border: 0 }\n")
 
 // uaDeclarations returns the user-agent default declarations for a tag, as
 // property:value pairs. These mirror a browser's default stylesheet for the
@@ -111,8 +124,37 @@ func uaDeclarations(tag string) []Declaration {
 	case "code", "kbd", "samp", "tt":
 		return []Declaration{{Property: "font-family", Value: "monospace"}}
 	case "span", "label", "abbr", "sup", "sub", "mark", "u", "s", "del", "ins",
-		"time", "q", "img", "button", "input", "select", "textarea":
+		"time", "q", "img":
 		return []Declaration{{Property: "display", Value: "inline"}}
+	case "button", "select":
+		// A real button/select has a visible UA-default background and border
+		// that author CSS very commonly resets (e.g. a nav bar's `<button>`
+		// styled to look like a plain text link) — this MUST be a real,
+		// author-overridable cascade value, not a hardcoded colour paint
+		// picks regardless of styling, or every such reset renders with a
+		// fake generic gray box instead of the invisible chrome the author
+		// asked for. Confirmed load-bearing live: github.com's top nav items
+		// are literal `<button>` elements with `background:0 0;border:0`
+		// (its own CSS, read directly) rendering as solid gray pills without
+		// this. Colours match paint's PRE-EXISTING hardcoded fallback
+		// (`formButtonBg`/`formBorder` in paint/paint.go) exactly, so an
+		// actually-unstyled control's appearance is unchanged — only a
+		// STYLED one now differs, correctly.
+		return []Declaration{{Property: "display", Value: "inline"},
+			{Property: "background-color", Value: "#efefef"},
+			{Property: "border", Value: "1px solid #767676"}}
+	case "input", "textarea":
+		// Same reasoning as button/select above; the default (white-ish
+		// field) UA look for a text-like control. <input type=checkbox/
+		// radio/button/submit/reset> are narrowed by the attribute-selector
+		// rules in uaDescendantRules below — checkbox/radio lose this
+		// background/border entirely (paint draws their own checked-state
+		// square and never consults Style.Background/Border for them), and
+		// button-like input types get the SAME grey button look as a real
+		// <button>.
+		return []Declaration{{Property: "display", Value: "inline"},
+			{Property: "background-color", Value: "#ffffff"},
+			{Property: "border", Value: "1px solid #767676"}}
 	case "head", "title", "style", "script", "meta", "link", "base", "noscript":
 		return []Declaration{{Property: "display", Value: "none"}}
 	case "option":
