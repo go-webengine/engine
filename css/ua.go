@@ -115,6 +115,21 @@ func uaDeclarations(tag string) []Declaration {
 		return []Declaration{{Property: "display", Value: "inline"}}
 	case "head", "title", "style", "script", "meta", "link", "base", "noscript":
 		return []Declaration{{Property: "display", Value: "none"}}
+	case "option":
+		// A real <select> is a replaced, OS-native control: it shows only the
+		// currently selected option's text, on one line, entirely opaque to CSS
+		// box layout — <option>/<optgroup> children never participate in normal
+		// document flow the way this engine's generic "select" (line 114,
+		// display:inline) fallback implies. Observed live on pkg.go.dev/net/http:
+		// its version/tab-switcher <select> (dozens of <option>s, one holding the
+		// page's ENTIRE alphabetical symbol index as option text) rendered every
+		// option's text as ordinary inline content, wrapping across 455px/~19
+		// lines of concatenated identifiers stacked at the select's DOM position.
+		// This engine has no native form-control rendering at all (an <input>'s
+		// value is equally never shown — an existing, accepted simplification),
+		// so hiding <option> content is the same honest-about-the-gap choice
+		// already used for <template>'s subtree above, not a new kind of gap.
+		return []Declaration{{Property: "display", Value: "none"}}
 	case "template":
 		// A <template>'s children are inert: per the HTML spec they live in the
 		// element's .content DocumentFragment, never in the normal document tree,
