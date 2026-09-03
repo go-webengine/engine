@@ -18,6 +18,63 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont.) — a form control's background/border now comes from its own cascaded style, not a hardcoded colour (engine#98)
+
+github.com/golang/go's top navigation ("Platform", "Solutions", "Resources",
+"Open Source", "Enterprise") rendered as solid grey pill buttons — but a raw
+fetch of the real page shows these are literal `<button>` elements styled by
+GitHub's own CSS with `background:0 0;border:0`, meant to look like plain
+text links with a dropdown caret, not visible buttons at all.
+
+Root cause: engine#95's new form-control paint step (`paintFormControl`)
+drew every button/select's background and border from two flat, hardcoded
+package-level colours (`formButtonBg`, `formBorder`), completely independent
+of `it.Style` — so ANY author reset of a control's default appearance (an
+extremely common pattern; virtually every professionally-designed site
+restyles its buttons rather than accepting the raw UA look) was silently
+overridden by fake generic chrome. This is a broadly-applicable regression,
+not specific to this one page's header.
+
+Fixed at the source rather than special-casing paint: `css/ua.go` never gave
+`button`/`select`/`input`/`textarea` a background-color or border UA default
+at all (only `display:inline`) — so the cascade had NOTHING for an author
+rule to actually override; `Style.Background`/`Style.Border` were always
+empty/transparent for these tags regardless of styling, which is why paint
+had to hardcode its own colours in the first place. Added real UA defaults
+(matching paint's own prior hardcoded values exactly, so an unstyled
+control's appearance is unchanged): `button`/`select` get a light-grey
+background + grey border, `input`/`textarea` get white + grey border,
+narrowed by two new `uaDescendantRules` attribute-selector overrides —
+`input[type=button/submit/reset]` gets the button look, `input[type=
+checkbox/radio]` gets no generic background/border at all (paint's own
+checkbox-square renderer never consults these fields for them). `paint/
+paint.go`'s `paintFormControl` now reads `it.Style.Background`/`.Border`
+directly instead of choosing between the two hardcoded constants, painting
+nothing for a zero-alpha background or a `border:0`/`border-style:none`
+side — exactly the mechanism every other element's background/border
+already uses in this engine, just newly extended to form controls.
+
+**Verified live: github.com's nav items no longer render as grey pills.**
+Measured: github.com/golang/go SSIM 0.531→0.532, pixdiff 32.9%→32.8% —
+barely moved in the aggregate, honestly reported rather than oversold: the
+fixed header is a small fraction of a long (2989px), text-dense page whose
+diff is dominated by ordinary font-rasteriser variance, the same category of
+noise already documented for Wikipedia and several other pages this
+session. The fix's real value is general (any styled button/select/input on
+ANY page, not just this one), independently of this page's own number.
+
+New regression tests confirmed to fail against engine#95's original
+hardcoded-colour implementation before this fix (reverted via a temporary
+`git checkout` of `css/ua.go`/`paint/paint.go` covering just this round's
+diff): `TestPaintFormControlHonoursAuthorReset` (a zero-alpha background and
+a zero-width border must paint nothing, not the UA fallback colours) is the
+core new case; `TestPaintFormControlDrawsBackgroundAndBorder` and
+`TestPaintFormControlButtonBackground` were updated to pass an explicit,
+realistic cascaded style (matching what `css/ua.go` now actually produces)
+instead of relying on paint's own hardcoded fallback, so they keep testing
+the same visible-box contract through the new mechanism rather than around
+it.
+
 ## 2026-09-03 (cont.) — `<select>` sizes to its widest option and shows the correct one, matching the real cross-engine pattern (engine#96)
 
 Round engine#94 (below) fixed pkg.go.dev's garbled index block by hiding

@@ -12,8 +12,20 @@ import (
 	"github.com/go-webengine/engine/layout"
 )
 
+// controlStyle mirrors what css/ua.go's real UA defaults now give a text-
+// like control (background-color:#ffffff; border:1px solid #767676) — paint
+// no longer supplies these itself, it reads them from the cascaded style
+// (an author reset like `background:0 0;border:0` must be honoured, see
+// TestPaintFormControlHonoursAuthorReset below), so a hand-built test style
+// needs to carry them explicitly to exercise the SAME visible-box contract
+// the old hardcoded-colour version tested.
 func controlStyle() *css.Style {
-	return &css.Style{FontFamily: css.Sans, FontSize: 14, FontWeight: 400, Color: css.Color{A: 255}}
+	return &css.Style{FontFamily: css.Sans, FontSize: 14, FontWeight: 400, Color: css.Color{A: 255},
+		Background: formFieldBg,
+		Border: css.Borders{
+			Top: css.BorderSide{Width: 1, Style: css.BorderSolid, Color: formBorder},
+		},
+	}
 }
 
 // paintControl lays out a single form-control InlineItem at (0,0) sized
@@ -22,9 +34,17 @@ func controlStyle() *css.Style {
 // pipeline (paint's own tests are pipeline-agnostic by convention).
 func paintControl(t *testing.T, n *dom.Node, w, h float64) *image.RGBA {
 	t.Helper()
+	return paintControlStyled(t, n, w, h, controlStyle())
+}
+
+// paintControlStyled is paintControl with an explicit style, for a test that
+// needs a specific cascaded Background/Border (e.g. a button's own default,
+// or an author reset) rather than controlStyle's plain text-field look.
+func paintControlStyled(t *testing.T, n *dom.Node, w, h float64, style *css.Style) *image.RGBA {
+	t.Helper()
 	dst := white(int(w)+20, int(h)+20)
 	item := &layout.InlineItem{
-		Node: n, FormControl: n, Style: controlStyle(),
+		Node: n, FormControl: n, Style: style,
 		Width: w, Ascent: h, LineHeight: h, X: 5, Y: 5,
 	}
 	box := &layout.Box{
@@ -57,16 +77,46 @@ func TestPaintFormControlDrawsBackgroundAndBorder(t *testing.T) {
 }
 
 // TestPaintFormControlButtonBackground covers the button-like kind's darker
-// background, distinguishing it visually from a plain text field.
+// background (css/ua.go's own default for button/select), distinguishing it
+// visually from a plain text field.
 func TestPaintFormControlButtonBackground(t *testing.T) {
 	n := elem("button", map[string]string{"id": "e"})
-	dst := paintControl(t, n, 80, 30)
+	style := &css.Style{FontFamily: css.Sans, FontSize: 14, FontWeight: 400, Color: css.Color{A: 255},
+		Background: formButtonBg,
+		Border:     css.Borders{Top: css.BorderSide{Width: 1, Style: css.BorderSolid, Color: formBorder}},
+	}
+	dst := paintControlStyled(t, n, 80, 30, style)
 	// Near the top, above where the centered "Submit" label's glyphs reach
 	// (the label always renders something — see formControlDisplayText's
 	// button fallback — so avoid sampling where an ascender could land).
 	inside := dst.RGBAAt(40, 9)
 	if got, want := (css.Color{R: inside.R, G: inside.G, B: inside.B, A: 255}), formButtonBg; got != want {
 		t.Errorf("button interior = %+v, want button background %+v", got, want)
+	}
+}
+
+// TestPaintFormControlHonoursAuthorReset covers a real regression: a
+// button/select/input's background+border used to be a HARDCODED colour
+// paint chose regardless of the element's own cascaded style, so an author
+// reset (`background:0 0;border:0` — confirmed live on github.com's own top
+// nav <button>s, styled to look like plain text links, not gray boxes) was
+// always overridden by fake generic chrome. A zero-alpha Background and a
+// BorderNone/zero-width Border (exactly what that reset cascades to) must
+// now paint NOTHING for the box itself — only the canvas underneath.
+func TestPaintFormControlHonoursAuthorReset(t *testing.T) {
+	n := elem("button", map[string]string{"id": "e"})
+	style := &css.Style{FontFamily: css.Sans, FontSize: 14, FontWeight: 400, Color: css.Color{A: 255}}
+	// Background and Border are the zero value here — exactly what
+	// `background:0 0;border:0` cascades to — deliberately, not an oversight.
+	dst := paintControlStyled(t, n, 80, 30, style)
+
+	edge := dst.RGBAAt(5, 5)
+	if got := (css.Color{R: edge.R, G: edge.G, B: edge.B, A: 255}); got == formBorder {
+		t.Errorf("edge = %+v, an author border:0 must not paint the UA border colour", got)
+	}
+	inside := dst.RGBAAt(40, 9)
+	if got := (css.Color{R: inside.R, G: inside.G, B: inside.B, A: 255}); got == formButtonBg {
+		t.Errorf("interior = %+v, an author background:0 must not paint the UA button colour", got)
 	}
 }
 
