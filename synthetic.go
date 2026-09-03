@@ -98,6 +98,42 @@ func (d *LiveDocument) Type(ctx context.Context, n *dom.Node, text string) (img 
 	return
 }
 
+// Backspace removes the last character of n's value (a no-op if already
+// empty), firing keydown("Backspace")→[if not prevented]delete+input→keyup
+// — the same event shape Type's per-character typing uses, since a real
+// browser fires exactly this sequence for a Backspace keystroke too.
+// Ensures n is focused first, same as Type.
+func (d *LiveDocument) Backspace(ctx context.Context, n *dom.Node) (*image.RGBA, *RenderInfo, error) {
+	return d.Interact(ctx, func() {
+		d.focus(n)
+		prevented := d.sess.Dispatch(n, "keydown", js.EventInit{Bubbles: true, Cancelable: true, Key: "Backspace"})
+		if !prevented {
+			if v := []rune(n.Attr["value"]); len(v) > 0 {
+				n.Attr["value"] = string(v[:len(v)-1])
+				d.sess.Dispatch(n, "input", js.EventInit{Bubbles: true, InputType: "deleteContentBackward"})
+			}
+		}
+		d.sess.Dispatch(n, "keyup", js.EventInit{Bubbles: true, Cancelable: true, Key: "Backspace"})
+	})
+}
+
+// KeyDown fires a bare keydown+keyup pair for a NAMED key (e.g. "Enter",
+// "Tab", "Escape") that, unlike a printable character or Backspace, this
+// package does not itself interpret — it never mutates n's value or moves
+// focus on the caller's behalf. It exists for the common real case of a
+// login form whose OWN script listens for Enter on keydown to submit
+// itself (dispatchEvent already lets that handler run and call
+// preventDefault — see the reported bool); a host wanting real Tab-order
+// traversal or an implicit Enter-submits-the-enclosing-form fallback
+// implements that itself, on top of this, since neither is modeled here.
+func (d *LiveDocument) KeyDown(ctx context.Context, n *dom.Node, key string) (defaultPrevented bool, img *image.RGBA, info *RenderInfo, err error) {
+	img, info, err = d.Interact(ctx, func() {
+		defaultPrevented = d.sess.Dispatch(n, "keydown", js.EventInit{Bubbles: true, Cancelable: true, Key: key})
+		d.sess.Dispatch(n, "keyup", js.EventInit{Bubbles: true, Cancelable: true, Key: key})
+	})
+	return
+}
+
 // Click synthesizes a real user click on n: mousedown, mouseup, then click
 // — the sequence a page's onclick/addEventListener('click', …) expects,
 // bubbling per real semantics (so a handler on a container, not just the
