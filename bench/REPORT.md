@@ -69,7 +69,7 @@ Speed× is `chrome_ms / webengine_ms`: >1 means webengine is faster.
 
 <!-- BEGIN ANALYSIS (hand-written, preserved across re-runs) -->
 
-## Honest analysis — 2026-09-03: pkg.go.dev's garbled top-of-page text block fixed — `<option>` had no UA styling at all (engine#93)
+## Honest analysis — 2026-09-03: pkg.go.dev's garbled top-of-page text block fixed — `<option>` had no UA styling at all (engine#94)
 
 **pkg.go.dev/net/http: SSIM 0.530→0.616, pixdiff 45.8%→40.0%.** A dense,
 concatenated block of identifier text rendered near the top of the page,

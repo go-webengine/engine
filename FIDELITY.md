@@ -1639,7 +1639,7 @@ columns.
 
 - **No native form-control rendering at all** — an `<input>`'s `value`/
   `placeholder` was never shown (an existing, accepted simplification), and
-  as of 2026-09-03 (engine#93) `<option>` is explicitly hidden (`display:
+  as of 2026-09-03 (engine#94) `<option>` is explicitly hidden (`display:
   none`) rather than left to leak its text into ordinary layout, matching
   that same simplification rather than diverging from it. A real `<select>`
   never shows anything at all in this engine — not even its selected
