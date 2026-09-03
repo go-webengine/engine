@@ -1,0 +1,245 @@
+// Copyright (c) the go-webengine/engine authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+package paint
+
+import (
+	"image"
+	"testing"
+
+	"github.com/go-webengine/engine/css"
+	"github.com/go-webengine/engine/dom"
+	"github.com/go-webengine/engine/layout"
+)
+
+func controlStyle() *css.Style {
+	return &css.Style{FontFamily: css.Sans, FontSize: 14, FontWeight: 400, Color: css.Color{A: 255}}
+}
+
+// paintControl lays out a single form-control InlineItem at (0,0) sized
+// w×h and paints it onto a fresh white dst, mirroring how background_paint_
+// test.go hand-builds a Box rather than going through the full HTML
+// pipeline (paint's own tests are pipeline-agnostic by convention).
+func paintControl(t *testing.T, n *dom.Node, w, h float64) *image.RGBA {
+	t.Helper()
+	dst := white(int(w)+20, int(h)+20)
+	item := &layout.InlineItem{
+		Node: n, FormControl: n, Style: controlStyle(),
+		Width: w, Ascent: h, LineHeight: h, X: 5, Y: 5,
+	}
+	box := &layout.Box{
+		Lines: []*layout.LineBox{{X: 5, Y: 5, W: w, H: h, Items: []*layout.InlineItem{item}}},
+		W:     w + 10, H: h + 10,
+	}
+	PaintFull(dst, box, NewFonts(), nil, nil)
+	return dst
+}
+
+func elem(tag string, attrs map[string]string) *dom.Node {
+	return &dom.Node{Type: dom.Element, Tag: tag, Attr: attrs}
+}
+
+// TestPaintFormControlDrawsBackgroundAndBorder covers the base visible-box
+// contract every kind shares: a border-colored pixel at the edge, a
+// background-colored (not border, not raw white-canvas) pixel inside.
+func TestPaintFormControlDrawsBackgroundAndBorder(t *testing.T) {
+	n := elem("input", map[string]string{"id": "e"})
+	dst := paintControl(t, n, 100, 24)
+
+	edge := dst.RGBAAt(5, 5)
+	if got, want := (css.Color{R: edge.R, G: edge.G, B: edge.B, A: 255}), formBorder; got != want {
+		t.Errorf("top-left edge = %+v, want border colour %+v", got, want)
+	}
+	inside := dst.RGBAAt(50, 15)
+	if got, want := (css.Color{R: inside.R, G: inside.G, B: inside.B, A: 255}), formFieldBg; got != want {
+		t.Errorf("interior = %+v, want field background %+v", got, want)
+	}
+}
+
+// TestPaintFormControlButtonBackground covers the button-like kind's darker
+// background, distinguishing it visually from a plain text field.
+func TestPaintFormControlButtonBackground(t *testing.T) {
+	n := elem("button", map[string]string{"id": "e"})
+	dst := paintControl(t, n, 80, 30)
+	// Near the top, above where the centered "Submit" label's glyphs reach
+	// (the label always renders something — see formControlDisplayText's
+	// button fallback — so avoid sampling where an ascender could land).
+	inside := dst.RGBAAt(40, 9)
+	if got, want := (css.Color{R: inside.R, G: inside.G, B: inside.B, A: 255}), formButtonBg; got != want {
+		t.Errorf("button interior = %+v, want button background %+v", got, want)
+	}
+}
+
+// TestPaintCheckboxCheckedVsUnchecked covers the one kind with a state-
+// dependent fill: unchecked is the plain field background, checked is the
+// accent colour — the visible signal a login "remember me" box relies on.
+func TestPaintCheckboxCheckedVsUnchecked(t *testing.T) {
+	unchecked := elem("input", map[string]string{"type": "checkbox"})
+	dstU := paintControl(t, unchecked, 13, 13)
+	cu := dstU.RGBAAt(9, 9) // avoid the 1px border at (5,5)/(6,6)
+	if got, want := (css.Color{R: cu.R, G: cu.G, B: cu.B, A: 255}), formFieldBg; got != want {
+		t.Errorf("unchecked interior = %+v, want %+v", got, want)
+	}
+
+	checked := elem("input", map[string]string{"type": "checkbox", "checked": ""})
+	dstC := paintControl(t, checked, 13, 13)
+	cc := dstC.RGBAAt(9, 9)
+	if got, want := (css.Color{R: cc.R, G: cc.G, B: cc.B, A: 255}), formAccent; got != want {
+		t.Errorf("checked interior = %+v, want accent %+v", got, want)
+	}
+}
+
+// TestPaintFormControlDrawsSomeText covers that a control WITH a value
+// actually draws glyphs (some non-background pixel inside), and one with
+// none does not — the difference proves text painting is actually wired,
+// not just the box.
+func TestPaintFormControlDrawsSomeText(t *testing.T) {
+	withValue := elem("input", map[string]string{"value": "hello"})
+	dst := paintControl(t, withValue, 100, 24)
+	if !hasNonBackgroundPixel(dst, formFieldBg) {
+		t.Error("a valued input painted no glyphs at all")
+	}
+
+	empty := elem("input", map[string]string{})
+	dstEmpty := paintControl(t, empty, 100, 24)
+	if hasNonBackgroundPixel(dstEmpty, formFieldBg) {
+		t.Error("an empty, placeholder-less input painted something other than its box")
+	}
+
+	// A placeholder (muted text) must ALSO paint glyphs — the muted colour
+	// is a different draw color, not a skip.
+	placeholder := elem("input", map[string]string{"placeholder": "Email"})
+	dstPH := paintControl(t, placeholder, 100, 24)
+	if !hasNonBackgroundPixel(dstPH, formFieldBg) {
+		t.Error("a placeholder input painted no glyphs at all")
+	}
+}
+
+// TestPaintFormControlNilStylePaintsBoxOnly guards paintFormControl's own
+// nil-Style path (distinct from Text=="" — Style itself absent, which a box
+// with no computed style at all would hit): the box/border must still
+// paint without a nil-pointer panic; text painting is simply skipped.
+func TestPaintFormControlNilStylePaintsBoxOnly(t *testing.T) {
+	n := elem("input", map[string]string{"value": "hello"})
+	dst := white(120, 40)
+	item := &layout.InlineItem{Node: n, FormControl: n, Style: nil, Width: 100, Ascent: 24, LineHeight: 24, X: 5, Y: 5}
+	box := &layout.Box{Lines: []*layout.LineBox{{X: 5, Y: 5, W: 100, H: 24, Items: []*layout.InlineItem{item}}}, W: 110, H: 34}
+	PaintFull(dst, box, NewFonts(), nil, nil) // must not panic
+	edge := dst.RGBAAt(5, 5)
+	if got, want := (css.Color{R: edge.R, G: edge.G, B: edge.B, A: 255}), formBorder; got != want {
+		t.Errorf("nil-Style control still painted no border: got %+v want %+v", got, want)
+	}
+}
+
+func hasNonBackgroundPixel(img *image.RGBA, bg css.Color) bool {
+	for y := 7; y < 20; y++ { // inside the box, away from the border
+		for x := 7; x < 90; x++ {
+			c := img.RGBAAt(x, y)
+			if c.R != bg.R || c.G != bg.G || c.B != bg.B {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestFormControlKind(t *testing.T) {
+	cases := []struct {
+		n    *dom.Node
+		want controlKind
+	}{
+		{elem("input", map[string]string{"type": "checkbox"}), controlCheckbox},
+		{elem("input", map[string]string{"type": "CHECKBOX"}), controlCheckbox},
+		{elem("input", map[string]string{"type": "radio"}), controlRadio},
+		{elem("input", map[string]string{"type": "submit"}), controlButtonLike},
+		{elem("input", map[string]string{"type": "button"}), controlButtonLike},
+		{elem("input", map[string]string{"type": "reset"}), controlButtonLike},
+		{elem("input", map[string]string{"type": "text"}), controlText},
+		{elem("input", map[string]string{}), controlText},
+		{elem("button", map[string]string{}), controlButtonLike},
+		{elem("select", map[string]string{}), controlSelect},
+		{elem("textarea", map[string]string{}), controlTextarea},
+		{elem("span", nil), controlText},
+	}
+	for _, c := range cases {
+		if got := formControlKind(c.n); got != c.want {
+			t.Errorf("formControlKind(%s type=%q) = %v, want %v", c.n.Tag, c.n.Attr["type"], got, c.want)
+		}
+	}
+}
+
+func TestFormControlDisplayText(t *testing.T) {
+	cases := []struct {
+		name      string
+		n         *dom.Node
+		wantText  string
+		wantMuted bool
+	}{
+		{"text value", elem("input", map[string]string{"value": "hi"}), "hi", false},
+		{"password masks", elem("input", map[string]string{"type": "password", "value": "abc"}), "•••", false},
+		{"placeholder is muted", elem("input", map[string]string{"placeholder": "Email"}), "Email", true},
+		{"empty, no placeholder", elem("input", map[string]string{}), "", false},
+		{"submit uses controlLabel", elem("input", map[string]string{"type": "submit"}), "Submit", false},
+		{"button tag text content", func() *dom.Node {
+			n := elem("button", nil)
+			n.Children = []*dom.Node{{Type: dom.Text, Text: "Go"}}
+			return n
+		}(), "Go", false},
+		{"button tag empty falls back", elem("button", map[string]string{}), "Submit", false},
+		{"textarea value attr", elem("textarea", map[string]string{"value": "explicit"}), "explicit", false},
+		{"textarea text content", func() *dom.Node {
+			n := elem("textarea", nil)
+			n.Children = []*dom.Node{{Type: dom.Text, Text: "content"}}
+			return n
+		}(), "content", false},
+		{"textarea placeholder", elem("textarea", map[string]string{"placeholder": "Bio"}), "Bio", true},
+		{"textarea completely empty", elem("textarea", map[string]string{}), "", false},
+		{"select with options", func() *dom.Node {
+			n := elem("select", nil)
+			n.Children = []*dom.Node{
+				elem("option", map[string]string{"value": "a"}),
+			}
+			n.Children[0].Children = []*dom.Node{{Type: dom.Text, Text: "A"}}
+			return n
+		}(), "A", false},
+		{"select with no options", elem("select", nil), "", false},
+		{"unknown tag", elem("span", nil), "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			text, muted := formControlDisplayText(c.n)
+			if text != c.wantText || muted != c.wantMuted {
+				t.Errorf("formControlDisplayText = (%q, %v), want (%q, %v)", text, muted, c.wantText, c.wantMuted)
+			}
+		})
+	}
+}
+
+func TestControlLabelReset(t *testing.T) {
+	if got := controlLabel(elem("input", map[string]string{"type": "reset"})); got != "Reset" {
+		t.Errorf("controlLabel(reset) = %q, want Reset", got)
+	}
+	if got := controlLabel(elem("input", map[string]string{"value": "Go!"})); got != "Go!" {
+		t.Errorf("controlLabel with a value = %q, want Go!", got)
+	}
+}
+
+func TestSelectedOptionLabelNoOptions(t *testing.T) {
+	if _, ok := selectedOptionLabel(elem("select", nil)); ok {
+		t.Error("selectedOptionLabel with no <option> children: want ok=false")
+	}
+}
+
+func TestSelectedOptionLabelPicksSelected(t *testing.T) {
+	sel := elem("select", nil)
+	a := elem("option", map[string]string{"value": "a"})
+	a.Children = []*dom.Node{{Type: dom.Text, Text: "A"}}
+	b := elem("option", map[string]string{"value": "b", "selected": ""})
+	b.Children = []*dom.Node{{Type: dom.Text, Text: "B"}}
+	sel.Children = []*dom.Node{a, b}
+
+	got, ok := selectedOptionLabel(sel)
+	if !ok || got != "B" {
+		t.Fatalf("selectedOptionLabel = (%q, %v), want (B, true)", got, ok)
+	}
+}

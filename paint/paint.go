@@ -6,6 +6,7 @@ package paint
 import (
 	"image"
 	"math"
+	"strings"
 
 	"github.com/go-gfx/gfx/raster"
 	"github.com/go-gfx/gfx/resample"
@@ -162,7 +163,7 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 		for _, line := range box.Lines {
 			for i, it := range line.Items {
 				paintInlineBackground(pp, box, line, i, inner)
-				paintItem(dst, it, f, imgs, inner)
+				paintItem(dst, pp, it, f, imgs, inner)
 			}
 		}
 	}
@@ -659,7 +660,7 @@ func iround(f float64) int { return int(f + 0.5) }
 // hollow circle a stroked round rect, and a square a plain filled rect.
 func paintMarker(dst *image.RGBA, pp *painter.PixelPainter, m *layout.Marker, f *Fonts, clip image.Rectangle) {
 	if m.Type == css.ListDecimal {
-		paintItem(dst, &layout.InlineItem{Text: m.Text, Style: m.Style, X: m.X, Y: m.Y, Ascent: m.Ascent}, f, nil, clip)
+		paintItem(dst, pp, &layout.InlineItem{Text: m.Text, Style: m.Style, X: m.X, Y: m.Y, Ascent: m.Ascent}, f, nil, clip)
 		return
 	}
 	r := markerRect(m)
@@ -721,28 +722,240 @@ func paintInlineBackground(pp *painter.PixelPainter, box *layout.Box, line *layo
 	fillRectClipped(pp, r, it.Style.Background, clip)
 }
 
-func paintItem(dst *image.RGBA, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, clip image.Rectangle) {
+func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, clip image.Rectangle) {
 	if it.Image != nil {
 		if src, ok := imgs[it.Image]; ok {
 			blitImage(dst, src, int(it.X), int(it.Y), clip)
 		}
 		return
 	}
+	if it.FormControl != nil {
+		paintFormControl(dst, pp, it, f, clip)
+		return
+	}
 	if it.Text == "" || it.Style == nil {
 		return
 	}
-	st := it.Style
+	drawText(dst, f, it.Style, it.Text, int(it.X), int(it.Y+it.Ascent), it.Style.Color, clip)
+}
+
+// drawText draws s left-aligned with its baseline at (x, baseline) in col, at
+// st's font, clipped to clip. Shared by the plain text-run path above and
+// form-control label/value painting (paintFormControl) so both letter glyphs
+// identically. Returns the pen position after the last glyph.
+func drawText(dst *image.RGBA, f *Fonts, st *css.Style, s string, x, baseline int, col css.Color, clip image.Rectangle) int {
 	fc := f.styleFace(st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
-	baseline := int(it.Y + it.Ascent)
-	penX := int(it.X)
-	col := st.Color
-	for _, r := range it.Text {
+	penX := x
+	for _, r := range s {
 		bounds, mask, maskp, advance, ok := fc.GlyphMask(r, penX, baseline)
 		if ok && mask != nil {
 			blitMask(dst, bounds, mask, maskp, col, clip)
 		}
 		penX += advance
 	}
+	return penX
+}
+
+// Form-control palette: close enough to a real browser's own UA defaults
+// (Chrome/Safari light theme) to read as intentional, not exact — the point
+// of this rendering is that a control is visible and clickable where it
+// belongs, not pixel-perfect chrome fidelity.
+var (
+	formFieldBg     = css.Color{R: 255, G: 255, B: 255, A: 255}
+	formButtonBg    = css.Color{R: 239, G: 239, B: 239, A: 255}
+	formBorder      = css.Color{R: 118, G: 118, B: 118, A: 255}
+	formAccent      = css.Color{R: 26, G: 115, B: 232, A: 255}
+	formMutedText   = css.Color{R: 150, G: 150, B: 150, A: 255}
+	formControlPadX = 6
+)
+
+// paintFormControl draws a form control's box (background + 1px border) and,
+// for anything but a checkbox/radio, its label or current value/placeholder
+// text — the visible, clickable rendering isReplacedTag-style items never
+// got before (see layout.go's isFormControlTag branch, which is what gives
+// it.FormControl a non-nil node and a real box size to paint here).
+func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, clip image.Rectangle) {
+	n := it.FormControl
+	r := painter.Rect{X: int(it.X), Y: int(it.Y), W: int(it.Width), H: int(it.LineHeight)}
+	kind := formControlKind(n)
+
+	if kind == controlCheckbox || kind == controlRadio {
+		paintCheckboxLike(pp, r, n, clip)
+		return
+	}
+
+	bg := formFieldBg
+	if kind == controlButtonLike || kind == controlSelect {
+		bg = formButtonBg
+	}
+	fillRectClipped(pp, r, bg, clip)
+	strokeRect1px(pp, r, formBorder, clip)
+
+	text, muted := formControlDisplayText(n)
+	if text == "" || it.Style == nil {
+		return
+	}
+	st := it.Style
+	col := st.Color
+	if muted {
+		col = formMutedText
+	}
+	baseline := r.Y + (r.H+int(st.FontSize))/2 - 2 // roughly centers the cap-height in the box
+	x := r.X + formControlPadX
+	if kind == controlButtonLike {
+		// A button's label centers horizontally in its own (content-sized) box.
+		tw := f.Measure(text, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+		x = r.X + int((float64(r.W)-tw)/2)
+	}
+	drawText(dst, f, st, text, x, baseline, col, clip)
+}
+
+// strokeRect1px draws a plain (non-rounded) 1px border around r — the simple
+// case paintBorders (paint.go) already handles for a real element box, but
+// this needs no Style/border-side plumbing, just a flat outline.
+func strokeRect1px(pp *painter.PixelPainter, r painter.Rect, c css.Color, clip image.Rectangle) {
+	fillRectClipped(pp, painter.Rect{X: r.X, Y: r.Y, W: r.W, H: 1}, c, clip)
+	fillRectClipped(pp, painter.Rect{X: r.X, Y: r.Y + r.H - 1, W: r.W, H: 1}, c, clip)
+	fillRectClipped(pp, painter.Rect{X: r.X, Y: r.Y, W: 1, H: r.H}, c, clip)
+	fillRectClipped(pp, painter.Rect{X: r.X + r.W - 1, Y: r.Y, W: 1, H: r.H}, c, clip)
+}
+
+// paintCheckboxLike draws a checkbox/radio as a small square: filled accent
+// when checked, outlined white otherwise. Checkbox vs. radio (square vs.
+// circular) is not distinguished — clickability and checked-state visibility
+// are what matter for this engine's driving use case (a login form), not
+// exact native chrome fidelity.
+func paintCheckboxLike(pp *painter.PixelPainter, r painter.Rect, n *dom.Node, clip image.Rectangle) {
+	_, checked := n.Attribute("checked")
+	bg, border := formFieldBg, formBorder
+	if checked {
+		bg, border = formAccent, formAccent
+	}
+	fillRectClipped(pp, r, bg, clip)
+	strokeRect1px(pp, r, border, clip)
+}
+
+type controlKind int
+
+const (
+	controlText controlKind = iota
+	controlCheckbox
+	controlRadio
+	controlButtonLike // <input type=button/submit/reset>, <button>
+	controlSelect
+	controlTextarea
+)
+
+func formControlKind(n *dom.Node) controlKind {
+	switch n.Tag {
+	case "input":
+		switch strings.ToLower(n.Attr["type"]) {
+		case "checkbox":
+			return controlCheckbox
+		case "radio":
+			return controlRadio
+		case "button", "submit", "reset":
+			return controlButtonLike
+		}
+		return controlText
+	case "button":
+		return controlButtonLike
+	case "select":
+		return controlSelect
+	case "textarea":
+		return controlTextarea
+	}
+	return controlText
+}
+
+// formControlDisplayText returns the text a form control shows and whether
+// it is placeholder text (drawn muted, matching a real browser) rather than
+// a real value.
+func formControlDisplayText(n *dom.Node) (text string, muted bool) {
+	switch n.Tag {
+	case "input":
+		v := n.Attr["value"]
+		if v != "" {
+			if strings.EqualFold(n.Attr["type"], "password") {
+				return strings.Repeat("•", len([]rune(v))), false
+			}
+			return v, false
+		}
+		if strings.EqualFold(n.Attr["type"], "button") ||
+			strings.EqualFold(n.Attr["type"], "submit") ||
+			strings.EqualFold(n.Attr["type"], "reset") {
+			return controlLabel(n), false
+		}
+		if ph, ok := n.Attribute("placeholder"); ok && ph != "" {
+			return ph, true
+		}
+		return "", false
+	case "button":
+		if label := dom.TextContent(n); label != "" {
+			return label, false
+		}
+		return "Submit", false
+	case "textarea":
+		if v, ok := n.Attribute("value"); ok && v != "" {
+			return v, false
+		}
+		if v := dom.TextContent(n); v != "" {
+			return v, false
+		}
+		if ph, ok := n.Attribute("placeholder"); ok && ph != "" {
+			return ph, true
+		}
+		return "", false
+	case "select":
+		if label, ok := selectedOptionLabel(n); ok {
+			return label, false
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// controlLabel returns an <input type=button/submit/reset>'s visible label —
+// duplicated (deliberately, not shared) from layout's own copy: this is a
+// PAINT-time text-content decision (what to draw) using only the DOM
+// attribute already available here, not a layout-time sizing input, and the
+// two packages do not otherwise depend on each other's internals.
+func controlLabel(n *dom.Node) string {
+	if v, ok := n.Attribute("value"); ok && v != "" {
+		return v
+	}
+	if strings.EqualFold(n.Attr["type"], "reset") {
+		return "Reset"
+	}
+	return "Submit"
+}
+
+// selectedOptionLabel returns the visible text of sel's selected <option>
+// (or its first option if none is explicitly selected, matching the HTML
+// default), or false if sel has no options.
+func selectedOptionLabel(sel *dom.Node) (string, bool) {
+	var opts []*dom.Node
+	var walk func(n *dom.Node)
+	walk = func(n *dom.Node) {
+		for _, c := range n.Children {
+			if c.Type == dom.Element && c.Tag == "option" {
+				opts = append(opts, c)
+			}
+			walk(c)
+		}
+	}
+	walk(sel)
+	if len(opts) == 0 {
+		return "", false
+	}
+	chosen := opts[0]
+	for _, o := range opts {
+		if _, ok := o.Attribute("selected"); ok {
+			chosen = o
+			break
+		}
+	}
+	return dom.TextContent(chosen), true
 }
 
 // blitMask composites an 8-bit coverage mask in colour col onto dst, confined to

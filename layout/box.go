@@ -91,6 +91,13 @@ type InlineItem struct {
 	Image      *dom.Node // non-nil when this item is an <img>
 	ImgW, ImgH float64
 
+	// FormControl is non-nil when this item is a form control
+	// (input/button/select/textarea) — an atomic box like an image, but
+	// drawn as a control (background+border+label/value text) rather than
+	// blitted decoded image bytes. Width/Ascent/LineHeight carry its box
+	// size, same convention as Image/ImgW/ImgH.
+	FormControl *dom.Node
+
 	LineBreak bool // a <br>: forces the current line to end
 
 	X, Y float64
