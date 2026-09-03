@@ -227,7 +227,7 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		w, h := l.formControlSize(node, st, cw)
 		b.commit()
 		item := &InlineItem{Node: node, FormControl: node, Style: st,
-			Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y}
+			Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y, Label: l.buttonLabel(node)}
 		box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: h, Items: []*InlineItem{item}}}
 		b.y += h
 		return b.y
@@ -570,7 +570,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			*items = append(*items, &InlineItem{
 				Style: cs, FormControl: el, Node: el,
 				Width: w, Ascent: h, LineHeight: h,
-				SpaceBefore: sb,
+				SpaceBefore: sb, Label: l.buttonLabel(el),
 			})
 			l.wsEmitted, l.wsPending = true, false
 			return
@@ -728,7 +728,7 @@ func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (w, h f
 			w, h = 170, textHeight
 		}
 	case "button":
-		label := dom.TextContent(node)
+		label := l.buttonLabel(node)
 		if label == "" {
 			label = "Submit"
 		}
@@ -780,6 +780,40 @@ func controlLabel(n *dom.Node) string {
 		return "Reset"
 	default: // submit and button both default to "Submit" in every major UA
 		return "Submit"
+	}
+}
+
+// buttonLabel returns a <button>'s rendered label: the concatenation of its
+// VISIBLE (non-display:none) descendant text, in document order. A <button>
+// is laid out as an atomic box in this engine (see the isFormControlTag
+// branch above) rather than as a real container of child boxes, so its
+// label has always come from dom.TextContent — but that walk has no notion
+// of computed style and includes text under a display:none descendant too.
+// That is not hypothetical: GitHub's site-header search trigger nests a
+// responsive text label next to a keyboard-shortcut hint ("/"), each shown
+// only at a different breakpoint via `display:none`/`display:block` on
+// nested spans/kbd — dom.TextContent concatenated both into a single
+// "Search/" label at every width, real browsers show only whichever one (if
+// either) is not display:none. This mirrors dom.TextContent's own recursive
+// walk (see dom/mutate.go), just pruning a display:none element's entire
+// subtree instead of recursing into it.
+func (l *layouter) buttonLabel(n *dom.Node) string {
+	var b strings.Builder
+	l.appendVisibleText(n, &b)
+	return strings.TrimSpace(b.String())
+}
+
+func (l *layouter) appendVisibleText(n *dom.Node, b *strings.Builder) {
+	for _, c := range n.Children {
+		switch c.Type {
+		case dom.Text:
+			b.WriteString(c.Text)
+		case dom.Element:
+			if cs := l.sm[c]; cs != nil && cs.Display == css.DisplayNone {
+				continue
+			}
+			l.appendVisibleText(c, b)
+		}
 	}
 }
 

@@ -813,7 +813,7 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 		strokeRect1px(pp, r, borderCol, clip)
 	}
 
-	text, muted := formControlDisplayText(n)
+	text, muted := formControlDisplayText(n, it.Label)
 	if text == "" || it.Style == nil {
 		return
 	}
@@ -892,8 +892,12 @@ func formControlKind(n *dom.Node) controlKind {
 
 // formControlDisplayText returns the text a form control shows and whether
 // it is placeholder text (drawn muted, matching a real browser) rather than
-// a real value.
-func formControlDisplayText(n *dom.Node) (text string, muted bool) {
+// a real value. label is the item's precomputed InlineItem.Label — only
+// meaningful (and only ever non-empty) for a "button", whose label is
+// resolved at layout time from its VISIBLE descendant text (see
+// layout.buttonLabel); paint has no style map of its own to redo that
+// display:none-aware walk from n alone.
+func formControlDisplayText(n *dom.Node, label string) (text string, muted bool) {
 	switch n.Tag {
 	case "input":
 		v := n.Attr["value"]
@@ -913,7 +917,7 @@ func formControlDisplayText(n *dom.Node) (text string, muted bool) {
 		}
 		return "", false
 	case "button":
-		if label := dom.TextContent(n); label != "" {
+		if label != "" {
 			return label, false
 		}
 		return "Submit", false

@@ -222,28 +222,25 @@ func TestFormControlDisplayText(t *testing.T) {
 	cases := []struct {
 		name      string
 		n         *dom.Node
+		label     string // InlineItem.Label — only meaningful for "button"
 		wantText  string
 		wantMuted bool
 	}{
-		{"text value", elem("input", map[string]string{"value": "hi"}), "hi", false},
-		{"password masks", elem("input", map[string]string{"type": "password", "value": "abc"}), "•••", false},
-		{"placeholder is muted", elem("input", map[string]string{"placeholder": "Email"}), "Email", true},
-		{"empty, no placeholder", elem("input", map[string]string{}), "", false},
-		{"submit uses controlLabel", elem("input", map[string]string{"type": "submit"}), "Submit", false},
-		{"button tag text content", func() *dom.Node {
-			n := elem("button", nil)
-			n.Children = []*dom.Node{{Type: dom.Text, Text: "Go"}}
-			return n
-		}(), "Go", false},
-		{"button tag empty falls back", elem("button", map[string]string{}), "Submit", false},
-		{"textarea value attr", elem("textarea", map[string]string{"value": "explicit"}), "explicit", false},
+		{"text value", elem("input", map[string]string{"value": "hi"}), "", "hi", false},
+		{"password masks", elem("input", map[string]string{"type": "password", "value": "abc"}), "", "•••", false},
+		{"placeholder is muted", elem("input", map[string]string{"placeholder": "Email"}), "", "Email", true},
+		{"empty, no placeholder", elem("input", map[string]string{}), "", "", false},
+		{"submit uses controlLabel", elem("input", map[string]string{"type": "submit"}), "", "Submit", false},
+		{"button uses precomputed label", elem("button", nil), "Go", "Go", false},
+		{"button tag empty falls back", elem("button", map[string]string{}), "", "Submit", false},
+		{"textarea value attr", elem("textarea", map[string]string{"value": "explicit"}), "", "explicit", false},
 		{"textarea text content", func() *dom.Node {
 			n := elem("textarea", nil)
 			n.Children = []*dom.Node{{Type: dom.Text, Text: "content"}}
 			return n
-		}(), "content", false},
-		{"textarea placeholder", elem("textarea", map[string]string{"placeholder": "Bio"}), "Bio", true},
-		{"textarea completely empty", elem("textarea", map[string]string{}), "", false},
+		}(), "", "content", false},
+		{"textarea placeholder", elem("textarea", map[string]string{"placeholder": "Bio"}), "", "Bio", true},
+		{"textarea completely empty", elem("textarea", map[string]string{}), "", "", false},
 		{"select with options", func() *dom.Node {
 			n := elem("select", nil)
 			n.Children = []*dom.Node{
@@ -251,13 +248,13 @@ func TestFormControlDisplayText(t *testing.T) {
 			}
 			n.Children[0].Children = []*dom.Node{{Type: dom.Text, Text: "A"}}
 			return n
-		}(), "A", false},
-		{"select with no options", elem("select", nil), "", false},
-		{"unknown tag", elem("span", nil), "", false},
+		}(), "", "A", false},
+		{"select with no options", elem("select", nil), "", "", false},
+		{"unknown tag", elem("span", nil), "", "", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			text, muted := formControlDisplayText(c.n)
+			text, muted := formControlDisplayText(c.n, c.label)
 			if text != c.wantText || muted != c.wantMuted {
 				t.Errorf("formControlDisplayText = (%q, %v), want (%q, %v)", text, muted, c.wantText, c.wantMuted)
 			}
