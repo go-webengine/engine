@@ -108,6 +108,20 @@ func (d *LiveDocument) Frame() (*image.RGBA, *RenderInfo, error) {
 	return img, renderInfo(d.doc, d.rp), nil
 }
 
+// Eval runs code in the document's live JS session and returns its value
+// as a plain Go value (see js.Session.Eval) — for reading page-side JS
+// state back into Go (a conformance harness reading testharness.js's own
+// PASS/FAIL results, say), not for driving input (see Interact and
+// synthetic.go's Focus/Type/Click for that). It does not re-settle
+// layout/paint afterward; a caller whose eval mutated the DOM and wants a
+// fresh Frame should follow it with Interact.
+func (d *LiveDocument) Eval(code string) (interface{}, error) {
+	if d.closed {
+		return nil, ErrClosed
+	}
+	return d.sess.Eval(code)
+}
+
 // Elements returns the CURRENT general element hit-map (every element's used
 // border-box rect, in the same full-page image pixel space Frame's image
 // uses) — call it fresh after Open or any Interact, since a mutation can

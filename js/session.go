@@ -5,6 +5,8 @@ package js
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/dop251/goja"
@@ -177,6 +179,32 @@ func (s *Session) RunPending() (ran bool) {
 
 // Result returns the cumulative execution tally.
 func (s *Session) Result() Result { return s.res }
+
+// Eval runs code in this session's JS runtime and returns its value,
+// converted to a plain Go value via goja's Export (string, float64, bool,
+// nil, []interface{}, map[string]interface{}, ...). It exists for a host
+// that needs to read a page's own JS-side state back out — e.g. a
+// conformance harness reading testharness.js's own PASS/FAIL results —
+// rather than only ever pushing input in via Dispatch.
+//
+// A JS-level error (a thrown exception, a syntax error) comes back as an
+// ordinary Go error; a runaway script still hits the session's own
+// watchdog like any other script, since it runs on the same runtime.
+func (s *Session) Eval(code string) (v interface{}, err error) {
+	if s.done {
+		return nil, errors.New("js: session is closed")
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("js: eval panicked: %v", r)
+		}
+	}()
+	val, runErr := s.b.vm.RunString(code)
+	if runErr != nil {
+		return nil, runErr
+	}
+	return val.Export(), nil
+}
 
 // Close stops the watchdog. It is idempotent.
 func (s *Session) Close() {

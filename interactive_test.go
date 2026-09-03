@@ -251,3 +251,38 @@ func TestLiveDocumentResettleKeepsGoodLayoutOnWipe(t *testing.T) {
 		t.Fatalf("after wipe, ContentHeight = %d, want the pre-wipe layout kept (>= %d)", info.ContentHeight, emptyRenderHeight)
 	}
 }
+
+// TestLiveDocumentEvalReadsPageState is Eval's own load-bearing proof at
+// the LiveDocument level: a host (a conformance harness, say) reading a
+// value the page's own script set — not a value Eval itself defines.
+func TestLiveDocumentEvalReadsPageState(t *testing.T) {
+	e := New()
+	live := openFixture(t, e, `<html><body>
+		<script>window.__ready = true; window.__count = 2 + 3;</script>
+	</body></html>`, image.Rect(0, 0, 320, 240))
+
+	ready, err := live.Eval("window.__ready")
+	if err != nil {
+		t.Fatalf("Eval(__ready): %v", err)
+	}
+	if ready != true {
+		t.Fatalf("Eval(__ready) = %#v, want true", ready)
+	}
+
+	count, err := live.Eval("window.__count")
+	if err != nil {
+		t.Fatalf("Eval(__count): %v", err)
+	}
+	if count != int64(5) {
+		t.Fatalf("Eval(__count) = %#v, want 5", count)
+	}
+}
+
+func TestLiveDocumentEvalOnAClosedDocumentErrors(t *testing.T) {
+	e := New()
+	live := openFixture(t, e, `<html><body></body></html>`, image.Rect(0, 0, 320, 240))
+	live.Close()
+	if _, err := live.Eval("1"); err != ErrClosed {
+		t.Fatalf("Eval after Close = %v, want ErrClosed", err)
+	}
+}
