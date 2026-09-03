@@ -31,14 +31,52 @@ var mediaWidthRe = regexp.MustCompile(`(min|max)-width\s*:\s*([0-9.]+)(px|rem)`)
 var mediaWidthCmpRe = regexp.MustCompile(
 	`width\s*(<=|>=|<|>)\s*([0-9.]+)(px|rem)|([0-9.]+)(px|rem)\s*(<=|>=|<|>)\s*width`)
 
-// mediaCalcRe evaluates a simple two-term "calc(A ± B)" expression appearing
-// in a media feature value — e.g. GitHub's `calc(48rem - .02px)`, used to open
-// a hair's-width gap just below the next breakpoint up so two adjacent ranges
-// never both match the same viewport width. Both terms may be px or rem; more
-// complex calc() expressions (products, nesting, more than two terms) are left
-// as unparsed text, same as any other value this simplified matcher cannot
-// handle — mediaWidthRe/mediaWidthCmpRe then simply find no match there.
-var mediaCalcRe = regexp.MustCompile(`calc\(\s*([0-9.]+)(px|rem)\s*([+-])\s*([0-9.]+)(px|rem)\s*\)`)
+// evalMediaCalcs replaces every calc(...) call in cond with its evaluated
+// pixel length (via the general calc() evaluator in calc.go — resolveCalc's
+// own evalCalcExpr, already used for ordinary property values), so
+// mediaWidthRe/mediaWidthCmpRe (which only ever match a bare
+// "<number><unit>", never an expression) can then read it like any other
+// length. A real breakpoint is rarely a single "calc(A ± B)" two-term
+// expression this package's PREVIOUS media-only evaluator handled: MDN's own
+// reference-article layout breakpoint is
+// `calc(1rem * 2 + 15rem + 2rem + 31rem)` — a multiplication by a bare
+// scalar plus a chain of four additive terms — which that narrower
+// evaluator left as unparsed text, so mediaWidthCmpRe then found no length
+// there and mediaMatches fell through to its "unknown feature: assume it
+// matches" default, making a MOBILE-ONLY breakpoint (real width 800px)
+// match at every viewport including a 1024px desktop one: MDN's article
+// page then always applied the narrow-viewport `display:block` override to
+// its CSS Grid sidebar layout, stacking the table-of-contents below the
+// article body instead of beside it. A calc() outside what evalCalcExpr
+// resolves (min()/max()/clamp(), a percentage, an em/vw/... term) is left as
+// unparsed text, exactly as before.
+func evalMediaCalcs(cond string) string {
+	var b strings.Builder
+	i := 0
+	for {
+		rel := strings.Index(cond[i:], "calc(")
+		if rel < 0 {
+			b.WriteString(cond[i:])
+			break
+		}
+		start := i + rel
+		b.WriteString(cond[i:start])
+		open := start + len("calc")
+		end, ok := matchParen(cond, open)
+		if !ok {
+			b.WriteString(cond[start:])
+			break
+		}
+		if px, hasUnit, ok := evalCalcExpr(cond[open+1 : end]); ok && hasUnit {
+			b.WriteString(strconv.FormatFloat(px, 'f', -1, 64))
+			b.WriteString("px")
+		} else {
+			b.WriteString(cond[start : end+1])
+		}
+		i = end + 1
+	}
+	return b.String()
+}
 
 // Declaration is a single property: value pair. Important marks a trailing
 // `!important` on the original declaration; it is consulted by the cascade,
@@ -194,15 +232,7 @@ func mediaMatches(cond string, vw float64) bool {
 	if strings.Contains(cond, "print") {
 		return false
 	}
-	cond = mediaCalcRe.ReplaceAllStringFunc(cond, func(m string) string {
-		g := mediaCalcRe.FindStringSubmatch(m)
-		a, b := lengthToPx(g[1], g[2]), lengthToPx(g[4], g[5])
-		v := a + b
-		if g[3] == "-" {
-			v = a - b
-		}
-		return strconv.FormatFloat(v, 'f', -1, 64) + "px"
-	})
+	cond = evalMediaCalcs(cond)
 	for _, m := range mediaWidthRe.FindAllStringSubmatch(cond, -1) {
 		if _, err := strconv.ParseFloat(m[2], 64); err != nil {
 			continue
@@ -420,6 +450,8 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.Display = DisplayInline
 		case "none":
 			s.Display = DisplayNone
+		case "contents":
+			s.Display = DisplayContents
 		}
 	case "visibility":
 		switch lv {

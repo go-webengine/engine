@@ -66,6 +66,14 @@ const (
 	DisplayTableRowGroup
 	// DisplayGrid is a block-level CSS grid container.
 	DisplayGrid
+	// DisplayContents makes the element generate no box of its own — its
+	// children behave as if they were direct children of ITS parent instead
+	// (the element itself becomes fully transparent to layout, though it still
+	// exists in the DOM/cascade). See layout.renderedChildren, the single
+	// chokepoint every layout algorithm (block, inline, flex, grid, table)
+	// walks a container's children through, which is where this is resolved —
+	// so a DisplayContents element never itself reaches box placement.
+	DisplayContents
 )
 
 // Position is the subset of the position property the engine understands.

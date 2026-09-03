@@ -18,6 +18,119 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont., round 25) — `display:contents` implemented at layout's one shared child-iteration chokepoint; a media-query `calc()` evaluator upgraded from two terms to general arithmetic (engine#105); a genuine third-party SVG-rasteriser defect found, isolated, and documented, not fixed
+
+developer.mozilla.org's reference-article table-of-contents ("In this
+article: Beginner's tutorials, Guides, How to, ...") rendered stacked BELOW
+the article body instead of beside it in its own sidebar column, as Chrome
+shows. Live-fetched the real markup/CSS and found TWO independent, unrelated
+bugs sharing this one page.
+
+**Bug 1 — `display: contents` was not implemented at all.** MDN's article
+layout is `<div class="layout__2-sidebars-inline"><main class="layout__content"
+style="display:contents"><div class="layout__header" style="grid-area:header">
+...</div></main><aside class="layout__right-sidebar" style="grid-area:sidebar">
+...</aside></div>` — the grid container's actual children ARE `<main>` and
+`<aside>`, but `<main>` sets `display:contents` specifically so it drops out
+of the grid's item list, letting its OWN child (`.layout__header`, which
+carries the real `grid-area`) take its place instead. Confirmed via an
+offline `css.CascadeVW` of the exact real markup + real fetched stylesheets
+(no live pipeline involved) that this engine's cascade computed the grid
+container's `grid-template-columns`/`grid-template-areas` correctly, and
+`<aside>`'s own `grid-area:sidebar` correctly — the bug was purely that
+`<main>` (unrecognised `display:contents`, defaulting to `DisplayBlock`)
+became an unnamed grid item, auto-placed into a cell of its own, while its
+child's `grid-area:header` was silently ignored (a `grid-area` only matters
+on a DIRECT grid item) — corrupting the whole layout's column placement, not
+just hiding one element.
+
+Fixed at the ONE existing chokepoint every layout algorithm already shares:
+`renderedChildren` (`layout/shadow.go`, the same function Shadow DOM slot
+projection already substitutes through) is now a `*layouter` method (needed
+the style map to check each child's computed `Display`) and calls a new
+`flattenContents`, which replaces any `display:contents` child with ITS OWN
+rendered children, recursively — so it never itself reaches box placement,
+matching CSS's real behaviour (the element generates no box at all). Adding
+`css.DisplayContents` to the `Display` enum and `"contents"` to
+`css/parse.go`'s display-keyword switch was the only other change needed;
+every one of the 10 production call sites (block/inline layout, flex, grid,
+table row/cell collection) picked up the fix automatically by construction,
+without being touched individually beyond the mechanical `renderedChildren(x)`
+→ `l.renderedChildren(x)` rename. A page with no `display:contents` anywhere
+takes the exact same `return children` path as before, unchanged.
+
+**Bug 2 — the media-query `calc()` evaluator only ever handled a bare
+two-term expression.** Even with display:contents fixed, the sidebar STILL
+didn't move — a second, unrelated live-cascade dump showed the grid
+container's OWN `display` resolving to `DisplayBlock`, not `DisplayGrid`,
+at the bench viewport (1024px). Root cause: MDN's own breakpoint for this
+is `@media (width < calc(1rem * 2 + 15rem + 2rem + 31rem))` (mobile-only,
+real width 800px) — a MULTIPLICATION by a bare scalar plus a chain of FOUR
+additive terms. `mediaCalcRe`, added in an earlier round for GitHub's
+`calc(48rem - .02px)` pattern, only ever matched a single `calc(A ± B)` with
+exactly two operands; MDN's five-term product-and-sum expression fell
+through unparsed, so `mediaWidthCmpRe` found no width feature in the
+condition at all, and `mediaMatches` applied its (deliberate, otherwise
+correct) "unknown feature: assume it matches" default — permanently
+activating a MOBILE breakpoint's `display:block` override at every
+viewport, including a 1024px desktop one.
+
+Fixed by DELETING `mediaCalcRe` entirely and routing media-query calc()
+evaluation through `resolveCalc`'s own general arithmetic evaluator
+(`evalCalcExpr`, `css/calc.go`) — already used for ordinary property values
+(it is what makes Tailwind v4's `calc(var(--spacing) * 48)` spacing scale
+work) and already handles the full `+ - * /` grammar with nested parens and
+correct length/scalar rules, so no new parser was needed once this was
+noticed (a first draft duplicated a smaller version of the same evaluator
+directly in `css/parse.go` before this was caught and deleted in favour of
+the existing one — see "Errors and fixes" discipline: check for existing
+machinery before writing new). `containerConditionMatches` (`@container`
+queries, `css/container.go`) shared the exact same two-term-only regex and
+was fixed the same way, since nothing about `@container`'s size features is
+different from `@media`'s width feature here.
+
+**Verified live: MDN's table-of-contents now renders in its own left-side
+column, matching Chrome exactly**, both fixes confirmed necessary together
+(with only Bug 1 fixed, the grid still collapsed to `display:block`; with
+only Bug 2 fixed, `<main>` still corrupted the column placement). Four
+regression tests (`TestDisplayContentsPromotesGridChildren`,
+`TestDisplayContentsRecursesThroughNesting` — a `display:contents` nested
+inside another, `TestDisplayContentsPlainBlockUnaffected` — the no-op case;
+`TestMediaMatchesSimpleCalc` extended with MDN's exact five-term expression
+plus the original two-term cases), confirmed to fail without the fix via a
+real `git diff > patch; git checkout --; go test; git apply patch` cycle
+(the layout tests failed as a BUILD error, since `renderedChildren` becoming
+a method is itself part of the fix; the css test failed behaviourally, with
+the exact wrong values predicted). `css`/`layout`/`paint`/`dom` all held
+their coverage floors (99.5%/100%/100%/98.1%) — two new small test cases
+were needed to restore `css` and `layout` to their floors after the
+refactor shrank each package's total statement count slightly.
+
+**A third, genuinely unrelated defect was found on the same page and is NOT
+fixed: this engine's third-party SVG rasteriser (`github.com/srwiley/oksvg`,
+pinned at its latest available commit, `be6e8873`) mis-renders MDN's own
+logo**, a small (83×24 viewBox) `<svg>` whose "mdn" wordmark is drawn as a
+single complex multi-subpath vector `<path>` (a common technique for brand
+wordmarks, avoiding a web-font dependency for three letters) — real
+letterforms render as overlapping, doubled glyph shapes. Isolated with an
+INCREASING series of reproductions, each ruling out one layer of this
+engine's own code: (1) the bug reproduces identically when the ENTIRE page
+minus this one `<svg>` is stripped away (a bare `RenderHTML` of just the
+logo markup); (2) it reproduces with EACH of the logo's three `<path>`s
+rendered alone (isolating it to the "mdn" text path specifically, not the
+separate "M" mark or cursor rectangle, both of which render correctly); (3)
+it reproduces in a THROWAWAY Go program calling `oksvg.ReadIconStream` +
+`rasterx` DIRECTLY, with no go-webengine code in the call path at all —
+conclusive proof this is not a bug this engine's own `svg.go` (path
+extraction, viewBox scaling, target sizing) could cause or fix. Checked
+whether a newer oksvg commit already fixes it (per this session's own
+"check if the real fix is smaller than it looks" discipline): the pinned
+commit IS the repository's newest available commit, so no upstream fix
+exists to pick up by bumping the dependency. Not attempted here: fixing (or
+forking) a third-party rasteriser's own path-fill-rule/subpath handling is
+outside this engine's own codebase and a materially different kind of task
+than every other fix this session has scoped and shipped.
+
 ## 2026-09-03 (cont., round 24) — a `<button>`'s label no longer includes text under a `display:none` descendant (engine#104); a bigger, related layout gap found and documented, not fixed
 
 github.com/golang/go's site-header search trigger rendered its visible text
@@ -2109,6 +2222,21 @@ columns.
 
 ## Known gaps (updated 2026-08-30 — see the note above on why this drifted)
 
+- **The third-party SVG rasteriser (`github.com/srwiley/oksvg`, pinned at its
+  latest available commit) mis-renders at least one real-world complex
+  multi-subpath vector `<path>`.** Found live on developer.mozilla.org
+  (2026-09-03, round 25, no code change possible in THIS engine): its "mdn"
+  logo wordmark, drawn as vector letterforms in a single `<path>` (a common
+  technique for a short brand mark, avoiding a web-font dependency), renders
+  as overlapping/doubled glyph shapes. Isolated with three independent
+  reproductions, the last calling `oksvg.ReadIconStream`+`rasterx` directly
+  with NO go-webengine code in the call path at all — conclusive proof this
+  is not a bug in this engine's own SVG handling (`svg.go`'s path
+  extraction/viewBox scaling/target sizing). The pinned commit is oksvg's
+  newest available one, so there is no newer upstream fix to pick up by
+  bumping the dependency. Fixing (or forking) a third-party rasteriser's own
+  path-fill-rule/subpath handling is outside this engine's own codebase —
+  not attempted.
 - **A block/flex/grid-level element nested under an inline-context ancestor
   (e.g. an unstyled custom element, which defaults to `display:inline`) is
   flattened into plain inline text instead of getting a real box.** Found
