@@ -88,6 +88,51 @@ func TestFormControlButtonSizesToLabel(t *testing.T) {
 	}
 }
 
+// TestFormControlSelectSizesToWidestOption covers a real <select>'s sizing:
+// the WIDEST option's label, not the flat text-input default — the common
+// cross-engine pattern (e.g. WebKit's RenderMenuList::updateOptionsWidth),
+// confirmed against that engine's own source before implementing here. With
+// fakeMeasurer's exact 10px/char this is fully predictable, unlike a real
+// font.
+func TestFormControlSelectSizesToWidestOption(t *testing.T) {
+	src := `<html><body><select id="e"><option>xx</option><option>xxxxx</option></select></body></html>`
+	items := firstLineItems(findBox(layoutHTML(t, src, 1024), "body"))
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatal("expected one form-control item")
+	}
+	// "xxxxx" = 5 runes * 10px (fakeMeasurer) + 2*formControlPadX(12) = 74.
+	assertF(t, "select width", items[0].Width, 74)
+}
+
+// TestFormControlSelectWidthIncludesOptgroupAndLabelAttribute covers that
+// sizing walks through <optgroup> nesting (real markup routinely groups
+// options this way) and honours an <option label="..."> override — plus
+// that whitespace TEXT NODES between sibling tags (indentation/newlines,
+// which real HTML always has and a single-line test string does not) are
+// skipped rather than mistaken for elements.
+func TestFormControlSelectWidthIncludesOptgroupAndLabelAttribute(t *testing.T) {
+	src := `<html><body><select id="e"><optgroup label="A Long Group Label">
+		<option label="Custom Wide Label">short</option>
+	</optgroup></select></body></html>`
+	items := firstLineItems(findBox(layoutHTML(t, src, 1024), "body"))
+	// "A Long Group Label" = 18 runes * 10px + 24 = 204, the widest candidate
+	// (wider than the 17-char "Custom Wide Label" option label).
+	assertF(t, "select width", items[0].Width, 204)
+}
+
+// TestFormControlSelectNarrowerThanTextInputDefault covers that the flat
+// text-input default (170) is NOT a floor a select with real options gets
+// clamped up to — a real browser sizes a <select><option>x</option></select>
+// to its one tiny option, not to an unrelated text-field width. The 170
+// default applies only when there are no options at all (see
+// TestFormControlDefaultSizes's "select" case, an empty <select>).
+func TestFormControlSelectNarrowerThanTextInputDefault(t *testing.T) {
+	src := `<html><body><select id="e"><option>x</option></select></body></html>`
+	items := firstLineItems(findBox(layoutHTML(t, src, 1024), "body"))
+	// "x" = 1 rune * 10px (fakeMeasurer) + 2*formControlPadX(12) = 34.
+	assertF(t, "select width", items[0].Width, 34)
+}
+
 // TestFormControlSubmitDefaultLabel covers the UA-default label text ("Submit")
 // an <input type=submit> with no value attribute gets — indirectly, through
 // its effect on sizing (an empty label would be narrower).

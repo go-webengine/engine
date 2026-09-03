@@ -243,3 +243,76 @@ func TestSelectedOptionLabelPicksSelected(t *testing.T) {
 		t.Fatalf("selectedOptionLabel = (%q, %v), want (B, true)", got, ok)
 	}
 }
+
+// TestSelectedOptionLabelLastSelectedWins covers the HTML standard's option
+// selectedness algorithm (https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness):
+// when several <option> elements carry `selected`, the LAST one in tree
+// order wins for a non-multiple <select> — not the first.
+func TestSelectedOptionLabelLastSelectedWins(t *testing.T) {
+	a := elem("option", map[string]string{"selected": ""})
+	a.Children = []*dom.Node{{Type: dom.Text, Text: "A"}}
+	b := elem("option", map[string]string{"selected": ""})
+	b.Children = []*dom.Node{{Type: dom.Text, Text: "B"}}
+	sel := elem("select", nil)
+	// A whitespace text node between sibling <option>s, exactly like real
+	// HTML markup (indentation/newlines) always has, must be skipped rather
+	// than mistaken for an element.
+	sel.Children = []*dom.Node{a, {Type: dom.Text, Text: "\n\t"}, b}
+
+	got, ok := selectedOptionLabel(sel)
+	if !ok || got != "B" {
+		t.Fatalf("selectedOptionLabel = (%q, %v), want (B, true) — last selected wins", got, ok)
+	}
+}
+
+// TestSelectedOptionLabelSkipsDisabledDefault covers the standard's default
+// (no explicit selection) rule: the FIRST option that is not itself disabled
+// wins, not simply the first option in source order.
+func TestSelectedOptionLabelSkipsDisabledDefault(t *testing.T) {
+	skip := elem("option", map[string]string{"disabled": ""})
+	skip.Children = []*dom.Node{{Type: dom.Text, Text: "SKIP"}}
+	first := elem("option", nil)
+	first.Children = []*dom.Node{{Type: dom.Text, Text: "FIRST"}}
+	sel := elem("select", nil)
+	sel.Children = []*dom.Node{skip, first}
+
+	got, ok := selectedOptionLabel(sel)
+	if !ok || got != "FIRST" {
+		t.Fatalf("selectedOptionLabel = (%q, %v), want (FIRST, true) — disabled option skipped", got, ok)
+	}
+}
+
+// TestSelectedOptionLabelOptgroupDisabledSkipsChildren covers that an
+// <optgroup disabled> disables every option inside it for default selection,
+// even though the option itself carries no `disabled` attribute of its own.
+func TestSelectedOptionLabelOptgroupDisabledSkipsChildren(t *testing.T) {
+	inGroup := elem("option", nil)
+	inGroup.Children = []*dom.Node{{Type: dom.Text, Text: "A"}}
+	group := elem("optgroup", map[string]string{"disabled": ""})
+	group.Children = []*dom.Node{inGroup}
+	after := elem("option", nil)
+	after.Children = []*dom.Node{{Type: dom.Text, Text: "B"}}
+	sel := elem("select", nil)
+	sel.Children = []*dom.Node{group, after}
+
+	got, ok := selectedOptionLabel(sel)
+	if !ok || got != "B" {
+		t.Fatalf("selectedOptionLabel = (%q, %v), want (B, true) — A is inside a disabled optgroup", got, ok)
+	}
+}
+
+// TestSelectedOptionLabelAttributeOverridesText covers the option label rule
+// (https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element):
+// a non-empty `label` attribute is shown instead of the element's text
+// content.
+func TestSelectedOptionLabelAttributeOverridesText(t *testing.T) {
+	opt := elem("option", map[string]string{"selected": "", "label": "Custom"})
+	opt.Children = []*dom.Node{{Type: dom.Text, Text: "ignored text"}}
+	sel := elem("select", nil)
+	sel.Children = []*dom.Node{opt}
+
+	got, ok := selectedOptionLabel(sel)
+	if !ok || got != "Custom" {
+		t.Fatalf("selectedOptionLabel = (%q, %v), want (Custom, true)", got, ok)
+	}
+}

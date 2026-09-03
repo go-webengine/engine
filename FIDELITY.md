@@ -18,6 +18,92 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont.) — `<select>` sizes to its widest option and shows the correct one, matching the real cross-engine pattern (engine#96)
+
+Round engine#94 (below) fixed pkg.go.dev's garbled index block by hiding
+`<option>` (`display:none`) — a real fix, but left EVERY `<select>` on any
+page showing nothing at all. Asked directly whether that fix had been
+checked against Firefox/WebKit source (per this project's own bibliography
+discipline) — it had not been, only against this engine's own prior
+`<template>` precedent and live pkg.go.dev diagnosis. Reading both engines'
+source afterward (`searchfox.org`'s `nsListControlFrame`/
+`nsComboboxControlFrame` for Firefox, `RenderMenuList.cpp` for WebKit — a
+`RenderFlexibleBox` subclass) showed the real common pattern: a `<select>`
+is a replaced, widget-backed element with a dedicated render object that (1)
+measures every option's label to size the control to its widest possible
+entry (WebKit's `updateOptionsWidth()`), and (2) paints only the currently
+selected option's label, on one line.
+
+**Between diagnosing this and shipping it, a different session merged
+engine#95, which independently built exactly the box+paint infrastructure
+this needed** — `isFormControlTag`/`formControlSize` in `layout/layout.go`
+and `paintFormControl`/`selectedOptionLabel` in `paint/paint.go`, covering
+`input`/`button`/`select`/`textarea` generically. Its own `select` handling
+was a placeholder, though: a flat `170px` width regardless of any option
+(the same constant used for a plain text `<input>`), and its
+`selectedOptionLabel` picked the FIRST `<option selected>` rather than the
+LAST, with no disabled-option or `<optgroup>` handling — a reasonable first
+cut for the PR's own driving goal (making a login form's text fields and
+buttons clickable), just not spec-correct for `<select>` specifically.
+Discovered this by re-syncing with `origin/main` mid-round (`gh pr list`
+showed #95 had landed) rather than by re-diagnosing from scratch, and
+rebuilt this round's fix ON TOP of it instead of shipping a second,
+competing atomic-box mechanism.
+
+Implemented per the HTML standard's own normative algorithms (read at
+https://html.spec.whatwg.org/multipage/form-elements.html, not reconstructed
+from memory):
+
+- **`layout/select.go`** (new): `optionLabel` (an option's `label` attribute
+  if present and non-empty, else its text content) and `selectOptionLabels`
+  (every option's — and each `<optgroup>`'s own — label, for sizing).
+- **`layout/layout.go`**: `formControlDefaultSize`'s `"select"` case now
+  measures every option's label via the existing `Measurer` and sizes to the
+  widest, falling back to the flat default ONLY when there are no options to
+  measure at all — not as a floor a real, narrower option set gets clamped
+  up to (a `<select><option>x</option></select>` really is a tiny box in a
+  real browser).
+- **`paint/paint.go`**: `selectedOptionLabel` rewritten to the standard's
+  option selectedness algorithm
+  (https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness):
+  the LAST `<option selected>` wins for a non-`multiple` select; with none
+  selected, the FIRST option that is not itself `disabled` and whose
+  ancestor `<optgroup>` (if any) is not disabled wins instead; a new
+  `optionLabel` (duplicated from layout's, matching this file's own existing
+  `controlLabel` duplication convention) applies the `label`-attribute
+  override.
+
+**Verified live on pkg.go.dev/net/http**: its platform selector shows
+"linux/amd64" inside a real, visible box (matching Chrome) instead of a flat
+170px empty field; its version/tab-switcher `<select>` sizes to its actual
+label instead of the generic text-input default.
+
+New regression tests (`layout/formcontrol_test.go`, `paint/formcontrol_test.go`)
+cover: sizing to the widest option (including through `<optgroup>` nesting
+and a `label`-attribute override), staying narrower than the flat default
+when real options are all short, last-selected-wins, disabled-option and
+disabled-`<optgroup>`-inheritance skipping for the default case, and the
+`label`-attribute override on the displayed value. Confirmed each of the
+four `paint` behavioural tests and three `layout` sizing tests fails against
+engine#95's original placeholder implementation (reverted via a temporary
+`git checkout`/file-move covering just this round's changes) before
+restoring the fix — one wrong answer per broken standard rule, not a
+generic "something's off" failure.
+
+**Deliberately not attempted**: an actual popup/listbox surface (this engine
+never renders anything interactively beyond what a settle pass produces),
+`<optgroup>` rendering as a visually distinct row in that non-existent
+popup, and the HTML spec's exact "text" IDL attribute whitespace-collapsing
+rule (approximated with a plain trim, matching this engine's existing text
+handling elsewhere).
+
+**Lesson, worth repeating alongside round 14/15's own version of it**: this
+is the THIRD time in three consecutive rounds that another session merged
+a PR touching the exact area under investigation between diagnosis and
+shipping (#89-91 during round 14, #93 during round 15, #95 during this one)
+— `gh pr list` before every `gh pr create` on this repo is no longer an
+occasional courtesy check, it is load-bearing.
+
 ## 2026-09-03 — pkg.go.dev's garbled top-of-page text block root-caused: `<option>` had no user-agent styling at all
 
 pkg.go.dev/net/http had the corpus's highest pixdiff (45.8%) after the
@@ -1637,16 +1723,14 @@ columns.
 
 ## Known gaps (updated 2026-08-30 — see the note above on why this drifted)
 
-- **No native form-control rendering at all** — an `<input>`'s `value`/
-  `placeholder` was never shown (an existing, accepted simplification), and
-  as of 2026-09-03 (engine#94) `<option>` is explicitly hidden (`display:
-  none`) rather than left to leak its text into ordinary layout, matching
-  that same simplification rather than diverging from it. A real `<select>`
-  never shows anything at all in this engine — not even its selected
-  option's text on one line, the way a real browser's native widget does —
-  which is a real, currently-unclaimed gap of its own if a page's fidelity
-  ever hinges specifically on a dropdown's visible label rather than just on
-  its surrounding content not being corrupted.
+- **Form controls now paint (2026-09-03, engine#95 — a general
+  `input`/`button`/`select`/`textarea` atomic box + paint mechanism, not
+  previously present at all) and `<select>`'s sizing/label followed up to be
+  standards-correct (2026-09-03, engine#96, see the log entry below)**:
+  remaining gaps are `<input>`'s value/placeholder text not being
+  pixel-perfect UA chrome (close enough to read as intentional, not exact),
+  and no actual popup/listbox surface for `<select>` (this engine has no
+  click-driven interactive UI beyond a settle pass at all).
 - **The settle loop's empty-render guard (`reskin()`, engine#84) cannot
   restyle a node that a rejected script pass REMOVED from the DOM** —
   confirmed live on react.dev (2026-09-02, engine#92): its hero `<h1>` and
