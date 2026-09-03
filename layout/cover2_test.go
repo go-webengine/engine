@@ -55,6 +55,35 @@ func TestFlexContainerEmptyStaysCollapsed(t *testing.T) {
 	}
 }
 
+// TestSelectOptionsDoNotLeakIntoLayout covers a real regression: a real
+// <select> is a replaced, OS-native control that shows only its selected
+// option on one line, entirely opaque to CSS box layout — but this engine had
+// no special-casing for <option> at all, so its text flowed as ordinary
+// inline content. Observed live on pkg.go.dev/net/http: a version/tab-switcher
+// <select> holding dozens of <option>s (one holding the page's entire
+// alphabetical symbol index as option text) rendered every option's text
+// wrapped across hundreds of pixels at the select's DOM position, instead of
+// the empty single-line box a real browser's native widget shows.
+func TestSelectOptionsDoNotLeakIntoLayout(t *testing.T) {
+	src := `<html><body style="margin:0">before<select>` +
+		`<option>AAAAAAAAAA</option><option>BBBBBBBBBB</option></select>after</body></html>`
+	root := layoutHTML(t, src, 300)
+	var walk func(b *Box)
+	walk = func(b *Box) {
+		for _, ln := range b.Lines {
+			for _, it := range ln.Items {
+				if it.Text == "AAAAAAAAAA" || it.Text == "BBBBBBBBBB" {
+					t.Fatalf("option text leaked into layout: %q", it.Text)
+				}
+			}
+		}
+		for _, c := range b.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+}
+
 func TestFlexItemAutoBasisPreferred(t *testing.T) {
 	// A flex item with no width/basis uses its max-content width ("xxx" = 30).
 	src := `<html><body style="margin:0"><div style="display:flex">` +

@@ -49,7 +49,7 @@ func TestUADeclarationsAllBranches(t *testing.T) {
 			t.Errorf("%s: expected display:inline", tag)
 		}
 	}
-	hidden := []string{"head", "title", "style", "script", "meta", "link", "base", "noscript", "template"}
+	hidden := []string{"head", "title", "style", "script", "meta", "link", "base", "noscript", "template", "option"}
 	for _, tag := range hidden {
 		if !hasDisplay(uaDeclarations(tag), "none") {
 			t.Errorf("%s: expected display:none", tag)

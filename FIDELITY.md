@@ -18,6 +18,63 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 — pkg.go.dev's garbled top-of-page text block root-caused: `<option>` had no user-agent styling at all
+
+pkg.go.dev/net/http had the corpus's highest pixdiff (45.8%) after the
+react.dev flex-bare-text fix. Chased visually: a dense, unbroken block of
+concatenated identifier text ("DocumentationSourceFilesDirectoriesOverview
+IndexExamplesConstantsVariablesFunctionsTypesCrossOriginProtectionFileServer…")
+rendered near the top of the page, overlapping the sidebar's "Details/
+Repository/Links" section — not the page's real, legitimate `Documentation-
+index` symbol list (confirmed present and correctly positioned much further
+down, at the same place a real browser puts it).
+
+Root-caused with a live box-tree dump (a temporary white-box `_test.go` in
+package `engine`, calling the same internal `renderCore` pipeline `Render`/
+`RenderHTML` use, walking the real box tree for any text containing a marker
+string unique to the garbled block) rather than guessing from the screenshot —
+the same technique used in round 4's tailwindcss.com grid investigation. The
+match traced straight to a `<select class="go-Select js-selectNav">`
+(pkg.go.dev's version/tab-switcher dropdown, `go-Main-navMobile`) whose
+`<option>` children include the page's entire alphabetical symbol/example
+index as option text.
+
+**This engine's user-agent stylesheet has never had any special case for
+`<option>`** (`css/ua.go`) — `<select>` itself falls into the same generic
+`display:inline` bucket as `<button>`/`<input>`/`<textarea>`, but unlike those
+(which are void or have no meaningful child text), a `<select>`'s `<option>`
+children carry real, visible text nodes. A real `<select>` is a replaced,
+OS-native control that shows only the currently selected option on one line,
+entirely opaque to CSS box layout; without any UA rule saying so, this
+engine laid out every `<option>`'s text as ordinary inline content, wrapping
+across ~19 lines/455px at the select's DOM position. Fixed with one addition
+to `uaDeclarations`: `option { display: none }` — the exact same "honest
+about the gap" precedent already used for `<template>`'s inert content just
+above it in the same file (this engine has no native form-control rendering
+at all; an `<input>`'s `value` going unshown is an existing, accepted
+simplification this now matches rather than diverges from).
+
+**Verified live:** the garbled block is completely gone from
+`cmd/render`'s output; the page's real content (Overview, code examples,
+Clients and Transports, Servers, …) now lines up closely with Chrome's
+rendering from the very top of the page.
+
+**Measured:** pkg.go.dev/net/http SSIM 0.530→0.616, pixdiff 45.8%→40.0%.
+Confirmed via a full 10-page bench corpus re-run that nothing else regressed;
+every other page's number held within its already-documented noise band.
+
+Regression test `TestSelectOptionsDoNotLeakIntoLayout` (`layout/cover2_test.go`)
+reproduces the failure shape directly (a `<select>` with two long `<option>`
+texts, asserting neither string appears in ANY box's laid-out text anywhere
+in the tree — the first version of this test only checked the document
+root's own `Lines` field, which is always empty for a root `<html>` box, and
+so passed even without the fix; walking the full tree was needed to actually
+exercise the regression, caught by reverting the fix locally and watching the
+corrected test fail with the predicted leaked text before restoring it).
+`css/ua_test.go`'s `TestUADeclarationsAllBranches` was extended to cover the
+new `option` branch, holding the `css` package's coverage-ratchet gate at
+its 99.5% floor.
+
 ## 2026-09-02 (cont. 3) — a real flexbox layout bug fixed: a `display:flex` element with bare text content collapsed to zero size
 
 react.dev held the corpus's highest pixdiff for a while: its hero `<h1>React</h1>`
@@ -1580,6 +1637,16 @@ columns.
 
 ## Known gaps (updated 2026-08-30 — see the note above on why this drifted)
 
+- **No native form-control rendering at all** — an `<input>`'s `value`/
+  `placeholder` was never shown (an existing, accepted simplification), and
+  as of 2026-09-03 (engine#93) `<option>` is explicitly hidden (`display:
+  none`) rather than left to leak its text into ordinary layout, matching
+  that same simplification rather than diverging from it. A real `<select>`
+  never shows anything at all in this engine — not even its selected
+  option's text on one line, the way a real browser's native widget does —
+  which is a real, currently-unclaimed gap of its own if a page's fidelity
+  ever hinges specifically on a dropdown's visible label rather than just on
+  its surrounding content not being corrupted.
 - **The settle loop's empty-render guard (`reskin()`, engine#84) cannot
   restyle a node that a rejected script pass REMOVED from the DOM** —
   confirmed live on react.dev (2026-09-02, engine#92): its hero `<h1>` and
