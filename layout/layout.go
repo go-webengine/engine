@@ -214,6 +214,25 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		}
 	}
 
+	// A form control (input/button/select/textarea) is likewise an atomic
+	// box — real content, not a container laid out from its DOM children
+	// (an <option>'s text is never itself rendered inline; a <button>'s
+	// children become its LABEL, not child boxes) — sized explicitly since
+	// unlike an image it has no intrinsic bitmap to measure. A hidden input
+	// takes no box at all, matching real UA behavior.
+	if node.Type == dom.Element && isFormControlTag(node.Tag) {
+		if node.Tag == "input" && strings.EqualFold(node.Attr["type"], "hidden") {
+			return b.y
+		}
+		w, h := l.formControlSize(node, st, cw)
+		b.commit()
+		item := &InlineItem{Node: node, FormControl: node, Style: st,
+			Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y}
+		box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: h, Items: []*InlineItem{item}}}
+		b.y += h
+		return b.y
+	}
+
 	switch st.Display {
 	case css.DisplayFlex:
 		bottom := l.flex(box, node, st, cx, cw, top, b)
@@ -524,6 +543,35 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			l.wsEmitted, l.wsPending = true, false
 		}
 	default:
+		// A form control defaults to display:inline (see css/ua.go) and so is
+		// laid out HERE, as a child of whatever block contains it — the
+		// common case (an <input> inside a <div>/<label>/<form>). It is
+		// still an atomic box like img/svg, just sized differently (no
+		// intrinsic bitmap — formControlSize resolves explicit CSS or a
+		// UA-shaped default; cw is unavailable in this inline-collection
+		// context so a percentage width/height degrades to the default
+		// rather than resolving against the containing block, a known,
+		// narrow limitation). The contents() branch in this file covers
+		// the far rarer case of a control given `display:block` (or
+		// similar) by author CSS, which routes through the normal
+		// block-box path instead of here.
+		if isFormControlTag(el.Tag) {
+			if el.Tag == "input" && strings.EqualFold(el.Attr["type"], "hidden") {
+				return
+			}
+			w, h := l.formControlSize(el, cs, 0)
+			sb := 0.0
+			if l.wsEmitted && l.wsPending {
+				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
+			}
+			*items = append(*items, &InlineItem{
+				Style: cs, FormControl: el, Node: el,
+				Width: w, Ascent: h, LineHeight: h,
+				SpaceBefore: sb,
+			})
+			l.wsEmitted, l.wsPending = true, false
+			return
+		}
 		l.appendInline(el, cs, items, pre || cs.WhiteSpace == css.WSPre)
 	}
 }
@@ -613,6 +661,104 @@ func (l *layouter) lineMetricsFor(st *css.Style) (ascent, lineHeight float64) {
 // intrinsic size (a raster/SVG <img>, or an inline <svg> rasterised upstream).
 func isReplacedTag(tag string) bool {
 	return tag == "img" || tag == "svg"
+}
+
+// isFormControlTag reports whether an element is a form control laid out as
+// its own atomic box (see the contents() branch above) rather than through
+// its DOM children.
+func isFormControlTag(tag string) bool {
+	switch tag {
+	case "input", "button", "select", "textarea":
+		return true
+	}
+	return false
+}
+
+// formControlSize resolves a form control's used box size: an explicit
+// non-auto CSS width/height first (percentages resolved against cw, the
+// same containing-block basis an ordinary block uses), else a UA default
+// sized to its kind — close enough to a real browser's own defaults for the
+// controls a login-shaped form actually uses. A button-like control (an
+// <input type=button/submit/reset>, or a <button>) sizes to fit its own
+// label text plus padding, the same way a real browser's default
+// (intrinsic, content-sized) button does.
+func (l *layouter) formControlSize(node *dom.Node, st *css.Style, cw float64) (w, h float64) {
+	if !st.Width.Auto {
+		w = st.Width.Resolve(cw)
+	}
+	if !st.Height.Auto {
+		h = st.Height.Resolve(cw)
+	}
+	if w > 0 && h > 0 {
+		return w, h
+	}
+	dw, dh := l.formControlDefaultSize(node, st)
+	if w <= 0 {
+		w = dw
+	}
+	if h <= 0 {
+		h = dh
+	}
+	return w, h
+}
+
+// formControlPadX/Y are the button-like controls' label padding (matching
+// typical UA default button padding closely enough to look intentional).
+const formControlPadX, formControlPadY = 12.0, 6.0
+
+// formControlDefaultSize is called only for a tag isFormControlTag already
+// accepted (input/button/select/textarea), so its outer switch's every real
+// case is covered by construction; w/h are named returns assigned by
+// whichever case matches and returned once at the bottom, rather than each
+// case returning directly, so that one line — not an unreachable trailing
+// fallback — is what a coverage tool sees every call flow through.
+func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (w, h float64) {
+	textHeight := st.FontSize + 10 // ~ real UA text-input default height at common font sizes
+	switch node.Tag {
+	case "input":
+		switch strings.ToLower(node.Attr["type"]) {
+		case "checkbox", "radio":
+			w, h = 13, 13
+		case "button", "submit", "reset":
+			w, h = l.buttonSize(controlLabel(node), st)
+		default: // text, email, password, search, tel, url, number, date, …
+			w, h = 170, textHeight
+		}
+	case "button":
+		label := dom.TextContent(node)
+		if label == "" {
+			label = "Submit"
+		}
+		w, h = l.buttonSize(label, st)
+	case "select":
+		w, h = 170, textHeight
+	case "textarea":
+		w, h = 200, 60
+	}
+	return w, h
+}
+
+// buttonSize sizes a button-like control to fit label at st's font, plus
+// padding — an intrinsic, content-sized box, matching how a real browser's
+// unstyled <button>/submit input sizes itself (unlike a plain text input,
+// which gets a fixed UA default width regardless of content).
+func (l *layouter) buttonSize(label string, st *css.Style) (float64, float64) {
+	tw := l.m.Measure(label, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+	return tw + 2*formControlPadX, st.FontSize + 2*formControlPadY
+}
+
+// controlLabel returns an <input type=button/submit/reset>'s visible label:
+// its value attribute if set, else the type-appropriate UA default text.
+func controlLabel(n *dom.Node) string {
+	if v, ok := n.Attribute("value"); ok && v != "" {
+		return v
+	}
+	switch strings.ToLower(n.Attr["type"]) {
+	case "reset":
+		return "Reset"
+	default: // submit and button both default to "Submit" in every major UA
+		return "Submit"
+	}
 }
 
 func (l *layouter) imageSize(el *dom.Node) (float64, float64) {
