@@ -930,32 +930,59 @@ func controlLabel(n *dom.Node) string {
 	return "Submit"
 }
 
-// selectedOptionLabel returns the visible text of sel's selected <option>
-// (or its first option if none is explicitly selected, matching the HTML
-// default), or false if sel has no options.
+// selectedOptionLabel returns the visible text of sel's selected <option>,
+// per the HTML standard's option selectedness algorithm
+// (https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness):
+// for a non-`multiple` select, the LAST <option> with a `selected` attribute
+// wins in tree order; with none marked selected, the FIRST option that is
+// not itself `disabled` and whose ancestor <optgroup> (if any) is not
+// disabled wins instead. Returns false only when sel has no eligible option
+// at all (no options, or every option disabled).
 func selectedOptionLabel(sel *dom.Node) (string, bool) {
-	var opts []*dom.Node
-	var walk func(n *dom.Node)
-	walk = func(n *dom.Node) {
+	var lastSelected, firstEnabled *dom.Node
+	var walk func(n *dom.Node, groupDisabled bool)
+	walk = func(n *dom.Node, groupDisabled bool) {
 		for _, c := range n.Children {
-			if c.Type == dom.Element && c.Tag == "option" {
-				opts = append(opts, c)
+			if c.Type != dom.Element {
+				continue
 			}
-			walk(c)
+			switch c.Tag {
+			case "option":
+				if _, ok := c.Attribute("selected"); ok {
+					lastSelected = c
+				}
+				if firstEnabled == nil && !groupDisabled {
+					if _, disabled := c.Attribute("disabled"); !disabled {
+						firstEnabled = c
+					}
+				}
+			case "optgroup":
+				_, groupDisabledHere := c.Attribute("disabled")
+				walk(c, groupDisabled || groupDisabledHere)
+			}
 		}
 	}
-	walk(sel)
-	if len(opts) == 0 {
+	walk(sel, false)
+	chosen := lastSelected
+	if chosen == nil {
+		chosen = firstEnabled
+	}
+	if chosen == nil {
 		return "", false
 	}
-	chosen := opts[0]
-	for _, o := range opts {
-		if _, ok := o.Attribute("selected"); ok {
-			chosen = o
-			break
-		}
+	return optionLabel(chosen), true
+}
+
+// optionLabel is an <option>'s displayed text: its `label` attribute if
+// present and non-empty, else its text content
+// (https://html.spec.whatwg.org/multipage/form-elements.html#the-option-element).
+// Duplicated (deliberately, not shared) from layout's own copy — see
+// controlLabel's doc comment above for why.
+func optionLabel(opt *dom.Node) string {
+	if v, ok := opt.Attribute("label"); ok && v != "" {
+		return v
 	}
-	return dom.TextContent(chosen), true
+	return strings.TrimSpace(dom.TextContent(opt))
 }
 
 // blitMask composites an 8-bit coverage mask in colour col onto dst, confined to

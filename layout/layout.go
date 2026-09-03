@@ -731,7 +731,26 @@ func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (w, h f
 		}
 		w, h = l.buttonSize(label, st)
 	case "select":
-		w, h = 170, textHeight
+		// A real <select> sizes itself to its WIDEST option's label, not a
+		// flat default — matching the common cross-engine pattern (e.g.
+		// WebKit's RenderMenuList::updateOptionsWidth), read from that
+		// engine's own source rather than assumed, so the control does not
+		// visually resize as a different option becomes selected. The flat
+		// text-input default (170) is unrelated to any option's own size —
+		// it applies ONLY to a <select> with no options to measure at all,
+		// never as a floor that a real, narrower set of options gets
+		// clamped up to.
+		h = textHeight
+		labels := selectOptionLabels(node)
+		if len(labels) == 0 {
+			w = 170
+			break
+		}
+		for _, label := range labels {
+			if lw := l.m.Measure(label, st.FontFamily, st.FontSize, st.FontWeight, st.Italic) + 2*formControlPadX; lw > w {
+				w = lw
+			}
+		}
 	case "textarea":
 		w, h = 200, 60
 	}
