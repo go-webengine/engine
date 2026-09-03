@@ -18,6 +18,48 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont.) — react.dev's washed-out homepage prose re-investigated: the SAME known gap, a far bigger blast radius, still not fixed
+
+react.dev is the corpus's worst page by pixdiff (47.6%). Chased visually
+rather than assuming the existing "hero h1/one button" Known Gap entry
+already covered it fully: nearly every heading and paragraph on the
+homepage, not just the hero, renders washed-out/low-contrast against the
+dark background.
+
+Ruled out two live hypotheses BEFORE settling on the real one, per this
+session's own "verify empirically, don't stop at plausible-sounding CSS
+reasoning" discipline:
+
+- **Not a `:is()`/escaped-class-name selector bug.** react.dev's design uses
+  Tailwind's `--tw-text-opacity` CSS-variable colour pattern gated by
+  `:is(.dark .dark\:text-primary-dark)`-shaped dark-mode selectors. Traced
+  this engine's own selector parser line by line (`splitPseudos` skips a
+  backslash-escaped colon when finding pseudo boundaries; `scanCompound`
+  correctly unescapes it back to a literal `:` in the stored class name) —
+  the mechanism is correct. Confirmed empirically too: with `DisableJS`,
+  the light-mode colour resolves exactly as expected.
+- **The real cause: with JS enabled, `<html class="dark">` IS correctly
+  present, but the settled DOM has ZERO `<h2>` elements at all.** The SAME
+  router-failure script pass documented for the hero (engine#92's
+  `reskin()` Known Gap) unmounts the ENTIRE marketing homepage content, not
+  just the hero — a much bigger blast radius than that entry's own wording
+  suggested. Every unmounted node keeps its pre-failure (light-mode) style
+  forever, per `reskin()`'s existing, correct-as-far-as-it-goes behaviour:
+  a node absent from the rejected pass's freshly-cascaded style map has
+  nothing to update its `Style` pointer TO.
+
+**Not fixed this round.** A real fix needs either a DOM diff across the
+rejected pass (to tell "removed, keep last-known style" apart from "still
+present, re-cascade normally") or re-cascading an orphaned subtree against
+a synthetic root that reproduces its lost ancestor chain — `dom.RemoveChild`
+nulls a node's own `.Parent` at the moment of removal, so that chain is not
+recoverable after the fact without having snapshotted it beforehand. Either
+is a real architectural addition, assessed (again) as bigger than this
+session's per-round scope — but the Known Gaps entry below is corrected to
+the true, now-measured scope, which is materially larger than previously
+documented and makes this a stronger candidate for a dedicated future
+session than the old wording implied.
+
 ## 2026-09-03 (cont.) — the `background` shorthand didn't reset colour when it had none, so engine#98's own fix survived only partway (engine#99)
 
 Verifying engine#98 live (github.com's nav `<button>`s no longer painting a
@@ -1845,21 +1887,28 @@ columns.
   and no actual popup/listbox surface for `<select>` (this engine has no
   click-driven interactive UI beyond a settle pass at all).
 - **The settle loop's empty-render guard (`reskin()`, engine#84) cannot
-  restyle a node that a rejected script pass REMOVED from the DOM** —
-  confirmed live on react.dev (2026-09-02, engine#92): its hero `<h1>` and
-  one CTA button are removed by the same router-failure script pass that
-  also toggles dark mode, and since a removed node is absent from that
-  pass's freshly-cascaded style map, `reskin` has nothing to update it TO —
-  it correctly keeps the node's pre-failure style rather than guessing, but
-  that style can predate the dark-mode class add, leaving such content
-  stuck in its light-mode colour on a dark background even though its
-  geometry and text content are preserved correctly. A general fix would
-  need to diff the DOM before/after a rejected pass (to distinguish "removed
-  and needs its last-known style" from "still present, re-cascade
-  normally") rather than a single before/after style-map lookup — not
-  attempted, since the narrower geometry-preserving behaviour `reskin`
-  already has covers the more common case (surviving content that only
-  changed style, not content that was removed outright).
+  restyle a node that a rejected script pass REMOVED from the DOM — and this
+  is a BIGGER-BLAST-RADIUS gap than earlier rounds' own write-up suggested.**
+  First confirmed live on react.dev (2026-09-02, engine#92) as affecting
+  "the hero `<h1>` and one CTA button". Re-measured 2026-09-03 (round 19,
+  no code change) by actually counting: after settle, react.dev's DOM has
+  **ZERO `<h2>` elements at all** — the SAME router-failure script pass that
+  toggles dark mode unmounts the ENTIRE marketing homepage's content
+  sections ("Create user interfaces from components", "Write components
+  with code and markup", every subsequent section), not just the hero. Every
+  one of those nodes keeps its pre-failure (light-mode) style forever, on a
+  now-dark background — the washed-out, low-contrast prose visible
+  throughout the whole page below the very top fold is this SAME root
+  cause, just far more of the page than previously documented. A general
+  fix would need to diff the DOM before/after a rejected pass (to
+  distinguish "removed and needs its last-known style" from "still present,
+  re-cascade normally"), or re-cascade an orphaned subtree against a
+  synthetic root reproducing its lost ancestor chain (its OWN `.Parent` is
+  nulled by `dom.RemoveChild` at the moment of removal, so the chain isn't
+  recoverable after the fact without having snapshotted it before) — still
+  not attempted: a real architectural addition, not a narrow fix, and now a
+  stronger candidate for a dedicated future session given the corrected,
+  much larger measured scope.
 
 Several bullets that stood here since Phase 0/1 were flatly wrong by the time of
 the 2026-08-30 audit — JavaScript, external stylesheets, `overflow` clipping,
