@@ -182,6 +182,34 @@ func parseOverflowKeyword(s string) (Overflow, bool) {
 	return OverflowVisible, false
 }
 
+// parseClipRect parses the legacy `clip: rect(top, right, bottom, left)`
+// value (CSS2's required comma-separated form, and the later space-separated
+// relaxation both accepted). Only the case every real-world use of this
+// property this engine has met actually needs — all four edges given as
+// explicit lengths — is modelled; a bare `auto` edge, a percentage (the spec
+// forbids one anyway), or anything else parseLength does not resolve makes
+// the whole value unrecognised (ok=false) rather than guessed at.
+func parseClipRect(v string, emRef float64) (Edges, bool) {
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(v, "rect(") || !strings.HasSuffix(v, ")") {
+		return Edges{}, false
+	}
+	inner := v[len("rect(") : len(v)-1]
+	fields := strings.FieldsFunc(inner, func(r rune) bool { return r == ',' || r == ' ' })
+	if len(fields) != 4 {
+		return Edges{}, false
+	}
+	var vals [4]float64
+	for i, f := range fields {
+		l, ok := parseLength(f, emRef)
+		if !ok || l.Auto || l.IsPercent {
+			return Edges{}, false
+		}
+		vals[i] = l.Px
+	}
+	return Edges{Top: vals[0], Right: vals[1], Bottom: vals[2], Left: vals[3]}, true
+}
+
 // BorderStyle is the subset of border-style the engine paints. Any non-none,
 // non-hidden line style renders as a solid line (dashed/dotted/etc. collapse to
 // solid at this fidelity).
@@ -506,6 +534,27 @@ type Style struct {
 	// value clips descendant painting to this box's padding box.
 	OverflowX Overflow
 	OverflowY Overflow
+
+	// HasClip/ClipRect model the legacy `clip: rect(top, right, bottom, left)`
+	// property — deprecated in favour of clip-path, but still a live, real-
+	// world pattern: confirmed load-bearing on pkg.go.dev's own "skip to main
+	// content" link (`clip:rect(0 0 0 0)`, the CSS2-era screen-reader-only
+	// idiom, predating the now-common `width:1px;height:1px;overflow:hidden`
+	// version this engine already honours via Overflow above — that one has
+	// no effect here since this element sets no explicit small width/height,
+	// only `clip`). Per spec this only applies when Position is absolute or
+	// fixed, and all four edges are distances from the box's own top-left
+	// BORDER edge (not the CSS shorthand's usual top/right/bottom/left box
+	// edges) — `rect(0,0,0,0)` is therefore a zero-size rectangle at the
+	// box's own corner, clipping it and its content to nothing while it
+	// still occupies its normal layout position (unlike display:none). Only
+	// the common case (all four values explicit lengths) is modelled; a
+	// `clip: auto` per edge, or any other value this engine's length parsing
+	// does not resolve, leaves HasClip false — clip:rect() with a genuinely
+	// variable edge is rare in practice (the sr-only idiom always hard-codes
+	// all four to 0), so this is not a real-world loss.
+	HasClip  bool
+	ClipRect Edges // Top, Right, Bottom, Left offsets from the box's own corner
 
 	// Positioning that affects normal flow.
 	Float Float

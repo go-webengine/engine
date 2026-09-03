@@ -18,6 +18,95 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont., round 26) — a missing vendor-prefixed pseudo-element wrongly hid a `<details>`'s whole summary; the legacy `clip: rect(...)` property implemented (engine#106)
+
+pkg.go.dev/net/http's "Details" panel (four checkmark rows: "Valid go.mod
+file", "Redistributable license", "Tagged version", "Stable version") was
+COMPLETELY MISSING — not misaligned, just absent — and separately, its
+header's "Skip to Main Content" accessibility link rendered as literal
+visible text overlapping the real search box. Two independent, unrelated
+bugs, both root-caused live rather than guessed at.
+
+**Bug 1 — `isPseudoElement` did not recognise `-webkit-details-marker`.**
+Each checkmark row is `<li><details class="go-Tooltip"><summary>…icon +
+"Valid go.mod file" + help icon…</summary><p role="tooltip">…</p></details>
+</li>` — a real, load-bearing `<details>`/`<summary>` pair this engine
+already has UA-stylesheet support for (`details:not([open]) > :not(summary)
+{display:none}`, added in an earlier round specifically for this exact
+tooltip pattern). Confirmed via TWO successive offline `css.CascadeVW` dumps
+(the real fetched markup + the real fetched stylesheets, no live pipeline)
+that this existing rule correctly does NOT match `<summary>` in isolation —
+so the regression had to be elsewhere. Found it by walking every parsed
+rule that matches `<summary>` and printing its declarations: the site's own
+CSS carries `.go-Tooltip>summary::-webkit-details-marker,.go-Tooltip>
+summary::marker{display:none}` — hiding WebKit's native disclosure-triangle
+marker, paired with the standard `::marker` for cross-browser coverage, a
+completely ordinary and harmless author rule in any real browser.
+`isPseudoElement` recognises `"marker"` but not `"-webkit-details-marker"` —
+an oversight, not a declined feature (the function already carries several
+OTHER vendor-prefixed pseudo-elements: `-moz-selection`, `-webkit-input-
+placeholder`, `-webkit-scrollbar` and its sub-parts). Unrecognised, it fell
+through `parseSimple`'s "reduce, don't drop" default: the compound reduced
+to plain `summary`, matching the REAL element and hiding its entire visible
+content, not just a marker glyph this engine never draws anyway. Fixed with
+a one-line addition to `isPseudoElement`'s recognised list.
+
+**Bug 2 — the legacy `clip: rect(...)` property was not implemented at
+all.** pkg.go.dev's own "skip to main content" link uses `clip:rect(0 0 0
+0)` (position:absolute, no explicit small width/height) — the CSS2-era
+screen-reader-only idiom that PREDATES the now-more-common `width:1px;
+height:1px;overflow:hidden` version this engine already handles (see
+`Overflow.Clips`'s own doc comment, which only ever mentions that variant).
+Unrecognised, the link kept its natural (large, readable) auto size and
+painted its real text in place, overlapping the real search box. Added
+`css.Style.HasClip`/`ClipRect` (parsed by a new `parseClipRect`, accepting
+both the CSS2-required comma-separated `rect(0, 0, 0, 0)` form and the
+later space-separated relaxation — a bare `auto` edge or anything else
+`parseLength` cannot resolve leaves the whole declaration unrecognised
+rather than guessed at, since real-world usage of this property
+overwhelmingly hard-codes all four edges to 0) and a new
+`paint.intersectClipRect`, applied at the very top of `paintBoxContent` —
+before background/border/text/children — scoped to `position:absolute`/
+`fixed` per spec, matching the property's own real-world semantics exactly:
+the element keeps its normal layout box and position, only its PAINTED
+region shrinks to nothing.
+
+**Verified live: pkg.go.dev's four checkmark rows now render with their
+icons, and "Skip to Main Content" no longer overlaps the search box** —
+both confirmed independently on the real page (each fix's effect is
+localised to its own element; neither masks the other). Four regression
+tests: `TestPseudoElementMatchesNothing` extended with the exact
+`summary::-webkit-details-marker` shape; `TestParseClipRect` (both
+separator forms, an unresolvable `auto` edge, wrong argument count);
+`TestCascadeClipDeclaration` (the full cascade-apply path, not just the
+parser in isolation); `TestClipRectHidesContent`/
+`TestClipRectIgnoredWithoutPositioning` (paint-level, confirming the
+position:absolute/fixed spec-scoping in both directions). All confirmed to
+fail without their fix via a real `git diff > patch; git checkout --; go
+test/vet; git apply patch` cycle — the css package failed to even BUILD
+without Bug 2's fix (`cascade_test.go` references the new `HasClip` field),
+the same "compile-time signal" class of confirmation as round 24's
+`InlineItem.Label`. `css`/`layout`/`paint`/`dom` all held their coverage
+floors (99.5%/100%/100%/98.1%); `paint.intersectClipRect`'s first draft
+carried two defensive clamp branches copied from `descendantClip`'s
+pattern that turned out to be dead code here (`image.Rectangle.Intersect`
+already returns the zero rectangle for a non-overlapping pair, unlike
+`descendantClip`'s own per-axis intersection, which really can end up
+inverted on just one axis) — removed rather than covered with a forced test,
+per this session's "don't add handling for scenarios that can't happen"
+discipline.
+
+Remaining visible differences on this page (the breadcrumb — "Discover
+Packages / Standard library / net / http" — stacking vertically with no
+">" separators between items, and the header's "Submit" text appearing
+where Chrome shows only icon buttons) were investigated and confirmed to be
+the SAME already-documented, deliberately-deferred gaps from round 24
+(`display:inline-flex`/`inline-grid`/`inline-table` losing their "atomic
+inline box, real layout inside" outer behaviour, conflated with the block-
+level `flex`/`grid`/`table` values; `::before`/`::after` generated content
+not synthesised at all) rather than new defects — not re-investigated from
+scratch, per the existing Known Gaps entries.
+
 ## 2026-09-03 (cont., round 25) — `display:contents` implemented at layout's one shared child-iteration chokepoint; a media-query `calc()` evaluator upgraded from two terms to general arithmetic (engine#105); a genuine third-party SVG-rasteriser defect found, isolated, and documented, not fixed
 
 developer.mozilla.org's reference-article table-of-contents ("In this
@@ -2222,6 +2311,24 @@ columns.
 
 ## Known gaps (updated 2026-08-30 — see the note above on why this drifted)
 
+- **`display:inline-flex`/`inline-grid`/`inline-table` lose their "inline"
+  half — this engine's `Display` enum conflates them with the block-level
+  `flex`/`grid`/`table` values, so such an element becomes BLOCK-LEVEL from
+  its parent's point of view.** Confirmed on TWO separate real pages:
+  github.com's header "Sign in"/"Sign up" buttons (round 24) and pkg.go.dev's
+  breadcrumb `<li>`s (round 26, `.go-Breadcrumb li{display:inline-flex}`),
+  where each list item stacks on its own line instead of flowing in a row
+  with `>` separators between them (the separators are ALSO missing — a
+  second, already-documented gap: `::before`/`::after` generated content is
+  not synthesised at all, rank 5 in the original Phase-0 fidelity plan).
+  This is the SAME architectural gap as the `<react-partial>`-flattens-
+  block-content one below, from the opposite direction: there, a genuinely
+  block element nested in an inline context gets wrongly flattened into
+  inline text; here, a genuinely INLINE-outer element (by explicit author
+  CSS) gets wrongly treated as block-level. A real fix needs the same
+  "atomic inline-level box with a real box/layout inside" mechanism this
+  engine has never had (already deferred in round 24, comparable in scope
+  to Shadow DOM) — not attempted.
 - **The third-party SVG rasteriser (`github.com/srwiley/oksvg`, pinned at its
   latest available commit) mis-renders at least one real-world complex
   multi-subpath vector `<path>`.** Found live on developer.mozilla.org

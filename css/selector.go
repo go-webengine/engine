@@ -1112,7 +1112,18 @@ func isPseudoElement(p string) bool {
 		"spelling-error", "target-text", "highlight", "part", "slotted",
 		"-moz-selection", "-moz-placeholder", "-webkit-input-placeholder",
 		"-ms-input-placeholder", "-webkit-scrollbar", "-webkit-scrollbar-thumb",
-		"-webkit-scrollbar-track", "-webkit-scrollbar-button":
+		"-webkit-scrollbar-track", "-webkit-scrollbar-button",
+		// WebKit's vendor-prefixed name for a <details>'s native disclosure
+		// triangle, always paired with the standard ::marker for cross-browser
+		// coverage (e.g. "summary::-webkit-details-marker,summary::marker") —
+		// confirmed load-bearing live on pkg.go.dev: unrecognised, this
+		// pseudo-element name fell through to "unmodelled pseudo, ignore it"
+		// (parseSimple's default case), so a compound like
+		// "summary::-webkit-details-marker" reduced to plain "summary" and
+		// WRONGLY matched the real element instead of matching nothing — its
+		// display:none then hid the summary's entire real content, not just
+		// a marker glyph nothing in this engine ever draws anyway.
+		"-webkit-details-marker":
 		return true
 	}
 	return false

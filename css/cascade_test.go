@@ -432,3 +432,19 @@ func TestCascadeDetailsAuthorOverride(t *testing.T) {
 		t.Errorf("author p{display:block} inside closed <details> = %v, want block (author wins)", d.Display)
 	}
 }
+
+// TestCascadeClipDeclaration covers the `clip: rect(...)` cascade apply
+// branch end-to-end (parse.go's declaration switch, not just parseClipRect
+// in isolation): a recognised rect() sets HasClip/ClipRect, an unrecognised
+// clip value (a bare "auto" edge) leaves HasClip false, matching any other
+// declaration this engine cannot resolve.
+func TestCascadeClipDeclaration(t *testing.T) {
+	ok := styleOf(t, `<html><body><a style="position:absolute;clip:rect(1px,2px,3px,4px)">x</a></body></html>`, "a")
+	if !ok.HasClip || ok.ClipRect != (Edges{Top: 1, Right: 2, Bottom: 3, Left: 4}) {
+		t.Errorf("clip:rect(1px,2px,3px,4px) = HasClip=%v ClipRect=%v", ok.HasClip, ok.ClipRect)
+	}
+	unresolved := styleOf(t, `<html><body><a style="position:absolute;clip:rect(auto,2px,3px,4px)">x</a></body></html>`, "a")
+	if unresolved.HasClip {
+		t.Error("an unresolvable clip value must leave HasClip false")
+	}
+}

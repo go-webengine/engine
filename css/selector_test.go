@@ -587,6 +587,26 @@ func TestPseudoElementMatchesNothing(t *testing.T) {
 	if !isPseudoElement("after") || !isPseudoElement("-webkit-scrollbar") {
 		t.Error("pseudo-elements must be classified as such")
 	}
+	// A real regression, found live on pkg.go.dev: "summary::-webkit-details-
+	// marker,summary::marker{display:none}" (WebKit's vendor-prefixed name for
+	// a <details>'s native disclosure triangle, always paired with the
+	// standard ::marker for cross-browser coverage) hides a <details>'s
+	// entire disclosure-triangle marker in a real browser. Before
+	// "-webkit-details-marker" was added to isPseudoElement, it fell through
+	// to "unmodelled pseudo, ignore it" — so "summary::-webkit-details-marker"
+	// reduced to plain "summary" and WRONGLY matched the real <summary>
+	// element, hiding its entire visible content (the SAME real element the
+	// standard "summary::marker" alternative in the same rule correctly
+	// leaves alone).
+	summary := el("summary", "", "")
+	if !isPseudoElement("-webkit-details-marker") {
+		t.Error("-webkit-details-marker must be classified as a pseudo-element")
+	}
+	if s, ok := parseComplex("summary::-webkit-details-marker"); !ok {
+		t.Fatal("parseComplex(summary::-webkit-details-marker) should parse")
+	} else if s.Matches(summary) {
+		t.Error("summary::-webkit-details-marker must not match the real <summary> element")
+	}
 }
 
 // TestStripTrailingSelfCombinator covers stripTrailingSelfCombinator's own

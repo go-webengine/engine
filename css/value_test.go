@@ -197,3 +197,35 @@ func TestLineHeightResolve(t *testing.T) {
 		}
 	}
 }
+
+// TestParseClipRect covers the legacy `clip: rect(...)` property — found
+// load-bearing live on pkg.go.dev, whose own "skip to main content" link
+// uses clip:rect(0 0 0 0) (the CSS2-era screen-reader-only idiom) rather than
+// the modern width:1px/height:1px/overflow:hidden pattern this engine
+// already handled. Both the space-separated form used there and CSS2's
+// originally-required comma-separated form must parse to the same rect.
+func TestParseClipRect(t *testing.T) {
+	want := Edges{Top: 0, Right: 0, Bottom: 0, Left: 0}
+	if r, ok := parseClipRect("rect(0 0 0 0)", 16); !ok || r != want {
+		t.Errorf("rect(0 0 0 0) = %v,%v want %v,true", r, ok, want)
+	}
+	if r, ok := parseClipRect("rect(0, 0, 0, 0)", 16); !ok || r != want {
+		t.Errorf("rect(0, 0, 0, 0) = %v,%v want %v,true", r, ok, want)
+	}
+	if r, ok := parseClipRect("rect(1px, 2px, 3px, 4px)", 16); !ok ||
+		r != (Edges{Top: 1, Right: 2, Bottom: 3, Left: 4}) {
+		t.Errorf("rect(1px,2px,3px,4px) = %v,%v", r, ok)
+	}
+	// A bare "auto" edge (a real, spec-legal value this simplified parser
+	// does not resolve) must not be guessed at — the whole value is left
+	// unrecognised, same as any other clip value outside the common case.
+	if _, ok := parseClipRect("rect(auto, 0, 0, 0)", 16); ok {
+		t.Error("rect() with an auto edge should not parse")
+	}
+	if _, ok := parseClipRect("rect(0, 0, 0)", 16); ok {
+		t.Error("rect() with the wrong number of edges should not parse")
+	}
+	if _, ok := parseClipRect("auto", 16); ok {
+		t.Error(`clip: auto (the initial value, no rect() at all) should not parse`)
+	}
+}

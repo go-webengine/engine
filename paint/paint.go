@@ -104,6 +104,16 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 // child boxes are additionally confined to descendantClip, which intersects clip
 // with this box's padding box on any axis whose overflow is not visible.
 func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, clip image.Rectangle) {
+	// The legacy `clip: rect(...)` property (see css.Style.HasClip) narrows
+	// this box's OWN painting — background, border, text, AND everything it
+	// passes down to its children — to a rectangle relative to its own
+	// border-box corner, applying BEFORE any of the steps below so a
+	// `clip:rect(0 0 0 0)` (the sr-only idiom this exists for) hides
+	// everything, not just what a plain overflow clip on children would.
+	// Spec-scoped to position:absolute/fixed, same as the property itself.
+	if box.Style != nil && box.Style.HasClip && box.Position.OutOfFlow() {
+		clip = intersectClipRect(clip, box)
+	}
 	// visibility:hidden paints nothing of this box's OWN background/border/
 	// shadows/marker/inline content, but — unlike opacity<=0 or display:none —
 	// still reserves its layout space, and a descendant box may re-show itself
@@ -233,6 +243,25 @@ func descendantClip(clip image.Rectangle, box *layout.Box) image.Rectangle {
 	if out.Max.Y < out.Min.Y {
 		out.Max.Y = out.Min.Y
 	}
+	return out
+}
+
+// intersectClipRect narrows clip to box's legacy `clip: rect(...)` region
+// (see css.Style.HasClip/ClipRect): a rectangle whose four edges are
+// distances from box's own border-box top-left corner — NOT the box's own
+// padding box the way descendantClip's overflow clipping is. image.Rectangle.
+// Intersect already returns the zero rectangle for two rects that do not
+// overlap at all (e.g. rect(0 0 0 0), the sr-only idiom this exists for), so
+// no extra empty-rect clamp is needed here the way descendantClip's per-axis
+// intersection (which can legitimately end up inverted on just one axis)
+// requires.
+func intersectClipRect(clip image.Rectangle, box *layout.Box) image.Rectangle {
+	r := box.Style.ClipRect
+	cr := image.Rect(
+		int(box.X+r.Left), int(box.Y+r.Top),
+		int(box.X+r.Right), int(box.Y+r.Bottom),
+	)
+	out := clip.Intersect(cr)
 	return out
 }
 
