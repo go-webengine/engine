@@ -181,6 +181,59 @@ func TestFormControlButtonTagUsesTextContent(t *testing.T) {
 	assertF(t, "empty <button> width", empty[0].Width, 84)
 }
 
+// TestFormControlButtonLabelSkipsDisplayNoneDescendants covers a real
+// regression, found live on github.com/golang/go: its site-header search
+// button nests a responsive text label ("Search") next to a keyboard-shortcut
+// hint ("/"), each shown at a DIFFERENT breakpoint via display:none on
+// nested spans/kbd — never both at once. dom.TextContent (what this engine
+// used to size and paint a <button>'s label, since a button is laid out as
+// an atomic box, never as a real container of child boxes — see
+// isFormControlTag above) has no notion of computed style, so it
+// concatenated both into a single "Search/" label regardless of which one
+// was actually display:none, at every width. The label must instead be
+// exactly the text NOT under a display:none ancestor — here, "Search" only
+// (the kbd hint is display:none), matching what a real browser would show
+// were it to lay this button's children out normally.
+func TestFormControlButtonLabelSkipsDisplayNoneDescendants(t *testing.T) {
+	src := `<html><body><button id="e">` +
+		`<span>Search</span><kbd style="display:none">/</kbd>` +
+		`</button></body></html>`
+	items := firstLineItems(findBox(layoutHTML(t, src, 1024), "body"))
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatalf("expected one form-control item, got %v", items)
+	}
+	if items[0].Label != "Search" {
+		t.Errorf("Label = %q, want %q (the display:none kbd must not contribute)", items[0].Label, "Search")
+	}
+	// "Search" (6 runes) * 10px (fakeMeasurer) + 24 padding = 84 — NOT "Search/"
+	// (7 runes) * 10 + 24 = 94, which is what dom.TextContent's unconditional
+	// concatenation used to produce.
+	assertF(t, "button width sized to the visible label only", items[0].Width, 84)
+}
+
+// TestFormControlDisplayBlockButtonLabelSkipsDisplayNoneDescendants is
+// TestFormControlButtonLabelSkipsDisplayNoneDescendants's counterpart for the
+// display:block entry point (contents(), not appendElementInline) — the
+// label computation is duplicated at both entry points (see layout.go), and
+// both need covering, same as the hidden-input case above.
+func TestFormControlDisplayBlockButtonLabelSkipsDisplayNoneDescendants(t *testing.T) {
+	src := `<html><body><button id="e" style="display:block">` +
+		`<span>Search</span><kbd style="display:none">/</kbd>` +
+		`</button></body></html>`
+	box := findBox(layoutHTML(t, src, 1024), "button")
+	if box == nil {
+		t.Fatal("display:block button did not get its own box")
+	}
+	items := firstLineItems(box)
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatalf("display:block button's own box has no form-control item: %v", items)
+	}
+	if items[0].Label != "Search" {
+		t.Errorf("Label = %q, want %q (the display:none kbd must not contribute)", items[0].Label, "Search")
+	}
+	assertF(t, "display:block button width sized to the visible label only", items[0].Width, 84)
+}
+
 // TestFormControlHiddenInputTakesNoBox covers the one control kind that must
 // NOT get a box at all: a hidden input, matching real UA behavior (an
 // invisible, un-clickable field carries no visible box or click target).

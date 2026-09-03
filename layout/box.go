@@ -98,6 +98,17 @@ type InlineItem struct {
 	// size, same convention as Image/ImgW/ImgH.
 	FormControl *dom.Node
 
+	// Label is a <button>'s precomputed rendered label — the concatenation of
+	// its VISIBLE (non-display:none) descendant text, resolved here at layout
+	// time because this is where the style map needed to check each
+	// descendant's computed display is available (paint operates on the box
+	// tree alone and has no such map). Only ever set for FormControl tag
+	// "button" (empty there means the button has no visible text, e.g. an
+	// icon-only button — paint falls back to "Submit"); every other
+	// FormControl tag draws its label/value from an attribute instead (see
+	// paint.formControlDisplayText) and always leaves this empty.
+	Label string
+
 	LineBreak bool // a <br>: forces the current line to end
 
 	X, Y float64

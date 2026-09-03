@@ -18,7 +18,86 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
-## 2026-09-03 (cont.) — quirks mode implemented (scoped to the one confirmed-load-bearing rule): a `<table>` no longer inherits centered text from a `<center>` ancestor (engine#103)
+## 2026-09-03 (cont., round 24) — a `<button>`'s label no longer includes text under a `display:none` descendant (engine#104); a bigger, related layout gap found and documented, not fixed
+
+github.com/golang/go's site-header search trigger rendered its visible text
+as **"Search/"** — Chrome shows only a magnifying-glass icon at this
+viewport width. Live-fetched the real markup and CSS (`github.githubassets.com`'s
+`lazy-react-partial-marketing-header*.css`) rather than guessing: the button
+nests `<span class="…label…">Search</span><kbd class="…kbd…">/</kbd>`, each
+shown at a DIFFERENT responsive breakpoint via `display:none`/`display:block`
+on the nested span/kbd (`@media (width>=63.25rem) and (width<=87.499rem)`
+hides both text and the shortcut hint, showing only the icon) — never both at
+once in a real browser.
+
+Root cause: this engine treats every `<input>`/`<button>`/`<select>`/
+`<textarea>` as an ATOMIC box (`layout.go`'s `isFormControlTag` branch — "a
+`<button>`'s children become its LABEL, not child boxes", by design, not a
+bug in itself). A `<button>`'s label was `dom.TextContent(node)` — a raw,
+style-blind concatenation of every descendant text node, in both the width
+calculation (`formControlDefaultSize`) and the paint step
+(`formControlDisplayText`). Confirmed via an offline cascade of the real
+markup + real CSS (`css.CascadeVW`, no live pipeline involved) that the
+label span and kbd hint were BOTH correctly resolving to
+`Display: DisplayNone` at this viewport — the cascade was never the
+problem; `dom.TextContent` simply has no notion of computed style and
+walks every text node regardless.
+
+Fixed narrowly, reusing the style map layout already has (`l.sm`) rather
+than threading one into `paint`, which has none: added
+`layouter.buttonLabel`/`appendVisibleText` (mirrors `dom.TextContent`'s own
+recursive walk in `dom/mutate.go`, just pruning a `display:none` element's
+entire subtree instead of recursing into it), called at BOTH of a
+button's two `InlineItem`-construction sites (`contents()`'s
+`display:block` entry point and `appendElementInline`'s ordinary-inline
+entry point — the codebase's own established pattern of covering both, see
+the hidden-input tests). The result is stored on a new
+`InlineItem.Label` field, computed once at layout time; `paint`'s
+`formControlDisplayText` now takes that precomputed label instead of
+re-deriving it from `dom.TextContent` itself (paint has no style map to
+redo a display:none-aware walk from the DOM node alone). Verified live:
+the button's rendered text is now empty of visible content (an icon-only
+button, so it falls back to "Submit" — the SAME pre-existing fallback
+every icon-only/empty button already had; this fix does not add or change
+that fallback, it just stops "Search/" from ever reaching it).
+Regression tests: `TestFormControlButtonLabelSkipsDisplayNoneDescendants`
+and its `display:block` counterpart, confirmed to fail (a build failure,
+since `InlineItem.Label` and `formControlDisplayText`'s new parameter are
+themselves part of the fix) via a real `git diff > patch; git checkout --;
+go test; git apply patch` cycle. layout and paint both hold their 100%
+coverage floor.
+
+**A bigger, related gap surfaced during this same investigation and is
+NOT fixed**: two sibling `<a>` buttons ("Sign in", "Sign up") in the same
+header render with **zero gap** between them ("Sign inSign up"), despite
+the real CSS giving the wrapping element `margin-right: 8px` (confirmed,
+via the same offline-cascade technique used above, to resolve correctly —
+this is not a `var()` or cascade bug). Root-caused by instrumenting the
+live layout box tree directly: GitHub wraps its entire marketing header in
+`<react-partial>`, an unstyled CUSTOM ELEMENT (falls back to this engine's
+default `display:inline`, since nothing in the UA stylesheet or any
+fetched CSS targets it) — and this engine's inline-content collector
+(`appendElementInline`'s `default:` case, `layout.go`) has NO check for a
+nested element's OWN display resolving to block-level: it unconditionally
+recurses via `appendInline`, flattening the `<react-partial>`'s ENTIRE
+subtree — including a real `<header>`, `<nav>`, and a `display:flex` CTA
+row several levels down — into one inline run of words and atomic
+(image/form-control) items. A block/flex/grid box nested under an inline
+ancestor this way never reaches `l.place()`/`l.flex()` at all, so it never
+gets a real box, margin, or flex-layout pass; two adjacent `<a>` elements
+with no text node between them in the DOM (the exact shape here) then
+render with the bare "no whitespace between them" spacing inline content
+would have, not their own margin. This is architecturally the same class
+of gap as this engine's already-documented, deliberately-deferred ones
+(Shadow DOM's slot projection, the reskin/orphaned-node case above): CSS's
+real behaviour here is to generate an anonymous block wrapper splitting
+the inline run around the nested block box and promote that box to a real
+sibling (CSS 2.1 §9.2.1.1) — a genuine layout feature, not a narrow bug fix,
+and this session's "no speculative capability" discipline argues against a
+narrower special case (e.g. hardcoding `<react-partial>` by tag name) that
+would only cover the one custom element anticipated in advance rather than
+the general "unstyled/inline wrapper around real block content" shape a
+future page could hit just as easily with a `<div>` inside a `<span>`.
 
 news.ycombinator.com's story subtext ("N points by user … | hide | N
 comments") rendered CENTERED under each title instead of left-aligned like
@@ -2030,6 +2109,20 @@ columns.
 
 ## Known gaps (updated 2026-08-30 — see the note above on why this drifted)
 
+- **A block/flex/grid-level element nested under an inline-context ancestor
+  (e.g. an unstyled custom element, which defaults to `display:inline`) is
+  flattened into plain inline text instead of getting a real box.** Found
+  live on github.com/golang/go (2026-09-03, round 24, no code change): its
+  whole marketing header sits inside `<react-partial>`, a custom element
+  nothing styles — `layout.go`'s `appendElementInline` has no check for a
+  nested element's OWN display resolving to block-level, so it
+  unconditionally recurses via `appendInline`, losing box model/margins/flex
+  layout for everything inside (see the round-24 log entry above for the
+  concrete symptom: two adjacent buttons render glued together with no
+  gap). The correct fix — generating an anonymous block wrapper around such
+  a box and promoting it to a real sibling (CSS 2.1 §9.2.1.1) — is a real
+  layout feature comparable in scope to Shadow DOM slot projection, not a
+  narrow bug fix; not attempted.
 - **No `@font-face` (custom web fonts) at all — `css/parse.go` explicitly
   skips it wholesale, like any other unrecognised at-rule.** Confirmed
   load-bearing live on go.dev/blog (2026-09-03, round 20 investigation, no
