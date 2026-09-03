@@ -706,30 +706,36 @@ func (l *layouter) formControlSize(node *dom.Node, st *css.Style, cw float64) (w
 // typical UA default button padding closely enough to look intentional).
 const formControlPadX, formControlPadY = 12.0, 6.0
 
-func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (float64, float64) {
+// formControlDefaultSize is called only for a tag isFormControlTag already
+// accepted (input/button/select/textarea), so its outer switch's every real
+// case is covered by construction; w/h are named returns assigned by
+// whichever case matches and returned once at the bottom, rather than each
+// case returning directly, so that one line — not an unreachable trailing
+// fallback — is what a coverage tool sees every call flow through.
+func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (w, h float64) {
 	textHeight := st.FontSize + 10 // ~ real UA text-input default height at common font sizes
 	switch node.Tag {
 	case "input":
 		switch strings.ToLower(node.Attr["type"]) {
 		case "checkbox", "radio":
-			return 13, 13
+			w, h = 13, 13
 		case "button", "submit", "reset":
-			return l.buttonSize(controlLabel(node), st)
+			w, h = l.buttonSize(controlLabel(node), st)
 		default: // text, email, password, search, tel, url, number, date, …
-			return 170, textHeight
+			w, h = 170, textHeight
 		}
 	case "button":
 		label := dom.TextContent(node)
 		if label == "" {
 			label = "Submit"
 		}
-		return l.buttonSize(label, st)
+		w, h = l.buttonSize(label, st)
 	case "select":
-		return 170, textHeight
+		w, h = 170, textHeight
 	case "textarea":
-		return 200, 60
+		w, h = 200, 60
 	}
-	return 0, 0
+	return w, h
 }
 
 // buttonSize sizes a button-like control to fit label at st's font, plus

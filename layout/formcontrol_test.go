@@ -18,6 +18,23 @@ func TestFormControlExplicitCSSSize(t *testing.T) {
 	assertF(t, "height", items[0].LineHeight, 24)
 }
 
+// TestFormControlSpaceBeforeWhenPrecededByText covers the case a bare
+// "<input>" fixture never exercises: a control preceded by inline text
+// with trailing whitespace ("Label <input>", the normal shape of a real
+// form) needs its own SpaceBefore, the same collapsible-space handling
+// img/svg items already get, or the label and field would render glued
+// together with no gap.
+func TestFormControlSpaceBeforeWhenPrecededByText(t *testing.T) {
+	src := `<html><body>Label <input id="e"></body></html>`
+	items := firstLineItems(findBox(layoutHTML(t, src, 1024), "body"))
+	if len(items) != 2 || items[1].FormControl == nil {
+		t.Fatalf("expected [text, form-control], got %v", texts(items))
+	}
+	if items[1].SpaceBefore <= 0 {
+		t.Fatalf("SpaceBefore = %v, want > 0 (a space separated \"Label\" from the input)", items[1].SpaceBefore)
+	}
+}
+
 // TestFormControlDefaultSizes covers the UA-default fallback per control
 // kind, for a page that (like plenty of real ones) leaves an input unstyled.
 func TestFormControlDefaultSizes(t *testing.T) {
@@ -162,4 +179,16 @@ func TestFormControlDisplayBlockRoutesThroughContents(t *testing.T) {
 	}
 	assertF(t, "display:block width", items[0].Width, 150)
 	assertF(t, "display:block height", items[0].LineHeight, 20)
+}
+
+// TestFormControlDisplayBlockHiddenTakesNoBox is
+// TestFormControlHiddenInputTakesNoBox's counterpart for the display:block
+// entry point (contents(), not appendElementInline) — the hidden check is
+// duplicated at both entry points (see layout.go), and both need covering.
+func TestFormControlDisplayBlockHiddenTakesNoBox(t *testing.T) {
+	src := `<html><body><input id="e" type="hidden" style="display:block" value="csrf-token"></body></html>`
+	box := findBox(layoutHTML(t, src, 1024), "input")
+	if box != nil && len(firstLineItems(box)) > 0 {
+		t.Fatalf("a display:block hidden input produced content: %v", firstLineItems(box))
+	}
 }
