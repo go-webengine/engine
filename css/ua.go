@@ -41,8 +41,10 @@ var uaDescendantRules = ParseStylesheet(
 // uaDeclarations returns the user-agent default declarations for a tag, as
 // property:value pairs. These mirror a browser's default stylesheet for the
 // common structural and text tags Phase 0 supports. Values in px are chosen to
-// match typical browser defaults at a 16px root font-size.
-func uaDeclarations(tag string) []Declaration {
+// match typical browser defaults at a 16px root font-size. quirks is the
+// document's quirks-mode flag (see dom.Node.Quirks) — consulted only by the
+// handful of tags whose UA default genuinely differs in quirks mode.
+func uaDeclarations(tag string, quirks bool) []Declaration {
 	switch tag {
 	case "html", "body", "div", "section", "article", "header", "footer",
 		"nav", "main", "aside", "figure", "form", "hr",
@@ -64,7 +66,24 @@ func uaDeclarations(tag string) []Declaration {
 		}
 		return d
 	case "table":
-		return []Declaration{{Property: "display", Value: "table"}, {Property: "border-color", Value: "gray"}}
+		d := []Declaration{{Property: "display", Value: "table"}, {Property: "border-color", Value: "gray"}}
+		if quirks {
+			// The HTML spec's quirks-mode UA stylesheet resets several
+			// inherited properties on <table> to their initial value —
+			// text-align is the one confirmed load-bearing live:
+			// news.ycombinator.com has no <!DOCTYPE> at all (quirks mode)
+			// and wraps its whole page in `<center><table>...</table>
+			// </center>` — real browsers use `<center>`'s block-centering
+			// effect to centre the TABLE on the page without also
+			// inheriting centered TEXT into every cell, which this reset is
+			// what actually prevents. font-weight/font-style/font-variant/
+			// font-size/line-height/white-space are also reset in the spec's
+			// quirks-mode table rule but are not added here — no live page
+			// has shown them load-bearing yet, and adding them speculatively
+			// would be guessing rather than fixing a confirmed defect.
+			d = append(d, Declaration{Property: "text-align", Value: "left"})
+		}
+		return d
 	case "thead", "tbody", "tfoot":
 		return []Declaration{{Property: "display", Value: "table-row-group"}}
 	case "tr":

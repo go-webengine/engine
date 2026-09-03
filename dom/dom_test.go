@@ -88,3 +88,28 @@ func TestTitleAndFindMissing(t *testing.T) {
 		t.Error("expected nil for missing tag")
 	}
 }
+
+// TestParseQuirksMode covers a real regression: a document with no
+// <!DOCTYPE> at all (confirmed live on news.ycombinator.com, which ships
+// `<html lang="en" op="news">` directly) must be flagged Quirks — real
+// browsers' quirks-mode UA stylesheet resets `table{text-align:initial}`,
+// without which a `<center><table>...` page shell (used only to centre the
+// table as a block) inherited centered text into every cell. A document
+// WITH a doctype (the common case) must not be flagged.
+func TestParseQuirksMode(t *testing.T) {
+	noDoctype, err := Parse(`<html><body><div></div></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !noDoctype.Quirks {
+		t.Error("no <!DOCTYPE> at all: want Quirks=true")
+	}
+
+	withDoctype, err := Parse(`<!DOCTYPE html><html><body><div></div></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withDoctype.Quirks {
+		t.Error("<!DOCTYPE html> present: want Quirks=false")
+	}
+}
