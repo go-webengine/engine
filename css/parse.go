@@ -441,8 +441,20 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.Background = c
 		}
 	case "background":
-		// The shorthand may carry image/position/repeat layers; pick up a leading
-		// colour token, which may be a function with internal spaces.
+		// A shorthand resets EVERY sub-property it represents, including ones a
+		// given value doesn't mention — background-color's initial value is
+		// transparent, so `background: 0 0` (position only) or `background:
+		// url(x.png) no-repeat` (image only, no colour) must reset any
+		// PREVIOUSLY-set background-colour to transparent, not leave it as
+		// whatever it was before this declaration. Confirmed load-bearing live:
+		// github.com's own nav <button>s reset `background:0 0;border:0` to
+		// look like plain text links — before this reset, the UA-default
+		// background-color this engine now gives <button> (css/ua.go) was never
+		// overridden by that author declaration at all, since "0 0" carries no
+		// colour token for the old code to find and apply, and the UA colour
+		// simply survived untouched. Set to transparent FIRST, then overwrite
+		// with a real colour token if the value has one.
+		s.Background = Transparent
 		if c, ok := parseColor(backgroundColorToken(v)); ok {
 			s.Background = c
 		}
