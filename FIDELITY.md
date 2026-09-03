@@ -18,6 +18,54 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont.) — a list-item marker inside a flex/grid/table/float item was left at its pre-layout position (engine#102)
+
+caniuse.com's "Most searched features" numbered list (`<ol style="list-
+style:decimal">`, one of three columns in a `display:flex` section) showed
+no visible "1."/"2."/… markers at all where Chrome shows a clean numbered
+list. Root-caused with a live dump of the actual `Marker.X` values rather
+than guessing from the screenshot: they were small, near-zero-ish numbers —
+nowhere near the ~370px the list's real flex-column position should put
+them at.
+
+`attachMarker` (`layout/marker.go`) computes a marker's absolute X/Y once,
+from the box's `ContentX`/first-line `Y` at the moment it runs — the SAME
+absolute-coordinate convention every other field in this package uses. But
+several layout algorithms lay a subtree out at a temporary, near-origin
+position FIRST and only afterward call `translateBox` to shift it into its
+real place: `flex.go`'s row cross-axis and column main-axis placement,
+`grid.go`'s item placement, `table.go`'s cell placement, and `floats.go`'s
+own `placeFloat`. `translateBox` shifted every field it knew about
+(`X`/`Y`/`ContentX`/`ContentY`, every line, every inline item) but never
+`Box.Marker` — so a list whose `<li>` got repositioned by ANY of these four
+mechanisms AFTER `attachMarker` ran kept its marker glued to the
+pre-translation coordinates, rendering it off in whatever happened to sit
+at the box's OLD position (usually nothing, since the intervening space is
+typically empty gutter) rather than beside its own item.
+
+Fixed with a two-line addition to `translateBox` itself — shift
+`box.Marker.X`/`.Y` by the same `(dx, dy)` as everything else — rather than
+patching each of the four call sites separately, since the bug is in the
+one shared function all of them go through.
+
+**Verified live: caniuse.com's numbered list now shows "1. AVIF", "2. WebP",
+"3. CSS Grid", "4. dvh (…)", matching Chrome.** Measured: caniuse.com SSIM
+0.653→0.652, pixdiff 21.7%→21.8% — essentially flat, honestly reported: five
+small digit-plus-period markers are a tiny fraction of the page's total ink,
+and general font-rasteriser noise dominates the aggregate score either way.
+The fix is broadly applicable — ANY marker-bearing list (`<ol>`/`<ul>`, or
+any `display:list-item`) placed inside a flex item, grid item, table cell,
+or float anywhere on any page, not specific to this one list.
+
+New regression tests: `TestTranslateBoxMovesMarker` (a direct unit check
+that `translateBox` shifts a box's `Marker` field, not just its other
+fields) and `TestFlexItemListMarkerPositionedInItsOwnColumn` (an end-to-end
+check — a numbered list as the SECOND item in a flex row must have its
+marker positioned inside its OWN column, not left behind near the first
+item's position). Both confirmed to fail with the exact wrong (pre-
+translation) coordinates before this fix, via a temporary revert of
+`layout/floats.go`.
+
 ## 2026-09-03 (cont.) — go.dev/blog's nav shows raw icon-ligature text ("arrow_drop_down"); root-caused as a genuine but out-of-scope gap, not fixed
 
 Chased go.dev/blog's pixdiff (28.0%) visually, at full resolution from the

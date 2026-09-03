@@ -118,6 +118,31 @@ func TestFlexColumnAutoWidthFlexStart(t *testing.T) {
 	assertF(t, "colauto.A.W", outer.Children[0].W, 20) // "xx" = 20
 }
 
+// TestFlexItemListMarkerPositionedInItsOwnColumn covers the full, real bug
+// shape (not just the unit-level translateBox check above): a numbered list
+// as the SECOND item in a flex row must have its marker positioned relative
+// to ITS OWN column, not left behind at the first item's position — the
+// list is laid out at a local, near-zero origin before flex.go translates
+// it into its real column, and attachMarker (which runs during that local
+// layout) has no way to know the shift is still coming.
+func TestFlexItemListMarkerPositionedInItsOwnColumn(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex">` +
+		`<div style="width:100px">first column</div>` +
+		`<ol style="padding-left:40px;margin:0"><li>item</li></ol>` +
+		`</div></body></html>`
+	ol := findBox(layoutHTML(t, src, 300), "ol")
+	li := ol.Children[0]
+	if li.Marker == nil {
+		t.Fatal("li has no marker")
+	}
+	// The marker sits just left of the li's own content edge — well inside
+	// the SECOND column (X >= 100, the first column's width), never at the
+	// near-zero local-origin X a stuck, untranslated marker would show.
+	if li.Marker.X < 100 {
+		t.Errorf("marker.X = %v, want >= 100 (inside the second flex column, not left behind at the pre-translation origin)", li.Marker.X)
+	}
+}
+
 func TestInlineTextFlowsBelowFloat(t *testing.T) {
 	// A left float 250 wide leaves 50px beside it; a 60px first word cannot fit
 	// and drops below the 40px-tall float.
@@ -200,6 +225,24 @@ func TestTranslateNoOp(t *testing.T) {
 		t.Errorf("no-op translate changed box: %+v", b)
 	}
 	translateBox(nil, 1, 1) // nil-safe
+}
+
+// TestTranslateBoxMovesMarker covers a real regression: translateBox shifted
+// every other field (X/Y/ContentX/ContentY/Lines/Items) but never Marker,
+// so a list-item box repositioned AFTER attachMarker ran (a flex row/column
+// item, a grid item, a table cell, a float — every one of which lays out a
+// subtree at a temporary local origin then translates it into place) left
+// its marker's absolute X/Y stuck at the pre-translation position. Observed
+// live on caniuse.com: a `display:flex` 3-column section's numbered list
+// (flex.go's translateBox call at line ~359) rendered no visible "1."/"2."/…
+// markers at all — they were painted in the wrong column, off in the
+// gutter of a sibling.
+func TestTranslateBoxMovesMarker(t *testing.T) {
+	b := &Box{X: 100, Y: 100, Marker: &Marker{X: 10, Y: 10, Text: "1."}}
+	translateBox(b, 5, 7)
+	if b.Marker.X != 15 || b.Marker.Y != 17 {
+		t.Errorf("marker = %+v, want X=15 Y=17 (translated along with the box)", b.Marker)
+	}
 }
 
 func TestPreferredWidthImage(t *testing.T) {
