@@ -164,3 +164,94 @@ func TestTypeAfterCloseReturnsErrClosed(t *testing.T) {
 		t.Fatalf("Type after Close: err = %v, want ErrClosed", err)
 	}
 }
+
+// TestBackspaceRemovesLastCharacter is the basic real-editing proof: type a
+// typo, fix it with Backspace, confirm the corrected value — the flow a
+// login window's user actually performs, not just forward-only typing.
+func TestBackspaceRemovesLastCharacter(t *testing.T) {
+	live := openFixture(t, New(), `<html><body><input id="a"></body></html>`, image.Rect(0, 0, 200, 200))
+	a := findByID(live.Document().Root, "a")
+	ctx := context.Background()
+
+	if _, _, err := live.Type(ctx, a, "helloo"); err != nil {
+		t.Fatalf("Type: %v", err)
+	}
+	if _, _, err := live.Backspace(ctx, a); err != nil {
+		t.Fatalf("Backspace: %v", err)
+	}
+	if got := a.Attr["value"]; got != "hello" {
+		t.Fatalf("value after Backspace = %q, want %q", got, "hello")
+	}
+}
+
+// TestBackspaceOnEmptyValueIsNoop covers the boundary: Backspace on an
+// already-empty field must not panic or produce a negative-length slice.
+func TestBackspaceOnEmptyValueIsNoop(t *testing.T) {
+	live := openFixture(t, New(), `<html><body><input id="a"></body></html>`, image.Rect(0, 0, 200, 200))
+	a := findByID(live.Document().Root, "a")
+	if _, _, err := live.Backspace(context.Background(), a); err != nil {
+		t.Fatalf("Backspace on empty: %v", err)
+	}
+	if got := a.Attr["value"]; got != "" {
+		t.Fatalf("value = %q, want empty", got)
+	}
+}
+
+// TestBackspaceHonorsPreventDefault covers the same character-filtering
+// pattern Type's own test suite covers for typing: a script that calls
+// preventDefault() on keydown blocks the deletion too.
+func TestBackspaceHonorsPreventDefault(t *testing.T) {
+	const src = `<html><body><input id="a" value="locked">
+		<script>
+			document.getElementById('a').addEventListener('keydown', function(e){ e.preventDefault(); });
+		</script>
+	</body></html>`
+	live := openFixture(t, New(), src, image.Rect(0, 0, 200, 200))
+	a := findByID(live.Document().Root, "a")
+	if _, _, err := live.Backspace(context.Background(), a); err != nil {
+		t.Fatalf("Backspace: %v", err)
+	}
+	if got := a.Attr["value"]; got != "locked" {
+		t.Fatalf("value = %q, want unchanged %q (keydown was prevented)", got, "locked")
+	}
+}
+
+// TestKeyDownReachesPageScriptAndReportsPrevented covers the Enter-to-submit
+// pattern a real login form commonly uses: the page's own keydown listener
+// sees the named key and can prevent its default.
+func TestKeyDownReachesPageScriptAndReportsPrevented(t *testing.T) {
+	const src = `<html><body><input id="a">
+		<div id="log">none</div>
+		<script>
+			document.getElementById('a').addEventListener('keydown', function(e){
+				if (e.key === 'Enter') {
+					e.preventDefault();
+					document.getElementById('log').textContent = 'submitted';
+				}
+			});
+		</script>
+	</body></html>`
+	live := openFixture(t, New(), src, image.Rect(0, 0, 200, 200))
+	a := findByID(live.Document().Root, "a")
+
+	prevented, _, _, err := live.KeyDown(context.Background(), a, "Enter")
+	if err != nil {
+		t.Fatalf("KeyDown: %v", err)
+	}
+	if !prevented {
+		t.Fatal("KeyDown(Enter): want defaultPrevented=true")
+	}
+	if got := dom.TextContent(findByID(live.Document().Root, "log")); got != "submitted" {
+		t.Fatalf("log = %q, want %q", got, "submitted")
+	}
+}
+
+// TestKeyDownAfterCloseReturnsErrClosed mirrors Type's own Close guard.
+func TestKeyDownAfterCloseReturnsErrClosed(t *testing.T) {
+	live := openFixture(t, New(), `<html><body><input id="a"></body></html>`, image.Rect(0, 0, 200, 200))
+	a := findByID(live.Document().Root, "a")
+	live.Close()
+	if _, _, _, err := live.KeyDown(context.Background(), a, "Enter"); err != ErrClosed {
+		t.Fatalf("KeyDown after Close: err = %v, want ErrClosed", err)
+	}
+}
