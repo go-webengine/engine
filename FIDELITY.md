@@ -18,6 +18,62 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont.) — the `background` shorthand didn't reset colour when it had none, so engine#98's own fix survived only partway (engine#99)
+
+Verifying engine#98 live (github.com's nav `<button>`s no longer painting a
+hardcoded grey box) turned up a SECOND bug in the same spot: the grey box
+was still there, just now sourced from a genuinely CASCADED value rather
+than a hardcoded one — engine#98's own new UA-default background-color for
+`<button>` was surviving the author's own reset unchanged.
+
+Root cause, found by dumping the live cascade result rather than assuming
+engine#98 alone was sufficient: GitHub's reset is `background:0 0;border:0`
+— the `background` SHORTHAND, not `background-color`. Per CSS, a shorthand
+resets every sub-property it represents to its initial value when the given
+value doesn't mention it — `background-color`'s initial value is
+transparent. `css/parse.go`'s `background` case never modelled this: it
+only assigned `s.Background` when it found an actual colour token in the
+value, and silently left whatever was there before (a prior declaration, or
+now, a UA default) untouched otherwise. `background:0 0` (bare position,
+GitHub's own exact value), `background:url(x) no-repeat` (image only, a
+common real pattern for layering an icon over a differently-coloured
+ancestor), and `background:none` all hit this — none carry a colour token,
+so none ever reset a stale background-color, regardless of what author CSS
+actually says.
+
+Fixed by resetting `s.Background` to `Transparent` FIRST, unconditionally,
+then overwriting it with a parsed colour token if the value has one —
+matching the shorthand's real reset semantics with a two-line change.
+`border`'s own shorthand handler (`applyBorderShorthand`) already had this
+right (it builds a fresh zero-value `BorderSide` and blanket-assigns all
+four edges, so an unrecognised `border:0` correctly ends up `BorderNone`
+regardless) — confirmed by checking it before assuming the same class of
+bug existed there too, rather than fixing both defensively.
+
+**Verified live: github.com's nav buttons now render as genuinely
+transparent, matching Chrome.** Measured: github.com/golang/go SSIM
+0.531→0.532, pixdiff 32.9%→32.8% — essentially flat two rounds in a row now
+for the SAME reason both times (a small header fraction of a long,
+text-dense page dominated by font-rasteriser noise) — the fix is general
+(any page whose CSS resets a background/image-only shorthand on a control
+or any other element), not specific to this one page's number.
+
+New regression test `TestBackgroundShorthandResetsColorWhenAbsent`
+(`css/modern_test.go`) covers all three colour-less shorthand shapes
+(`0 0`, `url(...) no-repeat`, `none`) against a PRIOR non-transparent
+background-color, confirmed to fail with the exact wrong (un-reset) colour
+before this fix.
+
+**Lesson: verifying a fix live caught what the unit tests alone did not** —
+engine#98's own tests all passed (they exercise `paintFormControl` reading
+`Style.Background` correctly; none of them exercised the CASCADE producing
+a wrong `Style.Background` in the first place from this specific shorthand
+shape). A live render is what surfaced that the visible bug persisted
+despite a "correct and tested" fix landing — the same discipline this
+session has applied to every prior round, now caught a defect in this
+session's OWN immediately-preceding work, not just in the code being
+investigated.
+
 ## 2026-09-03 (cont.) — a form control's background/border now comes from its own cascaded style, not a hardcoded colour (engine#98)
 
 github.com/golang/go's top navigation ("Platform", "Solutions", "Resources",

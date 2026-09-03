@@ -100,6 +100,32 @@ func TestModernBackgroundColorCascade(t *testing.T) {
 	}
 }
 
+// TestBackgroundShorthandResetsColorWhenAbsent covers a real regression: the
+// `background` shorthand must reset background-color to transparent when the
+// value doesn't carry a colour token, matching CSS's per-shorthand "resets
+// every sub-property it represents" rule — `background:0 0` (position only)
+// or `background:url(x) no-repeat` (image only) must NOT leave a previously
+// cascaded (or UA-default) background-color untouched. Confirmed load-
+// bearing live: github.com's own nav <button>s reset `background:0 0;
+// border:0` to look like plain text links; this engine's own new <button>
+// UA default (css/ua.go) survived that reset entirely before this fix,
+// rendering every such button as a solid grey pill regardless of the
+// author's own CSS.
+func TestBackgroundShorthandResetsColorWhenAbsent(t *testing.T) {
+	html := `<html><head><style>
+	.a{background-color:red;background:0 0}
+	.b{background-color:red;background:url(x.png) no-repeat}
+	.c{background-color:red;background:none}
+	</style></head><body>` +
+		`<p class="a">a</p><p class="b">b</p><p class="c">c</p></body></html>`
+	sm := cascadeHTML(t, html)
+	for _, class := range []string{"a", "b", "c"} {
+		if got := findStyle(t, sm, class).Background; got != Transparent {
+			t.Errorf(".%s background = %+v, want transparent (the bare `background:` shorthand resets colour when it carries none)", class, got)
+		}
+	}
+}
+
 // TestModernBorderColor proves the `border` shorthand and `border-color` accept
 // the modern space-separated rgb() syntax (previously the whitespace tokenizer
 // shredded `rgb(230 120 40 / 1)` and the border fell back to the text colour).
