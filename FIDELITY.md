@@ -18,6 +18,43 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-03 (cont.) — go.dev/blog's nav shows raw icon-ligature text ("arrow_drop_down"); root-caused as a genuine but out-of-scope gap, not fixed
+
+Chased go.dev/blog's pixdiff (28.0%) visually, at full resolution from the
+start (per round 19's own "don't trust the thumbnail" lesson). Immediately
+visible: the top nav shows literal text "arrow_drop_down" three times where
+Chrome shows small dropdown-caret triangles.
+
+Root cause, confirmed against the real page's markup and CSS: this is
+Google's Material Icons convention — `<i class="material-icons">
+arrow_drop_down</i>`, where the element's TEXT CONTENT is a semantic
+keyword a custom `@font-face` TTF (fetched from `fonts.googleapis.com`)
+substitutes for a single glyph via its own OpenType GSUB ligature table,
+entirely at the font level. `css/parse.go` skips `@font-face` wholesale
+(like any unrecognised at-rule), so `font-family:'Material Icons'` falls
+back to this engine's normal font stack, which has no matching glyph and
+no ligature mechanism to invoke — the raw keyword renders literally.
+
+**Checked whether this was smaller than it looked before writing it off**:
+`go-opentype/opentype` (already a dependency) has real GSUB support
+(`gsub.go`), and a sibling `go-opentype/shape` package exists specifically
+to drive it — but `paint/fonts.go`'s `Measure`/`Metrics` call
+`opentype.Face` directly (plain per-rune cmap+advance lookups) for every
+one of this engine's existing bundled fonts; `go-opentype/shape` is not
+used anywhere in this engine yet. A real fix needs BOTH a wholly new
+capability (fetch and load an arbitrary `@font-face` TTF by its declared
+family name, the way a browser does) AND rewiring text measurement/painting
+through real shaping instead of the current no-shaping model — genuinely
+comparable in scope to Shadow DOM or the reskin-orphaned-node architecture
+already deferred this session, not a narrow bug fix.
+
+**Not fixed.** Considered and rejected a narrower mitigation (hide text for
+a hardcoded list of well-known icon-font family names) as the same kind of
+speculative, name-guessing special case this session has avoided
+elsewhere — it would only ever cover icon fonts anticipated in advance.
+Documented as a new Known Gap below rather than forced into an unfitting
+narrow fix.
+
 ## 2026-09-03 (cont.) — react.dev's washed-out homepage prose re-investigated: the SAME known gap, a far bigger blast radius, still not fixed
 
 react.dev is the corpus's worst page by pixdiff (47.6%). Chased visually
@@ -1878,6 +1915,37 @@ columns.
 
 ## Known gaps (updated 2026-08-30 — see the note above on why this drifted)
 
+- **No `@font-face` (custom web fonts) at all — `css/parse.go` explicitly
+  skips it wholesale, like any other unrecognised at-rule.** Confirmed
+  load-bearing live on go.dev/blog (2026-09-03, round 20 investigation, no
+  code change): its nav dropdown carets are `<i class="material-icons">
+  arrow_drop_down</i>` — Google's Material Icons convention, where the
+  *text content itself* is a semantic ligature keyword
+  (`arrow_drop_down`, `menu`, `search`, …) that a custom `@font-face` TTF
+  (loaded via `fonts.googleapis.com`) substitutes for a single icon glyph
+  via its own OpenType GSUB ligature table, PURELY at the font level — the
+  HTML/CSS carries no icon-drawing instruction of its own. Without
+  `@font-face`, `font-family:'Material Icons'` falls back to this engine's
+  normal font stack, which has no such glyph and no ligature substitution
+  to perform, so the raw keyword text renders literally instead of an
+  arrow. **Checked whether the fix is smaller than it looks before writing
+  it off**: `go-opentype/opentype` (this engine's font-parsing dependency)
+  already has real GSUB support (`gsub.go`), and a separate
+  `go-opentype/shape` package exists specifically to drive it — but
+  `paint/fonts.go`'s `Measure`/`Metrics` call `opentype.Face` DIRECTLY
+  (simple per-rune cmap+advance lookups), never `go-opentype/shape` at all,
+  for ANY of this engine's existing bundled fonts. A real fix needs BOTH a
+  new capability this engine has never had (fetch and load an arbitrary
+  `@font-face` TTF from a URL, keyed by its declared `font-family` name,
+  the same way a browser does) AND wiring the text-measurement/painting
+  pipeline through real OpenType shaping instead of its current
+  no-shaping-pass model — genuinely comparable in scope to Shadow DOM or
+  the reskin-orphaned-node architecture already deferred this session, not
+  a narrow bug fix. A narrower, name-matching special case (hide text for
+  a hardcoded list of known icon-font family names) was considered and
+  rejected: it would only ever cover the specific icon fonts anticipated
+  in advance, the same "no speculative capability" trap this session has
+  avoided elsewhere.
 - **Form controls now paint (2026-09-03, engine#95 — a general
   `input`/`button`/`select`/`textarea` atomic box + paint mechanism, not
   previously present at all) and `<select>`'s sizing/label followed up to be
