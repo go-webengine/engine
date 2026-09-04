@@ -18,6 +18,58 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-04 (round 30) — a content-less `<button>` (an icon-only submit button) rendered a fabricated literal "Submit" instead of no text at all — a fallback correct for `<input type=button/submit>` but wrong when copied onto the `<button>` tag (engine#109)
+
+pkg.go.dev/net/http's header showed a stray "Submit"/"Sub" overlapping its
+search box, and the breadcrumb read "httpSubmit" instead of just "http" —
+both immediately visible at full resolution.
+
+Fetched the real markup rather than guessing: the search-submit control is
+`<button aria-label="Submit search"><img ... alt="" /></button>` — an
+`<img>` icon, no text content at all. Chrome (fetched and compared directly)
+renders no text for it whatsoever, just the icon. This engine's
+`formControlDefaultSize`/`formControlDisplayText` (layout.go, paint.go)
+special-cased an EMPTY `<button>` label to fall back to the literal string
+"Submit" — a rule that IS correct for `<input type=button/submit>` with no
+`value` attribute (a real, cross-browser UA default, handled separately by
+`controlLabel`), but was mistakenly copied onto the `<button>` TAG case too.
+No major browser fabricates default text for a content-less `<button>`
+element; it simply renders empty, sized to its own padding.
+
+The existing test suite had encoded the wrong behavior as intentional
+(`TestFormControlButtonTagUsesTextContent`'s "empty <button> falls back to
+Submit" case, justified by a comment citing "the real-world unstyled-button
+case go-aiquota's own login flow uses") — checked this claim against
+go-aiquota's actual capstone test (`e2e_login_test.go`) rather than trusting
+the comment, per bibliographie-avant, and found its real login button has
+visible text ("Log in"), never empty; the "Submit" fallback was never
+actually validated against a real downstream need.
+
+Fixed by removing the button-tag-specific fallback in both `layout.go`
+(sizing) and `paint.go` (drawing) — `<input type=button/submit>`'s own,
+separate, still-correct "Submit"/"Reset" default via `controlLabel` is
+untouched.
+
+**Verified live: the "Submit" text is gone from the search button, and the
+breadcrumb correctly reads just "http".**
+
+Removing the button-tag fallback also removed the ONLY test case (an
+implicitly-labeled `<button>`) exercising `paintFormControl`'s button-label
+horizontal-centering draw path, dropping `paint`'s coverage below its 100%
+floor; fixed by giving `TestPaintFormControlButtonBackground` an explicit
+non-empty label so that path stays covered on its own terms rather than as
+a side effect of the bug being fixed.
+
+Three existing tests updated to the corrected expectation
+(`TestFormControlButtonTagUsesTextContent`, `TestFormControlDisplayText`'s
+button case, `TestPaintFormControlButtonBackground`), each confirmed to
+fail with the exact predicted wrong value (84px / "Submit") via a genuine
+revert-and-rerun check before the fix was restored.
+
+This fallback is engine-specific glue between this codebase's own DOM/CSS
+node types and its layout/paint pipeline — nothing about it is a
+general-purpose utility, so no extraction to a shared package applies here.
+
 ## 2026-09-04 (round 29) — CSS logical margin/padding properties (`margin-block-start`, `margin-block-end`, `margin-inline-*`, and the `-block`/`-inline` axis shorthands) had zero support — every declaration using them was silently dropped (engine#108)
 
 go.dev/blog's blog-listing page rendered each entry (title/date/author, then

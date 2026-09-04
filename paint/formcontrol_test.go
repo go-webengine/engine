@@ -78,17 +78,30 @@ func TestPaintFormControlDrawsBackgroundAndBorder(t *testing.T) {
 
 // TestPaintFormControlButtonBackground covers the button-like kind's darker
 // background (css/ua.go's own default for button/select), distinguishing it
-// visually from a plain text field.
+// visually from a plain text field. Also exercises the button label's
+// horizontal-centering draw path (an empty <button> — an icon-only submit
+// button, e.g. — has no label at all since the fix for pkg.go.dev's
+// "Submit" text wrongly appearing next to its search icon, so this needs an
+// explicit Label to still reach that code path).
 func TestPaintFormControlButtonBackground(t *testing.T) {
 	n := elem("button", map[string]string{"id": "e"})
 	style := &css.Style{FontFamily: css.Sans, FontSize: 14, FontWeight: 400, Color: css.Color{A: 255},
 		Background: formButtonBg,
 		Border:     css.Borders{Top: css.BorderSide{Width: 1, Style: css.BorderSolid, Color: formBorder}},
 	}
-	dst := paintControlStyled(t, n, 80, 30, style)
-	// Near the top, above where the centered "Submit" label's glyphs reach
-	// (the label always renders something — see formControlDisplayText's
-	// button fallback — so avoid sampling where an ascender could land).
+	dst := white(100, 50)
+	item := &layout.InlineItem{
+		Node: n, FormControl: n, Style: style, Label: "Go",
+		Width: 80, Ascent: 30, LineHeight: 30, X: 5, Y: 5,
+	}
+	box := &layout.Box{
+		Lines: []*layout.LineBox{{X: 5, Y: 5, W: 80, H: 30, Items: []*layout.InlineItem{item}}},
+		W:     90, H: 40,
+	}
+	PaintFull(dst, box, NewFonts(), nil, nil)
+	// Near the top, above where the centered "Go" label's glyphs reach
+	// (the label draw is centered vertically too, so avoid sampling where
+	// an ascender could land).
 	inside := dst.RGBAAt(40, 9)
 	if got, want := (css.Color{R: inside.R, G: inside.G, B: inside.B, A: 255}), formButtonBg; got != want {
 		t.Errorf("button interior = %+v, want button background %+v", got, want)
@@ -232,7 +245,7 @@ func TestFormControlDisplayText(t *testing.T) {
 		{"empty, no placeholder", elem("input", map[string]string{}), "", "", false},
 		{"submit uses controlLabel", elem("input", map[string]string{"type": "submit"}), "", "Submit", false},
 		{"button uses precomputed label", elem("button", nil), "Go", "Go", false},
-		{"button tag empty falls back", elem("button", map[string]string{}), "", "Submit", false},
+		{"button tag empty has no label", elem("button", map[string]string{}), "", "", false},
 		{"textarea value attr", elem("textarea", map[string]string{"value": "explicit"}), "", "explicit", false},
 		{"textarea text content", func() *dom.Node {
 			n := elem("textarea", nil)

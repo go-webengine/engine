@@ -163,8 +163,10 @@ func TestFormControlResetAndButtonDefaultLabels(t *testing.T) {
 
 // TestFormControlButtonTagUsesTextContent covers the <button>...</button>
 // tag (distinct from <input type=button>): its label is its TEXT CONTENT,
-// not a value attribute, and an empty one falls back to "Submit" — the
-// real-world unstyled-button case go-aiquota's own login flow uses.
+// not a value attribute, and an empty one (an icon-only button, e.g.
+// pkg.go.dev's search-submit <button> with only an <img> child) has NO
+// fallback label at all — unlike <input type=button/submit>, no major
+// browser fabricates default text for a content-less <button> tag.
 func TestFormControlButtonTagUsesTextContent(t *testing.T) {
 	labeled := firstLineItems(findBox(layoutHTML(t,
 		`<html><body><button id="e">Log in</button></body></html>`, 1024), "body"))
@@ -176,9 +178,8 @@ func TestFormControlButtonTagUsesTextContent(t *testing.T) {
 
 	empty := firstLineItems(findBox(layoutHTML(t,
 		`<html><body><button id="e"></button></body></html>`, 1024), "body"))
-	// Falls back to "Submit" (6 runes): same width as the labeled case above
-	// since both labels happen to be 6 characters.
-	assertF(t, "empty <button> width", empty[0].Width, 84)
+	// Empty label: just the padding, 2*formControlPadX(12) = 24.
+	assertF(t, "empty <button> width", empty[0].Width, 24)
 }
 
 // TestFormControlButtonLabelSkipsDisplayNoneDescendants covers a real
