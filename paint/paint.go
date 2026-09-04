@@ -946,10 +946,10 @@ func formControlDisplayText(n *dom.Node, label string) (text string, muted bool)
 		}
 		return "", false
 	case "button":
-		if label != "" {
-			return label, false
-		}
-		return "Submit", false
+		// label is layout's precomputed visible-text-content label; unlike
+		// <input type=button/submit>, a <button> tag with no visible text
+		// (an icon-only button) has NO fabricated default in any real UA.
+		return label, false
 	case "textarea":
 		if v, ok := n.Attribute("value"); ok && v != "" {
 			return v, false

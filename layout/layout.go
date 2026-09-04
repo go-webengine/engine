@@ -728,11 +728,12 @@ func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (w, h f
 			w, h = 170, textHeight
 		}
 	case "button":
-		label := l.buttonLabel(node)
-		if label == "" {
-			label = "Submit"
-		}
-		w, h = l.buttonSize(label, st)
+		// Unlike <input type=button/submit> (a real UA default label, see
+		// controlLabel), a <button> tag with no visible text renders with
+		// NO label at all in every major browser — an icon-only button
+		// (e.g. pkg.go.dev's search-submit button, an <img> child with no
+		// text) must size to just its padding, not a fabricated "Submit".
+		w, h = l.buttonSize(l.buttonLabel(node), st)
 	case "select":
 		// A real <select> sizes itself to its WIDEST option's label, not a
 		// flat default — matching the common cross-engine pattern (e.g.
