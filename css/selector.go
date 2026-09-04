@@ -52,6 +52,18 @@ type compound struct {
 	// instead of all-but-the-first, hiding an entire "Did you know?" tip
 	// list's text that should have shown its first entry.
 	FirstChild bool
+	// Empty is set by the ":empty" structural pseudo-class — the element has
+	// no child nodes at all (this engine's tree has no comment-node type, so
+	// "no children" is exactly "no element AND no text children", matching
+	// spec: even a whitespace-only text child disqualifies an element from
+	// being :empty). Modelled for the SAME reason as FirstChild above: a
+	// plain (non-":not()") unmodelled pseudo degrades a compound to matching
+	// its base alone, which is actively wrong for a real, sometimes-true
+	// structural fact like this one — found live on pkg.go.dev, where
+	// `.Documentation-toc:empty{display:none}` (meant to hide a genuinely
+	// empty table-of-contents list) degraded to `.Documentation-toc`,
+	// unconditionally hiding a real, non-empty table of contents.
+	Empty bool
 	// Not holds the compound selectors of every ":not(...)" attached to this
 	// compound. The compound matches only when NONE of them matches the element.
 	// A ":not()" argument that is a dynamic pseudo (never matches statically) is
@@ -226,6 +238,9 @@ func (c compound) matches(n *dom.Node) bool {
 		return false
 	}
 	if c.FirstChild && prevElementSibling(n) != nil {
+		return false
+	}
+	if c.Empty && len(n.Children) != 0 {
 		return false
 	}
 	for _, am := range c.Attrs {
@@ -785,6 +800,8 @@ func parseSimple(s string) (compound, bool) {
 			c.Checked = true
 		case "first-child":
 			c.FirstChild = true
+		case "empty":
+			c.Empty = true
 		case "not":
 			// An unmodelled ":not()" argument imposes NO constraint rather than
 			// dropping the rule — the same "reduce, don't drop" philosophy applied
@@ -853,7 +870,7 @@ func parseSimple(s string) (compound, bool) {
 	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
 	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 {
+		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 {
 		return compound{}, false
 	}
 	return c, true
