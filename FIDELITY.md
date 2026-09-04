@@ -1869,6 +1869,48 @@ Phase 2.4 — that the engine did not paint `<li>` `list-style` bullet discs —
 `title="DOM mutated by JS", contentHeight=306` for this page; with JS disabled only
 the static `<h1>` remains.
 
+## Bugfix — a childless box's own explicit width was invisible to `preferredWidth`
+
+**Date: 2026-09-04.** Found while rendering a print report with an
+HTML-table-based bar chart: a chart row was `<td>label</td><td><div
+style="width:200px;height:15px">…fill…</div></td><td>9,4 k$</td>`, and the
+middle column collapsed to 0 width, so the third column's cells were
+positioned on top of the bar instead of after it.
+
+**Root cause** (`layout/floats.go`, `preferredWidth`): the max-content-width
+estimator only ever measured a node's *children* — the widest block child, or
+the widest unwrapped inline run. A node's own definite (non-auto,
+non-percentage) `width` was never consulted. That is fine for a normal element
+sized by its content, but a box with no text and no image — a bar-chart fill,
+a spacer, a colour swatch — has no children to measure either, so it reported
+a preferred width of exactly 0. `layout/table.go`'s column-sizing feeds
+`preferredWidth` straight into each column's natural width, so that column
+scaled to 0 and the next column's `X` landed on top of it. The same function
+backs a flex item's basis (`flex.go: mainBaseRow`), so an auto-basis flex item
+with an explicit width and no text content was equally at risk of a 0 base
+size.
+
+**Fix**: `preferredWidth` now checks the node's own resolved width first — a
+definite width (content-box: width + edges; border-box: width as-is) is
+returned outright, exactly as CSS max-content sizing requires when the author
+has already fixed the width; only an auto/percentage width falls through to
+measuring children. `TestTableColumnWidthFromChildlessExplicitWidthBox`
+(`layout/features_test.go`) pins a 3-column table with a childless
+explicit-width middle cell and asserts all three columns land at their scaled
+natural widths with no overlap, plus that the inner div keeps its own 200px
+(not clamped by the column).
+
+**A related symptom that turned out not to be a bug**: the same report also
+had `<dt>`/`<dd>` pairs inside `display:flex` items rendering with the `dd`
+shifted right of its `dt` instead of stacked underneath it. That is the
+standard user-agent default (`dd { margin-inline-start: 40px }`) doing exactly
+what a real browser does absent a `dd { margin: 0 }` reset — confirmed by
+reproducing both with and without the reset
+(`layout/floats_test.go`-style ad hoc cases, not committed, both matched
+expectation). Flex `gap` itself, tested in isolation with plain text flex
+items, was already correct. Recorded here so the same false lead isn't
+re-walked.
+
 ## Phase 2.3 — CSS `:checked` + `:not()` (the checkbox-hack that collapses MediaWiki's dropdowns)
 
 **Date: 2026-08-05.** Phase 2.2's honest residual was that Wikipedia's collapsed

@@ -208,6 +208,20 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 		w, _ := l.imageSize(node)
 		return w + edges
 	}
+	// A definite (non-auto, non-percentage) width is the box's max-content
+	// contribution outright — CSS doesn't fall back to measuring children once
+	// the author has fixed the width, even when those children carry no text of
+	// their own (a bar-chart fill, a spacer div). Skipping this check made such
+	// a box report a 0 preferred width, which collapsed its table column to 0
+	// and let the next column's cells overlap it. This takes priority over the
+	// flex-row sum below: a flex row with its own explicit width doesn't need
+	// its children measured either.
+	if !st.Width.Auto && !st.Width.IsPercent {
+		if st.BoxSizing == css.BorderBox {
+			return st.Width.Px
+		}
+		return st.Width.Px + edges
+	}
 	// A flex ROW lays its items side by side, so its max-content main size is the
 	// SUM of the items' outer main sizes plus the inter-item gaps — not the max of
 	// them (the block / flex-column case handled below). Without this a

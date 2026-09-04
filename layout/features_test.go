@@ -353,6 +353,32 @@ func TestTableRowGroup(t *testing.T) {
 	assertF(t, "rg.row1.Y", tbl.Children[1].Y, 20)
 }
 
+func TestTableColumnWidthFromChildlessExplicitWidthBox(t *testing.T) {
+	// A cell with no text of its own — just a div sized by an explicit width,
+	// as a bar-chart fill or a spacer — must still contribute that width to its
+	// column's natural (max-content) width. Before the preferredWidth fix, a
+	// childless box's own explicit width was never consulted (only its
+	// children's), so this column collapsed to 0 and the next column's cells
+	// were positioned on top of it instead of after it.
+	src := `<html><body style="margin:0"><table style="width:400px"><tr>` +
+		`<td style="padding:0">label</td>` + // natural 50 (5 chars × 10)
+		`<td style="padding:0"><div style="width:200px;height:15px"></div></td>` + // natural 200
+		`<td style="padding:0">9,4k</td>` + // natural 40
+		`</tr></table></body></html>`
+	tbl := findBox(layoutHTML(t, src, 500), "table")
+	row := tbl.Children[0]
+	c0, c1, c2 := row.Children[0], row.Children[1], row.Children[2]
+	// natural: 50 + 200 + 40 = 290; scale = 400/290.
+	scale := 400.0 / 290.0
+	assertF(t, "bar.c0.W", c0.W, 50*scale)
+	assertF(t, "bar.c1.W", c1.W, 200*scale)
+	assertF(t, "bar.c2.W", c2.W, 40*scale)
+	assertF(t, "bar.c2.X", c2.X, (50+200)*scale)
+	if got := c1.Children[0].W; got != 200 {
+		t.Errorf("bar.c1 child div.W = %v, want 200 (own explicit width, not clamped by the column)", got)
+	}
+}
+
 func TestTableEmpty(t *testing.T) {
 	// A table with no rows lays out to nothing (no panic).
 	src := `<html><body style="margin:0"><table style="width:100px"></table></body></html>`
