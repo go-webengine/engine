@@ -18,6 +18,53 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-04 (round 31) — `:first-child` was an unmodelled pseudo-class, so `:not(:first-child)` — the standard "hide every item but the first" idiom — degraded to matching EVERY item, hiding content that should have stayed visible (engine#111)
+
+caniuse.com's "Did you know?" section showed only its heading, with the tip
+paragraph entirely missing — Chrome shows the first tip's real text ("If a
+feature you're looking for is not available on the site, you can vote to
+have it included...").
+
+Fetched the real CSS rather than guessing: `.home__section--dyk.is-static
+.home__list-item:not(:first-child), .home__section--dyk.is-static
+.home__next-dyk-button { display: none; }` — the progressive-enhancement,
+no-JS fallback for a "Did you know?" tip rotator, meant to show only the
+first `<li>` of a list and hide the rest (plus the "Next" button, until JS
+takes over). `:first-child` had never been modelled as a real structural
+pseudo-class (only `:root`/`:checked`/dynamic-interaction pseudos/`:not()`/
+`:host` are); the generic "unmodelled `:not()` argument imposes no
+constraint" rule — correct for a genuinely always-false dynamic pseudo like
+`:hover` (negating an always-false condition is always true) — was silently
+also applied to `:first-child`, which is a real, SOMETIMES-true structural
+fact, not an always-false one. `:not(:first-child)` therefore degraded to
+`.home__list-item` with no negation at all, matching every list item
+including the first, so the `display:none` rule hid the ENTIRE tip list
+instead of all-but-the-first.
+
+Fixed by modelling `:first-child` as a real structural pseudo-class: a new
+`compound.FirstChild` field, set when the pseudo is `:first-child`, checked
+in `matches()` against the element's previous element sibling (reusing the
+existing `prevElementSibling` helper `+`/`~` combinator matching already
+relies on) — `:first-child` matches iff there is none. `:last-child`/
+`:nth-child(...)` remain unmodelled; only `:first-child` was confirmed
+live-load-bearing, and it requires no new sibling-walking machinery beyond
+what already exists (`:last-child` would need a new forward-walking helper
+that doesn't exist yet, a bigger step not justified by any confirmed need).
+
+**Verified live: the "Did you know?" tip text now renders**, matching
+Chrome's first-tip text exactly.
+
+Regression test (`TestFirstChildPseudo` in `css/selector_test.go`) uses
+caniuse.com's own real rule shape (`.home__list-item:not(:first-child)`)
+against a real two-`<li>` DOM built via `dom.Parse`, confirmed to fail (a
+bare `:first-child` refusing to even parse) via a genuine
+`git diff > patch; git checkout --; go test; git apply patch` cycle. `css`
+held its 99.5% coverage floor exactly.
+
+This fix lives entirely in `css/selector.go`'s own compound-matching types —
+nothing here is a general-purpose utility usable outside HTML rendering, so
+no extraction to a shared package applies.
+
 ## 2026-09-04 (round 30) — a content-less `<button>` (an icon-only submit button) rendered a fabricated literal "Submit" instead of no text at all — a fallback correct for `<input type=button/submit>` but wrong when copied onto the `<button>` tag (engine#109)
 
 pkg.go.dev/net/http's header showed a stray "Submit"/"Sub" overlapping its

@@ -38,6 +38,20 @@ type compound struct {
 	// "checked" attribute (a checkbox/radio) — see isChecked. This is the pivot of
 	// the CSS "checkbox hack" MediaWiki uses to keep collapsed dropdowns hidden.
 	Checked bool
+	// FirstChild is set by the ":first-child" structural pseudo-class — the
+	// element has no preceding element sibling. Unlike ":nth-child(...)" this
+	// is cheap and common enough (and, critically, common as a ":not()"
+	// argument — ":not(:first-child)" is the standard "gap between items"
+	// idiom) to model directly rather than leave unmodelled: an unmodelled
+	// pseudo degrades ":not(X)" to imposing NO constraint (correct for a
+	// dynamic pseudo like ":hover", which is always-false statically, so its
+	// negation is always-true) — but ":first-child" is a real, sometimes-true
+	// structural fact, so treating it the same way was actively wrong: found
+	// live on caniuse.com, where `.home__list-item:not(:first-child){display:
+	// none}` degraded to matching EVERY list item (including the first)
+	// instead of all-but-the-first, hiding an entire "Did you know?" tip
+	// list's text that should have shown its first entry.
+	FirstChild bool
 	// Not holds the compound selectors of every ":not(...)" attached to this
 	// compound. The compound matches only when NONE of them matches the element.
 	// A ":not()" argument that is a dynamic pseudo (never matches statically) is
@@ -209,6 +223,9 @@ func (c compound) matches(n *dom.Node) bool {
 	// ":checked" — at static render an input is checked iff it has the default
 	// "checked" attribute (there is no user interaction to toggle it).
 	if c.Checked && !isChecked(n) {
+		return false
+	}
+	if c.FirstChild && prevElementSibling(n) != nil {
 		return false
 	}
 	for _, am := range c.Attrs {
@@ -766,6 +783,8 @@ func parseSimple(s string) (compound, bool) {
 			c.Root = true
 		case "checked":
 			c.Checked = true
+		case "first-child":
+			c.FirstChild = true
 		case "not":
 			// An unmodelled ":not()" argument imposes NO constraint rather than
 			// dropping the rule — the same "reduce, don't drop" philosophy applied
@@ -829,11 +848,12 @@ func parseSimple(s string) (compound, bool) {
 	}
 	// A compound with no tag/class/id and no modelled pseudo/attribute reduces to
 	// nothing — a bare "::before" is dropped. A bare ":hover"/":checked"/
-	// ":not()"/"[attr]"/":host" is kept: a dynamic-only compound never matches
-	// statically (equivalent to being dropped), and ":checked"/":not(...)"/
-	// attribute/":host" selectors carry a real constraint on their own.
+	// ":first-child"/":not()"/"[attr]"/":host" is kept: a dynamic-only compound
+	// never matches statically (equivalent to being dropped), and
+	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
+	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 {
+		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 {
 		return compound{}, false
 	}
 	return c, true
