@@ -337,6 +337,48 @@ func TestFirstChildPseudo(t *testing.T) {
 	}
 }
 
+// TestEmptyPseudo covers the ":empty" structural pseudo-class, using
+// pkg.go.dev's own real rule shape as the fixture:
+// `.Documentation-toc:empty{display:none}` is meant to hide a genuinely
+// empty table-of-contents list, but a plain (non-":not()") unmodelled
+// pseudo degrades the compound to matching its base class ALONE — hiding
+// even a real, non-empty <ul> unconditionally.
+func TestEmptyPseudo(t *testing.T) {
+	root, err := dom.Parse(`<html><body>
+		<ul class="Documentation-toc"><li>Clients and Transports</li></ul>
+		<ul class="Documentation-toc"></ul>
+	</body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lists []*dom.Node
+	var walk func(n *dom.Node)
+	walk = func(n *dom.Node) {
+		if n.Type == dom.Element && n.Tag == "ul" {
+			lists = append(lists, n)
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	if len(lists) != 2 {
+		t.Fatalf("expected 2 <ul> elements, got %d", len(lists))
+	}
+	nonEmpty, empty := lists[0], lists[1]
+
+	sel, ok := parseComplex(".Documentation-toc:empty")
+	if !ok {
+		t.Fatal(".Documentation-toc:empty should parse")
+	}
+	if sel.Matches(nonEmpty) {
+		t.Error(".Documentation-toc:empty should NOT match a <ul> with a real <li> child (it would wrongly hide it)")
+	}
+	if !sel.Matches(empty) {
+		t.Error(".Documentation-toc:empty should match a genuinely empty <ul>")
+	}
+}
+
 func TestNotUnmodelledDoesNotDropRule(t *testing.T) {
 	// A :not() whose argument is empty or genuinely UNMODELLED (a pseudo-
 	// element) must NOT drop the rule — it degrades to "no constraint" so the

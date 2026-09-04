@@ -18,6 +18,60 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-04 (round 35) — `:empty` was an unmodelled pseudo-class, so `.Documentation-toc:empty{display:none}` degraded to hiding a genuinely non-empty table of contents on pkg.go.dev (engine#116)
+
+pkg.go.dev/net/http's "Overview" section was missing its own table of
+contents ("Clients and Transports", "Servers", "HTTP/2") entirely — Chrome
+shows all three as a short link list directly under the "Overview" heading.
+
+Root-caused a much bigger red herring first before finding the real cause
+(documented in full for anyone reading this investigation later): the
+initial hypothesis was that pkg.go.dev's outer page skeleton
+(`.go-Main{display:grid;grid-template-areas:"banner" "header" "aside" "nav"
+"article" "footer"}`) needed a client-side JavaScript flip of a
+`data-layout` attribute to reach its wide, multi-column form. Traced this
+all the way through: confirmed the site's dynamically-`document.
+createElement`-injected `<script src>` chain (a ResourceLoader-style
+pattern this engine's `runScripts`/`RunPending` architecture is explicitly
+designed to support across settle passes) DOES land in the final DOM: 5
+external scripts present after a full render. But then found the
+`data-layout="responsive"` attribute is already present in the STATIC SSR
+HTML on `<html>` itself — no JavaScript involved at all — and the relevant
+grid override requires `width >= 80rem` (1280px), well above the bench's
+1024px viewport. Re-checked Chrome's OWN reference render at the same
+1024px and confirmed it ALSO shows the single-column stacked layout — there
+never was a layout bug here; the whole `.go-Main`/`data-layout` line of
+investigation was a wrong premise about which class governed the visible
+symptom.
+
+The REAL cause, found by then re-reading the actual missing content's
+markup precisely: `.Documentation-toc:empty{display:none}` (main.min.css) —
+meant to hide the table of contents ONLY on package pages that have no
+headings to link to. `:empty` had never been modelled anywhere in
+`css/selector.go` (confirmed via grep). Per this file's own established
+"reduce, don't drop" convention for an unmodelled PLAIN (non-`:not()`)
+pseudo-class, the compound degrades to matching its base alone —
+`.Documentation-toc:empty` became unconditionally `.Documentation-toc`,
+hiding the real, non-empty `<ul>` on every package page regardless of
+whether it actually had any table-of-contents entries. This is the SAME
+systemic bug class as round 31's `:first-child` fix (a real,
+sometimes-true structural fact wrongly treated like an always-false
+dynamic pseudo), just on the "plain compound" side of the pattern instead
+of the "`:not()` argument" side.
+
+Fixed by modelling `:empty` as a genuine structural pseudo (a new
+`compound.Empty` field, checked as `len(n.Children) != 0` in `matches()`)
+— this engine's DOM tree has no comment-node type, so "no children at all"
+is the complete, spec-correct check with no comment/PI nuance to handle.
+
+**Verified live: "Clients and Transports", "Servers", and "HTTP/2" now
+render under "Overview"**, matching Chrome exactly.
+
+Regression test (`TestEmptyPseudo`) uses pkg.go.dev's own real rule shape
+against both a non-empty and a genuinely empty `<ul class="Documentation-
+toc">`, confirmed to fail (matching the non-empty list) via a genuine
+revert-and-rerun check before the fix was restored.
+
 ## 2026-09-04 (round 34) — `background-color: initial`/`unset` were unrecognised, so a real `<button>`'s UA-default gray chrome survived an author's own reset unchanged (engine#115)
 
 developer.mozilla.org's header showed the "Theme" toggle and "English (US)"
