@@ -379,6 +379,62 @@ func TestTableColumnWidthFromChildlessExplicitWidthBox(t *testing.T) {
 	}
 }
 
+// TestTableColspanAlignsFollowingCellWithLaterRow covers a real regression,
+// found live on news.ycombinator.com: its own markup shapes a story as a
+// title row of 3 plain cells, then a subtext row of
+// `<td colspan=2></td><td class=subtext>...</td>`. colStart/colSpan were
+// previously unmodelled — a cell's column index was just its position in
+// the row's own cell list — so the subtext row's SECOND cell (raw position
+// 1) landed in the vote-arrow's narrow column instead of the title's wide
+// one, splitting every story into two misaligned side-by-side blocks
+// instead of one flowing title+subtext column.
+func TestTableColspanAlignsFollowingCellWithLaterRow(t *testing.T) {
+	src := `<html><body style="margin:0"><table style="width:140px">` +
+		`<tr><td style="padding:0">A</td><td style="padding:0">B</td><td style="padding:0">CCCCC</td></tr>` +
+		`<tr><td colspan="2" style="padding:0"></td><td style="padding:0">DDDDD</td></tr>` +
+		`</table></body></html>`
+	tbl := findBox(layoutHTML(t, src, 300), "table")
+	if len(tbl.Children) != 2 {
+		t.Fatalf("rows = %d", len(tbl.Children))
+	}
+	titleRow, subtextRow := tbl.Children[0], tbl.Children[1]
+	if len(titleRow.Children) != 3 || len(subtextRow.Children) != 2 {
+		t.Fatalf("cells = %d, %d", len(titleRow.Children), len(subtextRow.Children))
+	}
+	// natural: col0=10 (A), col1=10 (B), col2=50 (CCCCC, DDDDD); sum=70;
+	// scale=140/70=2 → colW=[20,20,100], colX=[0,20,40].
+	titleCell := titleRow.Children[2]     // "CCCCC"
+	spanCell := subtextRow.Children[0]    // <td colspan=2>
+	subtextCell := subtextRow.Children[1] // "DDDDD" — must align with titleCell, not colX[1]
+	assertF(t, "title cell X", titleCell.X, 40)
+	assertF(t, "title cell W", titleCell.W, 100)
+	assertF(t, "colspan=2 cell X", spanCell.X, 0)
+	assertF(t, "colspan=2 cell W", spanCell.W, 40)
+	assertF(t, "subtext cell X", subtextCell.X, 40)
+	assertF(t, "subtext cell W", subtextCell.W, 100)
+}
+
+// TestCellColSpanInvalidValueDefault covers cellColSpan's "invalid value
+// default" (a non-numeric or non-positive colspan is treated as absent, per
+// the HTML spec), via its effect on column alignment: an invalid colspan
+// cell must NOT shift a later plain cell out of its column, same as a
+// colspan="1" cell wouldn't.
+func TestCellColSpanInvalidValueDefault(t *testing.T) {
+	src := `<html><body style="margin:0"><table style="width:100px">` +
+		`<tr><td colspan="bogus" style="padding:0">A</td><td style="padding:0">BB</td></tr>` +
+		`<tr><td colspan="0" style="padding:0">C</td><td style="padding:0">DD</td></tr>` +
+		`</table></body></html>`
+	tbl := findBox(layoutHTML(t, src, 300), "table")
+	// natural: col0=max(10,10)=10, col1=max(20,20)=20; sum=30; scale=100/30.
+	want := 10 * (100.0 / 30.0)
+	if got := tbl.Children[0].Children[1].X; got != want {
+		t.Errorf("row 0 second cell X = %v, want %v (colspan=\"bogus\" must not shift it)", got, want)
+	}
+	if got := tbl.Children[1].Children[1].X; got != want {
+		t.Errorf("row 1 second cell X = %v, want %v (colspan=\"0\" must not shift it)", got, want)
+	}
+}
+
 func TestTableEmpty(t *testing.T) {
 	// A table with no rows lays out to nothing (no panic).
 	src := `<html><body style="margin:0"><table style="width:100px"></table></body></html>`
