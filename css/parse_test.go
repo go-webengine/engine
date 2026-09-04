@@ -156,6 +156,30 @@ func TestParseStylesheetMediaQueries(t *testing.T) {
 	}
 }
 
+// TestParseStylesheetNestedNotAllAnd covers Tailwind v4's real compiled shape
+// for a compound range variant like "sm:max-md:inline" (min 40rem, max under
+// 48rem): an OUTER "@media (min-width:40rem)" (already handled) wrapping an
+// INNER "@media not all and (min-width:48rem)" for the upper bound —
+// confirmed live on tailwindcss.com. Both must hold for the inner rule to
+// apply: at 1024px the outer matches (>=40rem) but the inner must NOT
+// (1024px is not < 48rem=768px), so the declaration is excluded; at 700px
+// both hold and it is included.
+func TestParseStylesheetNestedNotAllAnd(t *testing.T) {
+	css := `@media (min-width:40rem) { @media not all and (min-width:48rem) { .sm\:max-md\:inline { display: inline } } }`
+	wide := declValues(ParseStylesheetVW(css, 1024))
+	if _, ok := wide["display"]; ok {
+		t.Errorf("sm:max-md:inline must NOT apply at 1024px (above the max-md upper bound), got %+v", wide)
+	}
+	narrow := declValues(ParseStylesheetVW(css, 700))
+	if narrow["display"] != "inline" {
+		t.Errorf("sm:max-md:inline must apply at 700px (within [40rem,48rem)), got %+v", narrow)
+	}
+	tooNarrow := declValues(ParseStylesheetVW(css, 500))
+	if _, ok := tooNarrow["display"]; ok {
+		t.Errorf("sm:max-md:inline must NOT apply at 500px (below the outer min-width:40rem), got %+v", tooNarrow)
+	}
+}
+
 // declValues returns a property->value map flattening every declaration of
 // every rule, for the common "did this apply" style of assertion below.
 func declValues(rules []Rule) map[string]string {
@@ -367,6 +391,47 @@ func TestMediaMatchesRangeComparisonSyntax(t *testing.T) {
 	}
 	if !mediaMatches("(1024px>width)", 1023) {
 		t.Error("1024px>width should mean the same as width<1024px: matches at 1023px")
+	}
+}
+
+// TestMediaMatchesNotAllAnd covers a real regression, found live on
+// tailwindcss.com's own homepage: Tailwind v4 compiles EVERY "max-*:"
+// breakpoint variant (max-sm:, and the upper bound of a compound range like
+// sm:max-md:) to "@media not all and (min-width:...)" rather than a direct
+// max-width feature — CSS's own idiom for negating a feature test, since
+// "all" (a media type that always matches) reduces "not all and (X)" to
+// "not (X)". Before this was recognised, mediaMatches evaluated the
+// min-width feature INSIDE the parens completely normally and silently
+// ignored the "not", so a narrow-viewport-only utility (a "text-6xl" /
+// "text-white" responsive-breakpoint label, and the ENTIRE header's
+// responsive nav links, both confirmed live) matched at every viewport
+// ABOVE the breakpoint instead of below it — the exact opposite of what the
+// rule means.
+func TestMediaMatchesNotAllAnd(t *testing.T) {
+	// max-sm: real compiled form — matches only BELOW 40rem (640px).
+	if !mediaMatches(" not all and (min-width:40rem)", 639) {
+		t.Error("not all and (min-width:40rem) should match at 639px (below the breakpoint)")
+	}
+	if mediaMatches(" not all and (min-width:40rem)", 640) {
+		t.Error("not all and (min-width:40rem) should NOT match at 640px (at/above the breakpoint)")
+	}
+	if mediaMatches(" not all and (min-width:40rem)", 1024) {
+		t.Error("not all and (min-width:40rem) should NOT match at 1024px — the exact bug this covers")
+	}
+	// The case-insensitive, no-leading-space form (a bare @import/<link media>
+	// query, which is not pre-lowercased or spaced the way an @media
+	// prelude's own text always is).
+	if mediaMatches("NOT ALL AND (min-width:1024px)", 1024) {
+		t.Error("NOT ALL AND (case-insensitive, no leading space) should NOT match at 1024px")
+	}
+	if !mediaMatches("NOT ALL AND (min-width:1024px)", 1023) {
+		t.Error("NOT ALL AND (min-width:1024px) should match at 1023px")
+	}
+	// A "not" that is not immediately followed by "all and" is left alone
+	// (unmodelled, matches optimistically) rather than misparsed — this
+	// engine only recognises the exact "not all and" idiom Tailwind emits.
+	if !mediaMatches("not screen", 1024) {
+		t.Error(`"not screen" (a different negation shape) should fall through to match optimistically`)
 	}
 }
 
