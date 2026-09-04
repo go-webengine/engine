@@ -18,6 +18,65 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-04 (round 36) — a compound combining an explicit `*` with a class ("*.line") was parsed as a LITERAL tag name "*", so it never matched any real element (engine#117)
+
+tailwindcss.com's own hero code demo — a syntax-highlighted, multi-line
+`<pre><code>` sample — rendered every line of code squashed onto a single
+row instead of one line per row.
+
+Fetched the real compiled CSS rather than guessing: Tailwind v4's
+`**:[.line]:isolate **:[.line]:block **:[.line]:not-last:min-h-lh`
+arbitrary-variant utilities (used to give each syntax-highlighted
+`<span class="line">` its own line) compile to
+`:is(.\*\*\:\[\.line\]\:block *).line{display:block}` — a compound `:is()`
+selector whose argument is itself a descendant chain. This engine's
+`:is()`/`:where()` handling (a general text-splicing mechanism, not true
+functional matching) correctly spliced this to
+`.\*\*\:\[\.line\]\:block *.line`, and correctly un-escaped the
+backslash-escaped class name — both already-solid, pre-existing
+mechanisms, confirmed working in isolation. The actual bug: the
+resulting `*.line` COMPOUND (a bare `*` immediately followed by `.line`,
+no separating space) was parsed by `scanCompound` as tag name literal
+`"*"` — `scanCompound` has no notion that `*` is special, only
+`parseSimple`'s narrow `if s == "*"` fast-path (for a BARE, standalone
+universal selector) ever recognised it. Since `compound.matches` compares
+`c.Tag` byte-for-byte against the real element's tag name, `"*" !=
+"span"` unconditionally, so a `*.foo`-shaped compound never matched ANY
+element — not just this one selector, but the general shape, which
+`:is(X *).foo` splicing (and any literal `*.foo` compound written
+directly in a stylesheet) can both produce.
+
+Fixed by treating a leading `"*"` tag from `scanCompound` as the
+universal selector (dropped, imposing no tag constraint) rather than a
+literal tag name, whether it appears bare (already handled) or fused
+with further qualifiers.
+
+**Root-caused the CSS side fully — confirmed via an isolated internal
+test that the fix makes the cascade correctly compute `display:block`
+for the real `.line` span — but the VISIBLE symptom persists for a
+different, already-known reason**: `<code>` is inline by default, and
+each `.line` span is one of its direct children. A live box-tree
+instrumentation confirmed the `.line` node never gets its own `Box` at
+all (not even as a flattened `InlineItem` — it vanishes entirely into
+its parent's text run). This is a THIRD confirmed instance of the
+"inline flattens block content" architectural gap already found and
+correctly declined on github.com (round 24) and news.ycombinator.com
+(round 33): a genuinely block-level child nested under an inline-context
+ancestor gets no real box, rather than the spec's anonymous-block-wrapper-
+plus-promotion behaviour. Not fixed here either, for the same reason as
+before (comparable in scope to Shadow DOM slot projection).
+
+The CSS selector fix itself is shipped regardless — it is real,
+independently confirmed, and broadly applicable (any `*.foo`-shaped
+compound, from `:is()` splicing or written directly), even though its
+visible effect on THIS specific page is masked by the separate,
+already-declined layout gap.
+
+Regression test (`TestUniversalCompoundWithClass`) uses tailwindcss.com's
+own real selector as one fixture and a bare `.parent *.foo` compound as a
+second, confirmed to fail on both via a genuine revert-and-rerun check
+before the fix was restored.
+
 ## 2026-09-04 (round 35) — `:empty` was an unmodelled pseudo-class, so `.Documentation-toc:empty{display:none}` degraded to hiding a genuinely non-empty table of contents on pkg.go.dev (engine#116)
 
 pkg.go.dev/net/http's "Overview" section was missing its own table of

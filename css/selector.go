@@ -851,6 +851,21 @@ func parseSimple(s string) (compound, bool) {
 		return c, true
 	}
 	tag, parts := scanCompound(s)
+	// A leading "*" combined with further qualifiers (class/id) — "*.line",
+	// "*#id" — is the universal selector too, not a literal tag requirement:
+	// scanCompound has no notion of "*" being special, so a compound like
+	// "*.line" (produced by this file's own :is()-splicing, e.g. `:is(X
+	// *).line` splicing to "X *.line") came out with Tag="*", which then
+	// NEVER matched any real element (c.matches compares it byte-for-byte
+	// against the element's real tag name). Found live on tailwindcss.com's
+	// own compiled Tailwind v4 output: `:is(.\*\*\:\[\.line\]\:block
+	// *).line{display:block}` — the syntax-highlighted code block's
+	// per-line `<span class="line">` elements never got their `display:
+	// block`, so every line of a multi-line code sample rendered squashed
+	// onto one line.
+	if tag == "*" {
+		tag = ""
+	}
 	c.Tag = strings.ToLower(tag)
 	for _, p := range parts {
 		if p.name == "" {

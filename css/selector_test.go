@@ -379,6 +379,42 @@ func TestEmptyPseudo(t *testing.T) {
 	}
 }
 
+// TestUniversalCompoundWithClass covers a compound combining an explicit "*"
+// with a further qualifier — "*.line", "*#id" — using tailwindcss.com's own
+// real compiled rule as the fixture:
+// `:is(.\*\*\:\[\.line\]\:block *).line{display:block}` (Tailwind v4's
+// `**:[.line]:block` arbitrary-variant utility, used on its syntax-
+// highlighted code samples so each `.line` span gets its own line).
+// expandFunctionalPseudos splices this to
+// `.\*\*\:\[\.line\]\:block *.line` — a "*.line" compound — which
+// scanCompound (with no notion that "*" is special) parsed as a LITERAL tag
+// name "*", never matching any real element (a <span>'s tag is "span", not
+// the string "*"). Without the fix, tailwindcss.com's whole multi-line code
+// demo collapsed onto one line.
+func TestUniversalCompoundWithClass(t *testing.T) {
+	line := el("span", "", "line")
+	attach(el("div", "", "**:[.line]:block"), line)
+
+	sels := ParseSelectorList(`:is(.\*\*\:\[\.line\]\:block *).line`)
+	if len(sels) != 1 {
+		t.Fatalf("the real tailwindcss.com selector should parse to 1 selector, got %d", len(sels))
+	}
+	if !sels[0].Matches(line) {
+		t.Error("the real tailwindcss.com selector should match .line nested under the **:[.line]:block ancestor")
+	}
+
+	// A bare "*.foo" compound (no wrapping :is()) must also match — the
+	// splice isn't the only source of this shape.
+	bareSels := ParseSelectorList(".parent *.foo")
+	if len(bareSels) != 1 {
+		t.Fatalf(".parent *.foo should parse to 1 selector, got %d", len(bareSels))
+	}
+	foo := attach(el("div", "", "parent"), el("span", "", "foo"))
+	if !bareSels[0].Matches(foo.Children[0]) {
+		t.Error(".parent *.foo should match a descendant with class foo, regardless of its own tag")
+	}
+}
+
 func TestNotUnmodelledDoesNotDropRule(t *testing.T) {
 	// A :not() whose argument is empty or genuinely UNMODELLED (a pseudo-
 	// element) must NOT drop the rule — it degrades to "no constraint" so the
