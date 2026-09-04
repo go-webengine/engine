@@ -18,6 +18,56 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-04 (round 29) — CSS logical margin/padding properties (`margin-block-start`, `margin-block-end`, `margin-inline-*`, and the `-block`/`-inline` axis shorthands) had zero support — every declaration using them was silently dropped (engine#108)
+
+go.dev/blog's blog-listing page rendered each entry (title/date/author, then
+a separate summary paragraph) with extra, unwanted vertical whitespace
+between the author line and the summary — Chrome fits 6 full entries plus an
+interstitial cookie-consent banner in the same ~900px of vertical space where
+this engine's render fit only 5.
+
+Fetched the real page HTML and CSS rather than guessing from the screenshot
+alone: go.dev's stylesheet uses
+```css
+#blogindex p.blogsummary { margin-block-start: 0px; }
+#blogindex p.blogtitle   { margin-block-end: 0px; }
+```
+to zero out the gap *between* a listing's title-block and its own summary,
+while leaving the UA-default `<p>` margin on the *outer* edges (the gap
+before the next entry's title). This engine's declaration-apply switch had
+no case for any CSS Logical Property on margin or padding at all — direct
+grep confirmed zero matches for `margin-block`, `margin-inline`,
+`padding-block`, or `padding-inline` anywhere in `css/parse.go` — so both
+declarations were silently dropped as unrecognised, leaving the default
+`<p>` UA margin (16px, both sides) on both edges of the gap that should have
+collapsed to 0.
+
+The analogous logical *inset* properties (`inset-inline`/`inset-block`) were
+already supported, via an established precedent: this engine has no
+bidi/vertical writing-mode support anywhere, so a logical axis always maps
+directly to the same physical edges regardless of any writing-mode or
+direction context (block → top/bottom, inline → left/right). Extended that
+exact precedent to margin and padding: `margin-block-start`/`-end` →
+`Margin.Top`/`Margin.Bottom`, `margin-inline-start`/`-end` →
+`Margin.Left`/`Margin.Right` (honouring `auto`, exactly like `margin-left`/
+`margin-right` already do), plus the two-value `margin-block`/`margin-inline`
+axis shorthands, and the six padding equivalents (`padding-block-start/end`,
+`padding-inline-start/end`, `padding-block`, `padding-inline`) — the padding
+side wasn't confirmed load-bearing on this specific page, but the
+implementation cost was near-zero given how directly it mirrors the margin
+case, and leaving it out would have reintroduced the exact same silent-drop
+gap the moment a real page used a logical padding property instead.
+
+Verified live: re-rendering go.dev/blog after the fix shows 7 full entries
+fitting in the same 900px region the pre-fix render fit 5 into, matching
+Chrome's tight per-entry spacing.
+
+Regression tests use go.dev's own real rule shape as the fixture
+(`TestCascadeMarginLogicalProperties`, `TestCascadeMarginBlockInlineShorthand`,
+`TestCascadePaddingLogicalProperties` in `css/cascade_test.go`), confirmed to
+fail with the exact predicted wrong values (the UA-default 16px leaking
+through) via a genuine revert-and-rerun check before the fix was restored.
+
 ## 2026-09-04 (round 28) — `@media not all and (...)`, Tailwind v4's compiled form of every `max-*:` breakpoint variant, was silently un-negated — every narrow-viewport-only rule matched at every wider viewport instead (engine#107)
 
 tailwindcss.com's own homepage rendered a stray line of grey monospace text
