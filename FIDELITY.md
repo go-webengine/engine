@@ -18,6 +18,59 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-04 (round 32) — table `colspan` was entirely unmodelled — a row mixing a spanning cell with plain ones split every story on news.ycombinator.com into two misaligned side-by-side blocks (engine#112)
+
+news.ycombinator.com's front page rendered every story split into two
+columns: a narrow left block stacking each story's rank number and its
+"N points by user | hide | N comments" subtext, and a wide right block
+holding just the title links — visually unrelated to their own row's
+subtext, with heights drifting out of sync story by story.
+
+Fetched the real markup rather than guessing: HN's own table structure
+shapes each story as TWO `<tr>`s — `<tr class=athing><td>1.</td><td
+class=votelinks>...</td><td class=title>Title</td></tr>` followed by
+`<tr><td colspan="2"></td><td class=subtext>...</td></tr>`. `layout/table.go`
+had never modelled `colspan` at all: a cell's column index was just its
+position in the row's own cell list. In the title row (3 plain cells)
+that happened to line up correctly, but in the subtext row the SECOND
+cell (raw position 1) is really the THIRD column (after the colspan=2
+empty cell) — the old code put it in position 1's column instead,
+which is the narrow vote-arrow column shared by every title row. Every
+subtext line thus rendered in the wrong, narrow column, and the column-
+width algorithm (which takes each column's cells' MAX natural width
+across all rows) inflated that shared column to the subtext's own wide
+content width, splitting the whole table into two misaligned blocks.
+
+Fixed by tracking each cell's real starting column index and span in
+`tableRow` (a new `colStart`/`colSpan` pair, populated in `makeRow` by
+advancing a running column cursor by each PRECEDING cell's own colspan,
+not by 1 per cell), and using those — not raw cell position — for
+natural-width attribution, column-width lookup, and final cell
+placement. A `colspan` attribute of 0, negative, or non-numeric defaults
+to 1, per the HTML spec's own "invalid value default" for this
+attribute (`cellColSpan`). A colspan>1 cell is deliberately excluded
+from natural-width attribution — distributing its content need across
+the columns it spans is the full spec algorithm, well past this table
+layout's own documented "basic auto layout" scope — but it still
+occupies those columns so a later plain cell in the same row is not
+shifted out of alignment with the other rows' columns.
+
+**Verified live: the page now renders as one flowing title+subtext
+column per story**, matching Chrome's own layout exactly.
+
+This is a general table-layout bug, not an HN-specific quirk: any table
+mixing a `colspan` cell with plain ones in different rows — an invoice
+line-item table, a spec-comparison table, any "label row then a spanning
+detail row" shape — would trigger the identical misalignment. Confirmed
+no existing test exercised any table with a `colspan` attribute at all.
+
+Two new regression tests: `TestTableColspanAlignsFollowingCellWithLaterRow`
+(HN's own real row shape, confirmed to fail with the exact predicted wrong
+column position via a genuine revert-and-rerun check) and
+`TestCellColSpanInvalidValueDefault` (a bogus/zero colspan must not shift
+a later cell, closing a coverage gap the first test's own guard clauses
+left open).
+
 ## 2026-09-04 (round 31) — `:first-child` was an unmodelled pseudo-class, so `:not(:first-child)` — the standard "hide every item but the first" idiom — degraded to matching EVERY item, hiding content that should have stayed visible (engine#111)
 
 caniuse.com's "Did you know?" section showed only its heading, with the tip
