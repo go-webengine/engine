@@ -460,3 +460,57 @@ func TestMaxExternalSheetsStillBoundsAPathologicalPage(t *testing.T) {
 		t.Fatalf("fetched %d sheets, want exactly the cap (%d)", len(sheets), maxExternalSheets)
 	}
 }
+
+func TestLoadImagesExported(t *testing.T) {
+	// The exported entry point must hand back the same two maps the internal
+	// pipeline feeds to layout and paint — sizes for LayoutDocument, bitmaps
+	// for a painter — keyed by the <img> element, offline via a data: URI, and
+	// must leave a src-less / display:none <img> out of both.
+	src := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for i := 0; i < len(src.Pix); i += 4 {
+		src.Pix[i], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3] = 0, 0, 200, 255
+	}
+	png, err := EncodePNG(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri := "data:image/png;base64," + base64.StdEncoding.EncodeToString(png)
+	html := `<html><body style="margin:0"><img id="a" src="` + uri + `">` +
+		`<img id="hidden" style="display:none" src="` + uri + `"><img id="nosrc"></body></html>`
+	root, _ := dom.Parse(html)
+	doc := &Document{URL: "https://x.test/", Root: root}
+	sm := css.Cascade(root)
+
+	sizes, bmps := New().LoadImages(context.Background(), doc, sm, 1024)
+
+	var a *dom.Node
+	var walk func(n *dom.Node)
+	walk = func(n *dom.Node) {
+		if n.Type == dom.Element && n.Tag == "img" {
+			if id, _ := n.Attribute("id"); id == "a" {
+				a = n
+			}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	if a == nil {
+		t.Fatal("test <img id=a> not found in parsed DOM")
+	}
+	if got := sizes[a]; got != [2]float64{8, 8} {
+		t.Errorf("sizes[a] = %v, want [8 8]", got)
+	}
+	bmp, ok := bmps[a]
+	if !ok || bmp == nil {
+		t.Fatalf("bitmaps[a] missing (ok=%v)", ok)
+	}
+	if b := bmp.Bounds(); b.Dx() != 8 || b.Dy() != 8 {
+		t.Errorf("bitmaps[a] bounds = %v, want 8x8", b)
+	}
+	// One accepted image only: display:none and src-less are both excluded.
+	if len(sizes) != 1 || len(bmps) != 1 {
+		t.Errorf("len(sizes)=%d len(bitmaps)=%d, want 1 and 1", len(sizes), len(bmps))
+	}
+}
