@@ -968,6 +968,30 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		applyEdge(&s.Padding.Bottom, v, emRef)
 	case "padding-left":
 		applyEdge(&s.Padding.Left, v, emRef)
+	case "margin-block-start":
+		applyEdge(&s.Margin.Top, v, emRef)
+	case "margin-block-end":
+		applyEdge(&s.Margin.Bottom, v, emRef)
+	case "margin-inline-start":
+		applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, v, emRef)
+	case "margin-inline-end":
+		applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, v, emRef)
+	case "margin-block":
+		applyMarginBlockShorthand(s, v, emRef)
+	case "margin-inline":
+		applyMarginInlineShorthand(s, v, emRef)
+	case "padding-block-start":
+		applyEdge(&s.Padding.Top, v, emRef)
+	case "padding-block-end":
+		applyEdge(&s.Padding.Bottom, v, emRef)
+	case "padding-inline-start":
+		applyEdge(&s.Padding.Left, v, emRef)
+	case "padding-inline-end":
+		applyEdge(&s.Padding.Right, v, emRef)
+	case "padding-block":
+		applyPaddingBlockShorthand(s, v, emRef)
+	case "padding-inline":
+		applyPaddingInlineShorthand(s, v, emRef)
 	case "container-type":
 		if ct, ok := containerTypeKeyword(lv); ok {
 			s.ContainerType = ct
@@ -1027,6 +1051,53 @@ func applyEdge(dst *float64, v string, emRef float64) {
 	if l, ok := parseLength(v, emRef); ok && !l.Auto && !l.IsPercent {
 		*dst = l.Px
 	}
+}
+
+// applyMarginBlockShorthand parses the 1-or-2-value margin-block shorthand
+// (<start> [<end>]) onto the top/bottom physical edges. This engine has no
+// bidi/vertical writing-mode support anywhere, so block-start/end always map
+// directly to top/bottom, matching the inset-block precedent.
+func applyMarginBlockShorthand(s *Style, v string, emRef float64) {
+	fields := strings.Fields(v)
+	if len(fields) == 0 || len(fields) > 2 {
+		return
+	}
+	applyEdge(&s.Margin.Top, fields[0], emRef)
+	applyEdge(&s.Margin.Bottom, fields[len(fields)-1], emRef)
+}
+
+// applyMarginInlineShorthand parses the 1-or-2-value margin-inline shorthand
+// onto the left/right physical edges, honouring `auto` as margin-left/right
+// already do — this engine's inline axis always maps to left/right.
+func applyMarginInlineShorthand(s *Style, v string, emRef float64) {
+	fields := strings.Fields(v)
+	if len(fields) == 0 || len(fields) > 2 {
+		return
+	}
+	applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, fields[0], emRef)
+	applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, fields[len(fields)-1], emRef)
+}
+
+// applyPaddingBlockShorthand parses the 1-or-2-value padding-block shorthand
+// onto the top/bottom physical edges.
+func applyPaddingBlockShorthand(s *Style, v string, emRef float64) {
+	fields := strings.Fields(v)
+	if len(fields) == 0 || len(fields) > 2 {
+		return
+	}
+	applyEdge(&s.Padding.Top, fields[0], emRef)
+	applyEdge(&s.Padding.Bottom, fields[len(fields)-1], emRef)
+}
+
+// applyPaddingInlineShorthand parses the 1-or-2-value padding-inline
+// shorthand onto the left/right physical edges.
+func applyPaddingInlineShorthand(s *Style, v string, emRef float64) {
+	fields := strings.Fields(v)
+	if len(fields) == 0 || len(fields) > 2 {
+		return
+	}
+	applyEdge(&s.Padding.Left, fields[0], emRef)
+	applyEdge(&s.Padding.Right, fields[len(fields)-1], emRef)
 }
 
 // parseEdges parses the 1-to-4 value shorthand for margin/padding. Percentages

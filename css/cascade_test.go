@@ -448,3 +448,80 @@ func TestCascadeClipDeclaration(t *testing.T) {
 		t.Error("an unresolvable clip value must leave HasClip false")
 	}
 }
+
+// TestCascadeMarginLogicalProperties covers margin-block-start/end and
+// margin-inline-start/end, using go.dev/blog's real rule shape
+// (`p.blogtitle{margin-block-end:0px}` / `p.blogsummary{margin-block-start:0px}`)
+// as the fixture — this engine has no bidi/vertical writing-mode support
+// anywhere, so these always map directly to the physical top/bottom and
+// left/right edges, matching the inset-block/inset-inline precedent.
+func TestCascadeMarginLogicalProperties(t *testing.T) {
+	title := styleOf(t, `<html><body><p style="margin-block-end:0px;margin-block-start:1em">x</p></body></html>`, "p")
+	if title.Margin.Bottom != 0 {
+		t.Errorf("margin-block-end:0px -> Margin.Bottom = %v, want 0", title.Margin.Bottom)
+	}
+	if title.Margin.Top != 16 {
+		t.Errorf("margin-block-start:1em -> Margin.Top = %v, want 16", title.Margin.Top)
+	}
+
+	inline := styleOf(t, `<html><body><p style="margin-inline-start:2px;margin-inline-end:auto">x</p></body></html>`, "p")
+	if inline.Margin.Left != 2 {
+		t.Errorf("margin-inline-start:2px -> Margin.Left = %v, want 2", inline.Margin.Left)
+	}
+	if !inline.MarginRightAuto {
+		t.Error("margin-inline-end:auto -> MarginRightAuto = false, want true")
+	}
+}
+
+// TestCascadeMarginBlockInlineShorthand covers the margin-block/margin-inline
+// axis shorthands (1-or-2-value: <start> [<end>]).
+func TestCascadeMarginBlockInlineShorthand(t *testing.T) {
+	oneValue := styleOf(t, `<html><body><p style="margin-block:3px">x</p></body></html>`, "p")
+	if oneValue.Margin.Top != 3 || oneValue.Margin.Bottom != 3 {
+		t.Errorf("margin-block:3px -> Margin.Top=%v Margin.Bottom=%v, want 3/3", oneValue.Margin.Top, oneValue.Margin.Bottom)
+	}
+
+	twoValue := styleOf(t, `<html><body><p style="margin-block:1px 2px">x</p></body></html>`, "p")
+	if twoValue.Margin.Top != 1 || twoValue.Margin.Bottom != 2 {
+		t.Errorf("margin-block:1px 2px -> Margin.Top=%v Margin.Bottom=%v, want 1/2", twoValue.Margin.Top, twoValue.Margin.Bottom)
+	}
+
+	inline := styleOf(t, `<html><body><p style="margin-inline:4px 5px">x</p></body></html>`, "p")
+	if inline.Margin.Left != 4 || inline.Margin.Right != 5 {
+		t.Errorf("margin-inline:4px 5px -> Margin.Left=%v Margin.Right=%v, want 4/5", inline.Margin.Left, inline.Margin.Right)
+	}
+
+	// An axis shorthand only ever takes 1 or 2 values; a 3-value form is
+	// invalid and must leave the UA default untouched, matching how every
+	// other unresolvable declaration in this package is handled.
+	invalidBlock := styleOf(t, `<html><body><p style="margin-block:1px 2px 3px">x</p></body></html>`, "p")
+	if invalidBlock.Margin.Top != 16 || invalidBlock.Margin.Bottom != 16 {
+		t.Errorf("margin-block with 3 values must be ignored -> Margin.Top=%v Margin.Bottom=%v, want UA default 16/16", invalidBlock.Margin.Top, invalidBlock.Margin.Bottom)
+	}
+	invalidInline := styleOf(t, `<html><body><p style="margin-inline:1px 2px 3px">x</p></body></html>`, "p")
+	if invalidInline.Margin.Left != 0 || invalidInline.Margin.Right != 0 {
+		t.Errorf("margin-inline with 3 values must be ignored -> Margin.Left=%v Margin.Right=%v, want UA default 0/0", invalidInline.Margin.Left, invalidInline.Margin.Right)
+	}
+}
+
+// TestCascadePaddingLogicalProperties covers padding-block-start/end,
+// padding-inline-start/end, and the padding-block/padding-inline shorthands
+// — the padding-side sibling of the margin logical-property fix above.
+func TestCascadePaddingLogicalProperties(t *testing.T) {
+	sides := styleOf(t, `<html><body><p style="padding-block-start:1px;padding-block-end:2px;padding-inline-start:3px;padding-inline-end:4px">x</p></body></html>`, "p")
+	if sides.Padding != (Edges{Top: 1, Bottom: 2, Left: 3, Right: 4}) {
+		t.Errorf("padding logical sides -> Padding = %+v, want {Top:1 Bottom:2 Left:3 Right:4}", sides.Padding)
+	}
+
+	shorthand := styleOf(t, `<html><body><p style="padding-block:5px 6px;padding-inline:7px">x</p></body></html>`, "p")
+	if shorthand.Padding != (Edges{Top: 5, Bottom: 6, Left: 7, Right: 7}) {
+		t.Errorf("padding-block/inline shorthand -> Padding = %+v, want {Top:5 Bottom:6 Left:7 Right:7}", shorthand.Padding)
+	}
+
+	// A 3-value axis shorthand is invalid and must leave the UA default (0)
+	// untouched.
+	invalid := styleOf(t, `<html><body><p style="padding-block:1px 2px 3px;padding-inline:1px 2px 3px">x</p></body></html>`, "p")
+	if invalid.Padding != (Edges{}) {
+		t.Errorf("padding-block/inline with 3 values must be ignored -> Padding = %+v, want zero", invalid.Padding)
+	}
+}
