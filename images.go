@@ -82,6 +82,25 @@ func parallelDo(n int, fn func(i int)) {
 	wg.Wait()
 }
 
+// LoadImages fetches and decodes every replaced element in doc — raster
+// <img>, <img src="*.svg"> and inline <svg> — best-effort and concurrently,
+// returning the intrinsic sizes layout.LayoutDocument needs to size their
+// boxes and the decoded bitmaps a painter needs to draw them, both keyed by
+// element. A relative src resolves against doc.URL. Images wider than
+// viewportW are scaled down proportionally, so a returned bitmap is already
+// the size its box will be laid out at. A fetch or decode failure just leaves
+// that element out of both maps; the raster/vector budgets are MaxImages and
+// MaxVectorImages.
+//
+// It is the exported entry point for a consumer that runs the engine's own
+// cascade + layout but paints to something other than the built-in raster
+// canvas (a PDF, say), so that consumer sizes and draws images exactly as the
+// engine itself does instead of re-implementing fetch/decode/budgeting.
+// RenderDocument uses the same code path internally.
+func (e *Engine) LoadImages(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int) (map[*dom.Node][2]float64, map[*dom.Node]image.Image) {
+	return e.loadImages(ctx, doc, sm, viewportW)
+}
+
 // loadImages fetches and decodes every <img> in the document (best-effort),
 // returning intrinsic sizes for layout and decoded bitmaps for paint. Images
 // wider than the viewport are scaled down proportionally. Failures are skipped.
