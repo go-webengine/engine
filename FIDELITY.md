@@ -18,6 +18,70 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-04 (round 28) — `@media not all and (...)`, Tailwind v4's compiled form of every `max-*:` breakpoint variant, was silently un-negated — every narrow-viewport-only rule matched at every wider viewport instead (engine#107)
+
+tailwindcss.com's own homepage rendered a stray line of grey monospace text
+("text-4xl text-5xl text-white") above its hero headline, and its header's
+"Docs / Blog / Showcase / Partners / Plus" navigation links were entirely
+missing — both at full resolution, immediately visible.
+
+Fetched the real compiled CSS rather than guessing: the stray text is an
+`aria-hidden="true"` decorative annotation Tailwind's marketing site uses
+throughout to show which literal utility class produces a given effect —
+several `<span>` elements, each gated on a DIFFERENT responsive variant
+(`max-sm:inline`, `sm:max-md:inline`, `lg:max-xl:inline`, `xl:inline`),
+designed so exactly ONE is visible at any given viewport width. Root cause,
+found by tracing the ACTUAL compiled selector rather than assuming Tailwind
+still emits a plain `@media (max-width:...)`: Tailwind v4 compiles every
+`max-*:` variant (and the upper bound of a compound range like
+`sm:max-md:`) to **`@media not all and (min-width:...)`** — CSS's own idiom
+for negating a single feature test, since `all` (a media type that always
+matches) reduces `not all and (X)` to `not (X)`. `mediaMatches` had no
+concept of `not` at all: it scanned the condition text for a `min-width`
+feature, found one, and evaluated it completely normally — silently
+ignoring the negation, so a rule meant for viewports BELOW a breakpoint
+matched at every viewport AT OR ABOVE it instead, the exact opposite of
+its meaning. At the bench's 1024px viewport this made BOTH `max-sm:` and
+`sm:max-md:`'s narrower-than-1024px variants match simultaneously (hence
+two stray class-name labels appearing together, "text-4xl" AND
+"text-5xl"), and — far more consequentially — hid the header's own
+responsive nav links, which use the identical `max-*:`/`sm:max-*:` idiom
+to swap between a mobile menu and the desktop link row.
+
+Fixed with a single new regex (`notAllAndPrefix`, matching a leading
+`not all and` case-insensitively) checked at the very top of `mediaMatches`:
+when it matches, the REST of the condition is evaluated recursively through
+the same function and the result negated — no new evaluation logic needed,
+since everything after "not all and" is exactly the ordinary feature-test
+text `mediaMatches` already understands. A first attempt anchored the regex
+to the very start of the string with no allowance for leading whitespace
+(`^not\s+all\s+and\s+`) and consequently DID NOT FIRE at all — verified
+live before assuming success (per this session's "verify live even after a
+green test suite" discipline): `mediaMatches` receives its condition as
+`lower[len("@media"):]`, which always carries the single space that
+followed "@media" in the source text, so the anchored `^not` never matched
+a real caller's string even though a hand-typed test omitted that leading
+space and passed. Fixed by allowing (and requiring nothing of) leading
+whitespace in the regex itself, confirmed against the exact real
+leading-space-carrying string this time.
+
+**Verified live: the stray class-name line now shows the single correct
+label for a 1024px viewport ("text-6xl text-white text-balance"), and the
+full "Docs / Blog / Showcase / Partners / Plus" navigation — plus a
+previously-invisible "Get started" button — now render.** This is a
+broadly-applicable fix, not tailwindcss.com-specific: Tailwind v4's
+`max-*:` variants are used constantly across any site built with it (this
+session's OWN earlier `min-width`/rem/range-comparison/multi-term-`calc()`
+media-query fixes were ALL, similarly, first found on Tailwind-built sites
+and later confirmed to matter broadly). Three regression tests
+(`TestMediaMatchesNotAllAnd` — the real leading-space-carrying string, the
+case-insensitive/no-space `<link media>` form, and a confirmed-unrelated
+`not screen` left alone; `TestParseStylesheetNestedNotAllAnd` — the real
+NESTED shape `sm:max-md:` compiles to, an outer plain `min-width` wrapping
+an inner `not all and`), confirmed to fail with the exact wrong values
+predicted via a real `git diff > patch; git checkout --; go test; git apply
+patch` cycle. `css` held its 99.5% coverage floor.
+
 ## 2026-09-03 (cont., round 26) — a missing vendor-prefixed pseudo-element wrongly hid a `<details>`'s whole summary; the legacy `clip: rect(...)` property implemented (engine#106)
 
 pkg.go.dev/net/http's "Details" panel (four checkmark rows: "Valid go.mod

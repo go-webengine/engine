@@ -223,14 +223,34 @@ func parseRules(src string, vw float64) []Rule {
 	return rules
 }
 
+// notAllAndPrefix matches a leading "not all and" — CSS's own idiom for
+// negating a single feature test, which "all" (a media type that always
+// matches) reduces to "not (the feature)". Tailwind v4 compiles EVERY
+// "max-*:" breakpoint variant (max-sm:, and the upper bound of a compound
+// range like sm:max-md:) to exactly this shape — `@media not all and
+// (min-width:40rem)` for max-sm:, confirmed live on tailwindcss.com's own
+// homepage — rather than a direct max-width feature. Before this was
+// recognised, mediaMatches evaluated the min-width feature INSIDE the
+// parens completely normally and silently ignored the "not", so a
+// narrow-viewport-only utility (e.g. a "text-4xl" label meant to show only
+// below the sm breakpoint) matched at every viewport ABOVE it instead —
+// the opposite of what the rule means — because the wrapped feature (here,
+// "min-width:40rem") is exactly the condition that should be negated, and a
+// match without negation gives precisely the inverted answer.
+var notAllAndPrefix = regexp.MustCompile(`(?i)^\s*not\s+all\s+and\s+`)
+
 // mediaMatches evaluates a simplified @media condition against viewport width
-// vw. print media never matches; min-width/max-width pixel features (colon
-// syntax and the Level 4 comparison syntax) are honoured (all must hold);
-// anything else (screen/all/unknown features) matches optimistically so
-// desktop layout rules are applied.
+// vw. print media never matches; a leading "not all and" negates the rest of
+// the condition (see notAllAndPrefix); min-width/max-width pixel features
+// (colon syntax and the Level 4 comparison syntax) are honoured (all must
+// hold); anything else (screen/all/unknown features) matches optimistically
+// so desktop layout rules are applied.
 func mediaMatches(cond string, vw float64) bool {
 	if strings.Contains(cond, "print") {
 		return false
+	}
+	if loc := notAllAndPrefix.FindStringIndex(cond); loc != nil {
+		return !mediaMatches(cond[loc[1]:], vw)
 	}
 	cond = evalMediaCalcs(cond)
 	for _, m := range mediaWidthRe.FindAllStringSubmatch(cond, -1) {
