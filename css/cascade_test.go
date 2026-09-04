@@ -300,6 +300,24 @@ func TestCascadeInheritUnknownPropertyIsNoop(t *testing.T) {
 	}
 }
 
+// TestCascadeBackgroundColorInitialResetsUAButton covers `background-color:
+// initial`/`unset`, using MDN's own real component rule shape
+// (`.color-theme__button{background-color:initial;border:none}`, its
+// color-theme toggle button) as the fixture: a real UA-default-styled
+// <button> must have its default gray chrome reset to transparent, the
+// property's spec initial value — matching the already-handled
+// `background:0 0`/`background:transparent` reset idiom.
+func TestCascadeBackgroundColorInitialResetsUAButton(t *testing.T) {
+	initial := styleOf(t, `<html><body><button style="background-color:initial">x</button></body></html>`, "button")
+	if initial.Background != Transparent {
+		t.Errorf("background-color:initial = %v, want Transparent", initial.Background)
+	}
+	unset := styleOf(t, `<html><body><button style="background-color:unset">x</button></body></html>`, "button")
+	if unset.Background != Transparent {
+		t.Errorf("background-color:unset = %v, want Transparent", unset.Background)
+	}
+}
+
 func TestCascadeFontSizeEm(t *testing.T) {
 	// font-size:2em on a child is relative to the parent's font-size (20px→40px);
 	// a margin in em is relative to the element's own computed font-size.

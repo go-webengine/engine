@@ -18,6 +18,47 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-04 (round 34) — `background-color: initial`/`unset` were unrecognised, so a real `<button>`'s UA-default gray chrome survived an author's own reset unchanged (engine#115)
+
+developer.mozilla.org's header showed the "Theme" toggle and "English (US)"
+language-switcher as visible gray PILL/BUTTON boxes — Chrome renders both as
+plain text links with no visible box at all.
+
+Fetched the real markup and CSS rather than guessing: both are backed by
+declarative-Shadow-DOM web components (`<mdn-color-theme>`,
+`<mdn-language-switcher>`) whose light-DOM slotted content is a real
+`<button>` — `.color-theme__button{background-color:initial;border:none;
+color:inherit;...}`. `border:none` already worked (confirmed via an
+isolated cascade check: `Border.Top.Width` correctly zeroed), but
+`background-color:initial` did not — `css/parse.go`'s `background-color`
+case had no handling for the CSS-wide keywords `initial`/`unset` at all
+(only `inherit` is handled generically, at the very top of `apply`), so the
+declaration was silently ignored like any other unrecognised value, leaving
+the UA-default `<button>` background (`#efefef`) untouched underneath.
+
+Fixed narrowly: `background-color: initial` or `:unset` (a non-inherited
+property, so `unset` behaves like `initial`) now resets to `Transparent` —
+the property's actual CSS-spec initial value — mirroring the SAME reset
+idiom the `background` shorthand already handles for a value with no colour
+token (`background:0 0`/`background:transparent`, confirmed load-bearing on
+github.com's own nav buttons in an earlier round). Scoped to
+`background-color` only: the fetched CSS confirmed exactly two real uses of
+`initial` on this page (`.color-theme__button`, `.color-theme__option`),
+both on this one property; a general per-property "initial value" table for
+every CSS property would be substantially bigger scope with no confirmed
+need.
+
+**Verified live: both the "Theme" and "English (US)" controls now render as
+plain text**, matching Chrome (the still-missing breadcrumb `>` separator
+between "Web" and "CSS" is a separate, already-documented gap — this
+engine does not synthesise `::before`/`::after` generated content at all —
+correctly left untouched by this fix).
+
+Regression test (`TestCascadeBackgroundColorInitialResetsUAButton`) uses
+MDN's own real rule shape as the fixture, confirmed to fail with the exact
+predicted UA-default gray value (`{239,239,239,255}`) via a genuine
+revert-and-rerun check before the fix was restored.
+
 ## 2026-09-04 (round 32) — table `colspan` was entirely unmodelled — a row mixing a spanning cell with plain ones split every story on news.ycombinator.com into two misaligned side-by-side blocks (engine#112)
 
 news.ycombinator.com's front page rendered every story split into two

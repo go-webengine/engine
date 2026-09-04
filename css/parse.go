@@ -487,6 +487,19 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.Color = c
 		}
 	case "background-color":
+		// `initial`/`unset` (background-color is not an inherited property, so
+		// `unset` behaves like `initial` here) reset to the property's spec
+		// initial value, transparent — confirmed load-bearing live on MDN's
+		// own `mdn-color-theme` web component: `.color-theme__button{
+		// background-color:initial; border:none}` resets a real `<button>`'s
+		// UA-default gray chrome to look like a plain icon-button, the same
+		// idiom already handled for the `background:0 0`/`background:transparent`
+		// shorthand forms. Left unrecognised before this, the declaration was
+		// silently ignored and the UA default background survived untouched.
+		if lv == "initial" || lv == "unset" {
+			s.Background = Transparent
+			break
+		}
 		// The whole value is the colour (may itself contain spaces, e.g. the
 		// modern `rgb(22 24 29 / 1)` syntax), so parse it directly.
 		if c, ok := parseColor(v); ok {
