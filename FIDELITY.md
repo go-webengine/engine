@@ -2666,6 +2666,32 @@ columns.
   a box and promoting it to a real sibling (CSS 2.1 §9.2.1.1) — is a real
   layout feature comparable in scope to Shadow DOM slot projection, not a
   narrow bug fix; not attempted.
+  **Confirmed a SECOND, independent real-world instance (2026-09-04, round
+  33): news.ycombinator.com's own upvote-triangle icon.** Its markup is
+  `<a href='vote?...'><div class='votearrow'></div></a>` — a plain block
+  `<div>` (styled with a `background: url("triangle.svg"), linear-
+  gradient(...) no-repeat` icon, no text) nested directly inside an inline
+  `<a>`. Root-caused with an isolated, network-independent reproduction
+  (`RenderHTML` against a minimal fixture): a background-image `url()`
+  layer on a standalone `<div id=e>{...}</div>` renders correctly (44
+  non-background pixels of the expected triangle shape), and the SAME CSS
+  wrapped in the SAME `<a>...</a>` nesting the real page uses renders
+  ZERO — confirming the div's own box (and therefore its background paint
+  step) is lost inside the inline wrapper, not a background-image/SVG-
+  decoding defect. (An earlier bisection attempt wrongly suspected the
+  background-image pipeline itself, tracing a red herring caused by the
+  test fixture's OWN construction — an inline `style="..."` HTML attribute
+  containing a `url("data:...")` value whose embedded double quotes
+  collide with the attribute's own delimiter, truncating the attribute
+  value at HTML-parse time; switching the reproduction to a `<style>`
+  block — matching how the real page's CSS actually lives, in an external
+  stylesheet — immediately showed the background-image mechanism working
+  correctly in isolation, redirecting the investigation to the real cause.)
+  This confirms the gap is real, recurring, and independent of the
+  specific site or DOM shape that first surfaced it — not a one-off. Not
+  fixed, for the same reason as before: the correct fix is the same
+  bigger, deliberately-deferred layout feature, not a narrow one-off patch
+  for this specific icon.
 - **No `@font-face` (custom web fonts) at all — `css/parse.go` explicitly
   skips it wholesale, like any other unrecognised at-rule.** Confirmed
   load-bearing live on go.dev/blog (2026-09-03, round 20 investigation, no
