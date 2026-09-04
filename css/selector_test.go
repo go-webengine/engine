@@ -283,6 +283,60 @@ func TestNotPseudo(t *testing.T) {
 	}
 }
 
+// TestFirstChildPseudo covers ":first-child" and, critically, its use as a
+// ":not()" argument — found live on caniuse.com, whose real CSS is
+// `.home__list-item:not(:first-child){display:none}` (hide every "Did you
+// know?" tip except the first). Before this, ":first-child" was an
+// unmodelled pseudo like ":nth-child", and an unmodelled ":not()" argument
+// was treated as "always true statically" (correct for a genuinely
+// always-false dynamic pseudo like ":hover", wrong for a real structural
+// fact that is only SOMETIMES true): ":not(:first-child)" degraded to no
+// constraint at all, so the rule matched EVERY list item including the
+// first, hiding the whole tip list instead of all-but-the-first.
+func TestFirstChildPseudo(t *testing.T) {
+	root, err := dom.Parse(`<html><body><ul class="home__dyk-list">
+		<li class="home__list-item">first</li>
+		<li class="home__list-item">second</li>
+	</ul></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ul := dom.Find(root, "ul")
+	var items []*dom.Node
+	for _, c := range ul.Children {
+		if c.Type == dom.Element {
+			items = append(items, c)
+		}
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 <li> children, got %d", len(items))
+	}
+	first, second := items[0], items[1]
+
+	fc, ok := parseComplex(":first-child")
+	if !ok {
+		t.Fatal(":first-child should parse")
+	}
+	if !fc.Matches(first) {
+		t.Error(":first-child should match the first <li>")
+	}
+	if fc.Matches(second) {
+		t.Error(":first-child should NOT match the second <li>")
+	}
+
+	// The real caniuse.com rule: hide every list item except the first.
+	notFirst, ok := parseComplex(".home__list-item:not(:first-child)")
+	if !ok {
+		t.Fatal(".home__list-item:not(:first-child) should parse")
+	}
+	if notFirst.Matches(first) {
+		t.Error(":not(:first-child) should NOT match the first <li> (it would wrongly hide it)")
+	}
+	if !notFirst.Matches(second) {
+		t.Error(":not(:first-child) should match the second <li>")
+	}
+}
+
 func TestNotUnmodelledDoesNotDropRule(t *testing.T) {
 	// A :not() whose argument is empty or genuinely UNMODELLED (a pseudo-
 	// element) must NOT drop the rule — it degrades to "no constraint" so the
