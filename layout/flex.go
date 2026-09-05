@@ -446,6 +446,34 @@ func (l *layouter) layoutIsolated(node *dom.Node, st *css.Style, contentW float6
 	return box
 }
 
+// layoutNestedInlineFlex lays out a display:inline-flex element as a
+// self-contained nested box for InlineItem.NestedBox (see appendElementInline):
+// shrink-to-fit at its own preferred width, exactly like a width:auto flex
+// item would size against an unconstrained container, since at inline-
+// collection time no surrounding line width is known yet (the two-phase
+// collect-then-wrap design fixes every atomic inline item's size before line
+// breaking, the same reason Image/FormControl are sized up front). Internally
+// this behaves exactly like a block-level flex container — inline-vs-block
+// only matters for how the PARENT places this box, not how it lays out its
+// OWN children — so the isolated clone forces plain DisplayFlex, the value
+// contents()'s own dispatch and preferredWidth's flex-row branch already
+// know how to handle.
+func (l *layouter) layoutNestedInlineFlex(el *dom.Node, st *css.Style) *Box {
+	clone := *st
+	clone.Display = css.DisplayFlex
+	// preferredWidth returns an outer (border+padding-inclusive) measurement
+	// — see its own doc comment — while layoutIsolated wants a pure content
+	// width (it lays the node out at BoxSizing:ContentBox), so the edges it
+	// added have to come back off here.
+	bw := clone.Border.Widths()
+	edges := bw.Left + bw.Right + clone.Padding.Left + clone.Padding.Right
+	w := l.preferredWidth(el, &clone) - edges
+	if w < 0 {
+		w = 0
+	}
+	return l.layoutIsolated(el, &clone, w)
+}
+
 // distribute returns the leading offset and inter-item gap for a justify-content
 // value given free space and item count.
 func distribute(j css.Justify, free float64, n int) (offset, gap float64) {

@@ -18,6 +18,105 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 45) — `display:inline-flex` parsed down to the SAME value as block-level `flex`, making every such element block-level; fixing it surfaced a SECOND, unrelated bug in `translateBox` that silently dropped a nested box tree's own coordinates during re-translation (engine#125)
+
+pkg.go.dev re-investigated with a full top-to-bottom comparison (last
+touched round 43, on a narrow icon-colour issue only) after noticing it
+carries this session's corpus's highest pixdiff (49.6%) despite a middling
+SSIM — a strong signal that SOMETHING beyond the small icon fix was
+dominating the diff on this particular 78,426px page. The bench tool's own
+diff-heatmap montage showed a ghosting pattern that visibly WORSENED going
+down the page — the classic signature of a fixed vertical offset introduced
+early that then propagates through everything below it, rather than
+scattered noise.
+
+Traced to the very top: pkg.go.dev's breadcrumb (`Discover Packages > Standard
+library > net > http`) rendered as FOUR SEPARATE LINES, one per segment,
+instead of Chrome's single row. `.go-Breadcrumb li{display:inline-flex}` —
+this engine's CSS parser mapped BOTH `flex` and `inline-flex` to the exact
+same `css.DisplayFlex` value, discarding the "inline" qualifier entirely and
+making every `inline-flex` element block-level, stacking each breadcrumb
+`<li>` onto its own line and inflating the header's height by roughly 3
+extra lines — a fixed offset at the very top of the page that then shifted
+everything below it, compounding into exactly the growing-misalignment
+pattern the diff-heatmap showed.
+
+This is the "opposite direction" half of the already-documented "inline-
+flex/grid/table conflated with block" architectural gap (Known Gaps,
+originally scoped as "comparable to Shadow DOM… not attempted", confirmed
+on github.com round 24 and this same page's breadcrumb round 26) — but it
+turned out substantially more tractable than that estimate, because this
+engine already has the exact CONCEPT needed: `DisplayInlineBlock` already
+exists as "an atomic inline-level box, laid out as a block", and
+`layoutIsolated` (already used by flex/grid/table children) already knows
+how to lay a node out at a fixed content width in its own isolated context.
+
+Implemented for `inline-flex` specifically (the one confirmed live case;
+`inline-grid`/`inline-table` are NOT attempted, unconfirmed as live bugs):
+a new `css.DisplayInlineFlex` value, kept distinct from `DisplayFlex` so
+`isBlockLevel` correctly excludes it. `appendElementInline` treats it as a
+NEW kind of atomic inline item — `InlineItem.NestedBox`, a real laid-out
+`*Box` (unlike Image/FormControl's opaque bitmap/drawn-control) — sized via
+`layoutNestedInlineFlex`, which forces the isolated clone's `Display` back
+to plain `DisplayFlex` (inline-vs-block only matters for how the PARENT
+places the box, not how it lays out its own children) and shrink-to-fits it
+at its own `preferredWidth` (no surrounding line width is known yet at
+inline-collection time — the same reason Image/FormControl are sized up
+front). `layoutInline`'s two positioning loops translate the NestedBox to
+its final position once resolved, and `paintItem` recurses straight into
+`paintBox` for it, so it gets the identical filter/opacity/background/
+border/children handling any other box does for free.
+
+**A second, unrelated, more surprising bug surfaced verifying this live,
+found by the SAME "measure the real pixels" discipline this session
+applies throughout**: after the base fix, the breadcrumb correctly flowed
+onto one line — but rendered OVERLAPPING the page's own top search bar,
+painted well above where its own correctly-computed layout box said it
+should be. Direct instrumentation (comparing a from-scratch reproduction of
+the engine's OWN pipeline against `engine.Render`'s real output) proved the
+LAYOUT was already correct in both — the bug was in PAINT. Root cause:
+`translateBox` — the general mechanism that repositions a subtree already
+laid out at a local, pre-positioning origin (used for every flex/grid
+item, and for floats) — walks `box.Children` and updates each
+`InlineItem`'s scalar `X`/`Y`, but `NestedBox` is a SECOND, independent box
+tree hanging off an `InlineItem` that neither of those paths reaches. This
+is the EXACT SAME blind spot an earlier fix in this same function already
+found and fixed for a DIFFERENT kind of attached data (a list-item
+marker's absolute position, confirmed live on caniuse.com) — a flex/grid
+ancestor positioned ABOVE the inline-flex element (pkg.go.dev's header
+section, itself flex-laid-out) re-translated the breadcrumb's containing
+box to its final position, correctly updating the InlineItem's own `X`/`Y`
+scalar, but leaving `NestedBox`'s internally-stored coordinates — and by
+extension, everything painted from them — stuck at their stale,
+pre-translation position.
+
+Fixed by making `translateBox` also recurse into `it.NestedBox` when
+translating a line's items, keeping the two representations in sync.
+**Caught a THIRD, smaller bug while writing the regression test for the
+whitespace-before-an-inline-flex case**: `layoutNestedInlineFlex` lays out
+the element's OWN content using the SAME layouter instance's
+`wsPending`/`wsEmitted` whitespace-tracking fields, which its internal
+layout call correctly mutates for ITS OWN text — but doing so silently
+clobbers the OUTER context's pending-whitespace state before the calling
+code can check it, dropping a real leading space. Fixed by capturing the
+outer state before the nested layout call.
+
+Verified live: the breadcrumb now renders as one line, positioned
+correctly below the header. **Bench: SSIM 0.616→0.642, pixdiff
+49.6%→33.4%** — a 16-point pixdiff drop, by far the largest single-round
+bench movement this session, confirming the cumulative-offset theory. This
+also moved developer.mozilla.org's and react.dev's page heights slightly
+(both also use `inline-flex` somewhere), not separately investigated this
+round.
+
+Six new regression tests across `layout/inlineflex_test.go` and a new
+`paint/inlineflex_test.go`, covering: inline flow (the base bug), the
+translateBox propagation bug, whitespace-before handling (and the
+wsPending-clobbering bug it caught), a `box-sizing:border-box` width-
+narrower-than-padding edge case, the `white-space:pre` code path, and
+paint's own recursion into a NestedBox — every one confirmed to fail via
+genuine revert-and-rerun before its corresponding fix.
+
 ## 2026-09-05 (round 44) — a plain inline element's own `margin-left`/`margin-right` had NO EFFECT at all — `InlineItem` carries no margin field, so a browser-rendered gap between two adjacent inline elements with no source whitespace between them silently vanished (engine#124)
 
 news.ycombinator.com re-investigated fresh with a full top-to-bottom

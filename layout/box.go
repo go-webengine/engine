@@ -129,6 +129,21 @@ type InlineItem struct {
 	// etc.) for placeInlineSegments to use.
 	BlockBreak *dom.Node
 
+	// NestedBox is non-nil when this item is an INLINE-level box that lays
+	// out its own content via a full nested formatting context — currently
+	// only display:inline-flex (see appendElementInline). Unlike Image/
+	// FormControl (opaque atomic content with no box tree of their own),
+	// NestedBox is a real *Box, already laid out at (0,0)-relative
+	// coordinates by layoutIsolated; layoutInline's positioning loop
+	// translates it to its final (X,Y) once resolved (the same translateBox
+	// step flex/grid/table items already get) and paint recurses into it
+	// like any other box, so borders, backgrounds, and its own children's
+	// flex-resolved positions all render correctly. Width/Ascent/LineHeight
+	// carry its outer box size, the same convention Image/FormControl use;
+	// Ascent equals the box's own height (its bottom edge sits ON the line's
+	// baseline), the same simplification already used for Image/FormControl.
+	NestedBox *Box
+
 	X, Y float64
 }
 
