@@ -6,6 +6,7 @@ package layout
 import (
 	"math"
 	"sort"
+	"strings"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
@@ -38,24 +39,44 @@ type flexLine struct {
 // align-content across the flex lines. Returns the content bottom y.
 func (l *layouter) flex(box *Box, node *dom.Node, st *css.Style, cx, cw, top float64, b *bfc) float64 {
 	items := l.flexItems(node)
-	if len(items) == 0 {
-		// flexItems only ever collects ELEMENT children, but a flex container
-		// whose content is bare text (no wrapping element at all — e.g.
-		// `<h1 style="display:flex">React</h1>`, confirmed live on
-		// react.dev's hero heading and its two CTA buttons) forms a single
-		// anonymous flex item from that text per spec. Previously this
-		// returned immediately having laid out nothing, collapsing the whole
-		// element to zero width AND height. Falling back to the same
+	if len(items) == 0 || l.hasDirectText(node) {
+		// flexItems only ever collects ELEMENT children, but a flex
+		// container's bare text (no wrapping element) forms an anonymous
+		// flex item per spec — confirmed live TWICE: react.dev's hero
+		// heading (`<h1 style="display:flex">React</h1>`, zero element
+		// children) and go.dev/blog's nav dropdown links (`<a
+		// style="display:inline-flex">Why Go <i>arrow_drop_down</i></a>`,
+		// ONE element child alongside the bare text "Why Go "). The first
+		// case was fixed by falling back here when len(items)==0; the
+		// second went unnoticed because flexItems (and preferredWidth's
+		// flex-row branch) only ever check "are there zero elements", never
+		// "is there ALSO meaningful bare text alongside the elements found"
+		// — so a MIXED container skipped straight to flexRow/flexColumn
+		// below, silently dropping every bare-text sibling entirely (the
+		// icon rendered, "Why Go " never did). Falling back to the same
 		// inline-formatting-context path contents() already uses for a
-		// plain, non-flex, no-block-child element correctly sizes the
-		// common single-line case (there is only ever one synthetic item
-		// here, so justify-content/align-items/gap have nothing to
-		// distribute across, and are not modelled for it).
+		// plain, non-flex element correctly renders both the text and the
+		// element side by side for the common single-line case (there is no
+		// attempt to model justify-content/align-items/gap once any bare
+		// text is present — not confirmed as a live need for a container
+		// that also has real flex items).
 		b.commit()
 		pre := st.WhiteSpace == css.WSPre
 		inline := l.collectInline(node, st, pre)
 		if len(inline) == 0 {
 			return top
+		}
+		// A mixed container's bare text can itself wrap an element whose OWN
+		// display is block-level (e.g. a `<div style="width:...">` sibling
+		// alongside the text, not just an inline icon like go.dev/blog's
+		// case above) — collectInline promotes that via the ordinary
+		// BlockBreak mechanism, which needs box.Children populated, not just
+		// box.Lines (see contents()'s own identical hasBlockBreak check).
+		// Skipping this and always taking the simple layoutInline path would
+		// silently orphan such a block's box, the same "secondary box
+		// nothing walks" defect class round 45 fixed for NestedBox.
+		if hasBlockBreak(inline) {
+			return l.placeInlineSegments(box, inline, st, cx, cw, b, pre)
 		}
 		lines, bottom := l.layoutInline(inline, st, cx, cw, top, pre)
 		box.Lines = lines
@@ -96,6 +117,22 @@ func (l *layouter) flexItems(node *dom.Node) []*flexItem {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].st.Order < out[j].st.Order })
 	return out
+}
+
+// hasDirectText reports whether node has any direct child that is a
+// non-blank text node (pure whitespace is not a real anonymous flex item,
+// matching how CSS collapses it away). Used by flex() and preferredWidth's
+// flex-row branch to detect a flex container mixing bare text with element
+// children — neither routine models a text run as its own flex item, so both
+// fall back to plain inline-formatting-context handling instead of silently
+// dropping the text.
+func (l *layouter) hasDirectText(node *dom.Node) bool {
+	for _, c := range l.renderedChildren(node) {
+		if c.Type == dom.Text && strings.TrimSpace(c.Text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // mainBaseRow returns an item's hypothetical main content size along a row (cw is

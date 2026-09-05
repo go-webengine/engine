@@ -18,6 +18,93 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 47) — a flex container mixing bare text with an element child silently dropped the text entirely, so a nav dropdown's own label vanished, leaving only its icon (engine#127)
+
+go.dev/blog re-investigated fresh (by far the most stale page in the corpus:
+last dedicated look was round 20, 27 rounds ago, on the already-declined
+`@font-face` icon-ligature gap). A fresh full-resolution comparison found a
+DIFFERENT, previously-undiscovered bug in the same nav bar: "Why Go" and
+"Docs" — two of the nav's dropdown menu links — rendered as EMPTY, showing
+only their `arrow_drop_down` icon (itself the already-known, correctly-
+declined ligature-text gap) with no visible label text before it at all.
+"Learn" and "Packages" (plain links, no dropdown icon) rendered correctly.
+
+- Real markup: `<a class="js-desktop-menu-hover" aria-label=Docs
+  aria-describedby="...">Docs <i class="material-icons"
+  aria-hidden="true">arrow_drop_down</i></a>`, and go.dev's own stylesheet
+  sets `.Header-menuItem > a:link, ...:visited { display: inline-flex; ... }`
+  — the anchor itself is an `inline-flex` container holding BOTH bare text
+  ("Docs ") and a real element child (the icon `<i>`).
+- **Root cause, confirmed with a minimal offline reproduction before
+  touching any source** (`<div style="display:flex">Why Go
+  <i>ICON</i></div>` rendered as "ICON" alone): `layout/flex.go`'s
+  `flexItems()` — and `layout/floats.go`'s `preferredWidth` flex-row branch —
+  only ever collect `dom.Element`-type children, never bare text. Round 14
+  already handled the case of a flex container whose content is bare text
+  with ZERO element children (react.dev's `<h1 style="display:flex">React
+  </h1>`) by falling back to plain inline layout — but that fallback only
+  triggered when `len(items) == 0`. A MIXED container (bare text ALONGSIDE
+  at least one real element, go.dev's actual case) has `len(items) > 0`, so
+  it skipped straight to `flexRow`, silently discarding every bare-text
+  sibling: the icon rendered, the label never did. The exact same gap
+  existed independently in `preferredWidth`'s flex-row sum, which would have
+  under-measured the container's width even if `flex()` alone were fixed.
+- Fixed with a new `hasDirectText(node)` helper (any direct child that is a
+  non-blank text node) used in BOTH places: `flex()` now takes its existing
+  bare-text fallback whenever `len(items) == 0 OR hasDirectText(node)`, and
+  `preferredWidth`'s flex-row branch is skipped (falling through to the
+  general inline-measurement path already used for the zero-element case)
+  under the same condition. This is the shared root cause for BOTH
+  `display:flex` and `display:inline-flex` — `layoutNestedInlineFlex`
+  (round 45) internally forces plain `DisplayFlex` and routes through this
+  exact same `flex()` function, so go.dev's real `inline-flex` bug and a
+  plain `display:flex` case are fixed by the identical code path.
+- **A second, narrower bug surfaced while testing the fix against the
+  pre-existing `TestFlexSkipsTextAndHidden` fixture** (text + a
+  `display:none` span + a genuinely BLOCK-level `<div style="width:50px">`
+  — heavier than go.dev's real case, where the second child is merely
+  `display:inline`): the naive fallback unconditionally called
+  `layoutInline` and set `box.Lines` directly, exactly like round-14's
+  original fallback — but when the bare text sits alongside a true
+  block-level element, `collectInline` promotes that block via the ordinary
+  BlockBreak mechanism, which needs `box.Children` populated by
+  `placeInlineSegments`, not a bare `box.Lines` assignment. This is the SAME
+  "secondary box nothing walks" defect class round 45 fixed for
+  `InlineItem.NestedBox` — an orphaned box, not a crash, so nothing but a
+  targeted test would have caught it. Fixed by checking `hasBlockBreak(items)`
+  and delegating to `placeInlineSegments` when true, mirroring `contents()`'s
+  own identical check a few lines away.
+- The pre-existing `TestFlexSkipsTextAndHidden` test asserted exactly the
+  bug (`len(outer.Children) == 1`, treating the dropped text as CORRECTLY
+  "not a flex item" when it should have become an anonymous one) —
+  rewritten as `TestFlexRendersMixedTextHiddenAndElement` to assert the text
+  and the block child both render while the `display:none` child still does
+  not, matching this session's established precedent (rounds 42/45) for
+  fixing a test that encoded a bug rather than working around it.
+- Verified live: go.dev/blog's "Why Go" and "Docs" now render their labels
+  correctly before the (separately, already-known) literal
+  "arrow_drop_down" ligature text. **Bench flat on go.dev/blog itself
+  (SSIM 0.684→0.684, pixdiff 19.0%→19.0%)** — two two-word nav labels are a
+  tiny fraction of a page dominated by a long article list, the same "real
+  fix, tiny aggregate movement" pattern this session has hit on nearly every
+  nav-bar round. **developer.mozilla.org moved the OTHER way this run
+  (pixdiff 13.3%→17.9%)** — confirmed NOT caused by this fix: Chrome's own
+  capture now includes a live third-party ad banner ("Discover Otari") that
+  was absent from round 46's capture (Chrome's own page height changed
+  4188px→4278px between runs with no engine change at all, and re-running
+  MDN alone reproduces the same new score deterministically against
+  whatever ad is currently being served) — the same "ads/cookie banners are
+  non-deterministic, not a rendering bug" category already documented for
+  pkg.go.dev's cookie banner. news.ycombinator.com moved slightly better
+  (16.2%→15.7%), plausibly the same general fix touching an unrelated flex
+  usage there; not separately investigated.
+- Coverage: css 99.5%, layout 100.0% (two new branches — the mixed-content
+  fallback and the `hasBlockBreak` delegation — were 0%-covered immediately
+  after the initial implementation, closed with
+  `TestFlexContainerMixedTextAndElement` and the rewritten
+  `TestFlexRendersMixedTextHiddenAndElement`), paint 100.0%, dom 98.1% (all
+  floors held).
+
 ## 2026-09-05 (round 46) — an SVG `fill`/`stroke` set via an ordinary CSS class (Tailwind's `fill-*`/`stroke-*` utilities) was silently dropped, so the element rasterised with SVG's initial fill (black) instead of its intended colour (engine#126)
 
 tailwindcss.com re-investigated fresh (last dedicated look pre-dated this
