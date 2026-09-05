@@ -58,6 +58,50 @@ func TestApplyVisibilityValues(t *testing.T) {
 	}
 }
 
+func TestApplyFillAndStroke(t *testing.T) {
+	// A concrete colour sets the paint and clears the "none" flag (in case an
+	// earlier, lower-precedence declaration had set fill:none).
+	s := newStyle()
+	s.FillNone = true
+	applyOn(s, "fill", "#1e90ff", 16)
+	if !s.FillSet || s.FillNone || s.Fill != (Color{0x1e, 0x90, 0xff, 0xff}) {
+		t.Errorf("fill:#1e90ff = %+v FillSet=%v FillNone=%v", s.Fill, s.FillSet, s.FillNone)
+	}
+	// fill:none clears any concrete colour and sets FillNone instead.
+	s = newStyle()
+	applyOn(s, "fill", "#1e90ff", 16)
+	applyOn(s, "fill", "none", 16)
+	if !s.FillNone || s.FillSet {
+		t.Errorf("fill:none FillSet=%v FillNone=%v, want FillSet=false FillNone=true", s.FillSet, s.FillNone)
+	}
+	// An unparseable value (e.g. an unresolved var()) is silently ignored,
+	// matching every other colour property in this switch.
+	s = newStyle()
+	applyOn(s, "fill", "not-a-colour", 16)
+	if s.FillSet || s.FillNone {
+		t.Errorf("fill:not-a-colour should be a no-op, got FillSet=%v FillNone=%v", s.FillSet, s.FillNone)
+	}
+
+	// stroke mirrors fill exactly.
+	s = newStyle()
+	s.StrokeNone = true
+	applyOn(s, "stroke", "white", 16)
+	if !s.StrokeSet || s.StrokeNone || s.Stroke != (Color{0xff, 0xff, 0xff, 0xff}) {
+		t.Errorf("stroke:white = %+v StrokeSet=%v StrokeNone=%v", s.Stroke, s.StrokeSet, s.StrokeNone)
+	}
+	s = newStyle()
+	applyOn(s, "stroke", "white", 16)
+	applyOn(s, "stroke", "none", 16)
+	if !s.StrokeNone || s.StrokeSet {
+		t.Errorf("stroke:none StrokeSet=%v StrokeNone=%v, want StrokeSet=false StrokeNone=true", s.StrokeSet, s.StrokeNone)
+	}
+	s = newStyle()
+	applyOn(s, "stroke", "not-a-colour", 16)
+	if s.StrokeSet || s.StrokeNone {
+		t.Errorf("stroke:not-a-colour should be a no-op, got StrokeSet=%v StrokeNone=%v", s.StrokeSet, s.StrokeNone)
+	}
+}
+
 func TestApplyBoxSizing(t *testing.T) {
 	s := newStyle()
 	applyOn(s, "box-sizing", "border-box", 16)

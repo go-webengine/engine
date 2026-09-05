@@ -200,7 +200,7 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 	}
 	// Inline <svg>: serialise the subtree and rasterise it.
 	if n.Tag == "svg" {
-		data := []byte(serializeSVG(n))
+		data := []byte(serializeSVG(n, sm))
 		b, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
 		if !ok {
 			return size, nil, false

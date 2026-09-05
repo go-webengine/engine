@@ -485,7 +485,28 @@ type Style struct {
 	FontWeight int     // 400 = normal, 700 = bold
 	FontFamily FontFamily
 	Italic     bool // font-style: italic|oblique (inherited)
-	Margin     Edges
+
+	// Fill/Stroke are the SVG paint properties (inherited, like Color).
+	// FillSet/StrokeSet distinguish "CSS resolved a concrete colour" from
+	// "left to the SVG document's own presentation attribute" — svg.go's
+	// serializeSVG is the only reader: unset changes nothing (the element's
+	// own `fill`/`stroke` XML attribute, if any, survives untouched), set
+	// overrides it with the CSS value. FillNone/StrokeNone models
+	// `fill:none`/`stroke:none` (paint suppressed) separately, since Color{}
+	// (transparent black) is also a legitimate real colour value. Confirmed
+	// load-bearing live: tailwindcss.com's nav icons (search glyph, version-
+	// badge chevron, logo mark) and CTA underline are coloured entirely via
+	// Tailwind's `fill-*`/`stroke-*` utility classes, never an XML `fill=`
+	// attribute — before this, every such icon rasterised with SVG's initial
+	// fill (black), often invisible against a dark background.
+	Fill       Color
+	FillSet    bool
+	FillNone   bool
+	Stroke     Color
+	StrokeSet  bool
+	StrokeNone bool
+
+	Margin Edges
 	Padding    Edges
 	Border     Borders
 	Width      Length // Auto by default
@@ -776,6 +797,12 @@ func inheritFrom(parent Style) Style {
 		Display:        DisplayInline, // reset (non-inherited)
 		Visibility:     parent.Visibility,
 		Color:          parent.Color,
+		Fill:           parent.Fill,
+		FillSet:        parent.FillSet,
+		FillNone:       parent.FillNone,
+		Stroke:         parent.Stroke,
+		StrokeSet:      parent.StrokeSet,
+		StrokeNone:     parent.StrokeNone,
 		Background:     Transparent, // reset
 		FontSize:       parent.FontSize,
 		FontWeight:     parent.FontWeight,
