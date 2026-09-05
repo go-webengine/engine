@@ -111,6 +111,24 @@ type InlineItem struct {
 
 	LineBreak bool // a <br>: forces the current line to end
 
+	// BlockBreak is non-nil when this item is a SENTINEL, not real inline
+	// content: a genuinely block-level element (display:block/flex/grid/
+	// table, or a form control explicitly given one of those) found while
+	// collecting inline content under an inline-context ancestor — e.g.
+	// `<a><div>...</div></a>` (news.ycombinator.com's own real markup) or
+	// `<code><span style="display:block">...</span></code>` (a syntax-
+	// highlighted code line, tailwindcss.com). Per CSS 2.1 §9.2.1.1 this
+	// element must be promoted to a REAL sibling box (with its own margins
+	// and block/flex/grid layout), splitting the surrounding inline content
+	// into anonymous block boxes around it — never flattened into the
+	// inline run's plain text as if it were ordinary inline content. Never
+	// reaches WrapItems/layoutInline directly: placeInlineSegments strips
+	// every BlockBreak sentinel out and places its node as a real box
+	// BEFORE the remaining runs on either side are wrapped and laid out.
+	// Style carries the element's own computed style (its display, margins,
+	// etc.) for placeInlineSegments to use.
+	BlockBreak *dom.Node
+
 	X, Y float64
 }
 
