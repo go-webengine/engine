@@ -33,11 +33,52 @@ type layouter struct {
 	// state threaded through the recursive collection rather than per text node.
 	wsPending bool
 	wsEmitted bool
+
+	// pendingMargin accumulates the margin-left of a plain inline element about
+	// to be entered, plus the margin-right of one just left, until the next
+	// InlineItem is created — margin-left applies as space before an inline
+	// element's own content starts, margin-right as space after it ends.
+	// Confirmed live on news.ycombinator.com: `<b class="hnname"
+	// style="margin-right:5px">Hacker News</b>` immediately followed by
+	// `<a>new</a>` with no source whitespace between them — the engine's own
+	// InlineItem carries no margin field, so the gap a real browser renders
+	// from margin-right alone was silently dropped, running the two together
+	// as "Hacker Newsnew". Reset alongside the whitespace state at a genuine
+	// break (a promoted block or forced <br>): unlike whitespace, which can
+	// legitimately carry a value AT that point (deferred to whatever comes
+	// after), a stale margin from before a hard break has nothing left on the
+	// same line to apply to.
+	//
+	// Consumed into the SAME SpaceBefore field collapsible whitespace uses
+	// (see takeMargin), not a dedicated one — a real, narrow consequence:
+	// layoutInline/wrapOneLine/WrapItems deliberately ignore SpaceBefore for
+	// a line's very FIRST item (so collapsible leading whitespace never
+	// creates a phantom indent), so a margin lands on an element that
+	// happens to start a line the SAME way — dropped, not applied. This
+	// engine's real, confirmed use of inline margin-right is always between
+	// two things already sharing a line (see the test above); a margin on a
+	// genuinely line-initial element would need its own field to survive
+	// line-breaking, not attempted here absent a confirmed live case.
+	pendingMargin float64
 }
 
-// beginInlineContext resets the whitespace-collapsing state at the top of an
-// inline formatting context.
-func (l *layouter) beginInlineContext() { l.wsPending, l.wsEmitted = false, false }
+// beginInlineContext resets the whitespace-collapsing and pending-margin state
+// at the top of an inline formatting context.
+func (l *layouter) beginInlineContext() { l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0 }
+
+// takeMargin returns the accumulated pending inline margin and resets it —
+// called exactly once, when the next InlineItem after it is created. Style's
+// own Margin.Left/Right are already plain resolved pixel values by this
+// point (a percentage margin collapses to 0 at cascade time — see
+// applyMarginShorthand — and an auto one leaves Margin.Left/Right at its zero
+// value too, tracked instead via the separate MarginLeftAuto/MarginRightAuto
+// bools block layout consults), so callers add them into pendingMargin
+// directly with no further resolution needed here.
+func (l *layouter) takeMargin() float64 {
+	m := l.pendingMargin
+	l.pendingMargin = 0
+	return m
+}
 
 // outOfFlowItem is a queued out-of-flow box plus the approximate static position
 // (the normal-flow cursor at the point it was skipped) used to resolve the box's
@@ -605,8 +646,10 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 	switch el.Tag {
 	case "br":
 		*items = append(*items, &InlineItem{LineBreak: true, Style: cs, Node: el})
-		// A forced break starts a new line: leading whitespace after it collapses.
-		l.wsPending, l.wsEmitted = false, false
+		// A forced break starts a new line: leading whitespace after it
+		// collapses, and any pending margin has nothing left on this line to
+		// apply to (same reasoning as the BlockBreak case below).
+		l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0
 	case "img", "svg":
 		w, h := l.imageSize(el)
 		if w > 0 && h > 0 {
@@ -614,12 +657,14 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			if l.wsEmitted && l.wsPending {
 				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
 			}
+			sb += l.takeMargin() + cs.Margin.Left
 			*items = append(*items, &InlineItem{
 				Style: cs, Image: el, Node: el, ImgW: w, ImgH: h,
 				Width: w, Ascent: h, LineHeight: h,
 				SpaceBefore: sb,
 			})
 			l.wsEmitted, l.wsPending = true, false
+			l.pendingMargin += cs.Margin.Right
 		}
 	default:
 		// A genuinely block-level element (display:block/flex/grid/table, or
@@ -653,8 +698,11 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			// placeInlineSegments), so any whitespace pending before it must
 			// not carry across as a phantom leading space on the FIRST word
 			// of the run that resumes after it — the same reset the "br"
-			// case above already applies for the identical reason.
-			l.wsPending, l.wsEmitted = false, false
+			// case above already applies for the identical reason. Any
+			// pending margin (from a preceding sibling's margin-right) is
+			// dropped the same way: nothing remains on this line to apply it
+			// to once a hard block break ends it.
+			l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0
 			return
 		}
 		// A form control defaults to display:inline (see css/ua.go) and so is
@@ -675,15 +723,27 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			if l.wsEmitted && l.wsPending {
 				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
 			}
+			sb += l.takeMargin() + cs.Margin.Left
 			*items = append(*items, &InlineItem{
 				Style: cs, FormControl: el, Node: el,
 				Width: w, Ascent: h, LineHeight: h,
 				SpaceBefore: sb, Label: l.buttonLabel(el),
 			})
 			l.wsEmitted, l.wsPending = true, false
+			l.pendingMargin += cs.Margin.Right
 			return
 		}
+		// A plain inline element contributes no box of its own — its margin
+		// is instead space around wherever its content ends up: margin-left
+		// as leading space before its first descendant InlineItem,
+		// margin-right as trailing space before whatever InlineItem follows
+		// it (see pendingMargin's own doc comment). Adjacent inline margins
+		// simply add up rather than collapsing, matching real CSS and
+		// falling out naturally here since pendingMargin only ever
+		// accumulates between takeMargin() calls.
+		l.pendingMargin += cs.Margin.Left
 		l.appendInline(el, cs, items, pre || cs.WhiteSpace == css.WSPre)
+		l.pendingMargin += cs.Margin.Right
 	}
 }
 
@@ -698,12 +758,13 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 				continue
 			}
 			*items = append(*items, &InlineItem{
-				Text:       seg,
-				Style:      st,
-				Node:       origin,
-				Width:      l.m.Measure(seg, st.FontFamily, st.FontSize, st.FontWeight, st.Italic),
-				Ascent:     asc,
-				LineHeight: lh,
+				Text:        seg,
+				Style:       st,
+				Node:        origin,
+				Width:       l.m.Measure(seg, st.FontFamily, st.FontSize, st.FontWeight, st.Italic),
+				SpaceBefore: l.takeMargin(),
+				Ascent:      asc,
+				LineHeight:  lh,
 			})
 		}
 		return
@@ -729,6 +790,9 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 			sb = space // whitespace between words within a run collapses to one space
 		} else if l.wsEmitted && l.wsPending {
 			sb = space // a boundary space — but never a leading indent on the first item
+		}
+		if i == 0 {
+			sb += l.takeMargin()
 		}
 		*items = append(*items, &InlineItem{
 			Text:        w,
