@@ -208,6 +208,27 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 		w, _ := l.imageSize(node)
 		return w + edges
 	}
+	// A form control (input/button/select/textarea) is an atomic box sized by
+	// formControlSize, never by measuring its children — it is a void or
+	// content-driven-differently element (an <input> has no children at all
+	// for collectInline's "Inline: max-content" fallback below to measure),
+	// the same reasoning appendElementInline already applies when it meets
+	// one as ordinary inline content. Without this check, preferredWidth
+	// reaches this node via a DIFFERENT path — recursing directly into an
+	// element child (the flex-row-sum and hasBlockLevelChild-max branches
+	// below both do this for any element, form control or not) — that never
+	// goes through appendElementInline at all, so the control's real size
+	// was never applied: a text <input> with no explicit width reported 0,
+	// not its ~170px UA-default. Confirmed live on github.com's "Go to file"
+	// search box: its `<span style="display:flex">` wrapper (itself
+	// block-level, so hasBlockLevelChild's max-of-children branch recurses
+	// into it directly) collapsed to near-zero width, shrinking a
+	// flex-shrink:0 container that should have kept room for the input down
+	// to almost nothing and crowding it against the adjacent "Code" button.
+	if node.Type == dom.Element && isFormControlTag(node.Tag) {
+		w, _ := l.formControlSize(node, st, 0)
+		return w + edges
+	}
 	// A definite (non-auto, non-percentage) width is the box's max-content
 	// contribution outright — CSS doesn't fall back to measuring children once
 	// the author has fixed the width, even when those children carry no text of

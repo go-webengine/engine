@@ -291,3 +291,29 @@ func TestFormControlDisplayBlockHiddenTakesNoBox(t *testing.T) {
 		t.Fatalf("a display:block hidden input produced content: %v", firstLineItems(box))
 	}
 }
+
+// TestFormControlSizeCountsTowardPreferredWidth covers a THIRD entry point
+// into a form control's size, distinct from both tests above: preferredWidth
+// (layout/floats.go), called when a form control sits behind one or more
+// ELEMENT ancestors that preferredWidth recurses into directly (the flex-row
+// sum and hasBlockLevelChild-max branches), never going through
+// appendElementInline or contents()' own isFormControlTag branch at all.
+// Confirmed live on github.com's "Go to file" search box: an unstyled
+// `<input>` wrapped in a `<span style="display:flex">` (itself block-level,
+// so a flex-shrink:0 ancestor's preferredWidth recursed straight into the
+// span) reported 0 preferred width instead of the input's ~170px UA default,
+// collapsing the container that should have made room for it and crowding
+// the input against the following "Code" button.
+func TestFormControlSizeCountsTowardPreferredWidth(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex;width:300px">` +
+		`<div id="filler" style="flex:auto">filler filler filler</div>` +
+		`<div id="wrap" style="flex-shrink:0"><span style="display:flex">` +
+		`<input type="text"></span></div></div></body></html>`
+	wrap := findBoxByID(layoutHTML(t, src, 300), "wrap")
+	if wrap == nil {
+		t.Fatal("wrap box not found")
+	}
+	// 170 (text input UA default, see formControlDefaultSize) + 2px of the
+	// input's own UA-default 1px border on each side (see css/ua.go).
+	assertF(t, "wrap.W", wrap.W, 172)
+}

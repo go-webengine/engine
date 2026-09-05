@@ -18,6 +18,22 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 41) — preferredWidth never special-cased form controls, so an `<input>` reached through an element ancestor (rather than through ordinary inline-content collection) measured as 0 width instead of its UA-default size (engine#121)
+
+Closes the last of the three github.com/golang/go header defects this session's rounds 39-40 flagged and left open: the "Go to file" search box and the "Code" button rendered overlapping instead of side by side.
+
+Root cause, found via the same throwaway-instrumentation approach as rounds 39-40: the search box's real markup is `<input>` inside a `<span style="display:flex">` inside a plain `<div>`, sitting in a `flex-shrink:0` container beside a shrinkable title. `preferredWidth` (`layout/floats.go`) is the function responsible for estimating how wide that `flex-shrink:0` container needs to be — and it reaches the `<span>` (block-level, since `display:flex` is a block-level display) via its OWN `hasBlockLevelChild → max of children` branch, which recurses into the span with a plain `l.preferredWidth(span, ...)` call. That call, in turn, is itself a `display:flex` row, so it takes the "flex row with element children" branch and recurses again — straight into the `<input>` node itself, calling `l.preferredWidth(input, ...)` directly.
+
+`preferredWidth` had no special case for a form control at all. Falling through to its generic "Inline: max-content" fallback, it calls `collectInline` on the `<input>` node's children — but an `<input>` is a void element with NO children to collect, so the estimate came out to 0. The control's real ~170px UA-default text-input width (already correctly modelled in `formControlSize`, and already correctly applied by `appendElementInline` and `contents()`'s own form-control branches) was never consulted, because THIS path into an `<input>`'s size — recursing through element ancestors via `preferredWidth`, rather than collecting it as one item of surrounding inline content — is a third entry point those two functions don't cover.
+
+Fixed by adding the same check `preferredWidth` already has for `<img>` (an atomic, non-recursible element) for any `isFormControlTag` element: return `formControlSize`'s width plus the node's own edges, instead of falling through to the empty-children measurement.
+
+Confirmed with a minimal, non-GitHub-specific reproduction (`<div style="flex-shrink:0"><span style="display:flex"><input></span></div>` inside a flex row) before touching the real page: the wrapping `flex-shrink:0` div reported 2px (its own edges only) instead of ~172px. Verified live: github.com's search box and "Code" button now render side by side, matching Chrome.
+
+**Bench: SSIM 0.551→0.550, pixdiff 30.2%→30.2% — essentially flat**, despite the fix being real and visually confirmed (screenshots before/after show the overlap resolved). Same pattern as round 39 on this identical page: a small, correctly-scoped toolbar fix doesn't move an aggregate score dominated by the rest of the page's content. This closes out the github.com header investigation chain rounds 39-41 worked through — no further known defects flagged on this page's header at this time.
+
+Regression test `TestFormControlSizeCountsTowardPreferredWidth` (`layout/formcontrol_test.go`, alongside the file's two existing form-control-entry-point tests), confirmed to fail via genuine revert-and-rerun before the fix (2px instead of 172px — exactly the input's real size going uncounted).
+
 ## 2026-09-05 (round 40) — a floated element promoted out of an inline ancestor (round 38's BlockBreak mechanism) was placed as a plain in-flow block and excluded from its ancestor's preferred-width estimate, collapsing a flex-shrink:0 container to zero width (engine#120)
 
 Direct continuation of round 39's own honest disclosure: github.com/golang/go's repo-header action row (Notifications/Fork/Star) still overflowed the viewport's right edge after round 39's flex-shrink fix, and the header carried a large blank gap above the Code/Issues tab bar. Traced with the same instrumentation approach as round 39 (a throwaway program driving `css.CascadeVW`/`layout.LayoutDocument` directly against the real fetched page).
