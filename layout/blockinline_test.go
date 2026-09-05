@@ -123,3 +123,66 @@ func TestBlockBreakResetsPendingWhitespace(t *testing.T) {
 		t.Errorf("SpaceBefore = %v, want 0 (no phantom leading space carried across a promoted block)", first.SpaceBefore)
 	}
 }
+
+// TestFloatedBlockBreakGetsFloatPlacementAndCountsTowardPreferredWidth covers
+// a gap in the BlockBreak mechanism above, using github.com's own real
+// repo-header action row as the fixture: a classic `<li style="float:left">`
+// button row under a `display:inline` `<ul>` (the pre-flexbox idiom GitHub's
+// markup still carries) sits inside a `flex-shrink:0` container beside a
+// shrinkable title. Each `<li>` is block-level (isBlockLevel(Display)) so it
+// gets promoted via BlockBreak like any other block found under an inline
+// ancestor — but unlike a genuine block, a FLOATED one does not start a new
+// line: it must (1) go through l.placeFloat, not the plain block l.place, and
+// (2) still count toward its ancestor's preferredWidth max-content estimate,
+// since a float still consumes horizontal space alongside its siblings.
+// Before this fix, both were wrong: the floats were placed as plain in-flow
+// blocks, and preferredWidth's "skip every BlockBreak" line-sum saw NOTHING
+// else to measure (the <li>s are the entire content), reporting a 0
+// max-content width — collapsing a flex-shrink:0 container that should have
+// kept its natural, non-zero width down to nothing, pushing its content off
+// the right edge of the viewport entirely.
+func TestFloatedBlockBreakGetsFloatPlacementAndCountsTowardPreferredWidth(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex;width:300px">` +
+		`<div id="filler" style="flex:auto">filler text long enough to shrink</div>` +
+		`<div id="actions" style="flex-shrink:0"><ul style="display:inline">` +
+		`<li style="float:left;width:40px;height:10px">A</li>` +
+		`<li style="float:left;width:60px;height:10px">B</li>` +
+		`</ul></div></div></body></html>`
+	actions := findBoxByID(layoutHTML(t, src, 300), "actions")
+	if actions == nil {
+		t.Fatal("actions box not found")
+	}
+	assertF(t, "actions.W", actions.W, 100) // 40+60, not 0
+	if len(actions.Children) != 2 {
+		t.Fatalf("actions.Children = %d, want 2 (the two floated <li>s)", len(actions.Children))
+	}
+	assertF(t, "li[0].X", actions.Children[0].X, actions.X)
+	assertF(t, "li[0].W", actions.Children[0].W, 40)
+	assertF(t, "li[1].X", actions.Children[1].X, actions.X+40)
+	assertF(t, "li[1].W", actions.Children[1].W, 60)
+}
+
+// TestNonFloatedBlockBreakStillExcludedFromPreferredWidth is the counterpart
+// to the float case above: a NON-floated block-level child promoted via
+// BlockBreak still contributes nothing to its inline ancestor's max-content
+// estimate (it gets its own line, so it never sits alongside the measured
+// text) — only a floated BlockBreak is the exception. Exercises preferredWidth
+// itself (via a flex-shrink:0 item, the same mechanism the float case above
+// uses to trigger it) rather than the ordinary in-flow layout path the other
+// BlockBreak tests in this file use, which never calls preferredWidth at all.
+func TestNonFloatedBlockBreakStillExcludedFromPreferredWidth(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex;width:300px">` +
+		`<div id="filler" style="flex:auto">filler text long enough to shrink</div>` +
+		`<div id="mixed" style="flex-shrink:0"><span style="display:inline">` +
+		`<div style="display:block;width:900px;height:5px"></div>ab</span></div>` +
+		`</div></body></html>`
+	mixed := findBoxByID(layoutHTML(t, src, 300), "mixed")
+	if mixed == nil {
+		t.Fatal("mixed box not found")
+	}
+	// The 900px block is on its own line and contributes nothing to the
+	// max-content estimate; only "ab" (2 runes * 10px fakeMeasurer = 20px)
+	// does. A regression that also counted the non-floated block would
+	// report ~900px instead.
+	assertF(t, "mixed.W", mixed.W, 20)
+}

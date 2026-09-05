@@ -424,6 +424,23 @@ func (l *layouter) placeInlineSegments(box *Box, items []*InlineItem, st *css.St
 			run = append(run, it)
 			continue
 		}
+		// A FLOATED promoted element (e.g. a classic `<li style="float:left">`
+		// button under a `display:inline` `<ul>`, confirmed live on
+		// github.com's repo-header action row) does not break the
+		// surrounding inline run the way a genuine block does — it is taken
+		// out of flow into the float context instead, matching the float
+		// check contents() already applies before its own generic block
+		// dispatch. Routing it through the plain block l.place() here (as a
+		// non-floated BlockBreak correctly is) gave it a full-width,
+		// in-flow block box instead of a shrink-to-fit float — and, upstream
+		// in preferredWidth, meant its width never counted toward its
+		// ancestor's max-content estimate at all, collapsing a
+		// flex-shrink:0 container that should have kept its natural width
+		// down to zero.
+		if it.Style != nil && it.Style.Float != css.FloatNone {
+			l.placeFloat(box, it.BlockBreak, it.Style, cx, cw, b)
+			continue
+		}
 		flushRun()
 		child := l.place(it.BlockBreak, it.Style, cx, cw, b)
 		box.Children = append(box.Children, child)
