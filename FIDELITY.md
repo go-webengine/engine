@@ -18,6 +18,71 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 43) — `filter` had NO EFFECT on any `<img>` element, block or inline, because an image is never represented as a layout.Box (the only thing the filter/opacity group-buffer pipeline knows how to wrap) (engine#123)
+
+pkg.go.dev re-investigated fresh (last touched round 35, 8 rounds stale).
+Live at 1024px, the "Details" panel's Valid-go.mod/Redistributable-license/
+Tagged-version checkmark icons rendered as flat, uncoloured grey circles
+instead of Chrome's teal accent colour, alongside a "Latest" version badge
+missing its expected pill shape.
+
+Traced the icon colour gap first (the more clearly load-bearing of the two).
+pkg.go.dev ships each status icon as ONE shared, plain-grey SVG asset
+(`check_circle_gm_grey_24dp.svg`) referenced via an ordinary `<img src>`,
+then recolours it per context with the well-known "SVG-to-CSS-filter" idiom
+— `filter: brightness(0) invert(45%) sepia(94%) saturate(6735%)
+hue-rotate(176deg) brightness(94%) contrast(101%)` (the output of tools like
+the codepen "SVG to CSS filter" converter) — since an `<img src="...svg">`,
+unlike an inline `<svg>`, cannot be recoloured with `fill`/`currentColor`.
+
+Root cause, confirmed with a minimal reproduction (a solid greyscale test
+image via a `data:` URI, isolating the bug from the page's real assets)
+before touching any page-specific code: `layout`'s `contents()` represents
+EVERY `<img>` — whatever its `display` value — as an `InlineItem` with its
+`Image` field set (see `isReplacedTag`), never as an ordinary `layout.Box`.
+`paint`'s `filter`/opacity handling lives entirely in `paintBox`'s own
+group-buffer wrapping (render offscreen, apply the filter chain, composite)
+— which an `InlineItem` never passes through. Its own paint path,
+`paintItem`, blitted the decoded image bytes directly with no reference to
+`it.Style.Filters` (or opacity) at all. This is general, not specific to
+this one icon or even to `<img>` under an inline ancestor: `filter` on ANY
+image element had zero effect, block or inline.
+
+Fixed by applying the SAME `applyFilters` function `paintBox` already uses,
+directly in `paintItem`'s image branch, converting the decoded source to
+`*image.RGBA` first (a decoded JPEG or other non-RGBA `image.Image`
+implementation doesn't expose the raw pixel buffer `applyFilters`' colour-
+matrix math needs — a new `toRGBA` helper, pass-through for the common
+already-`*image.RGBA` case). Confirmed with the same minimal reproduction:
+the filtered pixel now matches an equivalent plain `<div>` with the
+identical `background-color`+`filter`, which was already correct — proving
+the filter MATH was never the problem, only the missing application point
+for images specifically.
+
+Verified live: pkg.go.dev's three Details-panel checkmarks now render in
+the correct teal accent colour. **Bench is flat (0.617→0.616 SSIM,
+49.6%→49.6% pixdiff)** — the icons are a tiny fraction of ink on an
+extremely tall (78,426px), text-and-code-block-dominated page whose
+comparison region (capped to 2500px) is overwhelmingly governed by
+font-rasteriser variance, the same already-documented pattern as Wikipedia
+and github.com's README. developer.mozilla.org moved slightly the OTHER
+way (13.5%→15.6% pixdiff) in this round's bench run — MDN also uses
+filtered icons, so this fix legitimately changed pixels there too; a small
+movement either direction from a real, independently-verified fix is
+consistent with this session's own repeated finding that SSIM/pixdiff
+comparison noise on real pages doesn't reliably track correctness at this
+scale.
+
+The "Latest" badge's missing pill shape is a SEPARATE, NOT-yet-investigated
+issue (looks like a border-radius or padding gap, not a filter one) —
+flagged for a future round rather than folded in speculatively.
+
+Two new regression tests in `paint/filter_test.go`
+(`TestInlineImageFilterApplied` and `TestInlineImageFilterConvertsNonRGBASource`,
+the latter specifically exercising `toRGBA`'s conversion branch with a
+decoded `*image.NRGBA` source), both confirmed to fail via genuine
+revert-and-rerun before the fix.
+
 ## 2026-09-05 (round 42) — preferredWidth's max-content estimate summed a promoted block's contribution to zero instead of treating it as its own candidate line, collapsing a shadow-DOM header control down to nothing (engine#122)
 
 developer.mozilla.org re-investigated fresh (last touched round 34, 8 rounds
