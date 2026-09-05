@@ -18,6 +18,99 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 46) — an SVG `fill`/`stroke` set via an ordinary CSS class (Tailwind's `fill-*`/`stroke-*` utilities) was silently dropped, so the element rasterised with SVG's initial fill (black) instead of its intended colour (engine#126)
+
+tailwindcss.com re-investigated fresh (last dedicated look pre-dated this
+session's round numbering — by far the corpus's most stale page). Wasn't
+picked for its bench score alone (13.3% pixdiff, mid-table) but for
+staleness, per this round's own "pick the worst-scoring/longest-stale page"
+discipline — and it paid off: the nav bar's Tailwind logo mark rendered as a
+near-invisible dark blob instead of Chrome's blue swirl+wordmark, and the
+search-box and version-badge icons were entirely missing.
+
+- Real markup, fetched fresh: `<a aria-label="Home"><svg class="h-5
+  text-black dark:text-white"><path class="fill-sky-400" d="..."/><path
+  fill="currentColor" d="...(wordmark letterforms)..."/></svg></a>`. The
+  wordmark path (`fill="currentColor"`, a literal XML attribute) is the
+  session's ALREADY-documented oksvg multi-subpath mis-render gap (round 25,
+  MDN's "mdn" logo) — ruled out as a re-discovery, not chased again. The
+  ICON path is different: `class="fill-sky-400"`, no `fill=` attribute at
+  all. `.fill-sky-400{fill:var(--color-sky-400)}` is a real, separate,
+  previously-undocumented gap.
+- **Root cause, confirmed with a minimal offline reproduction before
+  touching any source** (`<style>.blue{fill:#1e90ff}</style><svg><rect
+  class="blue".../></svg>` rendered black instead of blue): this engine's
+  CSS cascade has NEVER modelled `fill`/`stroke` as properties at all — no
+  field on `css.Style`, no case in `apply()`. Worse, even if it had,
+  `svg.go`'s `serializeSVG` (which re-emits an inline `<svg>` DOM subtree as
+  raw XML text for the third-party rasteriser, oksvg, to parse) only ever
+  copies each element's literal `n.Attr` map — it has no notion of this
+  engine's CSS cascade at all, so a class-driven paint colour had nowhere to
+  go even in principle. oksvg then sees a `<path>` with no `fill` attribute
+  and falls back to SVG's OWN initial value, black — invisible or
+  near-invisible against a dark nav bar.
+- Confirmed the SAME gap independently affects the nav's search-icon SVG
+  (`class="fill-gray-600 dark:fill-gray-500"`, no attribute) and the
+  version-badge's chevron SVG (`class="fill-gray-400"`, alongside an
+  IGNORED-by-CSS-priority `fill="currentColor"` attribute) — both were
+  invisible against the dark background for the identical reason, and
+  `stroke-white` (a CTA underline) is a second, live, real usage of the
+  parallel `stroke` property on the same page, so both were fixed together
+  rather than fill alone — not speculative, both confirmed load-bearing on
+  this one page.
+- Fixed with three additive changes: (1) `css/value.go` — `Style` gains
+  `Fill`/`FillSet`/`FillNone` and `Stroke`/`StrokeSet`/`StrokeNone` (the
+  *Set/*None split matters because `Color{}` — transparent black — is also a
+  legitimate real colour value, so "unset" needs its own bit rather than
+  overloading the zero value), inherited like `color` in `inheritFrom`. (2)
+  `css/parse.go` — `fill`/`stroke` cases parse a colour via the same
+  `parseColor` every other colour property already uses, or set the *None
+  flag for `none`; an unparseable value (an unresolved `var()`, matching
+  every other colour property's existing behaviour) is silently a no-op,
+  not a special case. (3) `svg.go`'s `serializeSVG`/`writeSVGNode` now take
+  the document's already-computed `css.StyleMap` (already available at both
+  call sites in `images.go` — no new plumbing needed) and, per element,
+  override (or add) the regenerated XML's `fill`/`stroke` attribute when CSS
+  resolved one, leaving every element CSS left untouched exactly as before.
+  Deliberately NOT implemented: `fill:currentColor`/`stroke:currentColor`
+  via a CSS class (no confirmed live usage — `currentColor` is fully
+  supported already, but only via the pre-existing literal-XML-attribute
+  path) and `fill:inherit`/`stroke:inherit` through the CSS-wide `inherit`
+  keyword dispatcher (ditto) — both narrower gaps than base support, left
+  undone rather than gold-plated in ahead of a confirmed need, matching this
+  session's established scope discipline.
+- **A second, separate real bug was found but NOT root-caused this round**:
+  the "v4.3" version-badge button renders overlapping the START of the logo
+  (a layout/positioning defect, unrelated to fill/stroke — it reproduced
+  identically before and after this round's fix). Two reasonable minimal
+  reproductions (a plain block-level flex sibling; an inline `<a>`
+  containing an SVG as a flex item, matching the real markup's un-styled
+  default `display:inline` `<a>`) both positioned correctly, failing to
+  reproduce it — the real page's specific combination (a `position:fixed`
+  ancestor, `justify-between` on the outer flex row, and a badge button
+  whose own text content is split by an empty React-hydration `<!--
+  -->` comment node between "v" and "4.3") wasn't narrowed down further
+  before time was better spent shipping the confirmed, well-scoped fix
+  above. Documented here rather than silently dropped, so a future round
+  doesn't have to rediscover the symptom from scratch.
+- Verified live: the nav's Tailwind logo now renders its correct blue swirl
+  (confirmed via a full-resolution crop of a fresh render, matching Chrome).
+  **Bench moved only slightly on tailwindcss.com itself (SSIM 0.706→0.709,
+  pixdiff 13.3%→13.1%)** — the fixed icons are a handful of pixels on a
+  13,585px page, the same "real fix, small aggregate movement" pattern this
+  session has hit repeatedly. The fix's real value is general: it applies to
+  any inline SVG on any page styled via CSS classes rather than XML
+  attributes, a very common pattern (every Tailwind-based site's icon set).
+- Coverage: css 99.5% (two new branches — `fill`/`stroke`'s color and
+  `none` cases — were 0%-covered immediately after the initial
+  implementation, closed with `TestApplyFillAndStroke`), layout 100.0%,
+  paint 100.0%, dom 98.1% (all floors held). Also added
+  `TestSerializeSVGCSSFillOverridesAttribute` (unit-level: override vs.
+  untouched vs. `none`) and `TestInlineSVGCSSClassFill` (end-to-end,
+  mirroring the real bug's shape) — the root `engine` package itself is not
+  coverage-gated (it performs live network I/O), but both were verified to
+  fail via a full revert-and-confirm-fail (`git stash`) before shipping.
+
 ## 2026-09-05 (round 45) — `display:inline-flex` parsed down to the SAME value as block-level `flex`, making every such element block-level; fixing it surfaced a SECOND, unrelated bug in `translateBox` that silently dropped a nested box tree's own coordinates during re-translation (engine#125)
 
 pkg.go.dev re-investigated with a full top-to-bottom comparison (last

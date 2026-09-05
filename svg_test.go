@@ -124,7 +124,7 @@ func TestSerializeSVG(t *testing.T) {
 	}, Parent: svg}
 	svg.Children = []*dom.Node{lg, rect}
 
-	out := serializeSVG(svg)
+	out := serializeSVG(svg, nil)
 
 	// Mixed-case names restored for the tokens oksvg reads case-sensitively.
 	for _, want := range []string{"viewBox=", "<linearGradient", "gradientUnits=", `xmlns="http://www.w3.org/2000/svg"`} {
@@ -147,6 +147,40 @@ func TestSerializeSVG(t *testing.T) {
 	}
 }
 
+func TestSerializeSVGCSSFillOverridesAttribute(t *testing.T) {
+	// A path with NO fill attribute at all (the common Tailwind
+	// `class="fill-*"` idiom, confirmed live on tailwindcss.com's nav icons)
+	// picks up the CSS-resolved colour; a path that ALREADY carries its own
+	// fill attribute has it overridden by a set CSS value, and a path with no
+	// computed style entry at all (sm has no entry for it) is left untouched.
+	svg := &dom.Node{Type: dom.Element, Tag: "svg", Attr: map[string]string{"viewbox": "0 0 10 10"}}
+	noAttr := &dom.Node{Type: dom.Element, Tag: "path", Attr: map[string]string{"d": "M0 0"}, Parent: svg}
+	hasAttr := &dom.Node{Type: dom.Element, Tag: "path", Attr: map[string]string{"d": "M0 0", "fill": "red"}, Parent: svg}
+	untouched := &dom.Node{Type: dom.Element, Tag: "path", Attr: map[string]string{"d": "M0 0", "fill": "purple"}, Parent: svg}
+	noneCase := &dom.Node{Type: dom.Element, Tag: "path", Attr: map[string]string{"d": "M0 0", "fill": "red"}, Parent: svg}
+	svg.Children = []*dom.Node{noAttr, hasAttr, untouched, noneCase}
+
+	sm := css.StyleMap{
+		noAttr:   {Fill: css.Color{R: 0x1e, G: 0x90, B: 0xff, A: 0xff}, FillSet: true},
+		hasAttr:  {Fill: css.Color{R: 0x00, G: 0xff, B: 0x00, A: 0xff}, FillSet: true},
+		noneCase: {FillNone: true},
+	}
+	out := serializeSVG(svg, sm)
+
+	if !strings.Contains(out, `d="M0 0" fill="#1e90ff"`) {
+		t.Errorf("CSS fill not added to a path with no attribute:\n%s", out)
+	}
+	if !strings.Contains(out, `d="M0 0" fill="#00ff00"`) {
+		t.Errorf("CSS fill did not override the path's own fill attribute:\n%s", out)
+	}
+	if !strings.Contains(out, `fill="purple"`) {
+		t.Errorf("a path absent from sm should keep its own attribute untouched:\n%s", out)
+	}
+	if !strings.Contains(out, `fill="none"`) {
+		t.Errorf("FillNone should emit fill=\"none\":\n%s", out)
+	}
+}
+
 func TestSerializeSVGEscapesText(t *testing.T) {
 	// The svg already declares xmlns (so the serialiser does not add another),
 	// and a "greater-than" appears in both an attribute value and text.
@@ -157,7 +191,7 @@ func TestSerializeSVGEscapesText(t *testing.T) {
 	// A non element/text node child is skipped by the serialiser.
 	doc := &dom.Node{Type: dom.Document, Parent: svg}
 	svg.Children = []*dom.Node{txt, doc}
-	out := serializeSVG(svg)
+	out := serializeSVG(svg, nil)
 	if !strings.Contains(out, "x &lt; y &amp; z &gt; w") {
 		t.Errorf("text not escaped: %s", out)
 	}
@@ -348,6 +382,19 @@ func TestInlineSVGIntrinsicLayout(t *testing.T) {
 	assertPixel(t, img, 20, 20, 0x12, 0xab, 0x34, "inline svg fill")
 	// Just outside the 40px box stays white (the box did not overflow to 200px).
 	assertPixel(t, img, 60, 20, 0xff, 0xff, 0xff, "outside svg box white")
+}
+
+func TestInlineSVGCSSClassFill(t *testing.T) {
+	// A <rect> painted purely via a CSS class (Tailwind's `fill-*` idiom, no
+	// `fill=` attribute at all) picks up the cascaded colour instead of
+	// rasterising with SVG's initial fill (black) — confirmed load-bearing
+	// live on tailwindcss.com's own nav icons and logo mark (engine#126).
+	html := `<!doctype html><html><body style="margin:0;background:#fff">` +
+		`<style>.blue{fill:#1e90ff}</style>` +
+		`<svg viewBox="0 0 40 40"><rect class="blue" width="40" height="40"/></svg>` +
+		`</body></html>`
+	img := renderHTMLTest(t, html, 100, 100)
+	assertPixel(t, img, 20, 20, 0x1e, 0x90, 0xff, "CSS-class fill on inline svg")
 }
 
 // --- end-to-end: <img src=svg> sized by width/height attrs ----------------

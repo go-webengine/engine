@@ -488,6 +488,18 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		if c, ok := parseColor(v); ok {
 			s.Color = c
 		}
+	case "fill":
+		if lv == "none" {
+			s.FillNone, s.FillSet = true, false
+		} else if c, ok := parseColor(v); ok {
+			s.Fill, s.FillSet, s.FillNone = c, true, false
+		}
+	case "stroke":
+		if lv == "none" {
+			s.StrokeNone, s.StrokeSet = true, false
+		} else if c, ok := parseColor(v); ok {
+			s.Stroke, s.StrokeSet, s.StrokeNone = c, true, false
+		}
 	case "background-color":
 		// `initial`/`unset` (background-color is not an inherited property, so
 		// `unset` behaves like `initial` here) reset to the property's spec

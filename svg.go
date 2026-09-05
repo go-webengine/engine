@@ -284,13 +284,23 @@ var svgAttrCase = map[string]string{
 // sorts attributes for deterministic output, XML-escapes values and text, and
 // ensures the root carries an xmlns. Elements are always written with an
 // explicit end tag (valid XML for empties too).
-func serializeSVG(n *dom.Node) string {
+//
+// sm supplies each element's cascaded style so a `fill`/`stroke` resolved by
+// an ordinary CSS rule (e.g. Tailwind's `fill-*`/`stroke-*` utility classes) is
+// written into the regenerated XML as a `fill`/`stroke` attribute — oksvg
+// parses raw SVG presentation attributes only and has no notion of this
+// engine's CSS cascade, so without this override a class-driven paint colour
+// is silently lost and every such path/shape rasterises with SVG's initial
+// fill (black). sm may be nil (e.g. a synthetic/detached subtree with no
+// computed styles), in which case every element's own original attributes
+// pass through unchanged, exactly as before this override existed.
+func serializeSVG(n *dom.Node, sm css.StyleMap) string {
 	var sb strings.Builder
-	writeSVGNode(&sb, n, true)
+	writeSVGNode(&sb, n, true, sm)
 	return sb.String()
 }
 
-func writeSVGNode(sb *strings.Builder, n *dom.Node, root bool) {
+func writeSVGNode(sb *strings.Builder, n *dom.Node, root bool, sm css.StyleMap) {
 	switch n.Type {
 	case dom.Text:
 		xmlEscapeText(sb, n.Text)
@@ -306,8 +316,29 @@ func writeSVGNode(sb *strings.Builder, n *dom.Node, root bool) {
 	}
 	sb.WriteByte('<')
 	sb.WriteString(tag)
-	keys := make([]string, 0, len(n.Attr))
-	for k := range n.Attr {
+	attrs := n.Attr
+	if st := sm[n]; st != nil {
+		if st.FillSet || st.FillNone || st.StrokeSet || st.StrokeNone {
+			attrs = make(map[string]string, len(n.Attr)+2)
+			for k, v := range n.Attr {
+				attrs[k] = v
+			}
+			switch {
+			case st.FillNone:
+				attrs["fill"] = "none"
+			case st.FillSet:
+				attrs["fill"] = fmt.Sprintf("#%02x%02x%02x", st.Fill.R, st.Fill.G, st.Fill.B)
+			}
+			switch {
+			case st.StrokeNone:
+				attrs["stroke"] = "none"
+			case st.StrokeSet:
+				attrs["stroke"] = fmt.Sprintf("#%02x%02x%02x", st.Stroke.R, st.Stroke.G, st.Stroke.B)
+			}
+		}
+	}
+	keys := make([]string, 0, len(attrs))
+	for k := range attrs {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -323,7 +354,7 @@ func writeSVGNode(sb *strings.Builder, n *dom.Node, root bool) {
 		sb.WriteByte(' ')
 		sb.WriteString(name)
 		sb.WriteString(`="`)
-		xmlEscapeAttr(sb, n.Attr[k])
+		xmlEscapeAttr(sb, attrs[k])
 		sb.WriteByte('"')
 	}
 	if root && !hasXMLNS {
@@ -331,7 +362,7 @@ func writeSVGNode(sb *strings.Builder, n *dom.Node, root bool) {
 	}
 	sb.WriteByte('>')
 	for _, c := range n.Children {
-		writeSVGNode(sb, c, false)
+		writeSVGNode(sb, c, false, sm)
 	}
 	sb.WriteString("</")
 	sb.WriteString(tag)
