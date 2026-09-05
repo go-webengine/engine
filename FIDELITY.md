@@ -18,6 +18,62 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 44) — a plain inline element's own `margin-left`/`margin-right` had NO EFFECT at all — `InlineItem` carries no margin field, so a browser-rendered gap between two adjacent inline elements with no source whitespace between them silently vanished (engine#124)
+
+news.ycombinator.com re-investigated fresh with a full top-to-bottom
+comparison (last touched round 33/38, via the general BlockBreak mechanism
+rather than a dedicated look at this page's own remaining diffs). Live at
+1024px, the header read "**Hacker News**new | past | comments | ..." — the
+site title and the first nav link ran together with no gap, where Chrome
+shows a clear space.
+
+Root cause, confirmed against the real source: `<b class="hnname"
+style="margin-right:5px">Hacker News</b><a href="newest">new</a>` — genuinely
+no whitespace at all between the two elements in the HTML. The margin-right
+IS the only source of the gap Chrome renders. `InlineItem` (the atom of
+inline layout) has no margin field of any kind, and nothing in inline
+collection ever reads `Style.Margin.Left`/`.Right` for a plain (non-replaced,
+non-atomic) inline element — its margin was simply never consulted.
+
+Fixed with a `pendingMargin` accumulator on the layouter: entering a plain
+inline element adds its `margin-left`, leaving one adds its `margin-right`,
+and whichever `InlineItem` is created next (in `appendWords`, or the
+img/svg and form-control atomic-item branches) takes the accumulated
+value into its `SpaceBefore` field via a new `takeMargin()` method — the
+same field collapsible whitespace already uses to represent "space before
+this item," reusing the existing line-layout machinery rather than adding a
+parallel code path. Adjacent inline elements' margins correctly ADD (not
+collapse, unlike block margins) since accumulation only resets at
+`takeMargin()`. Reset alongside the whitespace-collapsing state at a
+genuine break (a promoted block or forced `<br>`): a stale margin has
+nothing left on the same line to apply to once one interrupts.
+
+**A real, narrower limitation surfaced by the session's own OWN regression
+test, not shipped over**: an inline margin lands correctly whenever the
+margined element is not the very first item on its line — but
+`layoutInline`/`wrapOneLine`/`WrapItems` deliberately ignore `SpaceBefore`
+for a line's first item (so collapsible leading whitespace never creates a
+phantom indent), and a margin riding in that SAME field is ignored for the
+identical reason. A dedicated non-collapsible field would be needed to
+survive that case too, not attempted here absent any CONFIRMED live page
+needing it (this engine's real, confirmed use of inline margin-right is
+always between two things already sharing a line, as on this page) — the
+regression test suite covers the working case, documents the gap plainly in
+`pendingMargin`'s own doc comment, and does not claim more than what is
+actually fixed.
+
+Verified live: "Hacker News new | past | ..." now renders with the correct
+gap. **Bench is flat (SSIM 0.559→0.556, pixdiff ~16% either way)** — a
+single-word header spacing fix on a page whose overall diff is dominated by
+ordinary font-rasteriser variance across dozens of story-list rows, the
+same already-documented pattern as every other small, correctly-scoped
+fix this session that didn't move a shared-region score.
+
+Four new regression tests in a new `layout/inlinemargin_test.go`
+(margin-right, margin-left, adjacent-margins-add, and the block-break
+drops-pending-margin boundary case), all confirmed to fail via genuine
+revert-and-rerun before the fix.
+
 ## 2026-09-05 (round 43) — `filter` had NO EFFECT on any `<img>` element, block or inline, because an image is never represented as a layout.Box (the only thing the filter/opacity group-buffer pipeline knows how to wrap) (engine#123)
 
 pkg.go.dev re-investigated fresh (last touched round 35, 8 rounds stale).
