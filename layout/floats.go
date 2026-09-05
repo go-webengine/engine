@@ -284,11 +284,28 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	items := l.collectInline(node, st, st.WhiteSpace == css.WSPre)
 	var line float64
 	for i, it := range items {
-		// A BlockBreak sentinel (a promoted block-level element, see
-		// InlineItem.BlockBreak) carries no Width/SpaceBefore of its own —
-		// its content gets its own independent box, not part of this
-		// max-content line estimate.
-		if it.LineBreak || it.BlockBreak != nil {
+		if it.LineBreak {
+			continue
+		}
+		if it.BlockBreak != nil {
+			// A BlockBreak sentinel (a promoted block-level element, see
+			// InlineItem.BlockBreak) normally carries no Width/SpaceBefore of
+			// its own — its content gets its own independent box, on its own
+			// line, not part of this max-content line estimate. But a FLOATED
+			// block-level element (e.g. a classic `<li style="float:left">`
+			// row of buttons under a `display:inline` `<ul>`, confirmed live
+			// on github.com's repo-header action row) is promoted for the
+			// SAME reason (isBlockLevel(Display)) yet never starts a new
+			// line — it still sits alongside the surrounding content,
+			// consuming its own horizontal space. Skipping it here made a
+			// container holding ONLY floated children (nothing left in the
+			// "line" sum once every child is skipped) report a 0
+			// max-content width, collapsing a flex-shrink:0 item that should
+			// keep its full natural width down to nothing.
+			if it.Style == nil || it.Style.Float == css.FloatNone {
+				continue
+			}
+			line += l.preferredWidth(it.BlockBreak, it.Style) + it.Style.Margin.Left + it.Style.Margin.Right
 			continue
 		}
 		if i > 0 {

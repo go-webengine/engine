@@ -18,6 +18,27 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 40) — a floated element promoted out of an inline ancestor (round 38's BlockBreak mechanism) was placed as a plain in-flow block and excluded from its ancestor's preferred-width estimate, collapsing a flex-shrink:0 container to zero width (engine#120)
+
+Direct continuation of round 39's own honest disclosure: github.com/golang/go's repo-header action row (Notifications/Fork/Star) still overflowed the viewport's right edge after round 39's flex-shrink fix, and the header carried a large blank gap above the Code/Issues tab bar. Traced with the same instrumentation approach as round 39 (a throwaway program driving `css.CascadeVW`/`layout.LayoutDocument` directly against the real fetched page).
+
+github.com's action row is classic, pre-flexbox markup GitHub still ships: `<ul class="pagehead-actions ... d-md-inline">` (computed `display:inline` at this width — confirmed genuinely correct: the `.pagehead ul.pagehead-actions{float:right}` rule in GitHub's own CSS requires a `.pagehead` ancestor class that is no longer present anywhere in the current DOM, so `float:none` on the `<ul>` itself is right, not a bug) containing three `<li style="float:left">` buttons, sitting inside a `flex-shrink:0` container beside a shrinkable repo-name title.
+
+Each `<li>` is block-level (`display:list-item` computes block-outside here) nested under the inline `<ul>`, so round 38's BlockBreak mechanism correctly promotes it out of the inline flow — but BlockBreak promotion had only ever been exercised by genuine, non-floated blocks before, and was wrong in two ways for a floated one:
+
+- **Placement** (`placeInlineSegments`, `layout/layout.go`): every promoted BlockBreak was routed through the plain block `l.place()`, giving it a full in-flow block box. `contents()`'s own ordinary per-child dispatch already checks `Float != FloatNone` BEFORE the block-level check for exactly this reason (float participates in a completely different placement algorithm); the promotion path never had the same check.
+- **Sizing** (`preferredWidth`, `layout/floats.go`): the line-sum that estimates an inline container's max-content width skipped every BlockBreak item unconditionally, on the reasoning that a promoted block gets its own line and contributes nothing to the width of the surrounding text. True for a genuine block — wrong for a float, which does NOT start a new line and DOES consume horizontal space alongside its siblings. With the action row's entire content being three floated `<li>`s and nothing else, the estimate summed to zero, and a `flex-shrink:0` item that should have kept its full natural width collapsed to nothing instead.
+
+Fixed both: a BlockBreak item now checks its own `Style.Float` (the promotion path already stores the RAW, authoritative style for exactly this kind of non-inherited-property check, per the established convention from round 38's own Display fix) — floated, it goes through `l.placeFloat` and its own `preferredWidth` is added to the running estimate; non-floated, behaviour is unchanged from round 38.
+
+Verified live: the Notifications/Fork/Star row now renders fully on-screen, side by side, immediately below the repo title — and the blank gap above the tab bar is gone (both were the same root cause; page height 3173px→3051px). **Measured: SSIM 0.528→0.551, pixdiff 34.0%→30.2%** — a real, visible improvement this time, unlike round 39's flat aggregate score on the same page.
+
+The remaining, separately-flagged "Go to file" search-box/"Code"-button overlap on this same page is still not fixed — confirmed structurally unrelated (a different subtree, the newer React `OverviewContent-module` toolbar, not this classic float-based action row) and left for a future round.
+
+Two new regression tests in `layout/blockinline_test.go`
+(`TestFloatedBlockBreakGetsFloatPlacementAndCountsTowardPreferredWidth` and
+its non-floated counterpart `TestNonFloatedBlockBreakStillExcludedFromPreferredWidth`, added to keep the branch covered), the floated one confirmed to fail via a genuine revert-and-rerun before the fix (0 width and an off-container child position instead of the correct 100px/340px).
+
 ## 2026-09-05 (round 39) — flex-shrink resolved in a single, non-iterative pass, so a line where one item bottoms out at its floor left the container overflowing instead of passing the shortfall to its sibling (engine#119)
 
 github.com/golang/go re-investigated fresh (last touched round 24, 15 rounds
