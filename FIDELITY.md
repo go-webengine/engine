@@ -18,6 +18,70 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 39) — flex-shrink resolved in a single, non-iterative pass, so a line where one item bottoms out at its floor left the container overflowing instead of passing the shortfall to its sibling (engine#119)
+
+github.com/golang/go re-investigated fresh (last touched round 24, 15 rounds
+stale, and round 24's own diagnosis was reached through a much simpler,
+synthetic markup shape than the site's CURRENT real header — worth
+re-verifying from scratch rather than assuming it still applies). Live at
+1024px, "Sign in" and "Sign up" were entirely missing from the top nav, and
+the nav items themselves were spread across huge, uneven gaps — despite the
+CSS driving both being correctly parsed and cascaded (checked directly: the
+mobile-only fallback controls compute `display:none` as they should, and the
+container's `flex-direction` correctly switches to row at this width; this is
+NOT a repeat of the CSS Media Queries Level 4 range-syntax gap engine#61
+already closed for this exact site back on 2026-08-31).
+
+Traced it to layout, not CSS: `github.com`'s marketing header lays out a
+small logo item beside a nav+search+sign-in/up group in one flex row. Once
+the mobile-only controls are correctly hidden, the visible content is a
+narrow logo and a much wider nav group — together wider than the 1024px
+viewport. `resolveMainRow` (`layout/flex.go`) distributed the resulting
+negative free space across both items in a single pass, weighted by
+`flex-shrink`, then clamped each one independently to its floor (0) or
+min/max-width. The logo's proportional share pushed it below 0, so it
+clamped to 0 — but the portion of its share that the floor refused to take
+was simply dropped, never handed to the nav group. The nav group therefore
+kept ~1421px of its ~1421px hypothetical (unshrunk) width in a 1024px
+container, carrying "Sign in"/"Sign up" off the right edge of the viewport
+entirely.
+
+This is CSS Flexbox §9.7 "Resolving Flexible Lengths": clamping is not a
+one-shot operation. An item that clamps at a bound must be frozen and
+removed from the flexible set, and the space it couldn't absorb (or give up)
+redistributed among the REMAINING flexible items — repeated until nothing
+new freezes. `resolveMainRow` now runs that loop (bounded to at most one
+iteration per item, since each iteration freezes at least one more): recompute
+the still-flexible items' combined factor and the current shortfall, share it
+out, freeze whichever item's clamp changed its value, repeat. The existing
+symmetric case — two items that both hit the SAME bound in the same round,
+so nothing is left over to redistribute (`TestFlexShrinkClampedByMinWidth`,
+already in the suite) — still passes unchanged; only the asymmetric cascade
+case was ever wrong.
+
+Not GitHub-specific: this is the general flex-shrink algorithm, so it applies
+to any flex row where a narrow item's shrink share would take it negative
+while a wider sibling remains room to give. Confirmed live: "Sign in" and
+"Sign up" now render on-screen at the top-right of the nav on
+github.com/golang/go, and the nav item spacing is no longer stretched across
+artificially inflated gaps.
+
+**Two other real, separate defects were confirmed on this same page during
+investigation but are NOT fixed here** — each looks structurally independent
+of the flex-shrink bug (different DOM subtrees, different symptom shape) and
+is flagged rather than folded in speculatively: (1) the repo header's
+Notifications/Fork/Star button row still overflows past the right edge of the
+1024px viewport instead of shrinking or wrapping; (2) the "Go to file" search
+input and the "Code" split-button overlap instead of sitting side by side.
+Both need their own root-causing against GitHub's Primer React markup before
+a fix is attempted.
+
+Regression test `TestFlexShrinkCascadesPastAFrozenItem`
+(`layout/features_test.go`) reproduces the general shape (a 10px item beside
+a 300px item in a 200px container) independent of GitHub's markup, confirmed
+to fail (245px instead of 200px — exactly the un-redistributed single-pass
+value) via a genuine revert-and-rerun before the fix was restored.
+
 ## 2026-09-05 (round 38) — a block-level child nested under an inline-context ancestor got no real box at all, instead of the spec's anonymous-block-wrapper-plus-promotion behaviour (engine#118)
 
 This is the architectural gap round 36 (and round 33, and round 24

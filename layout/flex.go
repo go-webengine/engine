@@ -259,23 +259,81 @@ func (l *layouter) flexRow(box *Box, items []*flexItem, st *css.Style, cx, cw, t
 
 // resolveMainRow distributes free main space across a line via grow/shrink,
 // clamping each item's resolved main size to its min/max-width.
+//
+// This is CSS Flexbox §9.7 "Resolving Flexible Lengths": distributing once and
+// clamping each item independently is not enough. When an item's proportional
+// share would push it past its min/max-width, clamping it there changes how
+// much space the OTHER items must absorb — an item frozen at a bound no longer
+// participates, so the space it couldn't take (grow) or couldn't give up
+// (shrink) has to be redistributed among the remaining, still-flexible items,
+// repeated until no further item clamps. A single pass instead leaves that
+// leftover amount undistributed: a shrinking line whose first item clamps at
+// its floor (0 or min-width) stays that much too WIDE overall, because the
+// deficit it couldn't shrink by never gets passed on to its siblings.
+// Confirmed live on github.com/golang/go: its marketing header lays out a
+// logo (an auto-width flex item with no visible siblings once the mobile-only
+// controls are hidden by their own media queries, so its content-based base
+// size is small) beside a nav+search+sign-in/up group whose unwrapped content
+// is wider than the 1024px viewport. The single-pass version clamped the logo
+// item to 0 (it had nowhere to shrink to) and dropped the rest of the
+// requested shrink instead of applying it to the nav group, leaving the group
+// at ~1421px in a 1024px container — overflowing off the right edge and
+// carrying "Sign in"/"Sign up" past the visible viewport with it.
 func resolveMainRow(line []*flexItem, cw, mainGap float64) {
-	var sumOuter, sumGrow, sumShrink float64
 	for _, it := range line {
 		it.main = it.base
-		sumOuter += it.base + it.hEdges + it.hMargin
-		sumGrow += it.st.FlexGrow
-		sumShrink += it.st.FlexShrink
 	}
-	free := cw - sumOuter - mainGap*float64(len(line)-1)
-	switch {
-	case free > 0 && sumGrow > 0:
+	n := len(line)
+	frozen := make([]bool, n)
+	sumOuter := func() float64 {
+		var s float64
 		for _, it := range line {
-			it.main = it.clampMainRow(it.base+free*it.st.FlexGrow/sumGrow, cw)
+			s += it.main + it.hEdges + it.hMargin
 		}
-	case free < 0 && sumShrink > 0:
-		for _, it := range line {
-			it.main = it.clampMainRow(math.Max(it.base+free*it.st.FlexShrink/sumShrink, 0), cw)
+		return s
+	}
+	grow := cw-sumOuter()-mainGap*float64(n-1) > 0
+
+	// At most n rounds: each round either freezes at least one more item or
+	// stops, so the loop can run at most n times before every item is frozen.
+	for range line {
+		var sumFactor float64
+		for i, it := range line {
+			if frozen[i] {
+				continue
+			}
+			if grow {
+				sumFactor += it.st.FlexGrow
+			} else {
+				sumFactor += it.st.FlexShrink
+			}
+		}
+		free := cw - sumOuter() - mainGap*float64(n-1)
+		if sumFactor <= 0 || (grow && free <= 0) || (!grow && free >= 0) {
+			break
+		}
+		frozeAny := false
+		for i, it := range line {
+			if frozen[i] {
+				continue
+			}
+			factor := it.st.FlexShrink
+			if grow {
+				factor = it.st.FlexGrow
+			}
+			if factor <= 0 {
+				continue // never participates; keeps its current main size
+			}
+			wanted := it.main + free*factor/sumFactor
+			clamped := it.clampMainRow(math.Max(wanted, 0), cw)
+			it.main = clamped
+			if clamped != wanted {
+				frozen[i] = true
+				frozeAny = true
+			}
+		}
+		if !frozeAny {
+			break
 		}
 	}
 }
