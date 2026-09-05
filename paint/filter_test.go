@@ -286,6 +286,57 @@ func TestPaintBoxFilterGroup(t *testing.T) {
 	}
 }
 
+// TestInlineImageFilterApplied covers a THIRD entry point into filter
+// handling, distinct from the two paintBox-based tests above: an <img>,
+// which is always represented as an InlineItem (see contents()'s
+// isReplacedTag branch), never a layout.Box, and so is painted via paintItem
+// rather than paintBox — a different code path that never saw `filter` at
+// all before this fix. Confirmed live on pkg.go.dev, whose Details-panel
+// icons are a single grey SVG asset recoloured per-context via exactly this
+// filter chain (the "SVG-to-CSS-filter" idiom, since an <img src> cannot be
+// recoloured with `fill`/`currentColor` the way an inline <svg> can).
+func TestInlineImageFilterApplied(t *testing.T) {
+	dst := white(20, 20)
+	node := &dom.Node{Type: dom.Element, Tag: "img"}
+	src := solid(10, 10, css.Color{R: 0, G: 0, B: 255, A: 255})
+	imgs := map[*dom.Node]image.Image{node: src}
+	st := &css.Style{Filters: []css.Filter{{Kind: css.FilterGrayscale, Amount: 1}}}
+	it := &layout.InlineItem{Image: node, Style: st, X: 0, Y: 0, ImgW: 10, ImgH: 10}
+	line := &layout.LineBox{X: 0, Y: 0, W: 10, H: 10, Items: []*layout.InlineItem{it}}
+	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "p"}, Style: &css.Style{},
+		X: 0, Y: 0, W: 20, H: 20, Lines: []*layout.LineBox{line}}
+	PaintFull(dst, box, NewFonts(), imgs, nil)
+	c := dst.RGBAAt(5, 5)
+	if c.R != c.G || c.G != c.B {
+		t.Errorf("grayscale filter did not neutralise inline image colour: %+v", c)
+	}
+}
+
+// TestInlineImageFilterConvertsNonRGBASource covers toRGBA's conversion
+// branch: a decoded image whose concrete type is not already *image.RGBA
+// (an *image.NRGBA here, matching what a decoded PNG with a straight alpha
+// channel commonly is) must still have its filter applied correctly, not
+// silently skipped or panic on a failed type assertion.
+func TestInlineImageFilterConvertsNonRGBASource(t *testing.T) {
+	dst := white(20, 20)
+	node := &dom.Node{Type: dom.Element, Tag: "img"}
+	nrgba := image.NewNRGBA(image.Rect(0, 0, 10, 10))
+	for i := 0; i < len(nrgba.Pix); i += 4 {
+		nrgba.Pix[i], nrgba.Pix[i+1], nrgba.Pix[i+2], nrgba.Pix[i+3] = 0, 0, 255, 255
+	}
+	imgs := map[*dom.Node]image.Image{node: nrgba}
+	st := &css.Style{Filters: []css.Filter{{Kind: css.FilterGrayscale, Amount: 1}}}
+	it := &layout.InlineItem{Image: node, Style: st, X: 0, Y: 0, ImgW: 10, ImgH: 10}
+	line := &layout.LineBox{X: 0, Y: 0, W: 10, H: 10, Items: []*layout.InlineItem{it}}
+	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "p"}, Style: &css.Style{},
+		X: 0, Y: 0, W: 20, H: 20, Lines: []*layout.LineBox{line}}
+	PaintFull(dst, box, NewFonts(), imgs, nil)
+	c := dst.RGBAAt(5, 5)
+	if c.R != c.G || c.G != c.B {
+		t.Errorf("grayscale filter on a non-RGBA source = %+v, want neutralised", c)
+	}
+}
+
 // TestPaintBoxFilterWithOpacity covers a box carrying BOTH a filter and a
 // fractional opacity: filter first, then the opacity composites the result.
 func TestPaintBoxFilterWithOpacity(t *testing.T) {

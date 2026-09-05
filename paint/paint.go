@@ -5,6 +5,7 @@ package paint
 
 import (
 	"image"
+	"image/draw"
 	"math"
 	"strings"
 
@@ -754,6 +755,20 @@ func paintInlineBackground(pp *painter.PixelPainter, box *layout.Box, line *layo
 func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, clip image.Rectangle) {
 	if it.Image != nil {
 		if src, ok := imgs[it.Image]; ok {
+			// Every <img> — block or inline — is represented as an InlineItem,
+			// never a layout.Box (see contents()'s isReplacedTag branch), so it
+			// never goes through paintBox's own hasFilter group-buffer wrapping
+			// above. Without this, `filter` on an <img> had no effect at all:
+			// confirmed live on pkg.go.dev, whose Details-panel icons are a
+			// single grey SVG asset recoloured per-context via exactly this
+			// `filter: brightness(0) invert(...) sepia(...) saturate(...)
+			// hue-rotate(...)` idiom (the standard "SVG-to-CSS-filter" trick,
+			// since an <img src> — unlike an inline <svg> — cannot be recoloured
+			// with `fill`/`currentColor`) — every one of them rendered in the
+			// SVG's own flat grey, never the intended accent colour.
+			if it.Style != nil && len(it.Style.Filters) > 0 {
+				src = applyFilters(toRGBA(src), it.Style.Filters, it.Style.Color)
+			}
 			blitImage(dst, src, int(it.X), int(it.Y), clip)
 		}
 		return
@@ -1270,6 +1285,19 @@ func copyRows(img *image.RGBA, y0, y1 int) *image.RGBA {
 	lo := (y0 - img.Rect.Min.Y) * img.Stride
 	hi := (y1 - img.Rect.Min.Y) * img.Stride
 	copy(out.Pix, img.Pix[lo:hi])
+	return out
+}
+
+// toRGBA returns src as an *image.RGBA, unchanged if it already is one (the
+// common case for a decoded PNG icon) — applyFilters' per-pixel colour-matrix
+// math needs direct Pix access, which a decoded JPEG (image.YCbCr) or other
+// image.Image implementation does not offer.
+func toRGBA(src image.Image) *image.RGBA {
+	if rgba, ok := src.(*image.RGBA); ok {
+		return rgba
+	}
+	out := image.NewRGBA(src.Bounds())
+	draw.Draw(out, out.Bounds(), src, src.Bounds().Min, draw.Src)
 	return out
 }
 
