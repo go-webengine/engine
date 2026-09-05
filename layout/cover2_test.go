@@ -10,14 +10,30 @@ import (
 	"github.com/go-webengine/engine/dom"
 )
 
-func TestFlexSkipsTextAndHidden(t *testing.T) {
-	// A text node and a display:none child are not flex items.
+func TestFlexRendersMixedTextHiddenAndElement(t *testing.T) {
+	// A display:none child is correctly excluded — but the bare text is a
+	// real anonymous flex item per spec, not something to silently drop
+	// (see TestFlexContainerMixedTextAndElement for why this matters live).
+	// hasDirectText routes this through the same BlockBreak-aware
+	// placeInlineSegments contents() itself uses, so the promoted
+	// `<div style="width:50px">` gets its own box (anon text run + div = 2
+	// children), rather than the naive layoutInline-only path that would
+	// have orphaned its box (round 45's NestedBox defect class).
 	src := `<html><body style="margin:0"><div style="display:flex">` +
 		`text<span style="display:none">H</span>` +
 		`<div style="width:50px">A</div></div></body></html>`
 	outer := findBox(layoutHTML(t, src, 300), "div")
-	if len(outer.Children) != 1 {
-		t.Fatalf("flex items = %d want 1", len(outer.Children))
+	if len(outer.Children) != 2 {
+		t.Fatalf("flex box children = %d want 2 (anon text run + promoted div)", len(outer.Children))
+	}
+	if findBoxWithText(outer, "A") == nil {
+		t.Error("the width:50px div's own content (\"A\") is missing from the tree")
+	}
+	if firstLineItems(outer) == nil || firstLineItems(outer)[0].Text != "text" {
+		t.Error("the bare text \"text\" was not rendered as an anonymous flex item")
+	}
+	if findBoxWithText(outer, "H") != nil {
+		t.Error("display:none child (\"H\") should not appear anywhere in the tree")
 	}
 }
 
@@ -40,6 +56,36 @@ func TestFlexContainerBareTextOnly(t *testing.T) {
 	}
 	if len(h1.Lines) != 1 || len(h1.Lines[0].Items) != 1 || h1.Lines[0].Items[0].Text != "React" {
 		t.Fatalf("bare-text flex container lines = %+v, want one line with the text", h1.Lines)
+	}
+}
+
+// TestFlexContainerMixedTextAndElement covers the real regression found on
+// go.dev/blog (2026-09-05, round 47): flexItems (and preferredWidth's
+// flex-row branch) only ever check "are there zero element children" to
+// decide whether a flex container's bare text needs the anonymous-item
+// fallback — a MIXED container (bare text ALONGSIDE a real element child,
+// e.g. go.dev's own `<a style="display:inline-flex">Why Go
+// <i>arrow_drop_down</i></a>` nav dropdown links) has len(items) > 0, so it
+// skipped straight to flexRow, silently dropping the bare text entirely: the
+// icon rendered, "Why Go " never did.
+func TestFlexContainerMixedTextAndElement(t *testing.T) {
+	// display:flex (block-level) exercises the exact same flex() code path
+	// go.dev's real display:inline-flex bug goes through (layoutNestedInlineFlex
+	// forces plain DisplayFlex internally — see its own doc comment); using
+	// the block form here keeps the box reachable via plain findBox, since an
+	// inline-flex atomic box hangs off InlineItem.NestedBox instead.
+	src := `<html><body style="margin:0">` +
+		`<div style="display:flex;font-size:20px">Why Go <i>X</i></div>` +
+		`</body></html>`
+	div := findBox(layoutHTML(t, src, 300), "div")
+	if div == nil {
+		t.Fatal("no div box")
+	}
+	if findBoxWithText(div, "Why") == nil {
+		t.Error("the bare text \"Why Go\" was silently dropped from a mixed flex container")
+	}
+	if findBoxWithText(div, "X") == nil {
+		t.Error("the <i> element's own content is missing")
 	}
 }
 
