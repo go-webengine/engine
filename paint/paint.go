@@ -174,7 +174,7 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 		for _, line := range box.Lines {
 			for i, it := range line.Items {
 				paintInlineBackground(pp, box, line, i, inner)
-				paintItem(dst, pp, it, f, imgs, inner)
+				paintItem(dst, pp, it, f, imgs, bgImgs, inner)
 			}
 		}
 	}
@@ -690,7 +690,7 @@ func iround(f float64) int { return int(f + 0.5) }
 // hollow circle a stroked round rect, and a square a plain filled rect.
 func paintMarker(dst *image.RGBA, pp *painter.PixelPainter, m *layout.Marker, f *Fonts, clip image.Rectangle) {
 	if m.Type == css.ListDecimal {
-		paintItem(dst, pp, &layout.InlineItem{Text: m.Text, Style: m.Style, X: m.X, Y: m.Y, Ascent: m.Ascent}, f, nil, clip)
+		paintItem(dst, pp, &layout.InlineItem{Text: m.Text, Style: m.Style, X: m.X, Y: m.Y, Ascent: m.Ascent}, f, nil, nil, clip)
 		return
 	}
 	r := markerRect(m)
@@ -752,7 +752,16 @@ func paintInlineBackground(pp *painter.PixelPainter, box *layout.Box, line *layo
 	fillRectClipped(pp, r, it.Style.Background, clip)
 }
 
-func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, clip image.Rectangle) {
+func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, clip image.Rectangle) {
+	if it.NestedBox != nil {
+		// An inline-flex item (see InlineItem.NestedBox's own doc comment)
+		// carries a real, already-positioned Box tree — paint it exactly
+		// like any other box, including its own filter/opacity group-buffer
+		// handling, backgrounds, borders and children, by recursing back
+		// into paintBox rather than duplicating any of that here.
+		paintBox(dst, pp, it.NestedBox, f, imgs, bgImgs, clip)
+		return
+	}
 	if it.Image != nil {
 		if src, ok := imgs[it.Image]; ok {
 			// Every <img> — block or inline — is represented as an InlineItem,

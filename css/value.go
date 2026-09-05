@@ -74,6 +74,19 @@ const (
 	// walks a container's children through, which is where this is resolved —
 	// so a DisplayContents element never itself reaches box placement.
 	DisplayContents
+	// DisplayInlineFlex is a flex container that is itself an INLINE-level
+	// box in its parent's flow (unlike DisplayFlex, which is block-level) —
+	// distinct from DisplayFlex specifically so isBlockLevel and the inline-
+	// collection walk can tell them apart; internally it lays out its
+	// children with the identical flex algorithm. Confirmed live on
+	// pkg.go.dev: `.go-Breadcrumb li{display:inline-flex}` stacked each
+	// breadcrumb item on its own line instead of flowing in a row, because
+	// this engine previously parsed `inline-flex` down to the SAME
+	// DisplayFlex value as `flex`, losing the "inline" qualifier entirely and
+	// making every such element block-level. See
+	// layout.appendElementInline's own handling for how the atomic
+	// inline-level box is produced.
+	DisplayInlineFlex
 )
 
 // Position is the subset of the position property the engine understands.

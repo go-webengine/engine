@@ -667,6 +667,41 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			l.pendingMargin += cs.Margin.Right
 		}
 	default:
+		// display:inline-flex is an INLINE-level box (unlike plain flex,
+		// which is block-level and goes through the BlockBreak promotion
+		// below) that lays out its own content with the flex algorithm — an
+		// atomic item like an image or form control, except its "bitmap" is
+		// a real nested Box tree rather than opaque pixels or a drawn
+		// control. Checked against the raw style map entry for the same
+		// nil-is-not-this-display reason as the isBlockLevel check below.
+		// Confirmed live on pkg.go.dev: `.go-Breadcrumb li{display:inline-
+		// flex}` stacked each breadcrumb item onto its own line (treated as
+		// block-level) instead of flowing in a row, because inline-flex and
+		// flex previously parsed down to the same Display value, losing the
+		// "inline" qualifier entirely.
+		if es := l.sm[el]; es != nil && es.Display == css.DisplayInlineFlex {
+			// layoutNestedInlineFlex lays out el's OWN content, which reuses
+			// this SAME layouter's wsPending/wsEmitted fields for ITS
+			// internal text — capture the OUTER context's values (from
+			// whatever preceded this element) before that call clobbers
+			// them, or a real leading space here was silently lost whenever
+			// el's own content ended in a state that reset them.
+			wasWsEmitted, wasWsPending := l.wsEmitted, l.wsPending
+			box := l.layoutNestedInlineFlex(el, es)
+			sb := 0.0
+			if wasWsEmitted && wasWsPending {
+				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
+			}
+			sb += l.takeMargin() + es.Margin.Left
+			*items = append(*items, &InlineItem{
+				Style: es, NestedBox: box, Node: el,
+				Width: box.W, Ascent: box.H, LineHeight: box.H,
+				SpaceBefore: sb,
+			})
+			l.wsEmitted, l.wsPending = true, false
+			l.pendingMargin += es.Margin.Right
+			return
+		}
 		// A genuinely block-level element (display:block/flex/grid/table, or
 		// a form control explicitly given one of those) found while
 		// collecting INLINE content must be promoted to a real sibling box,
@@ -1029,6 +1064,9 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 					x += it.SpaceBefore
 				}
 				it.X, it.Y = x, cursor+(baseline-it.Ascent)
+				if it.NestedBox != nil {
+					translateBox(it.NestedBox, it.X-it.NestedBox.X, it.Y-it.NestedBox.Y)
+				}
 				x += it.Width
 			}
 			line.X, line.Y, line.W, line.H = cx, cursor, cw, lineH
@@ -1061,6 +1099,9 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 				x += it.SpaceBefore
 			}
 			it.X, it.Y = x, cursor+(baseline-it.Ascent)
+			if it.NestedBox != nil {
+				translateBox(it.NestedBox, it.X-it.NestedBox.X, it.Y-it.NestedBox.Y)
+			}
 			x += it.Width
 		}
 		line.X, line.Y, line.W, line.H = left, cursor, right-left, lineH

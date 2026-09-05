@@ -21,7 +21,7 @@ func TestApplyDisplayValues(t *testing.T) {
 	cases := map[string]Display{
 		"block": DisplayBlock, "flow-root": DisplayBlock, "list-item": DisplayBlock,
 		"grid": DisplayGrid, "inline-grid": DisplayGrid,
-		"flex": DisplayFlex, "inline-flex": DisplayFlex,
+		"flex": DisplayFlex, "inline-flex": DisplayInlineFlex,
 		"table": DisplayTable, "inline-table": DisplayTable,
 		"table-row": DisplayTableRow, "table-cell": DisplayTableCell,
 		"table-row-group": DisplayTableRowGroup, "table-header-group": DisplayTableRowGroup,

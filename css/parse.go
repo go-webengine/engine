@@ -454,8 +454,10 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.Display = DisplayBlock
 		case "grid", "inline-grid":
 			s.Display = DisplayGrid
-		case "flex", "inline-flex":
+		case "flex":
 			s.Display = DisplayFlex
+		case "inline-flex":
+			s.Display = DisplayInlineFlex
 		case "table", "inline-table":
 			s.Display = DisplayTable
 		case "table-row":

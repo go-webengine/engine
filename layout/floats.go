@@ -392,6 +392,23 @@ func translateBox(box *Box, dx, dy float64) {
 		for _, it := range line.Items {
 			it.X += dx
 			it.Y += dy
+			// An inline-flex item's NestedBox (see InlineItem's own doc
+			// comment) is a SECOND, independent box tree hanging off an
+			// InlineItem rather than living in box.Children — the exact same
+			// blind spot the marker fix above already found and fixed for a
+			// DIFFERENT kind of attached data. it.X/it.Y (just updated above)
+			// are scalars the rest of this package treats as the item's
+			// authoritative position; NestedBox's own internally-stored
+			// coordinates need the identical shift to stay in sync, or its
+			// painted content is left stuck at wherever it was BEFORE an
+			// outer flex/grid ancestor's later re-translation moved the
+			// InlineItem itself — confirmed live on pkg.go.dev: an
+			// inline-flex breadcrumb `<li>` nested inside a flex-positioned
+			// header section painted at its pre-translation position,
+			// overlapping the page's own top navigation bar.
+			if it.NestedBox != nil {
+				translateBox(it.NestedBox, dx, dy)
+			}
 		}
 	}
 	for _, ch := range box.Children {
