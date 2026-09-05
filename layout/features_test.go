@@ -277,6 +277,32 @@ func TestFlexShrink(t *testing.T) {
 	assertF(t, "shrink.B.X", outer.Children[1].X, 150)
 }
 
+// TestFlexShrinkCascadesPastAFrozenItem covers CSS Flexbox §9.7's iterative
+// "freeze and redistribute" step, using github.com's own real shape: a small
+// logo item beside a much wider nav+search+sign-in/up group, narrower than
+// their combined content once the mobile-only controls are hidden. A single
+// shrink pass (dividing the deficit equally, then clamping each item
+// independently) clamps the small item at its floor (0, since it has nowhere
+// left to shrink) but drops the portion of ITS share that the floor refused —
+// that portion needs to fall through to the still-flexible sibling instead.
+// Without the redistribution, the two items' final widths sum to MORE than
+// the container (an overflow), which on github.com/golang/go pushed the
+// "Sign in"/"Sign up" buttons off the right edge of a 1024px viewport
+// entirely.
+func TestFlexShrinkCascadesPastAFrozenItem(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex">` +
+		`<div id="a" style="width:10px">A</div><div id="b" style="width:300px">B</div></div></body></html>`
+	root := layoutHTML(t, src, 200)
+	a, b := findBoxByID(root, "a"), findBoxByID(root, "b")
+	// free = 200 - 310 = -110. A single, non-iterative pass would split this
+	// -55/-55, clamp A's -45 up to 0 (losing the -10 A couldn't absorb) and
+	// leave B at 300-55=245 — 45px past the 200px container. Redistributing
+	// A's unabsorbed shrink to B instead brings the total to exactly 200.
+	assertF(t, "cascade.A.W", a.W, 0)
+	assertF(t, "cascade.B.W", b.W, 200)
+	assertF(t, "cascade.B.X", b.X, 0) // right after A, which occupies no width
+}
+
 func TestFlexAlignItemsCenter(t *testing.T) {
 	// Items of different heights, align-items:center on the cross axis.
 	src := `<html><body style="margin:0"><div style="display:flex;align-items:center">` +
