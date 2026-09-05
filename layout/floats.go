@@ -301,32 +301,53 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 		}
 		return max + edges
 	}
-	// Inline: max-content is everything on one line.
+	// Inline: max-content is the WIDEST line, where a promoted block (see
+	// InlineItem.BlockBreak) both ends the current line — CSS 2.1 §9.2.1.1
+	// promotes it to a real sibling, so it never shares a line with
+	// surrounding text — AND contributes its own preferred width as a
+	// candidate line in its own right. A single running sum that simply
+	// skipped every BlockBreak (this function's previous shape) was correct
+	// only when a promoted block was a minor part of otherwise-substantial
+	// surrounding text; when it is the ONLY content — e.g. an unstyled
+	// `<span>` wrapping a single `display:flex` `<button>`, confirmed live on
+	// developer.mozilla.org's header controls (the button computes
+	// block-level via `display:flex`, so it promotes exactly like any other
+	// block-level child found under an inline ancestor) — skipping it left
+	// nothing else to sum, reporting a 0 max-content width and collapsing a
+	// flex item that should have kept room for the button down to nothing.
+	// A FLOATED promoted block is the one exception that stays on the
+	// current line instead of starting a new one (see the BlockBreak
+	// doc comment and round 40's fix): a float does not break flow the way a
+	// genuine block does, so it keeps consuming space alongside its siblings.
 	items := l.collectInline(node, st, st.WhiteSpace == css.WSPre)
-	var line float64
+	var line, maxLine float64
+	flushLine := func() {
+		if line > maxLine {
+			maxLine = line
+		}
+		line = 0
+	}
 	for i, it := range items {
 		if it.LineBreak {
+			// A <br> forced break is deliberately NOT a line boundary for
+			// this estimate (unlike a promoted block below) — matching this
+			// function's pre-existing, unchanged convention that max-content
+			// sums straight through a <br>, only BlockBreak starts a fresh
+			// candidate line.
 			continue
 		}
 		if it.BlockBreak != nil {
-			// A BlockBreak sentinel (a promoted block-level element, see
-			// InlineItem.BlockBreak) normally carries no Width/SpaceBefore of
-			// its own — its content gets its own independent box, on its own
-			// line, not part of this max-content line estimate. But a FLOATED
-			// block-level element (e.g. a classic `<li style="float:left">`
-			// row of buttons under a `display:inline` `<ul>`, confirmed live
-			// on github.com's repo-header action row) is promoted for the
-			// SAME reason (isBlockLevel(Display)) yet never starts a new
-			// line — it still sits alongside the surrounding content,
-			// consuming its own horizontal space. Skipping it here made a
-			// container holding ONLY floated children (nothing left in the
-			// "line" sum once every child is skipped) report a 0
-			// max-content width, collapsing a flex-shrink:0 item that should
-			// keep its full natural width down to nothing.
-			if it.Style == nil || it.Style.Float == css.FloatNone {
+			// it.Style is always set alongside BlockBreak (see the promotion
+			// site in appendElementInline), so no nil check is needed here.
+			if it.Style.Float != css.FloatNone {
+				line += l.preferredWidth(it.BlockBreak, it.Style) + it.Style.Margin.Left + it.Style.Margin.Right
 				continue
 			}
-			line += l.preferredWidth(it.BlockBreak, it.Style) + it.Style.Margin.Left + it.Style.Margin.Right
+			flushLine()
+			blockW := l.preferredWidth(it.BlockBreak, it.Style) + it.Style.Margin.Left + it.Style.Margin.Right
+			if blockW > maxLine {
+				maxLine = blockW
+			}
 			continue
 		}
 		if i > 0 {
@@ -334,7 +355,8 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 		}
 		line += it.Width
 	}
-	return line + edges
+	flushLine()
+	return maxLine + edges
 }
 
 // translateBox shifts a box subtree (and its lines/items) by (dx,dy).

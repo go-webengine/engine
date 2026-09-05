@@ -162,15 +162,24 @@ func TestFloatedBlockBreakGetsFloatPlacementAndCountsTowardPreferredWidth(t *tes
 	assertF(t, "li[1].W", actions.Children[1].W, 60)
 }
 
-// TestNonFloatedBlockBreakStillExcludedFromPreferredWidth is the counterpart
-// to the float case above: a NON-floated block-level child promoted via
-// BlockBreak still contributes nothing to its inline ancestor's max-content
-// estimate (it gets its own line, so it never sits alongside the measured
-// text) — only a floated BlockBreak is the exception. Exercises preferredWidth
-// itself (via a flex-shrink:0 item, the same mechanism the float case above
-// uses to trigger it) rather than the ordinary in-flow layout path the other
-// BlockBreak tests in this file use, which never calls preferredWidth at all.
-func TestNonFloatedBlockBreakStillExcludedFromPreferredWidth(t *testing.T) {
+// TestNonFloatedBlockBreakIsItsOwnCandidateLine is the counterpart to the
+// float case above: a NON-floated block-level child promoted via BlockBreak
+// still starts its own line (unlike a float, it breaks the surrounding flow),
+// but that line's own width is a candidate for the max-content estimate in
+// its own right — max-content is the WIDEST line, not the sum of the inline
+// runs alone. Exercises preferredWidth itself (via a flex-shrink:0 item, the
+// same mechanism the float case above uses to trigger it) rather than the
+// ordinary in-flow layout path the other BlockBreak tests in this file use,
+// which never calls preferredWidth at all.
+//
+// An earlier version of this test asserted the OPPOSITE (that the promoted
+// block contributes NOTHING, only surrounding text does) — that was the bug:
+// confirmed live on developer.mozilla.org, where an unstyled wrapper's ENTIRE
+// content is a single `display:flex` `<button>` (block-level, so it promotes
+// exactly like any other block found under an inline ancestor). Excluding it
+// left NOTHING to measure, reporting 0 instead of the button's real width and
+// collapsing a flex-shrink:0 container that should have kept room for it.
+func TestNonFloatedBlockBreakIsItsOwnCandidateLine(t *testing.T) {
 	src := `<html><body style="margin:0"><div style="display:flex;width:300px">` +
 		`<div id="filler" style="flex:auto">filler text long enough to shrink</div>` +
 		`<div id="mixed" style="flex-shrink:0"><span style="display:inline">` +
@@ -180,9 +189,28 @@ func TestNonFloatedBlockBreakStillExcludedFromPreferredWidth(t *testing.T) {
 	if mixed == nil {
 		t.Fatal("mixed box not found")
 	}
-	// The 900px block is on its own line and contributes nothing to the
-	// max-content estimate; only "ab" (2 runes * 10px fakeMeasurer = 20px)
-	// does. A regression that also counted the non-floated block would
-	// report ~900px instead.
-	assertF(t, "mixed.W", mixed.W, 20)
+	// The 900px block is the widest line (its own, separate from "ab"'s 20px
+	// line) — max-content is 900, not 20 (the old, wrong exclusion) and not
+	// 920 (summing across a line boundary the block itself creates).
+	assertF(t, "mixed.W", mixed.W, 900)
+}
+
+// TestMultipleNonFloatedBlockBreaksTakeTheWidestLine covers TWO promoted
+// blocks in one inline ancestor, each its own line — the max-content
+// estimate must be the WIDEST of the two, not the LAST one seen (a
+// regression that simply overwrote a running "current block width" instead
+// of tracking a true running max would pass the single-block test above but
+// fail here if the wider block comes first).
+func TestMultipleNonFloatedBlockBreaksTakeTheWidestLine(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="display:flex;width:300px">` +
+		`<div id="filler" style="flex:auto">filler text long enough to shrink</div>` +
+		`<div id="mixed" style="flex-shrink:0"><span style="display:inline">` +
+		`<div style="display:block;width:900px;height:5px"></div>` +
+		`<div style="display:block;width:40px;height:5px"></div>` +
+		`</span></div></div></body></html>`
+	mixed := findBoxByID(layoutHTML(t, src, 300), "mixed")
+	if mixed == nil {
+		t.Fatal("mixed box not found")
+	}
+	assertF(t, "mixed.W", mixed.W, 900)
 }

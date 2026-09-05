@@ -18,6 +18,70 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 42) — preferredWidth's max-content estimate summed a promoted block's contribution to zero instead of treating it as its own candidate line, collapsing a shadow-DOM header control down to nothing (engine#122)
+
+developer.mozilla.org re-investigated fresh (last touched round 34, 8 rounds
+stale). Live at 1024px, the header's "Theme" and "English (US)" controls
+rendered as invisible, zero-width boxes — their text labels never appeared —
+alongside a missing search-box outline, though the hamburger menu icon and
+breadcrumb text (mangled separately by the already-documented oksvg defect,
+round 25) were unaffected.
+
+Traced with the same throwaway-instrumentation approach as rounds 39-41,
+extended this time to dump declarative-shadow-DOM structure directly (an
+element's `Shadow` field and its children), since MDN's header controls are
+custom elements (`<mdn-color-theme>`, `<mdn-language-switcher>`) each hosting
+their own shadow tree, in some cases nesting a SECOND custom element
+(`<mdn-dropdown>`) with ITS OWN shadow tree and slots inside. Confirmed the
+shadow-attachment and slot-projection machinery itself is sound (already
+verified architecturally correct in earlier rounds, and re-confirmed here by
+instrumenting the actual live structure rather than assuming) — the real
+element ultimately at fault is an ordinary `<button>` with `display:flex`
+(matching MDN's own icon-plus-label button styling), nested a few levels
+down through the custom-element/shadow/slot chain, inside an otherwise-empty
+`display:inline` wrapper.
+
+Because the button computes to `display:flex` — a block-level value, per
+this engine's Display enum — it gets promoted by round 38's BlockBreak
+mechanism exactly like any other block-level element found under an inline
+ancestor. `preferredWidth`'s inline max-content estimate (`layout/floats.go`)
+summed ordinary inline items but skipped every non-floated BlockBreak
+entirely, on the reasoning (correct on its own terms, and true for a run of
+several sibling items) that a promoted block starts its own line and
+contributes nothing to a DIFFERENT line's width. But CSS max-content is
+properly defined as the WIDEST line, and a promoted block IS a line in its
+own right — when it is the wrapper's ONLY content, as here, excluding it
+left literally nothing to sum, reporting 0 instead of the button's real
+width and collapsing the `display:flex` custom element (and its
+`flex-shrink:0`-equivalent slot in the breadcrumbs-bar's flex row) down to
+nothing.
+
+Fixed by tracking a running MAX across candidate lines instead of a single
+sum: an ordinary inline item still accumulates into the current line; a
+floated BlockBreak still joins the current line (round 40's fix, unchanged);
+a non-floated BlockBreak flushes the current line into the running max, then
+independently recurses into its OWN preferred width as a second candidate —
+matching how a genuine mix of text and promoted blocks actually behaves. A
+`<br>` forced break is deliberately left as NOT a line boundary for this
+estimate, preserving this function's pre-existing convention
+(`TestPreferredWidthInlineWithBreak`, unaffected).
+
+An earlier version of a round-40 test (`TestNonFloatedBlockBreakStillExcludedFromPreferredWidth`)
+had asserted the OLD, now-understood-to-be-wrong behaviour (a promoted block
+contributes nothing); corrected in place
+(`TestNonFloatedBlockBreakIsItsOwnCandidateLine`) and joined by
+`TestMultipleNonFloatedBlockBreaksTakeTheWidestLine`, which specifically
+orders the wider block FIRST — a regression that tracked "the last block
+seen" instead of a true running max would still pass the single-block case
+but fail here.
+
+Verified live: MDN's "Theme" and "English (US)" text labels, and a
+search-box outline, now render. **Measured: SSIM 0.611→0.636, pixdiff
+17.9%→13.5%** — the mangled "mdn" wordmark (oksvg, round 25) and the missing
+`::before`/`::after` breadcrumb separators (documented gap, generated
+content not synthesised at all) remain, unrelated to this fix and not
+attempted here.
+
 ## 2026-09-05 (round 41) — preferredWidth never special-cased form controls, so an `<input>` reached through an element ancestor (rather than through ordinary inline-content collection) measured as 0 width instead of its UA-default size (engine#121)
 
 Closes the last of the three github.com/golang/go header defects this session's rounds 39-40 flagged and left open: the "Go to file" search box and the "Code" button rendered overlapping instead of side by side.
