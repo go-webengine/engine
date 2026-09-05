@@ -18,6 +18,116 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-05 (round 38) — a block-level child nested under an inline-context ancestor got no real box at all, instead of the spec's anonymous-block-wrapper-plus-promotion behaviour (engine#118)
+
+This is the architectural gap round 36 (and round 33, and round 24
+before it) each independently found and explicitly declined as
+"comparable in scope to Shadow DOM slot projection" — three real pages
+hit the same missing mechanism, so this round did the bibliography the
+project's own standing rule requires (read the reference engines'
+source before implementing) and fixed it.
+
+**WebKit** used to solve this with "continuation": `RenderInline::splitInlines`
+physically split an inline box into anonymous pre/post fragments linked
+by a continuation pointer, so the "same" element kept answering
+geometry/hit-test queries consistently across the split. That mechanism
+is gone from WebKit's own main branch as of March 2026 (`8f520cb74d`,
+"[blocks-in-inline] Remove continuation code"; `506bc07aa8`, "Don't wrap
+sequences of blocks in anonymous block"). Current WebKit instead builds
+a flat inline-item list (`InlineItemsBuilder.cpp`) that tags a
+block-level descendant in place during a depth-first walk, and
+`InlineLineBuilder.cpp`'s `handleBlockContent` lays it out via a nested
+formatting context and ends the current line — no tree splitting, no
+persistent continuation identity.
+
+**Gecko** still runs its historical "ib-split" mechanism:
+`nsCSSFrameConstructor::ConstructInline` scans for the first block-level
+child and, if found, `CreateIBSiblings` physically materialises
+alternating anonymous-block/inline frame chains
+(`SetFrameIsIBSplit`/`IBSplitSibling`/`IBSplitPrevSibling`,
+`PseudoStyleType::mozBlockInsideInlineWrapper`). Its source comments
+cite CSS 2.1 §9.2.1.1 directly and work through a nested-`<span>`
+example that produces exactly this multi-fragment tree.
+
+Neither reference engine's persistent-identity machinery is needed
+here: go-webengine has no incremental DOM mutation and no persistent
+render tree — every render walks the DOM fresh in one recursive pass,
+and every `InlineItem`/`Box` already carries its own resolved style and
+node reference computed at collection time. That is architecturally
+closer to *current* WebKit's flat-item approach than to Gecko's, and
+explains why WebKit itself dropped continuation: a one-shot layout
+model doesn't need to keep re-answering "which fragment is this
+conceptually the same element as" once the box tree is built and
+thrown away per render.
+
+Implemented the same idea as a flat sentinel: a new
+`InlineItem.BlockBreak` field marks a slot in an otherwise-ordinary
+inline-item slice as "this is not inline content, it's a block-level
+element found while collecting inline content under an inline-context
+ancestor — promote it to a real sibling box" (`layout/box.go`). A new
+`placeInlineSegments` (`layout/layout.go`) consumes that flat sequence,
+splitting it into ordinary-item runs (each wrapped in its own anonymous
+box, matching the pre-existing block/inline mixing path) interleaved
+with real placed boxes for each sentinel — CSS 2.1 §9.2.1.1's algorithm,
+now firing at ANY nesting depth under an inline ancestor rather than
+only at a block container's direct children (which the pre-existing
+`hasBlockLevelChild` dispatch already handled). `appendElementInline`
+now checks the child's own resolved style for block-level `display`
+before recursing into it as inline content, emitting a `BlockBreak`
+sentinel instead when it is.
+
+That "own resolved style" check has to read the RAW `l.sm[el]` map
+entry, not the `cs` parameter `appendElementInline` was already passed —
+`cs` is the caller's already-substituted fallback (parent style when the
+child has no map entry of its own), correct for inherited properties but
+wrong for `display` (non-inherited; the true initial value for an
+unstyled element is always `inline`). Using `cs` directly broke the
+existing empty-style-map shadow-DOM tests, which deliberately rely on
+"no map entry = not block-level" throughout the codebase — the same
+convention the pre-existing out-of-flow check in the same function
+already follows a few lines above. Confirmed via a genuine revert (the
+tests failed with the wrong text order once every unstyled element in
+that tree got incorrectly promoted) before restoring the raw-map-entry
+version.
+
+The independent bibliography research (dispatched in parallel with the
+implementation, not strictly before it — an intentional partial
+divergence from "biblio d'abord," logged so it doesn't set a precedent)
+both validated the design against the two reference engines above and
+caught a second real bug I hadn't found yet: the new `BlockBreak`
+branch didn't reset the pending-whitespace state, so a promoted block
+followed by more text in the same wrapper gave the resumed text a
+spurious leading space. Fixed with the same two-line reset the
+pre-existing `<br>` case already applies, for the identical reason (a
+forced break also starts a fresh line). Confirmed via revert-and-rerun
+(`TestBlockBreakResetsPendingWhitespace` failed with `SpaceBefore=10,
+want 0` without the reset).
+
+Confirmed live for two of the three originally-documented cases:
+**news.ycombinator.com**'s upvote-triangle icon (a `display:block`
+background-image `<div>` inside an inline `<a>`) now gets a real box and
+paints (SSIM 0.564→0.579, pixdiff 15.6%→15.3%). **tailwindcss.com**'s
+syntax-highlighted code demo (each line a `display:block` `<span>`
+inside inline `<code>`) now renders one line per row instead of
+squashed onto one (page height 13273px→13585px; SSIM 0.666→0.704,
+pixdiff 14.3%→13.6%). The third case, **github.com**'s flex-container-
+under-an-unstyled-custom-element pattern from round 24, could not be
+re-verified live: the actual github.com/golang/go header content has
+changed since round 24 and no longer shows the originally-documented
+"Sign in"/"Sign up" buttons. Covered instead by a synthetic regression
+test built from the originally-documented markup shape
+(`TestFlexContainerUnderUnstyledInlineElementGetsRealLayout`). The small
+SSIM/pixdiff movement on github.com/golang/go in this round's bench run
+(0.532→0.528, 32.7%→33.9%) is unrelated to this fix — the page's current
+markup has no comparable block-in-inline structure — and is consistent
+with this project's already-documented live-fetch noise (page content
+and network timing vary between runs).
+
+Four regression tests in the new `layout/blockinline_test.go`, all
+confirmed to fail via genuine revert-and-rerun before the fix (and
+individually for the whitespace-reset sub-fix): the votearrow div, the
+flex container, the multi-line code spans, and the whitespace reset.
+
 ## 2026-09-04 (round 36) — a compound combining an explicit `*` with a class ("*.line") was parsed as a LITERAL tag name "*", so it never matched any real element (engine#117)
 
 tailwindcss.com's own hero code demo — a syntax-highlighted, multi-line

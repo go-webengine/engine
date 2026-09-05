@@ -284,7 +284,11 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	items := l.collectInline(node, st, st.WhiteSpace == css.WSPre)
 	var line float64
 	for i, it := range items {
-		if it.LineBreak {
+		// A BlockBreak sentinel (a promoted block-level element, see
+		// InlineItem.BlockBreak) carries no Width/SpaceBefore of its own —
+		// its content gets its own independent box, not part of this
+		// max-content line estimate.
+		if it.LineBreak || it.BlockBreak != nil {
 			continue
 		}
 		if i > 0 {

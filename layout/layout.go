@@ -252,10 +252,19 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 	if !l.hasBlockLevelChild(node) {
 		b.commit()
 		items := l.collectInline(node, st, pre)
-		lines, bottom := l.layoutInline(items, st, cx, cw, b.y, pre)
-		box.Lines = lines
-		b.y = bottom
-		return bottom
+		// hasBlockLevelChild only looks at node's DIRECT children — a
+		// block-level element nested deeper, under an inline-context
+		// ancestor (e.g. `<a><div>...</div></a>`), still shows up here as a
+		// BlockBreak sentinel. The common case (no sentinel at all) keeps
+		// the exact previous box shape (box.Lines set directly); only the
+		// rarer mixed case pays for building box.Children instead.
+		if !hasBlockBreak(items) {
+			lines, bottom := l.layoutInline(items, st, cx, cw, b.y, pre)
+			box.Lines = lines
+			b.y = bottom
+			return bottom
+		}
+		return l.placeInlineSegments(box, items, st, cx, cw, b, pre)
 	}
 
 	// List-item counter for this block's direct list-item children. It seeds from
@@ -273,14 +282,12 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		if len(items) == 0 {
 			return
 		}
-		b.commit()
-		anonTop := b.y
-		lines, bottom := l.layoutInline(items, st, cx, cw, anonTop, pre)
-		anon := &Box{Anonymous: true, Style: st, ContentX: cx, ContentY: anonTop, ContentW: cw}
-		anon.Lines = lines
-		anon.X, anon.Y, anon.W, anon.H = cx, anonTop, cw, bottom-anonTop
-		box.Children = append(box.Children, anon)
-		b.y = bottom
+		// A run of top-level "inline" siblings can still contain a
+		// block-level element nested under one of them (an inline wrapper) —
+		// placeInlineSegments handles both the plain case (one anonymous
+		// box, identical to what this function built directly before) and
+		// the mixed one (splitting around each promoted block box).
+		l.placeInlineSegments(box, items, st, cx, cw, b, pre)
 	}
 
 	for _, c := range l.renderedChildren(node) {
@@ -371,6 +378,58 @@ func (l *layouter) hasBlockLevelChild(node *dom.Node) bool {
 		}
 	}
 	return false
+}
+
+// hasBlockBreak reports whether items contains a BlockBreak sentinel — a
+// block-level element found nested under an inline-context ancestor while
+// collecting inline content (see InlineItem.BlockBreak).
+func hasBlockBreak(items []*InlineItem) bool {
+	for _, it := range items {
+		if it.BlockBreak != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// placeInlineSegments consumes items that may contain BlockBreak sentinels,
+// appending the result to box.Children and advancing b.y, returning the new
+// bottom. Each run of ordinary inline items between sentinels becomes its
+// own anonymous block box — the SAME "wrap the inline run, promote the
+// block sibling" treatment contents() already applies when a block-level
+// element is a DIRECT child of a block container (CSS 2.1 §9.2.1.1) — and
+// each sentinel's node is placed as a real box via the normal place()
+// dispatch, so it gets real margins and its own block/flex/grid/table/atomic
+// layout instead of having its content silently flattened into surrounding
+// text. With no sentinels at all, this produces exactly one anonymous box —
+// byte-identical to the plain (pre-BlockBreak) code this replaced.
+func (l *layouter) placeInlineSegments(box *Box, items []*InlineItem, st *css.Style, cx, cw float64, b *bfc, pre bool) float64 {
+	var run []*InlineItem
+	flushRun := func() {
+		if len(run) == 0 {
+			return
+		}
+		b.commit()
+		anonTop := b.y
+		lines, bottom := l.layoutInline(run, st, cx, cw, anonTop, pre)
+		run = nil
+		anon := &Box{Anonymous: true, Style: st, ContentX: cx, ContentY: anonTop, ContentW: cw}
+		anon.Lines = lines
+		anon.X, anon.Y, anon.W, anon.H = cx, anonTop, cw, bottom-anonTop
+		box.Children = append(box.Children, anon)
+		b.y = bottom
+	}
+	for _, it := range items {
+		if it.BlockBreak == nil {
+			run = append(run, it)
+			continue
+		}
+		flushRun()
+		child := l.place(it.BlockBreak, it.Style, cx, cw, b)
+		box.Children = append(box.Children, child)
+	}
+	flushRun()
+	return b.y
 }
 
 // resolveWidths computes the used content width and left/right margins of a
@@ -546,6 +605,41 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			l.wsEmitted, l.wsPending = true, false
 		}
 	default:
+		// A genuinely block-level element (display:block/flex/grid/table, or
+		// a form control explicitly given one of those) found while
+		// collecting INLINE content must be promoted to a real sibling box,
+		// not flattened into the surrounding text — see BlockBreak's own doc
+		// comment for the CSS 2.1 §9.2.1.1 rule and the real pages this was
+		// found on. Recursing into its children here (the old behaviour)
+		// skipped its own box entirely: no margins, no background, no
+		// flex/grid layout for whatever is inside it. placeInlineSegments
+		// (called by every consumer of the items this function fills)
+		// strips this sentinel out and places the real node via the normal
+		// place()/contents() dispatch, which already handles a block-level
+		// form control as an atomic box correctly when reached this way
+		// (the same path a form control given display:block as a DIRECT
+		// child of a block container already went through).
+		//
+		// Checked against the RAW style map entry (l.sm[el]), not the cs
+		// parameter — cs is the caller's already-substituted "use the
+		// parent's style when this element has none" fallback (see
+		// appendInline/collectInlineFrom), matching the SAME nil-is-not-
+		// block-level convention hasBlockLevelChild and contents()'s own
+		// per-child dispatch already use, and the out-of-flow check just
+		// above in this very function. Using cs.Display directly would
+		// treat "no style resolved for this specific element" as "inherit
+		// whatever block-level-ness some ancestor happened to have",
+		// corrupting layout for a node with a genuinely unresolved style.
+		if es := l.sm[el]; es != nil && isBlockLevel(es.Display) {
+			*items = append(*items, &InlineItem{BlockBreak: el, Style: cs})
+			// The promoted block starts its own anonymous box/line (see
+			// placeInlineSegments), so any whitespace pending before it must
+			// not carry across as a phantom leading space on the FIRST word
+			// of the run that resumes after it — the same reset the "br"
+			// case above already applies for the identical reason.
+			l.wsPending, l.wsEmitted = false, false
+			return
+		}
 		// A form control defaults to display:inline (see css/ua.go) and so is
 		// laid out HERE, as a child of whatever block contains it — the
 		// common case (an <input> inside a <div>/<label>/<form>). It is
@@ -554,10 +648,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 		// UA-shaped default; cw is unavailable in this inline-collection
 		// context so a percentage width/height degrades to the default
 		// rather than resolving against the containing block, a known,
-		// narrow limitation). The contents() branch in this file covers
-		// the far rarer case of a control given `display:block` (or
-		// similar) by author CSS, which routes through the normal
-		// block-box path instead of here.
+		// narrow limitation).
 		if isFormControlTag(el.Tag) {
 			if el.Tag == "input" && strings.EqualFold(el.Attr["type"], "hidden") {
 				return
