@@ -4,9 +4,9 @@
 #
 # Ratchet coverage gate for the pure-logic packages.
 #
-# Only css/layout/paint/dom are gated: they are font-free / deterministic pure
-# logic (cascade + inheritance, the line-breaker, box metrics, the DOM tree) and
-# are fully unit-testable offline. The root `engine` package and `cmd/render`
+# Only css/layout/paint/dom/paginate are gated: they are font-free /
+# deterministic pure logic (cascade + inheritance, the line-breaker, box
+# metrics, the DOM tree, the page cutter) and are fully unit-testable offline. The root `engine` package and `cmd/render`
 # are deliberately excluded because they perform live-network I/O (HTTP fetch of
 # pages and image sub-resources) whose coverage is not deterministic in CI.
 #
@@ -18,12 +18,13 @@
 set -euo pipefail
 
 # package -> minimum acceptable statement coverage (percent)
-PKGS=(css layout paint dom)
+PKGS=(css layout paint dom paginate)
 declare -A FLOOR=(
   [css]=99.5
   [layout]=100.0
   [paint]=100.0
   [dom]=97.4
+  [paginate]=100.0
 )
 
 fail=0
