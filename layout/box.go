@@ -145,10 +145,88 @@ type InlineItem struct {
 	NestedBox *Box
 
 	X, Y float64
+
+	// decor is the chain of inline-level ancestors of this item that generate
+	// a box of their own — one that reserves horizontal space (padding or
+	// border) or paints (background or border) — ordered OUTERMOST FIRST. It
+	// is shared by reference across every item of the same element, so an
+	// element's chain is allocated once, not per word, and stays nil for
+	// ordinary text (the overwhelmingly common case) which therefore costs
+	// nothing. See newInlineDecor and resolveInlineEdges.
+	decor []inlineDecor
+
+	// decorFirst and decorLast are the depths from which this item is,
+	// respectively, the FIRST and the LAST item of the decor entries at or
+	// below them: decor[decorFirst:] all begin at this item and
+	// decor[decorLast:] all end at it. They are what makes
+	// box-decoration-break: slice (the CSS default) computable — an
+	// element's leading edge is reserved and painted once, at its first
+	// item, and its trailing edge once, at its last, never again on a
+	// wrapped continuation line.
+	decorFirst, decorLast int
+
+	// padLead and padTrail are the horizontal space this item reserves in the
+	// line's advance for the leading/trailing border+padding of the decor
+	// entries that begin/end at it (0 for plain text). Unlike SpaceBefore,
+	// padLead is NOT dropped at the start of a line: collapsible whitespace
+	// legitimately disappears there, an element's own padding does not.
+	padLead, padTrail float64
+}
+
+// inlineDecor is one inline-level ancestor that generates a box: the element,
+// its computed style, and the space its four edges (border + padding) occupy.
+// lead/trail are horizontal and are reserved in the line's advance; top/bottom
+// are vertical and are NOT — per CSS an inline box's vertical padding and
+// border overflow the line box rather than growing it.
+type inlineDecor struct {
+	node                     *dom.Node
+	style                    *css.Style
+	lead, trail, top, bottom float64
+}
+
+// InlineFragment is one line box's worth of an inline-level element's own box:
+// the piece of a <span>, <a>, <code>, <b>… that falls on a single line, with
+// the geometry needed to paint its background, border and padding. An inline
+// element that wraps across three lines produces three fragments; one that
+// generates no box of its own (plain text styling only — no background, no
+// border, no padding) produces none at all.
+//
+// All coordinates are absolute document pixels, the same space Box and
+// InlineItem use, and describe the fragment's BORDER BOX: X..X+W spans the
+// element's content on this line plus its leading edge (border-left +
+// padding-left) when First and its trailing edge (border-right +
+// padding-right) when Last; Y..Y+H spans the tallest font box of the items on
+// this line, grown by border-top + padding-top above and border-bottom +
+// padding-bottom below. H may therefore exceed the line box's own height —
+// that is CSS: vertical padding on an inline box overflows the line instead of
+// growing it.
+//
+// First reports that this is the element's FIRST fragment and Last that it is
+// its LAST, which is exactly the box-decoration-break: slice rule (the CSS
+// default): the left border/padding belongs to the first fragment only and the
+// right border/padding to the last only, while top and bottom borders paint on
+// every fragment.
+//
+// Fragments are ordered outermost-first within a line, so painting them in
+// slice order draws an enclosing element's background beneath a nested one's.
+type InlineFragment struct {
+	// Node is the inline element this fragment is a piece of, and Style its
+	// computed style — read Style.Background, Style.Border, Style.Padding and
+	// Style.BorderRadius to paint it.
+	Node  *dom.Node
+	Style *css.Style
+
+	X, Y, W, H  float64
+	First, Last bool
 }
 
 // LineBox is one line of inline content with its positioned items.
 type LineBox struct {
 	X, Y, W, H float64
 	Items      []*InlineItem
+
+	// Inlines are the box fragments of the inline-level elements that generate
+	// a box on this line, outermost first (so painting them in order layers an
+	// enclosing element under a nested one). Empty for a line of plain text.
+	Inlines []InlineFragment
 }

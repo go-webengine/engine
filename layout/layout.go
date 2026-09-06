@@ -60,11 +60,22 @@ type layouter struct {
 	// genuinely line-initial element would need its own field to survive
 	// line-breaking, not attempted here absent a confirmed live case.
 	pendingMargin float64
+
+	// decor is the chain of inline-level ancestors currently being collected
+	// that generate a box of their own (background, border or padding),
+	// outermost first. Every InlineItem created while it is in scope keeps a
+	// reference to it (see InlineItem.decor), which is what lets layout, and
+	// any downstream painter, know which piece of which <span> a word belongs
+	// to. Nil for ordinary text, and reset at each inline formatting context.
+	decor []inlineDecor
 }
 
 // beginInlineContext resets the whitespace-collapsing and pending-margin state
 // at the top of an inline formatting context.
-func (l *layouter) beginInlineContext() { l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0 }
+func (l *layouter) beginInlineContext() {
+	l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0
+	l.decor = nil
+}
 
 // takeMargin returns the accumulated pending inline margin and resets it —
 // called exactly once, when the next InlineItem after it is created. Style's
@@ -598,6 +609,7 @@ func (l *layouter) collectInline(node *dom.Node, st *css.Style, pre bool) []*Inl
 	var items []*InlineItem
 	l.beginInlineContext()
 	l.appendInline(node, st, &items, pre)
+	resolveInlineEdges(items)
 	return items
 }
 
@@ -615,6 +627,7 @@ func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool)
 			l.appendElementInline(n, cs, &items, pre)
 		}
 	}
+	resolveInlineEdges(items)
 	return items
 }
 
@@ -661,7 +674,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			*items = append(*items, &InlineItem{
 				Style: cs, Image: el, Node: el, ImgW: w, ImgH: h,
 				Width: w, Ascent: h, LineHeight: h,
-				SpaceBefore: sb,
+				SpaceBefore: sb, decor: l.decor,
 			})
 			l.wsEmitted, l.wsPending = true, false
 			l.pendingMargin += cs.Margin.Right
@@ -696,7 +709,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			*items = append(*items, &InlineItem{
 				Style: es, NestedBox: box, Node: el,
 				Width: box.W, Ascent: box.H, LineHeight: box.H,
-				SpaceBefore: sb,
+				SpaceBefore: sb, decor: l.decor,
 			})
 			l.wsEmitted, l.wsPending = true, false
 			l.pendingMargin += es.Margin.Right
@@ -762,7 +775,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			*items = append(*items, &InlineItem{
 				Style: cs, FormControl: el, Node: el,
 				Width: w, Ascent: h, LineHeight: h,
-				SpaceBefore: sb, Label: l.buttonLabel(el),
+				SpaceBefore: sb, Label: l.buttonLabel(el), decor: l.decor,
 			})
 			l.wsEmitted, l.wsPending = true, false
 			l.pendingMargin += cs.Margin.Right
@@ -776,8 +789,18 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 		// simply add up rather than collapsing, matching real CSS and
 		// falling out naturally here since pendingMargin only ever
 		// accumulates between takeMargin() calls.
+		//
+		// A plain inline element DOES, however, generate a box for its own
+		// background, border and padding — one fragment per line box it
+		// spans. pushDecor records it for every item collected inside it; the
+		// horizontal edges it reserves in the line, and the fragment geometry
+		// a painter needs, both fall out of that chain (resolveInlineEdges,
+		// placeLine).
 		l.pendingMargin += cs.Margin.Left
+		saved := l.decor
+		l.decor = l.pushDecor(el, cs)
 		l.appendInline(el, cs, items, pre || cs.WhiteSpace == css.WSPre)
+		l.decor = saved
 		l.pendingMargin += cs.Margin.Right
 	}
 }
@@ -800,6 +823,7 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 				SpaceBefore: l.takeMargin(),
 				Ascent:      asc,
 				LineHeight:  lh,
+				decor:       l.decor,
 			})
 		}
 		return
@@ -837,6 +861,7 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 			SpaceBefore: sb,
 			Ascent:      asc,
 			LineHeight:  lh,
+			decor:       l.decor,
 		})
 		l.wsEmitted = true
 		l.wsPending = false
@@ -1058,17 +1083,7 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 		cursor := y
 		for _, line := range lines {
 			lineH, baseline, used := lineMetrics(line, fbH, fbAsc)
-			x := cx + alignOffset(st.TextAlign, cw, used)
-			for i, it := range line.Items {
-				if i > 0 {
-					x += it.SpaceBefore
-				}
-				it.X, it.Y = x, cursor+(baseline-it.Ascent)
-				if it.NestedBox != nil {
-					translateBox(it.NestedBox, it.X-it.NestedBox.X, it.Y-it.NestedBox.Y)
-				}
-				x += it.Width
-			}
+			placeLine(line, cx+alignOffset(st.TextAlign, cw, used), cursor, baseline)
 			line.X, line.Y, line.W, line.H = cx, cursor, cw, lineH
 			cursor += lineH
 		}
@@ -1093,17 +1108,7 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 		}
 		rest = rest[consumed:]
 		lineH, baseline, used := lineMetrics(line, fbH, fbAsc)
-		x := alignOffsetIn(st.TextAlign, left, right, used)
-		for i, it := range line.Items {
-			if i > 0 {
-				x += it.SpaceBefore
-			}
-			it.X, it.Y = x, cursor+(baseline-it.Ascent)
-			if it.NestedBox != nil {
-				translateBox(it.NestedBox, it.X-it.NestedBox.X, it.Y-it.NestedBox.Y)
-			}
-			x += it.Width
-		}
+		placeLine(line, alignOffsetIn(st.TextAlign, left, right, used), cursor, baseline)
 		line.X, line.Y, line.W, line.H = left, cursor, right-left, lineH
 		lines = append(lines, line)
 		cursor += lineH
@@ -1133,14 +1138,18 @@ func wrapOneLine(items []*InlineItem, maxW float64) (line *LineBox, consumed int
 			i++
 			return line, i, true
 		}
-		add := it.Width
+		// An inline element's own leading/trailing border+padding is part of
+		// what the item occupies on the line (see InlineItem.padLead), so it
+		// counts toward the break decision exactly like the word's own width.
+		own := it.padLead + it.Width + it.padTrail
+		add := own
 		if len(line.Items) > 0 {
 			add += it.SpaceBefore
 		}
 		if len(line.Items) > 0 && w+add > maxW {
 			return line, i, false
 		}
-		if len(line.Items) == 0 && it.Width > maxW {
+		if len(line.Items) == 0 && own > maxW {
 			return line, i, false
 		}
 		line.Items = append(line.Items, it)
@@ -1188,7 +1197,7 @@ func lineMetrics(line *LineBox, fbH, fbAsc float64) (lineH, baseline, used float
 		if i > 0 {
 			used += it.SpaceBefore
 		}
-		used += it.Width
+		used += it.padLead + it.Width + it.padTrail
 	}
 	return baseline + maxBelow, baseline, used
 }

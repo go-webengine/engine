@@ -23,7 +23,9 @@ func WrapItems(items []*InlineItem, maxW float64) []*LineBox {
 			curW = 0
 			continue
 		}
-		add := it.Width
+		// padLead/padTrail are the inline element edges (border+padding) this
+		// item reserves; they occupy the line exactly like the word's width.
+		add := it.padLead + it.Width + it.padTrail
 		if len(cur.Items) > 0 {
 			add += it.SpaceBefore
 		}
@@ -31,7 +33,7 @@ func WrapItems(items []*InlineItem, maxW float64) []*LineBox {
 			lines = append(lines, cur)
 			cur = &LineBox{}
 			curW = 0
-			add = it.Width
+			add = it.padLead + it.Width + it.padTrail
 		}
 		cur.Items = append(cur.Items, it)
 		curW += add

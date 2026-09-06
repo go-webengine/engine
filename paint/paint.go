@@ -169,11 +169,15 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 	if !hidden && box.Marker != nil {
 		paintMarker(dst, pp, box.Marker, f, inner)
 	}
-	// 6. Inline content.
+	// 6. Inline content: every inline element's own box decoration on the line
+	// first (outermost fragment first, so a nested background lands on top of
+	// its ancestor's), then the words and atomic items over all of it.
 	if !hidden {
 		for _, line := range box.Lines {
-			for i, it := range line.Items {
-				paintInlineBackground(pp, box, line, i, inner)
+			for i := range line.Inlines {
+				paintInlineFragment(dst, pp, &line.Inlines[i], inner)
+			}
+			for _, it := range line.Items {
 				paintItem(dst, pp, it, f, imgs, bgImgs, inner)
 			}
 		}
@@ -303,17 +307,21 @@ func fillRoundRectClipped(dst *image.RGBA, pp *painter.PixelPainter, r painter.R
 // boxRadius returns the used corner radius (in pixels) for a box, resolving a
 // percentage against the box's smaller side. The painter clamps it to half the
 // smaller side, so pill/circle radii (large px or 50%) render correctly.
-func boxRadius(box *layout.Box) int {
-	if box.Style == nil {
+func boxRadius(box *layout.Box) int { return styleRadius(box.Style, box.W, box.H) }
+
+// styleRadius is boxRadius for anything that has a style and a size but is not
+// a Box — an inline element's own fragment, which owns no block box.
+func styleRadius(st *css.Style, w, h float64) int {
+	if st == nil {
 		return 0
 	}
-	l := box.Style.BorderRadius
+	l := st.BorderRadius
 	if l.Auto {
 		return 0
 	}
 	var r float64
 	if l.IsPercent {
-		r = l.Percent * math.Min(box.W, box.H)
+		r = l.Percent * math.Min(w, h)
 	} else {
 		r = l.Px
 	}
@@ -639,10 +647,21 @@ func insideRoundRect(x, y int, r image.Rectangle, rad int) bool {
 // four sides), it is stroked as one rounded rectangle; otherwise each edge is
 // drawn as a straight solid rectangle.
 func paintBorders(pp *painter.PixelPainter, box *layout.Box, clip image.Rectangle) {
-	bd := box.Style.Border
-	x, y := int(box.X), int(box.Y)
-	w, h := int(box.W), int(box.H)
-	if rad := boxRadius(box); rad > 0 && uniformBorder(bd) && paintsSide(bd.Top) {
+	paintEdges(pp, box.Style.Border, int(box.X), int(box.Y), int(box.W), int(box.H),
+		boxRadius(box), true, true, clip)
+}
+
+// paintEdges strokes the four border edges of a border box at (x,y,w,h).
+//
+// left and right select whether the LEADING and TRAILING edges paint. A block
+// box passes true for both; an inline element split across lines passes them
+// per fragment, which is box-decoration-break: slice (the CSS default) — the
+// left border belongs to the element's first fragment only and the right
+// border to its last, while top and bottom paint on every fragment. A
+// fragment missing either edge also forgoes the rounded single-stroke path:
+// a partial rounded rect is not what the stroke primitive draws.
+func paintEdges(pp *painter.PixelPainter, bd css.Borders, x, y, w, h, rad int, left, right bool, clip image.Rectangle) {
+	if rad > 0 && left && right && uniformBorder(bd) && paintsSide(bd.Top) {
 		// A rounded uniform border is stroked as one rounded rect; skip it only
 		// when it lies entirely outside the clip (thin strokes are not per-pixel
 		// masked — an ancestor rarely clips a rounded-border box mid-edge).
@@ -663,10 +682,10 @@ func paintBorders(pp *painter.PixelPainter, box *layout.Box, clip image.Rectangl
 		bw := iround(bd.Bottom.Width)
 		fill(x, y+h-bw, w, bw, bd.Bottom.Color)
 	}
-	if paintsSide(bd.Left) {
+	if left && paintsSide(bd.Left) {
 		fill(x, y, iround(bd.Left.Width), h, bd.Left.Color)
 	}
-	if paintsSide(bd.Right) {
+	if right && paintsSide(bd.Right) {
 		bw := iround(bd.Right.Width)
 		fill(x+w-bw, y, bw, h, bd.Right.Color)
 	}
@@ -718,38 +737,44 @@ func markerRect(m *layout.Marker) painter.Rect {
 	}
 }
 
-// paintInlineBackground fills the solid background colour of an inline-level
-// element behind one of its inline items (a word). A block box paints its own
-// background in step 2, but an inline element — a <span style="background:…">
-// or a display:inline-block "pill" — owns no block box of its own, so without
-// this its background never paints; any light text the author set against that
-// background (the very common white-text-on-a-coloured-label pattern) then lands
-// as light-on-white and vanishes entirely.
+// paintInlineFragment paints one inline element's box decoration on one line —
+// its background, then its border. A block box paints its own background and
+// border in steps 2 and 5, but an inline element — a <span style="background:…">
+// label, a bordered <code>, an <a> with a highlight — owns no block box at all,
+// so without this its decoration never painted: any light text the author set
+// against that background (the very common white-on-a-coloured-pill pattern)
+// landed as light-on-white and vanished entirely, and a border simply never
+// appeared.
 //
-// The guard it.Style != box.Style skips the block's OWN direct text, which
-// carries the block's Style pointer and whose background step 2 has already
-// painted — so only genuine inline-descendant backgrounds are drawn here and a
-// plain block with a background is never double-painted. When the previous item
-// on the line comes from the same originating element, the space between the two
-// words is internal to that element, so it is covered too and a multi-word
-// inline background paints as one continuous band.
-func paintInlineBackground(pp *painter.PixelPainter, box *layout.Box, line *layout.LineBox, i int, clip image.Rectangle) {
-	it := line.Items[i]
-	if it.Style == nil || it.Style.Background.A == 0 || it.Image != nil || it.LineBreak {
+// Layout supplies the geometry already fragmented per line (see
+// layout.InlineFragment): X..X+W covers this line's run of the element plus its
+// leading edge on the FIRST fragment and its trailing edge on the LAST, and
+// Y..Y+H the items' font box grown by the element's vertical border+padding —
+// which may overflow the line box, exactly as CSS specifies. First/Last are
+// forwarded to paintEdges as the left/right selectors, which is
+// box-decoration-break: slice: an element wrapped across two lines paints one
+// left border, on the first fragment, and one right border, on the last, with
+// top and bottom on both.
+//
+// Padding is spacing, not paint: it is already inside X/W and Y/H because
+// layout reserved it, and nothing extra is drawn for it here.
+func paintInlineFragment(dst *image.RGBA, pp *painter.PixelPainter, fr *layout.InlineFragment, clip image.Rectangle) {
+	st := fr.Style
+	w, h := int(fr.W), int(fr.H)
+	if st == nil || w <= 0 || h <= 0 {
 		return
 	}
-	if box.Style != nil && it.Style == box.Style {
-		return // direct text of this block: its background is the box's own
-	}
-	left := int(it.X)
-	if i > 0 {
-		if prev := line.Items[i-1]; prev.Node != nil && prev.Node == it.Node {
-			left = int(it.X - it.SpaceBefore) // internal space: extend the band left
+	x, y := int(fr.X), int(fr.Y)
+	rad := styleRadius(st, fr.W, fr.H)
+	if st.Background.A > 0 {
+		r := painter.Rect{X: x, Y: y, W: w, H: h}
+		if rad > 0 {
+			fillRoundRectClipped(dst, pp, r, rad, st.Background, clip)
+		} else {
+			fillRectClipped(pp, r, st.Background, clip)
 		}
 	}
-	right := int(it.X + it.Width)
-	r := painter.Rect{X: left, Y: int(it.Y), W: right - left, H: int(it.LineHeight)}
-	fillRectClipped(pp, r, it.Style.Background, clip)
+	paintEdges(pp, st.Border, x, y, w, h, rad, fr.First, fr.Last, clip)
 }
 
 func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, clip image.Rectangle) {
