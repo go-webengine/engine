@@ -18,6 +18,79 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-06 (round 50) — a bare reference to the global `customElements` (no method call needed) threw an uncaught ReferenceError, silently aborting the REST of the script it appeared in — including unrelated code later in the same file (engine#130)
+
+caniuse.com re-investigated fresh. Live at 1024px: the nav bar was missing
+"News" and "Compare browsers" (only "Home" and "About" showed), the search
+box's "⚙ Settings" control was gone, and the "Filter features" dropdown never
+appeared — four visibly different, seemingly-unrelated UI pieces all absent
+at once.
+
+- Confirmed the markup for all four IS present in the real, fetched, static
+  HTML (this is a server-rendered page, not a client-templated one) — so the
+  gap wasn't missing content, it was something hiding already-present
+  elements.
+- Found the CSS mechanism first: `.no-js .site-nav-item--news, .no-js
+  .site-nav-item--comparison, .no-js .options-toggle, .no-js
+  .primary-settings, ... { display: none; }` — the classic progressive-
+  enhancement pattern: `<html class="no-js">` ships by default, and the
+  page's own bundled script removes that class once JS successfully runs,
+  revealing everything gated on its absence. All four missing pieces are
+  gated by this ONE mechanism.
+- **Confirmed directly, not inferred**: fetched the real page end-to-end
+  (`Engine.Fetch` + `Engine.RenderDocument`, the real pipeline, not a
+  simplified fixture) and inspected the final DOM's `<html>` class
+  attribute after settle: `"no-js client-js"` — this engine's OWN
+  `client-js` marker was added correctly, but the SITE'S OWN `no-js` class
+  was still there, meaning the page's `classList.remove("no-js")` call
+  never ran.
+- **Root cause, found by wiring `Engine.JSLog` (console/diagnostic output,
+  already piped through but not read in prior rounds) and reading what the
+  script actually reported**: `ReferenceError: customElements is not
+  defined`, thrown partway through the page's ~330KB bundled script. This
+  engine's JS global environment has no `customElements` at all — not even
+  as an inert stub — so a bare, unguarded reference to it (not even a
+  method CALL, just reading the global) throws immediately. Since the
+  `classList.remove("no-js")` call sits LATER in the exact same script
+  file, the uncaught exception aborted execution before ever reaching it —
+  the missing nav links, the missing "Settings" text and the missing
+  "Filter features" dropdown are four UNRELATED-LOOKING symptoms of the
+  SAME single root cause, discovered together because they share one CSS
+  gate, not because they share any functional connection to custom
+  elements.
+- This sits right next to an EXISTING, already-declined Known Gap (Shadow
+  DOM's write-up: "no imperative `attachShadow()`/`customElements.define()`
+  JS API (neither confirmed real site needed it)") — but that gap was about
+  custom elements not WORKING; this bug is about the bare global not
+  EXISTING, a materially different (and much smaller) problem with a much
+  bigger blast radius, since real sites often reference a capability
+  defensively (`if (window.customElements) {...}` or similar) or as part of
+  a larger bundle without actually depending on it doing anything.
+  caniuse.com's script apparently doesn't even get that far — it references
+  the bare identifier directly.
+- Fixed by adding `window.customElements` as a stub object (matching this
+  engine's existing "present-but-inert beats absent-and-throwing"
+  philosophy already used for `MutationObserver`/`IntersectionObserver`/
+  etc.): `define`/`get`/`upgrade` are harmless no-ops, `whenDefined`
+  resolves immediately (reusing the existing `resolved()` promise helper).
+  This does NOT implement real custom-element upgrade machinery (no
+  `connectedCallback`, no attribute-changed reactions) — that remains the
+  same already-documented, deliberately out-of-scope gap; only the
+  crash-on-mere-reference is fixed.
+- Verified live: "Home | News | March 5, 2026 - ... | Compare browsers |
+  About" now all render in the nav, and "Settings" appears next to the
+  search box, matching Chrome. **Bench moved for real this time: SSIM
+  0.640→0.645, pixdiff 21.7%→18.4%** — unlike most of this session's
+  "real fix, flat bench" nav-bar rounds, four separate, visible UI pieces
+  reappearing on a fairly compact (1547px) page was enough to move the
+  aggregate score meaningfully.
+- Coverage: `js` is not one of the gated packages (css/layout/paint/dom
+  only — it exercises the goja/DOM bridge, not pure deterministic layout
+  logic), so no floor to hold, but a new `TestCustomElementsRegistry` was
+  added anyway (`js/js_test.go`, alongside the existing `TestWindowStubs`)
+  and confirmed to fail with the EXACT predicted `ReferenceError` via a
+  full `git stash` revert.
+
 ## 2026-09-06 (round 48) — an inline-level element generated NO BOX AT ALL: its background, border and padding were never reserved and never painted, so a styled `<span>` label rendered as bare text and, with white-on-coloured text, vanished entirely (engine#128)
 
 An inline-level element — `<span style="background:…;padding:…;border:…">`,

@@ -411,6 +411,28 @@ func TestWindowStubs(t *testing.T) {
 		"aliases=truetruetruetruetrue", "dims=1024,768,1024,768,1,0,0,false,[]")
 }
 
+func TestCustomElementsRegistry(t *testing.T) {
+	// A bare reference to `customElements` (no method call needed) previously
+	// threw an uncaught ReferenceError, since the global didn't exist at all —
+	// confirmed live on caniuse.com, whose bundled script references it early
+	// and, with nothing stopping the throw, never reaches the REST of that
+	// same script file, including an unrelated `classList.remove("no-js")`
+	// call that several nav links and controls depend on being CSS-unhidden
+	// (engine#130). define/get/upgrade are harmless no-ops (this engine has
+	// no custom-element upgrade machinery — a real, already-documented gap,
+	// not attempted here) and whenDefined resolves immediately, since nothing
+	// is ever "defined" to legitimately keep it pending on.
+	_, logs, _ := runJS(t, page(`
+		console.log('type='+(typeof customElements));
+		console.log('define='+customElements.define('x-foo', function(){}));
+		console.log('get='+customElements.get('x-foo'));
+		console.log('upgrade='+customElements.upgrade(document.body));
+		customElements.whenDefined('x-foo').then(function(v){ console.log('whenDefined='+v); });
+	`))
+	mustHave(t, logs, "type=object", "define=undefined", "get=undefined",
+		"upgrade=undefined", "whenDefined=undefined")
+}
+
 func TestNavigator(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		console.log('nav='+navigator.userAgent+'|'+navigator.language+'|'+navigator.languages.length+'|'+navigator.onLine+'|'+navigator.javaEnabled()+'|'+navigator.sendBeacon('u')+'|'+navigator.hardwareConcurrency+'|'+navigator.cookieEnabled+'|'+navigator.appName);
