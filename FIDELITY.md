@@ -18,7 +18,7 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
-## 2026-09-06 (round 59) — CSS fragmentation properties, `@page`, and the absolute length units: the contract a paginating consumer reads, plus a `height:40mm` that laid out as 0 (engine#PRNUM)
+## 2026-09-06 (round 59) — CSS fragmentation properties, `@page`, and the absolute length units: the contract a paginating consumer reads, plus a `height:40mm` that laid out as 0 (engine#141)
 
 Paged media needs three things the engine did not carry: where a page may or must break, what the page box is, and lengths in the units print stylesheets are written in. This round adds all three to the `css` package as a contract for go-pdfkit/html2pdf and the `paginate` package (written concurrently against these exact names); the engine's own screen layout is unchanged by the first two.
 
