@@ -397,6 +397,34 @@ func TestInlineSVGCSSClassFill(t *testing.T) {
 	assertPixel(t, img, 20, 20, 0x1e, 0x90, 0xff, "CSS-class fill on inline svg")
 }
 
+func TestFlexRowSVGSiblingNotOverlapped(t *testing.T) {
+	// A flex item's preferredWidth (used to size a flex row before it has a
+	// definite width) special-cased only the "img" tag, never "svg" — fine
+	// as long as an inline SVG stayed CSS-display:inline (appendElementInline
+	// always sizes it correctly regardless of display, via a separate tag
+	// switch), but hasBlockLevelChild has no such exception: an SVG made
+	// display:block (Tailwind's own preflight reset,
+	// `img,svg,video,...{display:block}`) routed its ANCESTOR's preferredWidth
+	// through the "widest block child" branch instead, which recurses into
+	// preferredWidth for the SVG with no img/svg case of its own — falling
+	// through to a generic inline-content measurement that sees only the
+	// SVG's non-text <path>/<rect> children and reports ~0. Confirmed live on
+	// tailwindcss.com: the nav logo (an <svg class="h-5">, sized by CSS alone,
+	// no width/height attributes) measured as a zero-width flex item, so its
+	// sibling (a version-badge button) rendered overlapping it at the row's
+	// left edge instead of to its right (engine#129).
+	html := `<!doctype html><html><body style="margin:0;background:#fff">` +
+		`<style>svg{display:block}</style>` +
+		`<div style="display:flex;align-items:center">` +
+		`<svg viewBox="0 0 100 20" style="height:20px"><rect width="100" height="20" fill="#1e90ff"/></svg>` +
+		`<div style="width:10px;height:10px;background:#ff00ff"></div>` +
+		`</div>` +
+		`</body></html>`
+	img := renderHTMLTest(t, html, 200, 30)
+	assertPixel(t, img, 50, 10, 0x1e, 0x90, 0xff, "svg sized by CSS alone, no width/height attrs")
+	assertPixel(t, img, 105, 5, 0xff, 0x00, 0xff, "sibling positioned AFTER the svg, not overlapping it")
+}
+
 // --- end-to-end: <img src=svg> sized by width/height attrs ----------------
 
 func TestImgSVGAttrSizing(t *testing.T) {
