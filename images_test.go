@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-webengine/engine/css"
 )
@@ -134,4 +135,94 @@ func TestButtonIconOnlyRendersIcon(t *testing.T) {
 		`</button></body></html>`
 	img := renderHTMLTest(t, src, 50, 50)
 	assertPixel(t, img, 15, 15, 0xff, 0x00, 0x00, "icon-only button should paint its svg child's bitmap, not leave it empty")
+}
+
+// TestRetryAfterDelay covers retryAfterDelay's parsing of the Retry-After
+// header's delay-seconds form (the only form observed live — see
+// doWithRateLimitRetry's doc comment), independent of any network I/O.
+func TestRetryAfterDelay(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want time.Duration
+	}{
+		{"empty falls back to default", "", defaultRateLimitBackoff},
+		{"plain seconds", "2", 2 * time.Second},
+		{"zero seconds is honoured", "0", 0},
+		{"negative falls back to default", "-1", defaultRateLimitBackoff},
+		{"non-numeric falls back to default", "Wed, 21 Oct type date", defaultRateLimitBackoff},
+		{"surrounding whitespace trimmed", "  3  ", 3 * time.Second},
+		{"absurd value clamped to ceiling", "600", maxRateLimitBackoff},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := retryAfterDelay(c.in); got != c.want {
+				t.Errorf("retryAfterDelay(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+// TestFetchImageBytesRetriesOn429 guards the actual bug: en.wikipedia.org's
+// upload.wikimedia.org CDN replies 429 Too Many Requests (with a real
+// Retry-After header) to some fraction of this engine's own concurrent
+// per-page image fetches on an image-heavy article, so a real, fetchable
+// image was silently and non-deterministically dropped — confirmed live,
+// the infobox logo was missing in 2 of 3 renders of the same page. A bare
+// httptest.Server standing in for the CDN returns 429 for the first two
+// requests (Retry-After: 0, so the test runs fast) then 200 with real bytes
+// on the third; fetchImageBytes must retry through the 429s and return the
+// eventual success.
+func TestFetchImageBytesRetriesOn429(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&hits, 1)
+		if n <= 2 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Write([]byte("real-image-bytes"))
+	}))
+	defer srv.Close()
+
+	e := New()
+	e.Client = srv.Client()
+	ctx := withImgByteCache(context.Background(), newImgByteCache())
+	data, ok := e.fetchImageBytes(ctx, srv.URL+"/", "/pic.png")
+	if !ok {
+		t.Fatal("fetchImageBytes failed after retrying through 429s")
+	}
+	if string(data) != "real-image-bytes" {
+		t.Errorf("data = %q, want the eventual 200 body", data)
+	}
+	if got := atomic.LoadInt32(&hits); got != 3 {
+		t.Errorf("server saw %d requests, want exactly 3 (2 x 429 + 1 x 200)", got)
+	}
+}
+
+// TestFetchImageBytesGivesUpAfterMaxRetries covers the OTHER half of the same
+// fix: a host that is persistently (not just momentarily) rate-limiting must
+// not turn into an unbounded retry loop — fetchImageBytes gives up after
+// maxRateLimitRetries and reports failure, exactly as it already did for any
+// other non-200 status, rather than hanging the render.
+func TestFetchImageBytesGivesUpAfterMaxRetries(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	e := New()
+	e.Client = srv.Client()
+	ctx := withImgByteCache(context.Background(), newImgByteCache())
+	_, ok := e.fetchImageBytes(ctx, srv.URL+"/", "/pic.png")
+	if ok {
+		t.Fatal("fetchImageBytes should fail once a host is persistently rate-limited, not retry forever")
+	}
+	if want := int32(1 + maxRateLimitRetries); atomic.LoadInt32(&hits) != want {
+		t.Errorf("server saw %d requests, want exactly %d (1 initial + %d retries)", hits, want, maxRateLimitRetries)
+	}
 }
