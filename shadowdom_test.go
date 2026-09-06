@@ -131,3 +131,26 @@ func TestShadowDOMPlainPageUnaffected(t *testing.T) {
 		t.Fatalf("plain <template> (no shadowrootmode) should still be inert: contentHeight=%d", info.ContentHeight)
 	}
 }
+
+// TestShadowDOMInlineSVGIsDiscoveredForRasterization guards loadImages's own
+// replaced-element walk (images.go), a SEPARATE tree walk from the layout/
+// cascade ones already covered above — before it also descended into
+// n.Shadow.Children, an inline <svg> that lived only in a host's declarative
+// shadow content was never added to the fetch/rasterize job list at all, so
+// it painted as empty space regardless of how correctly layout positioned its
+// box or cascade computed its style. Confirmed root cause, live, of
+// developer.mozilla.org's top-nav <mdn-search-button> rendering as an empty
+// pill with no magnifying-glass icon (round 55; see FIDELITY.md) — this
+// fixture reproduces the same shape (a custom element's declarative shadow
+// root whose content is an inline <svg>) minimally, independent of that
+// page's own additional, separately-scoped icon-only-<button> sizing
+// limitation (see layout.formControlDefaultSize's "button" case), which is
+// why the host here is a plain custom element, not a <button>.
+func TestShadowDOMInlineSVGIsDiscoveredForRasterization(t *testing.T) {
+	src := `<html><body style="margin:0;background:#000">` +
+		`<my-icon><template shadowrootmode="open">` +
+		`<svg width="20" height="20" viewBox="0 0 20 20"><rect width="20" height="20" fill="#ff0000"/></svg>` +
+		`</template></my-icon></body></html>`
+	img := renderHTMLTest(t, src, 40, 40)
+	assertPixel(t, img, 10, 10, 0xff, 0x00, 0x00, "shadow-hosted inline <svg> should rasterize its red rect, not paint as empty background")
+}

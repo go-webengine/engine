@@ -18,6 +18,95 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-06 (round 55) — `loadImages`'s replaced-element walk never descended into a host's declarative shadow tree, so an `<svg>`/`<img>` living only in shadow content was never fetched or rasterised — silent empty space regardless of how correctly layout/cascade positioned and styled it (engine#135)
+
+Found on developer.mozilla.org: the top-nav search control (a
+`<mdn-search-button>` custom element, SSR'd with a `<template
+shadowrootmode="open">` per the Declarative Shadow DOM spec) renders as an
+empty pill with no magnifying-glass icon, while Chrome shows the icon
+clearly. Confirmed with a pixel-level zoom crop of the existing bench
+montage before investigating further (this session's standing "never trust
+a downscaled thumbnail" discipline) — round 55 continued from a fresh
+corpus-wide `Engine.JSLog` sweep (the round 51 technique) that came back
+fully clean of script errors, so this round switched to the traditional
+visual-comparison approach instead.
+
+- Fetched MDN's real HTML (not assumed) and found the search button's icon
+  is a genuine inline `<svg fill="none" stroke="currentColor" ...>` (a
+  circle + diagonal handle, Feather-icon-style) sitting inside the
+  declarative shadow root's own `<button>` element — i.e. shadow CONTENT,
+  never a light-DOM child of `<mdn-search-button>`.
+- Root-caused with a minimal, isolated repro (`cmd/render -file`, no
+  network): the SAME structure (`<my-icon><template shadowrootmode="open">
+  ...<svg>...</svg>...`) reproduced the bug standalone. Instrumented
+  `loadImages` (`images.go`) directly via a throwaway in-package test and
+  found the cause precisely: its own `walk` function — SEPARATE from the
+  cascade and layout tree walks, which already handle `n.Shadow` correctly
+  (see `css/cascade.go`, `layout/shadow.go`) — only ever recursed into
+  `n.Children`, never `n.Shadow.Children`. An `<svg>`/`<img>` reachable
+  only through a host's shadow content was therefore never added to the
+  fetch/rasterise job list at all: not a cascade bug (the element's
+  computed style, including the inherited `color` `currentColor` resolves
+  against, was already correct), not a serialisation bug (`serializeSVG`
+  already produced correct XML), purely a discovery gap in this one
+  independent tree walk.
+- Fixed by adding the same `if n.Shadow != nil { for _, c := range
+  n.Shadow.Children { walk(c) } }` branch `loadImages`'s walk was missing,
+  mirroring the pattern every other shadow-aware walk in this codebase
+  already uses. One-line mechanism, `images.go`.
+- **This alone does NOT fully resolve MDN's visible symptom** — documented
+  honestly rather than oversold. A SECOND, independent, pre-existing
+  limitation also gates this specific icon: `<button>` is laid out as an
+  atomic, label-text-only box in this engine (see
+  `layout.formControlDefaultSize`'s "button" case and
+  `layout.buttonLabel`'s doc comment, both already flagging this for
+  `pkg.go.dev`'s icon-only search-submit button before this round), so a
+  `<button>` whose entire content is an icon with no text has that icon
+  silently discarded at layout time regardless of whether it is discovered
+  by `loadImages` — confirmed directly: a plain `<button><svg
+  stroke="red">...</svg></button>` with NO shadow DOM involved at all
+  loses its icon exactly the same way. Fixing that is a materially larger,
+  cross-cutting change (multiple call sites sizing/painting every
+  input/button/select/textarea) and is left as a dedicated follow-up round
+  rather than folded into this one.
+- The fix is real and general on its own regardless: MDN's page also has a
+  DIFFERENT shadow-hosted icon (an `<a class="button">` "Ask the MDN
+  community" link, not a `<button>` tag) whose SVG is not gated by the
+  button limitation above — any host element OTHER than a real
+  input/button/select/textarea with a shadow-hosted `<img>`/inline `<svg>`
+  is fixed by this round alone. A live before/after full-page render diff
+  of the actual MDN URL showed zero pixel difference, however: with
+  JavaScript enabled (this session's normal bench/live-render configuration)
+  the settle loop's post-JS-mutation DOM differs from the raw fetched HTML
+  in ways not fully traced down given this round's time budget, and no
+  corpus page currently exercises the fixed mechanism in a JS-disabled,
+  non-button context. Reported honestly as a real, verified-by-unit-test
+  mechanism fix with unmeasured (not "flat", genuinely not isolated) impact
+  on the current 10-URL corpus, rather than claiming a corpus improvement
+  that a live diff did not actually show.
+- Added `TestShadowDOMInlineSVGIsDiscoveredForRasterization`
+  (`shadowdom_test.go`): a minimal, JS-disabled, non-button fixture (a
+  plain custom element host) with a shadow-hosted red-filled `<svg><rect>`,
+  asserting the rect's colour actually reaches a painted pixel. Confirmed
+  it fails with exactly the predicted symptom (`pixel (10,10) = #000000,
+  want #ff0000` — plain background, matching the live empty-pill symptom)
+  via a full `git stash` revert of `images.go` alone, and passes again once
+  restored.
+- **Bench corpus comparison could not be run this round**: headless Chrome
+  failed to complete its devtools handshake for every one of the 10 URLs
+  (`websocket url timeout reached` / `could not dial ...: context deadline
+  exceeded`), confirmed — via six independent manual `Google Chrome
+  --headless` invocations across several flag combinations, all hanging
+  with DevTools listening but no page-load ever attempted within a 15-25s
+  window — to be a local machine-load issue (33 concurrent Claude Code
+  processes, load average 4.3-8.0 observed via `ps`/`uptime` at the time),
+  not anything related to this fix, this page, or this engine. Retried
+  once more at a 60s per-page timeout with an identical result across all
+  10 URLs. The failed run's `results.json`/`REPORT.md` (all-zero SSIM,
+  `chrome_ok:false`) were correctly discarded via `git checkout --` rather
+  than committed over the last good numbers — bench/REPORT.md and
+  bench/results.json are UNCHANGED by this round, not silently regressed.
+
 ## 2026-09-06 (round 54) — `document.createTreeWalker` returned a bare empty object, so `nextNode()` threw and aborted lit-html's OWN template-compilation code, breaking every web component built on it (engine#134)
 
 Closes the SECOND (and last) of the two leads round 51's corpus-wide

@@ -110,7 +110,12 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 
 	// Collect replaced elements: raster/SVG <img> and inline <svg>. An inline
 	// <svg> is a replaced box: it is collected and its subtree is not descended
-	// into (its children are SVG primitives, not flow content).
+	// into (its children are SVG primitives, not flow content). A host's
+	// declarative shadow tree (n.Shadow) is walked too — e.g. a lit-based icon
+	// component's SSR'd <template shadowrootmode> commonly wraps its <svg> in
+	// shadow content, not light-DOM children, and without this the icon is
+	// simply never discovered: no fetch, no bitmap, silently empty space at
+	// paint time (found via developer.mozilla.org's nav search-button icon).
 	var reps []*dom.Node
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
@@ -124,6 +129,11 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 		}
 		for _, c := range n.Children {
 			walk(c)
+		}
+		if n.Shadow != nil {
+			for _, c := range n.Shadow.Children {
+				walk(c)
+			}
 		}
 	}
 	walk(doc.Root)

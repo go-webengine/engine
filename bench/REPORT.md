@@ -69,6 +69,34 @@ Speed× is `chrome_ms / webengine_ms`: >1 means webengine is faster.
 
 <!-- BEGIN ANALYSIS (hand-written, preserved across re-runs) -->
 
+## Honest analysis — 2026-09-06 (round 55): `loadImages` never walked into a host's declarative shadow tree, so a shadow-hosted `<svg>`/`<img>` was never fetched or rasterised at all (engine#135)
+
+**No corpus numbers this round — reported honestly rather than reused or
+fabricated.** Headless Chrome could not complete its devtools handshake for
+ANY of the 10 URLs this round (`websocket url timeout reached` / `context
+deadline exceeded` on every single one, twice, at both a 45s and a 60s
+per-page timeout), confirmed via independent manual `Google Chrome
+--headless` invocations to be a local machine-load problem (33 concurrent
+Claude Code processes observed at the time) rather than anything about this
+page or this fix. The failed run's all-zero-SSIM `results.json`/`REPORT.md`
+were discarded (`git checkout --`), not committed over the last good
+numbers above — this table is therefore UNCHANGED from round 54, not a
+claim that nothing moved.
+
+Root cause (developer.mozilla.org's nav search icon): `loadImages`'s own
+replaced-element walk (`images.go`) — separate from the cascade/layout
+walks, which already handle shadow trees correctly — never descended into
+`n.Shadow.Children`, so an `<svg>` reachable only through a declarative
+shadow root was never even added to the fetch/rasterise job list. Fixed
+with the same one-branch pattern every other shadow-aware walk in this
+codebase already uses. Verified via an isolated unit test (a shadow-hosted
+red `<svg><rect>` now reaches a painted pixel; confirmed failing with the
+predicted symptom via `git stash` before the fix). **Does not by itself fix
+MDN's visible icon** — a second, independent, pre-existing limitation
+(`<button>` is laid out as an atomic label-text-only box, discarding any
+icon child regardless of shadow DOM) also gates that specific control; see
+FIDELITY.md for the full account and why it's scoped to a follow-up round.
+
 ## Honest analysis — 2026-09-06 (round 54): `document.createTreeWalker` returned a bare empty object, so lit-html's own `nextNode()` call threw and aborted its template-compilation code (engine#134)
 
 **caniuse.com: SSIM 0.646→0.644, pixdiff 18.3%→18.4% — both within the
