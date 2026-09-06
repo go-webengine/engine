@@ -123,7 +123,37 @@ func (b *binder) installStubs(g *goja.Object) {
 	g.Set("getSelection", func(goja.FunctionCall) goja.Value { return goja.Null() })
 	// fetch and XMLHttpRequest are the real, e.Client-backed implementations
 	// installed by installNet (see net.go).
+	g.Set("customElements", b.newCustomElementRegistry())
 	b.installClasslessStorageAPIs(g)
+}
+
+// newCustomElementRegistry stubs window.customElements (a CustomElementRegistry
+// singleton, not a constructor — unlike the Observer classes above, script
+// never does `new customElements`, it reads the global directly). This engine
+// has no custom-element upgrade machinery at all (no connectedCallback,
+// attributeChangedCallback, or Shadow DOM attachment triggered by define) —
+// a real, already-documented gap, not attempted here. What WAS missing until
+// now is the global itself: confirmed live on caniuse.com, whose bundle
+// merely REFERENCES `customElements` (not even necessarily calling a method)
+// early in a large bundled script — with the global entirely absent, that one
+// reference threw an uncaught ReferenceError and aborted the ENTIRE script,
+// silently losing everything after it in the same file, including an
+// unrelated `document.documentElement.classList.remove("no-js")` call whose
+// failure then cascaded into several nav links and controls staying
+// CSS-hidden (`.no-js .site-nav-item--news{display:none}` and siblings) that
+// have nothing to do with custom elements at all. define/get/upgrade are
+// harmless no-ops and whenDefined returns a Promise that resolves immediately
+// (nothing is ever "defined" to wait for, so there's nothing to legitimately
+// stay pending on) — the same "present-but-inert beats absent-and-throwing"
+// philosophy as every other stub in this function.
+func (b *binder) newCustomElementRegistry() *goja.Object {
+	o := b.vm.NewObject()
+	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
+	o.Set("define", noop)
+	o.Set("get", noop)
+	o.Set("upgrade", noop)
+	o.Set("whenDefined", func(goja.FunctionCall) goja.Value { return b.resolved(goja.Undefined()) })
+	return o
 }
 
 // installClasslessStorageAPIs wires atob/btoa and structuredClone.
