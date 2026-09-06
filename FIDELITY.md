@@ -186,6 +186,73 @@ hold 100% statement coverage.
   inline background can overlap the line above or below. That IS what a
   browser does; it is listed here because it looks like a defect and is not.
 
+## 2026-09-06 (round 49) — preferredWidth's replaced-element check only matched the literal "img" tag, so an inline `<svg>` made `display:block` by its own stylesheet (a common preflight reset) measured as a zero-width flex item (engine#129)
+
+Closes the LAST open bug from round 46's tailwindcss.com investigation — the
+"v4.3" version-badge rendering overlapping the START of the logo, found live
+but explicitly left undiagnosed after two minimal reproductions both failed
+to reproduce it ("didn't reproduce in 2 minimal attempts, documented for
+later"). Round 47's flex/mixed-text fix was suspected as a possible partial
+fix but confirmed NOT to touch this — re-checked live at the start of this
+round and the badge still overlapped the logo, unchanged.
+
+- **Root-caused via a graduated series of reproductions, escalating only
+  after each simpler one failed to reproduce the bug** (this session's
+  established method when a live symptom won't reproduce from a
+  hand-simplified fixture): a plain `<a><svg width=... height=...></svg></a>`
+  next to a flex sibling positioned correctly; adding the real `shrink-0`
+  class, the real multi-path SVG content, even the real `position:fixed`
+  wrapper — all still positioned correctly. Only loading the page's ACTUAL
+  fetched stylesheet (690KB of real Tailwind-generated CSS, not a hand-typed
+  approximation) reproduced it. This ruled out the SVG's own complexity, the
+  flex-shrink property, and the fixed-position ancestor as red herrings
+  before the real cascade rule was found.
+- **The real culprit, found with a temporary instrumented print inside
+  `flexRow` dumping every item's resolved `main` size**: the logo's flex
+  item (`<a>` wrapping the `<svg>`) resolved to `main=0`, while a plain
+  `imageSize()` unit check on the SAME svg node — called from a DIFFERENT
+  path — correctly reported its real size (159×20). This proved the SVG's
+  own intrinsic-size lookup was fine, narrowing the bug specifically to
+  `preferredWidth`'s handling of the `<a>` wrapping it.
+- Tailwind's own preflight resets EVERY `img`/`svg`/`video`/etc. to
+  `display:block` (`img,svg,video,canvas,audio,iframe,embed,object{
+  vertical-align:middle;display:block}`) — a completely standard, common
+  reset most real sites carry. `layout/layout.go`'s `hasBlockLevelChild`
+  checks a child's COMPUTED display with no exception for a replaced
+  element, so a now-block `<svg>` makes its `<a>` parent's
+  `preferredWidth` take the "widest BLOCK child" branch instead of the
+  "Inline: max-content" one. That branch recurses into `preferredWidth` for
+  the svg — but `preferredWidth`'s OWN replaced-element fast path checked
+  only the literal `"img"` tag, never `"svg"` (`appendElementInline`, a
+  SEPARATE function used for the correct, working case, already dispatches
+  on tag via a switch that doesn't care about `display` at all — the two
+  functions had silently drifted out of sync). Missing that check, the
+  recursive call falls through every other branch to the generic
+  inline-content fallback, which measures the SVG's own `<path>`/`<rect>`
+  children (no text) as ~0.
+- Fixed with a one-line change: `node.Tag == "img"` → `isReplacedTag(node.Tag)`
+  (the SAME helper `contents()`'s own replaced-element check already uses,
+  previously duplicated ad hoc here instead of shared).
+- Verified live: tailwindcss.com's nav now renders "tailwindcss v4.3 ⌄"
+  correctly laid out left-to-right, matching Chrome, closing a bug that
+  spanned three rounds (46: found, misdiagnosed as unrelated fill/stroke
+  work shipped instead; 47: suspected-but-confirmed-unrelated; 49: actually
+  root-caused — round 48, concurrent with this investigation, was an
+  unrelated inline-box fix by another session). **Bench essentially flat on
+  tailwindcss.com (SSIM 0.706→0.704, pixdiff 13.4%→13.3%)** — a small badge
+  icon on a 13,657px page, the usual "real fix, tiny aggregate movement"
+  pattern. The fix's real value is general: ANY flex item whose only content
+  is a CSS-sized-only (no width/height HTML attributes), block-styled inline
+  SVG — a common pattern for any site combining Tailwind's default preflight
+  with a plain inline logo/icon SVG — no longer collapses to zero width.
+- Added `TestFlexRowSVGSiblingNotOverlapped` (end-to-end, `svg_test.go`):
+  confirmed to fail via a full revert (`git stash`) with the exact predicted
+  symptom (`sibling positioned AFTER the svg... pixel = white, want
+  magenta`). Coverage floors held (css 99.5%, layout 100.0%, paint 100.0%,
+  dom 98.1%) without needing a new test to close a gap — the changed branch
+  was already exercised by existing `<img>`-tag tests; the new test adds
+  real-bug coverage on top, not gap-filling.
+
 ## 2026-09-05 (round 47) — a flex container mixing bare text with an element child silently dropped the text entirely, so a nav dropdown's own label vanished, leaving only its icon (engine#127)
 
 go.dev/blog re-investigated fresh (by far the most stale page in the corpus:

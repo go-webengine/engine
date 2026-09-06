@@ -204,7 +204,21 @@ func (l *layouter) placeFloat(parent *Box, node *dom.Node, st *css.Style, cx, cw
 func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	bw := st.Border.Widths()
 	edges := bw.Left + bw.Right + st.Padding.Left + st.Padding.Right
-	if node.Type == dom.Element && node.Tag == "img" {
+	// A replaced element (img or inline svg) is sized from its own decoded/
+	// intrinsic size, never by measuring children — checked via isReplacedTag
+	// (not a bare "img" tag check) because an inline <svg> commonly computes
+	// display:block itself (Tailwind's own preflight reset:
+	// `img,svg,video,...{display:block}`), which used to route it through
+	// hasBlockLevelChild's "widest block child" branch below instead of this
+	// one. That branch recurses into preferredWidth for the child with no
+	// further img/svg special case of its own, falling through all the way to
+	// the generic inline-measurement fallback — which measures the SVG's own
+	// <path> children (no text) as ~0, not the SVG's real size. Confirmed live
+	// on tailwindcss.com: the nav's logo `<a><svg viewBox="..." class="h-5">`
+	// (no width/height HTML attributes, sized by CSS alone) measured as a
+	// zero-width flex item, so the version-badge sibling that should have sat
+	// to its right rendered overlapping it at the container's left edge.
+	if node.Type == dom.Element && isReplacedTag(node.Tag) {
 		w, _ := l.imageSize(node)
 		return w + edges
 	}
