@@ -224,6 +224,9 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	o.Set("contains", func(call goja.FunctionCall) goja.Value {
 		return b.vm.ToValue(contains(n, b.node(call.Argument(0))))
 	})
+	o.Set("isEqualNode", func(call goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(isEqualNode(n, b.node(call.Argument(0))))
+	})
 
 	o.Set("querySelector", func(call goja.FunctionCall) goja.Value {
 		if got := b.query(n, call.Argument(0).String(), true); len(got) > 0 {
@@ -878,6 +881,46 @@ func contains(root, target *dom.Node) bool {
 }
 
 func rooted(n, root *dom.Node) bool { return contains(root, n) }
+
+// isEqualNode reports whether a and b are the same TYPE of node with the same
+// tag/attributes (elements) or data (text), and equal children in the same
+// order, recursively — a structural comparison, unlike `===`/isSameNode's
+// reference identity. Two nil nodes (both representing JS null) are equal;
+// exactly one nil is not. Confirmed load-bearing live: react.dev's hydration/
+// reconciliation calls `node.isEqualNode(...)` on real DOM nodes eight times
+// per render — entirely missing before this (this engine had no
+// Node.prototype method by this name at all), each call threw a TypeError.
+// Fixing it is a real, independently-confirmed bug fix (found via a corpus-
+// wide sweep of Engine.JSLog output, not from chasing any one visual
+// symptom) — checked, and it is NOT the cause of react.dev's separate,
+// already-documented reskin/orphaned-node gap (rounds 10/19): that washed-
+// out-prose symptom is still present, unchanged, after this fix. The two
+// are independent defects that happen to both live in the same settle path.
+func isEqualNode(a, b *dom.Node) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Type != b.Type || a.Tag != b.Tag || a.Text != b.Text {
+		return false
+	}
+	if len(a.Attr) != len(b.Attr) {
+		return false
+	}
+	for k, v := range a.Attr {
+		if bv, ok := b.Attr[k]; !ok || bv != v {
+			return false
+		}
+	}
+	if len(a.Children) != len(b.Children) {
+		return false
+	}
+	for i, ca := range a.Children {
+		if !isEqualNode(ca, b.Children[i]) {
+			return false
+		}
+	}
+	return true
+}
 
 func cloneNode(n *dom.Node, deep bool) *dom.Node {
 	c := &dom.Node{Type: n.Type, Tag: n.Tag, Text: n.Text}

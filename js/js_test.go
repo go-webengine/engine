@@ -172,6 +172,11 @@ func TestElementTreeAndManipulation(t *testing.T) {
 		var deep=d.cloneNode(true), shallow=d.cloneNode(false);
 		console.log('clone='+deep.children.length+','+shallow.children.length);
 		console.log('contains='+d.contains(s)+','+document.body.contains(d)+','+d.contains(null)+','+d.contains({}));
+		var e1=document.createElement('p'); e1.setAttribute('id','x'); e1.appendChild(document.createTextNode('hi'));
+		var e2=document.createElement('p'); e2.setAttribute('id','x'); e2.appendChild(document.createTextNode('hi'));
+		var e3=document.createElement('p'); e3.setAttribute('id','y'); e3.appendChild(document.createTextNode('hi'));
+		var e4=document.createElement('span'); e4.appendChild(document.createTextNode('hi'));
+		console.log('eqSelf='+e1.isEqualNode(e1)+' eqStructural='+e1.isEqualNode(e2)+' eqDiffAttr='+e1.isEqualNode(e3)+' eqDiffTag='+e1.isEqualNode(e4)+' eqNull='+e1.isEqualNode(null));
 		d.insertBefore(document.createElement('q'), d.firstChild);
 		console.log('afterInsert='+d.firstElementChild.tagName);
 		d.replaceChild(document.createElement('r'), d.firstElementChild);
@@ -180,7 +185,8 @@ func TestElementTreeAndManipulation(t *testing.T) {
 		s.remove();
 		console.log('conn='+d.isConnected+','+document.createElement('z').isConnected);
 	`))
-	mustHave(t, logs, "parent=BODYBODY", "nsib=null", "afterInsert=Q", "afterReplace=R", "conn=true,false")
+	mustHave(t, logs, "parent=BODYBODY", "nsib=null", "afterInsert=Q", "afterReplace=R", "conn=true,false",
+		"eqSelf=true eqStructural=true eqDiffAttr=false eqDiffTag=false eqNull=false")
 	if dom.Find(root, "div") == nil {
 		t.Fatal("div vanished")
 	}
