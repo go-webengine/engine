@@ -18,6 +18,79 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-06 (round 54) — `document.createTreeWalker` returned a bare empty object, so `nextNode()` threw and aborted lit-html's OWN template-compilation code, breaking every web component built on it (engine#134)
+
+Closes the SECOND (and last) of the two leads round 51's corpus-wide
+`Engine.JSLog` sweep flagged and left unfixed — caniuse.com's own remaining
+crash, which survived round 50's `customElements` fix untouched (a
+different, later failure in the same bundle).
+
+- caniuse.com's console: `TypeError: Object has no member 'nextNode'`.
+  `document.createTreeWalker` (`js/dom.go`) previously just returned
+  `b.vm.NewObject()` — a bare object with no methods at all, not merely a
+  narrower stub — so ANY call into a `TreeWalker` immediately threw.
+- **Confirmed the exact real-world caller before implementing anything**
+  (this session's standing discipline, same as round 52's `document.
+  implementation`): fetched caniuse.com's real `bundle.js` and found the
+  failing line is [lit-html](https://lit.dev)'s own `Template` constructor —
+  `E=c.createTreeWalker(c,129)` (`c`=`document`, `129`=`NodeFilter.
+  SHOW_ELEMENT|SHOW_COMMENT`), then `E.currentNode=this.el.content` followed
+  by a `while(null!==(i=E.nextNode()))` loop reading each element's
+  attributes to find lit's `?`/`.`/`@`-prefixed template bindings. lit-html
+  underlies a huge fraction of the modern web-components ecosystem
+  (Shoelace, Material Web, and many sites' own custom elements), so this
+  crash's blast radius extends well past caniuse.com specifically.
+- Implemented a real, working (if narrowly-scoped) `TreeWalker`:
+  `currentNode` (get/set) and `nextNode()` — the two members lit-html's own
+  confirmed usage actually reaches for. `nextNode()` does a genuine
+  depth-first pre-order document-order walk (children before siblings),
+  bounded to never escape above the walker's own root, returning `null`
+  once the subtree is exhausted — reusing the SAME `nextSibling` helper
+  `Node.nextSibling`/`previousSibling` already use, not a new traversal
+  mechanism. `previousNode`/`parentNode`/`firstChild`/`lastChild`/
+  `nextSibling`/`previousSibling` (the rest of the real spec) are NOT
+  implemented — no confirmed caller reaches for them, matching round 52's
+  identical scope discipline for `document.implementation`.
+- **`whatToShow` honoured on a best-effort basis, honestly limited**: this
+  engine has no distinct Comment node type at all — `document.
+  createComment` already just returns a plain Text node (confirmed by
+  reading the existing code, not assumed) — so `NodeFilter.SHOW_TEXT` (4)
+  and `SHOW_COMMENT` (128) cannot be told apart internally; either bit
+  accepts every `dom.Text` node. For lit-html's own `129` mask this is
+  harmless in practice: its walker loop only ever DOES anything for
+  `nodeType===1` (element) nodes, silently skipping whatever else it visits,
+  so over-matching a text node it wouldn't otherwise have seen costs nothing
+  functionally — but this is a real, documented approximation, not a
+  claim of spec-complete `NodeFilter` support.
+- Verified live via the SAME JSLog sweep script from rounds 51/52:
+  caniuse.com now reports ZERO `nextNode`-related errors (the ONE remaining
+  console error on the page — `TypeError: Cannot convert undefined or null
+  to object` in `pagead2.googlesyndication.com/.../adsbygoogle.js` — is a
+  third-party Google-ads script, confirmed present and IDENTICAL before
+  this fix too via a targeted `git stash` check; correctly left alone as
+  non-deterministic third-party ad-network code, the same category
+  already established for MDN's ad banner in round 47). **Bench essentially
+  flat (SSIM 0.646→0.644, pixdiff 18.3%→18.4%, both within the corpus's
+  normal run-to-run noise band)** — whatever lit-html-based widget this
+  unblocks on caniuse.com is evidently small or below the fold at 1024×768,
+  so the fix's visible effect on a full-page screenshot is negligible even
+  though the underlying crash is real and now silenced. The fix's actual
+  value, like rounds 51/52, is general rather than page-specific: lit-html
+  is a foundational, widely-used library, and this exact `TreeWalker` setup
+  is its OWN core template-compilation mechanism, not an edge case.
+- Added `TestTreeWalkerNextNode` (`js/js_test.go`, alongside round 52's
+  `TestDocumentImplementationCreateHTMLDocument`): builds a real 3-element
+  tree, walks it with `whatToShow=SHOW_ELEMENT`, and checks the visited
+  order, that `currentNode` reflects the last-visited node, that walking
+  past the end returns `null`, and that `currentNode` is settable.
+  Confirmed to fail with the exact predicted `TypeError` via a full
+  `git stash` revert.
+- **This closes both leads round 51's corpus sweep flagged** — the sweep
+  technique (rounds 50→51→52→54, round 53 being an unrelated concurrent
+  session's PR) has now directly produced 4 shipped fixes
+  in a row from a single hour of initial investigation, the highest
+  yield-per-investigation-hour of any technique used this session.
+
 ## 2026-09-06 (round 52) — `document.implementation` was entirely absent, so jQuery's OWN bootstrap feature-check threw and aborted before assigning the global `$`, breaking every other script on the page that depends on it (engine#132)
 
 Picks up the first of the two leads round 51's corpus-wide `Engine.JSLog`

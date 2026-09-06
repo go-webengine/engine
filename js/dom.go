@@ -490,6 +490,87 @@ func (b *binder) newDetachedHTMLDocument() *goja.Object {
 	return d
 }
 
+// newTreeWalker builds a real, working TreeWalker: `currentNode` (get/set)
+// and `nextNode()`, the two members the one confirmed real caller — lit-html
+// (used by caniuse.com's own bundle for its web-component templates) —
+// actually reaches for (`E.currentNode=this.el.content` then a `nextNode()`
+// loop reading each element's attributes). Before this, `createTreeWalker`
+// returned a bare empty object, so `nextNode()` threw "Object has no member
+// 'nextNode'" and aborted lit-html's own template-compilation code entirely
+// (engine#134) — every web component built on lit-html was broken, not just
+// one narrow feature. previousNode/parentNode/firstChild/etc. (the rest of
+// the real interface) are not implemented: no confirmed caller reaches for
+// them, matching this session's established narrow-scope discipline (see
+// round 52's `document.implementation`, which similarly stopped at the
+// confirmed real usage rather than a full second Document).
+//
+// whatToShow is honoured on a best-effort basis: this engine has no distinct
+// Comment node type at all (document.createComment already returns a plain
+// Text node), so NodeFilter.SHOW_TEXT and SHOW_COMMENT cannot be told apart
+// internally — either bit accepts every dom.Text node. 0 (an omitted
+// argument, or the literal value) means SHOW_ALL, matching the spec's
+// documented default for a caller that never passes it.
+func (b *binder) newTreeWalker(root *dom.Node, whatToShow int) *goja.Object {
+	current := root
+	o := b.vm.NewObject()
+	o.Set("root", b.wrap(root))
+	b.accessor(o, "currentNode",
+		func() goja.Value { return b.wrap(current) },
+		func(v goja.Value) {
+			if n := b.node(v); n != nil {
+				current = n
+			}
+		})
+	o.Set("nextNode", func(goja.FunctionCall) goja.Value {
+		for {
+			next := treeWalkerStep(root, current)
+			if next == nil {
+				return goja.Null()
+			}
+			current = next
+			if treeWalkerShows(current, whatToShow) {
+				return b.wrap(current)
+			}
+		}
+	})
+	return o
+}
+
+// treeWalkerStep returns the node after n in document order (depth-first,
+// pre-order: children before siblings), never escaping above root, or nil at
+// the end of root's subtree — the standard "next node" step a TreeWalker's
+// nextNode builds by repeating until a whatToShow-matching node turns up.
+func treeWalkerStep(root, n *dom.Node) *dom.Node {
+	if len(n.Children) > 0 {
+		return n.Children[0]
+	}
+	for n != root {
+		if sib := nextSibling(n); sib != nil {
+			return sib
+		}
+		if n.Parent == nil {
+			return nil
+		}
+		n = n.Parent
+	}
+	return nil
+}
+
+// treeWalkerShows reports whether n matches a TreeWalker's whatToShow mask
+// (NodeFilter.SHOW_ELEMENT=1, SHOW_TEXT=4, SHOW_COMMENT=128; 0 is SHOW_ALL).
+func treeWalkerShows(n *dom.Node, whatToShow int) bool {
+	if whatToShow <= 0 {
+		return true
+	}
+	switch n.Type {
+	case dom.Element:
+		return whatToShow&1 != 0
+	case dom.Text:
+		return whatToShow&4 != 0 || whatToShow&128 != 0
+	}
+	return false
+}
+
 // newDataset exposes element.dataset (data-* attributes) as a dynamic object.
 func (b *binder) newDataset(n *dom.Node) goja.Value {
 	return b.vm.NewDynamicObject(&datasetDynObj{b: b, n: n})
@@ -678,7 +759,17 @@ func (b *binder) installDocument() *goja.Object {
 	d.Set("createRange", func(goja.FunctionCall) goja.Value { return b.newRange() })
 	d.Set("createEvent", func(call goja.FunctionCall) goja.Value { return b.newEvent("") })
 	d.Set("createNodeIterator", func(goja.FunctionCall) goja.Value { return b.vm.NewObject() })
-	d.Set("createTreeWalker", func(goja.FunctionCall) goja.Value { return b.vm.NewObject() })
+	d.Set("createTreeWalker", func(call goja.FunctionCall) goja.Value {
+		root := b.node(call.Argument(0))
+		if root == nil {
+			root = b.root
+		}
+		whatToShow := 0 // SHOW_ALL (spec default, and what an omitted/undefined argument means)
+		if a := call.Argument(1); !goja.IsUndefined(a) {
+			whatToShow = int(a.ToInteger())
+		}
+		return b.newTreeWalker(root, whatToShow)
+	})
 	d.Set("importNode", func(call goja.FunctionCall) goja.Value {
 		return b.wrap(cloneNode(b.node(call.Argument(0)), call.Argument(1).ToBoolean()))
 	})
