@@ -439,6 +439,33 @@ func TestCustomElementsRegistry(t *testing.T) {
 		"upgrade=undefined", "whenDefined=undefined")
 }
 
+func TestDocumentImplementationCreateHTMLDocument(t *testing.T) {
+	// document.implementation was entirely absent, so jQuery's own bootstrap
+	// (`E.implementation.createHTMLDocument("").body.innerHTML=...`, a
+	// feature-detection check it runs unconditionally at load) threw
+	// "Cannot read property 'createHTMLDocument' of undefined or null" —
+	// which aborted jQuery's whole script before it finished assigning the
+	// global `$`, so every OTHER script on the page that expects `$` failed
+	// too with a plain ReferenceError (confirmed live on go.dev/blog,
+	// engine#132). The detached document createHTMLDocument returns is
+	// backed by real elements (not a plain object), so `.body.innerHTML=`
+	// parses real child nodes exactly like it would on the main document —
+	// the same real-vs-plain-object distinction jQuery's own feature check
+	// (does the browser correctly parse two sibling forms?) depends on.
+	_, logs, _ := runJS(t, page(`
+		var d = document.implementation.createHTMLDocument("ignored title");
+		console.log('head='+d.head.tagName+' body='+d.body.tagName+' de='+d.documentElement.tagName);
+		d.body.innerHTML = '<form></form><form></form>';
+		console.log('parsed='+d.body.childNodes.length+' tag0='+d.body.childNodes[0].tagName);
+		var base = d.createElement('base');
+		base.href = 'https://example.com/';
+		d.head.appendChild(base);
+		console.log('base='+d.head.firstChild.tagName+' href='+d.head.firstChild.href);
+	`))
+	mustHave(t, logs, "head=HEAD body=BODY de=HTML", "parsed=2 tag0=FORM",
+		"base=BASE href=https://example.com/")
+}
+
 func TestNavigator(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		console.log('nav='+navigator.userAgent+'|'+navigator.language+'|'+navigator.languages.length+'|'+navigator.onLine+'|'+navigator.javaEnabled()+'|'+navigator.sendBeacon('u')+'|'+navigator.hardwareConcurrency+'|'+navigator.cookieEnabled+'|'+navigator.appName);
