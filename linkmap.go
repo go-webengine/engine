@@ -133,22 +133,17 @@ func (e *Engine) RenderDocumentWithLinks(ctx context.Context, doc *Document, vie
 	return img, renderInfo(doc, rp), links, nil
 }
 
-// itemRect returns an inline atom's painted rectangle. For a word the height is
-// the item's line height; for an image the image's height. Both use the atom's
-// positioned top-left (X,Y) which layout fills in full-page space.
+// itemRect returns an inline atom's painted rectangle in image pixels: itemBox
+// (nav.go) rounded out, so a sub-pixel advance still yields a hit-testable
+// width. For a word the height is the item's line height; for an image the
+// image's height. Both use the atom's positioned top-left (X,Y) which layout
+// fills in full-page space.
 func itemRect(it *layout.InlineItem) image.Rectangle {
-	if it.LineBreak {
+	x, y, w, h, ok := itemBox(it)
+	if !ok {
 		return image.Rectangle{}
 	}
-	w := it.Width
-	h := it.LineHeight
-	if it.Image != nil {
-		h = it.ImgH
-	}
-	if w <= 0 || h <= 0 {
-		return image.Rectangle{}
-	}
-	x0, y0 := int(it.X), int(it.Y)
+	x0, y0 := int(x), int(y)
 	return image.Rect(x0, y0, x0+ceilPx(w), y0+ceilPx(h))
 }
 
