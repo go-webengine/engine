@@ -18,6 +18,67 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-06 (round 52) — `document.implementation` was entirely absent, so jQuery's OWN bootstrap feature-check threw and aborted before assigning the global `$`, breaking every other script on the page that depends on it (engine#132)
+
+Picks up the first of the two leads round 51's corpus-wide `Engine.JSLog`
+sweep flagged but deliberately left unfixed (one bug per round even when a
+sweep surfaces several).
+
+- go.dev/blog's console output: `TypeError: Cannot read property
+  'createHTMLDocument' of undefined or null` in jquery.js, immediately
+  followed by `ReferenceError: $ is not defined` in godocs.js (go.dev's own
+  script). The second error is a DIRECT CONSEQUENCE of the first, not an
+  independent bug: jQuery's own bootstrap runs a feature-detection check
+  unconditionally at load —
+  `y.createHTMLDocument = ((_t = E.implementation.createHTMLDocument("")
+  .body).innerHTML = "<form></form><form></form>", 2 === _t.childNodes
+  .length)` — and with `document.implementation` entirely absent (this
+  engine never modelled it at all, not even a stub), reading
+  `.createHTMLDocument` off `undefined` threw before jQuery finished
+  assigning its global `$` alias, so godocs.js's very first `$(...)` call
+  failed outright.
+- Confirmed the EXACT real-world usage before implementing anything, by
+  fetching go.dev's actual `jquery.js` and reading the offset the error
+  named: both the feature-check above AND `jQuery.parseHTML` itself call
+  `document.implementation.createHTMLDocument("")`, then use the result's
+  `.body`/`.head`/`.createElement` — never anything else (no
+  `querySelector`, no event dispatch, no `getElementById`) — a narrow,
+  concretely-bounded real requirement, not a request to implement a full
+  second `Document` interface.
+- Implemented `document.implementation` (a `DOMImplementation`-shaped stub
+  with `createHTMLDocument`/`hasFeature`) and `createHTMLDocument(title)`
+  returning a minimal but GENUINELY REAL detached document: an actual
+  `<html><head></head><body></body></html>` tree of real elements (the same
+  `dom.Node`s the main document uses), plus `createElement`. Deliberately
+  NOT a full `Document` — no `querySelector`/`getElementById`/event
+  methods — since nothing in the confirmed real usage reaches for them;
+  adding them would be speculative surface with no live caller.
+  `.body.innerHTML = "..."` on the returned document therefore parses REAL
+  child nodes exactly the same way it does on the main document, which is
+  exactly what jQuery's own feature-check depends on to tell a real browser
+  apart from a broken shim.
+- Verified live via the same JSLog sweep from round 51: go.dev/blog now
+  reports ZERO ReferenceError/TypeError output; jQuery's global `$` is
+  correctly defined and godocs.js's calls into it succeed. **Bench flat
+  (SSIM/pixdiff unchanged)** — expected, not a shortfall: on THIS
+  particular page jQuery only drives interactive behaviours (nav
+  dropdowns' JS-assisted state, presumably), not the page's static layout,
+  so a script no longer crashing has no visible effect on a full-page
+  screenshot. The fix's real value is general rather than page-specific:
+  jQuery is one of the most widely-deployed libraries on the web, and this
+  exact feature-detection line ships unconditionally in every jQuery 3.x
+  bundle — any OTHER page in the wild using jQuery would have hit the
+  identical crash.
+- Added `TestDocumentImplementationCreateHTMLDocument` (`js/js_test.go`,
+  next to round 51's `TestCustomElementsRegistry`): checks `head`/`body`/
+  `documentElement` tag names, that `.body.innerHTML=` genuinely parses two
+  sibling `<form>` elements (mirroring jQuery's own feature-check
+  precisely), and that `createElement` + `appendChild` + attribute
+  read/write work on the detached tree. Confirmed to fail with the exact
+  predicted `TypeError` via a full `git stash` revert.
+- Coverage: `js` remains ungated (only css/layout/paint/dom are), same as
+  rounds 50/51 — the revert-and-confirm-fail discipline was applied anyway.
+
 ## 2026-09-06 (round 51) — `Node.prototype.isEqualNode` was entirely missing, throwing a TypeError on every call; a NEW corpus-wide diagnostic technique (reading `Engine.JSLog` across all 10 pages at once) found this plus two more real, unfixed bugs in a single pass (engine#131)
 
 **Methodology shift, not just a bug fix**: round 50 established that

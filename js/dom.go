@@ -444,6 +444,52 @@ func (b *binder) newRange() goja.Value {
 	return o
 }
 
+// newDOMImplementation stubs document.implementation. createHTMLDocument is
+// the one method with a confirmed real caller: jQuery's own support-detection
+// (`y.createHTMLDocument = (E.implementation.createHTMLDocument("").body...`)
+// and jQuery.parseHTML both call it unconditionally at load/first-use — with
+// `document.implementation` entirely absent (this engine's prior state),
+// reading `.createHTMLDocument` off `undefined` threw a TypeError that
+// aborted jQuery's own bootstrap before it finished assigning the global `$`,
+// so every OTHER script on the page that expects `$` to exist failed too with
+// a plain ReferenceError. hasFeature always reporting true matches every
+// real browser's own (permanently deprecated, always-true) implementation.
+func (b *binder) newDOMImplementation() *goja.Object {
+	o := b.vm.NewObject()
+	o.Set("createHTMLDocument", func(call goja.FunctionCall) goja.Value {
+		return b.newDetachedHTMLDocument()
+	})
+	o.Set("hasFeature", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(true) })
+	return o
+}
+
+// newDetachedHTMLDocument builds the minimal document-shaped object
+// createHTMLDocument's real callers need: a `<html><head></head><body></body>
+// </html>` tree of REAL elements (so `.body.innerHTML = "..."` parses actual
+// child nodes the same way it would on the main document, and a created
+// `<base>`/other element behaves identically to one from `document.
+// createElement`) plus `createElement`, all scoped to nodes no different in
+// kind from the real document's — this engine has no ownerDocument-scoped
+// parsing behaviour to diverge from. Not a full Document (no querySelector,
+// no event dispatch, …): jQuery's own usage never reaches for those on the
+// document `createHTMLDocument` returns, and nothing else in this engine
+// calls it, so implementing more would be unconfirmed, speculative surface.
+func (b *binder) newDetachedHTMLDocument() *goja.Object {
+	html := dom.NewElement("html")
+	head := dom.NewElement("head")
+	body := dom.NewElement("body")
+	dom.AppendChild(html, head)
+	dom.AppendChild(html, body)
+	d := b.vm.NewObject()
+	d.Set("documentElement", b.wrap(html))
+	d.Set("head", b.wrap(head))
+	d.Set("body", b.wrap(body))
+	d.Set("createElement", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(dom.NewElement(call.Argument(0).String()))
+	})
+	return d
+}
+
 // newDataset exposes element.dataset (data-* attributes) as a dynamic object.
 func (b *binder) newDataset(n *dom.Node) goja.Value {
 	return b.vm.NewDynamicObject(&datasetDynObj{b: b, n: n})
@@ -575,6 +621,7 @@ func (b *binder) installDocument() *goja.Object {
 	b.accessor(d, "cookie",
 		func() goja.Value { return b.vm.ToValue(b.cookie) },
 		func(v goja.Value) { b.cookie = mergeCookie(b.cookie, v.String()) })
+	b.accessor(d, "implementation", func() goja.Value { return b.newDOMImplementation() }, nil)
 
 	d.Set("getElementById", func(call goja.FunctionCall) goja.Value {
 		return b.wrap(byID(b.root, call.Argument(0).String()))
