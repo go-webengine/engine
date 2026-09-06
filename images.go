@@ -101,12 +101,76 @@ func (e *Engine) LoadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 	return e.loadImages(ctx, doc, sm, viewportW)
 }
 
+// LoadedImage is one replaced element as LoadImageSet returns it: the two
+// values LoadImages splits into its maps, plus the source the bitmap was
+// decoded from — for a consumer whose output can carry those bytes as they
+// are (a PDF embeds a JPEG as a DCTDecode stream without re-encoding it),
+// or that picks an encoding by the source's nature (a photograph from a
+// lossy source is not line art from a lossless one).
+type LoadedImage struct {
+	Size   [2]float64  // layout size, CSS px — LoadImages' first map
+	Bitmap image.Image // decoded, CSS-sized, viewport-clamped — LoadImages' second map
+	Data   []byte      // the bytes fetched for an <img> (SVG text included); nil for an inline <svg>
+	Format string      // sniffed from Data — "jpeg", "png", "gif", "webp", "bmp", "svg" — or "" when unknown
+	Lossy  bool        // Format is a lossy encoding: jpeg, or a webp whose bitstream is VP8 rather than VP8L
+	// SourceW, SourceH is the decoded source's pixel size before any CSS or
+	// viewport resize; Bitmap still has exactly the source's pixels iff its
+	// bounds are this size, which is when Data can stand in for it.
+	SourceW, SourceH int
+}
+
+// LoadImageSet is LoadImages keeping each image's source alongside its
+// bitmap — same budgets, same fetch, same sizing, same accepted set.
+func (e *Engine) LoadImageSet(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int) map[*dom.Node]*LoadedImage {
+	return e.loadImageSet(ctx, doc, sm, viewportW)
+}
+
+// sniffImageFormat names an image encoding from its leading bytes, and
+// whether that encoding is lossy. A WebP is lossy when its bitstream chunk
+// is "VP8 " (VP8L is lossless; an extended VP8X file carries one or the
+// other further in, so the first 4 KB are searched).
+func sniffImageFormat(data []byte) (format string, lossy bool) {
+	switch {
+	case len(data) >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF:
+		return "jpeg", true
+	case len(data) >= 8 && string(data[:8]) == "\x89PNG\r\n\x1a\n":
+		return "png", false
+	case len(data) >= 6 && (string(data[:6]) == "GIF87a" || string(data[:6]) == "GIF89a"):
+		return "gif", false
+	case len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP":
+		head := data
+		if len(head) > 4096 {
+			head = head[:4096]
+		}
+		if strings.Contains(string(head), "VP8L") {
+			return "webp", false
+		}
+		return "webp", strings.Contains(string(head), "VP8 ")
+	case len(data) >= 2 && data[0] == 'B' && data[1] == 'M':
+		return "bmp", false
+	}
+	return "", false
+}
+
 // loadImages fetches and decodes every <img> in the document (best-effort),
 // returning intrinsic sizes for layout and decoded bitmaps for paint. Images
 // wider than the viewport are scaled down proportionally. Failures are skipped.
 func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int) (map[*dom.Node][2]float64, map[*dom.Node]image.Image) {
-	sizes := map[*dom.Node][2]float64{}
-	bitmaps := map[*dom.Node]image.Image{}
+	set := e.loadImageSet(ctx, doc, sm, viewportW)
+	sizes := make(map[*dom.Node][2]float64, len(set))
+	bitmaps := make(map[*dom.Node]image.Image, len(set))
+	for n, li := range set {
+		sizes[n] = li.Size
+		bitmaps[n] = li.Bitmap
+	}
+	return sizes, bitmaps
+}
+
+// loadImageSet is the loader proper: the accepted set is decided in document
+// order before any fetch, the fetch+decode runs concurrently, and the map
+// is filled single-threaded, so the result is the same for any scheduling.
+func (e *Engine) loadImageSet(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int) map[*dom.Node]*LoadedImage {
+	set := map[*dom.Node]*LoadedImage{}
 
 	// Collect replaced elements: raster/SVG <img> and inline <svg>. An inline
 	// <svg> is a replaced box: it is collected and its subtree is not descended
@@ -180,23 +244,16 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 	// cost). Each worker writes only its own result slot; the maps are then filled
 	// single-threaded in document order, so the output is byte-identical to the
 	// sequential version for any fixture.
-	type result struct {
-		size [2]float64
-		bmp  image.Image
-		ok   bool
-	}
-	results := make([]result, len(jobs))
+	results := make([]*LoadedImage, len(jobs))
 	parallelDo(len(jobs), func(i int) {
-		size, bmp, ok := e.loadOneImage(ctx, doc, sm, viewportW, jobs[i])
-		results[i] = result{size, bmp, ok}
+		results[i] = e.loadOneImage(ctx, doc, sm, viewportW, jobs[i])
 	})
 	for i, n := range jobs {
-		if results[i].ok {
-			sizes[n] = results[i].size
-			bitmaps[n] = results[i].bmp
+		if results[i] != nil {
+			set[n] = results[i]
 		}
 	}
-	return sizes, bitmaps
+	return set
 }
 
 // loadOneImage fetches and decodes one accepted replaced element (inline <svg>,
@@ -204,40 +261,42 @@ func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 // ok=false means skip it (no maps entry) — a cancelled context, a failed fetch,
 // or an undecodable payload. It is pure with respect to its node, so it is safe
 // to run concurrently for distinct nodes.
-func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int, n *dom.Node) (size [2]float64, bmp image.Image, ok bool) {
+func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int, n *dom.Node) *LoadedImage {
 	if ctx.Err() != nil {
-		return size, nil, false // respect cancellation before any work
+		return nil // respect cancellation before any work
 	}
 	// Inline <svg>: serialise the subtree and rasterise it.
 	if n.Tag == "svg" {
 		data := []byte(serializeSVG(n, sm))
 		b, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
 		if !ok {
-			return size, nil, false
+			return nil
 		}
-		return [2]float64{float64(w), float64(h)}, b, true
+		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Format: "svg", SourceW: w, SourceH: h}
 	}
 	src, _ := n.Attribute("src") // presence was checked in the gate
 	data, ok := e.fetchImageBytes(ctx, doc.URL, src)
 	if !ok {
-		return size, nil, false
+		return nil
 	}
 	// <img src="*.svg"> and data:image/svg+xml: rasterise via the SVG path.
 	if looksLikeSVG(data, src) {
 		b, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
 		if !ok {
-			return size, nil, false
+			return nil
 		}
-		return [2]float64{float64(w), float64(h)}, b, true
+		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Data: data, Format: "svg", SourceW: w, SourceH: h}
 	}
 	src0, err := codec.Decode(data)
 	if err != nil {
-		return size, nil, false
+		return nil
 	}
 	w, h := src0.W, src0.H
 	if w <= 0 || h <= 0 {
-		return size, nil, false
+		return nil
 	}
+	format, lossy := sniffImageFormat(data)
+	li := &LoadedImage{Data: data, Format: format, Lossy: lossy, SourceW: w, SourceH: h}
 	mode := resampleMode(sm[n])
 	// Apply a single-axis CSS width/height as a browser does: the specified axis
 	// is used and the other is scaled by the intrinsic aspect ratio (so e.g. a
@@ -274,7 +333,8 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 		src0 = resizeRaster(src0, viewportW, nh, mode)
 		w, h = viewportW, nh
 	}
-	return [2]float64{float64(w), float64(h)}, src0.ToNRGBA(), true
+	li.Size, li.Bitmap = [2]float64{float64(w), float64(h)}, src0.ToNRGBA()
+	return li
 }
 
 // loadBackgroundImages fetches and decodes every distinct CSS
