@@ -808,7 +808,7 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 		return
 	}
 	if it.FormControl != nil {
-		paintFormControl(dst, pp, it, f, clip)
+		paintFormControl(dst, pp, it, f, imgs, clip)
 		return
 	}
 	if it.Text == "" || it.Style == nil {
@@ -852,7 +852,7 @@ var (
 // text — the visible, clickable rendering isReplacedTag-style items never
 // got before (see layout.go's isFormControlTag branch, which is what gives
 // it.FormControl a non-nil node and a real box size to paint here).
-func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, clip image.Rectangle) {
+func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, clip image.Rectangle) {
 	n := it.FormControl
 	r := painter.Rect{X: int(it.X), Y: int(it.Y), W: int(it.Width), H: int(it.LineHeight)}
 	kind := formControlKind(n)
@@ -889,6 +889,20 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 	}
 	if drawBorder {
 		strokeRect1px(pp, r, borderCol, clip)
+	}
+
+	// An icon-only <button> (Label == "", see layout.InlineItem.Icon's doc
+	// comment) draws its img/svg child's own bitmap centred in the control's
+	// box instead of any text — real browsers give it no fabricated label
+	// either, and this is the actual visible content that box exists for.
+	if it.Icon != nil {
+		if src, ok := imgs[it.Icon]; ok {
+			b := src.Bounds()
+			ix := r.X + (r.W-b.Dx())/2
+			iy := r.Y + (r.H-b.Dy())/2
+			blitImage(dst, src, ix, iy, clip)
+		}
+		return
 	}
 
 	text, muted := formControlDisplayText(n, it.Label)
