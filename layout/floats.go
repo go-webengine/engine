@@ -355,7 +355,7 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 		if i > 0 {
 			line += it.SpaceBefore
 		}
-		line += it.Width
+		line += it.padLead + it.Width + it.padTrail
 	}
 	flushLine()
 	return maxLine + edges
@@ -391,6 +391,14 @@ func translateBox(box *Box, dx, dy float64) {
 	for _, line := range box.Lines {
 		line.X += dx
 		line.Y += dy
+		// Inline fragments are absolute document geometry like everything else
+		// here (see InlineFragment), so a translated box must carry them along
+		// or an inline element's background/border stays behind at the
+		// pre-translation position while its own words move.
+		for i := range line.Inlines {
+			line.Inlines[i].X += dx
+			line.Inlines[i].Y += dy
+		}
 		for _, it := range line.Items {
 			it.X += dx
 			it.Y += dy

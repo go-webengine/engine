@@ -18,6 +18,174 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-06 (round 48) — an inline-level element generated NO BOX AT ALL: its background, border and padding were never reserved and never painted, so a styled `<span>` label rendered as bare text and, with white-on-coloured text, vanished entirely (engine#128)
+
+An inline-level element — `<span style="background:…;padding:…;border:…">`,
+a bordered `<code>`, a highlighted `<a>`, the near-universal "pill"/"chip"/
+"badge" pattern — had no representation in the layout tree of any kind.
+`collectInline` flattened it into a flat list of `InlineItem` words, each
+carrying only the innermost element's `Style` pointer and `Node`; nothing
+recorded that a run of those words belonged to a box with edges.
+
+Two distinct failures followed from the same root cause.
+
+**Nothing reserved the horizontal space.** CSS reserves an inline box's
+`border-left + padding-left` before its first content and its
+`border-right + padding-right` after its last. `collectInline` reserved
+neither, so the words after a padded `<span>` sat exactly where that span's
+own padding should have been: any decoration painted for it would have
+overlapped its neighbours, and a shrink-to-fit container sized to the text
+alone clipped the padding off entirely.
+
+**Nothing painted the decoration.** `paintBoxContent` paints backgrounds and
+borders for a `*layout.Box`, and an inline element never gets one;
+`paintItem` draws glyphs, image blits and form controls and nothing else. A
+narrow stopgap existed for the background alone — `paintInlineBackground`
+filled a rectangle behind each item whose `Style` pointer differed from the
+block's, merging adjacent items of the same originating node — but it could
+reach only the INNERMOST element (a `<b>` inside a styled `<span>` hid the
+span's own background from it completely, since the words then carry the
+`<b>`'s style, not the span's), it painted per item interleaved with the
+glyphs (so a later item's background could paint over an earlier item's
+letters), and it had no notion of a border, of padding, or of an element
+being split across lines. Borders on an inline element simply never appeared.
+
+Fixed by modelling what CSS actually specifies: an inline box FRAGMENTS, one
+fragment per line box it spans, with `box-decoration-break: slice` (the CSS
+default) putting its leading edge on the first fragment only and its trailing
+edge on the last only.
+
+**Layout.** Inline collection now carries a `decor` chain (`layouter.decor`):
+the inline-level ancestors currently in scope that generate a box —
+`newInlineDecor` says an element does when it has a background to paint or an
+edge (border or padding) to reserve, and says NO for a `<b>`, `<em>`, `<a>` or
+UA-default `<code>` carrying nothing but typographic style. Every `InlineItem`
+keeps a reference to that chain, shared per element rather than copied per
+word, so a page of plain text allocates nothing at all for this.
+`resolveInlineEdges` then walks one formatting context in document order and,
+from where each item's ancestor chain DIVERGES from its neighbour's, fills in
+`decorFirst`/`decorLast` (the depths at which this item is the first/last item
+of an ancestor) and `padLead`/`padTrail` (the horizontal edges it therefore
+reserves). Those two lengths enter the line's advance in `wrapOneLine`,
+`WrapItems`, `lineMetrics` and `preferredWidth`'s max-content estimate — the
+same fields, and the same machinery, the collapsible-whitespace and
+inline-margin work of round 44 already uses, not a parallel path. They are
+deliberately NOT `SpaceBefore`: collapsible whitespace legitimately disappears
+at the start of a line, an element's own padding does not.
+
+A single new positioning loop, `placeLine`, replaces the two (wrapped and
+`white-space:pre`) that layoutInline carried, opening a fragment when an
+ancestor's first item arrives and closing it when the next item leaves it —
+taking the trailing edge only when the element genuinely ENDS there rather
+than merely continuing on the next line. Vertical padding/border deliberately
+do NOT grow the line: they extend the fragment beyond it, which is what CSS
+says an inline box's vertical padding does.
+
+**Paint.** `paintInlineBackground` is gone, replaced by `paintInlineFragment`,
+which paints a fragment's background (honouring `border-radius`, including the
+rounded-fill path) and then its border. `paintBorders` was refactored into a
+shared `paintEdges(…, left, right bool, …)` so a block box and an inline
+fragment stroke their edges through the same code: a block passes true/true, a
+fragment passes its own `First`/`Last`. All of a line's fragments now paint
+BEFORE any of its items, outermost fragment first, so an enclosing background
+lands under a nested one and no background ever paints over an already-drawn
+glyph.
+
+**Exported API** (`layout/box.go`), for a downstream painter — a PDF writer,
+specifically — to consume without re-deriving any of it:
+
+```go
+type InlineFragment struct {
+	Node        *dom.Node   // the inline element this is a piece of
+	Style       *css.Style  // its computed style
+	X, Y, W, H  float64     // absolute document px, BORDER box
+	First, Last bool        // box-decoration-break: slice
+}
+
+type LineBox struct {
+	// …
+	Inlines []InlineFragment // outermost first
+}
+```
+
+A consumer iterates `for _, line := range box.Lines { for _, fr := range
+line.Inlines { … } }` and paints in that order. `X..X+W` covers the element's
+content on this line plus its leading edge when `First` and its trailing edge
+when `Last`; `Y..Y+H` covers the items' font box grown by the element's
+vertical border+padding, and may exceed the line box's own height. Fragments
+translate with their box (`translateBox`), so a flex/grid/float-repositioned
+subtree's decoration follows its words.
+
+**Proven deterministically.** In `layout` (fake measurer: 10px per rune,
+ascent 8, line height 20, so every coordinate below is exact):
+`TestInlineDecorationReservesEdges` (a span's 7px edges reserved: its text at
+x=27 and the FOLLOWING text pushed to x=54, fragment X=20/W=34, and the line
+height unchanged at 20 by the vertical border),
+`TestInlineDecorationFragmentsPerLineBox` (a wrapped span: two fragments,
+First/Last true/false then false/true, and no phantom re-indent on the
+continuation line — its first word at x=0),
+`TestNestedInlineDecorationOutermostFirst` (a decorated `<b>` inside a
+decorated `<span>`: two fragments, span BEFORE b, both edges nested),
+`TestAdjacentInlineDecorationsAreSeparateFragments`,
+`TestInlineDecorationSpansAForcedBreak` (a `<br>` is not content: the edge is
+reserved once, before the first word),
+`TestInlineDecorationCountsTowardMaxContentWidth` (a float sizes to 34, not
+20), `TestInlineDecorationInPreformattedText` (the `white-space:pre` path),
+`TestBorderStyleNoneReservesNothing`,
+`TestInlineDecorationTranslatesWithItsBox`, and
+`TestUndecoratedInlineElementsMakeNoFragment` — which pins the
+no-regression claim directly: `<a>`, `<code>`, `<b>` and `<em>` produce no
+fragment, reserve nothing, and leave every item's X exactly where it was.
+
+In `paint`: `TestPaintInlineFragmentBackground`,
+`TestPaintInlineFragmentBorderSlice` (all three cases — a first fragment with
+a left border and no right, a last with a right and no left, a middle with
+neither and both horizontals), `TestPaintInlineFragmentRounded`,
+`TestPaintInlineFragmentDegenerate`.
+
+End to end: `TestInlineDecorationGolden` renders
+`testdata/inline_decoration.html` and asserts the FINAL pixels — the top
+border band, the left border on the first fragment, the background present on
+BOTH lines, NO left border where the element continues onto line two, the
+nested `<b>`'s green over its ancestor's blue, the right border on the last
+fragment only, the bottom border, and not one decoration pixel anywhere on the
+undecorated `<span>`'s rows — against a committed golden PNG.
+
+**Every one of the other twelve committed goldens regenerates byte-identical**
+(`UPDATE_GOLDEN=1 go test -short ./...` leaves `testdata/golden/` clean), which
+is the direct evidence that no existing page changed. `layout` and `paint` both
+hold 100% statement coverage.
+
+**Honest residual.**
+
+- **`box-decoration-break: clone` is not supported** — the property is not
+  parsed at all; every fragment is sliced. `slice` is the CSS initial value,
+  so this is only wrong for a page that explicitly asks for `clone`.
+- **A fragment's content height is the item's LINE BOX height, not the font's
+  own em box.** CSS paints an inline background over the content area, whose
+  height is font-derived and independent of `line-height`; this engine uses
+  `InlineItem.LineHeight`, so with a large `line-height` the band is taller
+  than a browser's (the same convention the previous `paintInlineBackground`
+  used — this change does not make it worse, and does not fix it). The font's
+  natural height is not currently carried on the item, which is what fixing it
+  would need.
+- **`background-image`/gradient layers on an inline element still do not
+  paint** — only the solid `background-color` does. An element whose ONLY
+  background is a gradient generates no fragment at all.
+- **`box-shadow`, `outline` and `filter` on an inline element** are likewise
+  unpainted; those live on the `*layout.Box` path only.
+- **No RTL.** Fragments are built left to right in document order;
+  `direction: rtl` is unmodelled engine-wide, so a fragment's First edge is
+  always its LEFT one.
+- **An inline element split by a promoted block-level child** (the round-40
+  `BlockBreak` path) yields fragments in each surrounding anonymous box with
+  First on the earlier and Last on the later, rather than CSS's own
+  "split the inline box around the block" model. No confirmed live page
+  depends on the difference.
+- **Vertical padding overflows the line box and is not clipped**, so a tall
+  inline background can overlap the line above or below. That IS what a
+  browser does; it is listed here because it looks like a defect and is not.
+
 ## 2026-09-05 (round 47) — a flex container mixing bare text with an element child silently dropped the text entirely, so a nav dropdown's own label vanished, leaving only its icon (engine#127)
 
 go.dev/blog re-investigated fresh (by far the most stale page in the corpus:
@@ -3481,6 +3649,16 @@ columns.
   bumping the dependency. Fixing (or forking) a third-party rasteriser's own
   path-fill-rule/subpath handling is outside this engine's own codebase —
   not attempted.
+- **An inline element's box decoration is painted (round 48) but not
+  completely**: solid `background-color`, `border` and `padding` fragment per
+  line box with `box-decoration-break: slice`, and `border-radius` is honoured
+  on a complete fragment; `background-image`/gradients, `box-shadow`,
+  `outline` and `filter` on an inline element are still unpainted (they live
+  on the `*layout.Box` path only), `box-decoration-break: clone` is not
+  parsed, and a fragment's content height is the item's LINE BOX height rather
+  than the font's own em box — so a large `line-height` makes the band taller
+  than a browser's.
+
 - **A block/flex/grid-level element nested under an inline-context ancestor
   (e.g. an unstyled custom element, which defaults to `display:inline`) is
   flattened into plain inline text instead of getting a real box.** Found
@@ -3722,6 +3900,7 @@ go run ./cmd/render -file testdata/tailwind_hero_demo.html -out testdata/renders
 go run ./cmd/render -file testdata/position_demo.html -out testdata/renders/position_demo.png -w 400 -h 600
 go run ./cmd/render -file testdata/dropdown_hover_demo.html -out testdata/renders/dropdown_hover_demo.png -w 400 -h 300
 go run ./cmd/render -file testdata/modern_css_demo.html -out testdata/renders/modern_css_demo.png -w 400 -h 300
+go run ./cmd/render -file testdata/inline_decoration.html -out testdata/renders/inline_decoration.png -w 400 -h 200
 ```
 
 The Phase-1.9 golden test (`go test -run TestModernCSSDemoGolden`, regenerate
