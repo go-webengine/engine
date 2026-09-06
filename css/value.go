@@ -145,6 +145,77 @@ const (
 	ClearBoth
 )
 
+// Break is a break-before / break-after value (CSS Fragmentation Level 3)
+// as it matters to paged media: a forced page break (page, left, right), an
+// avoided one, or neither. The column- and region-only values (column,
+// avoid-column, region, avoid-region) say nothing about pages and map to
+// BreakAuto. This engine's own screen layout never fragments; the value is
+// carried on Style for a paginating consumer (go-pdfkit/html2pdf and the
+// paginate package) to read.
+type Break uint8
+
+const (
+	// BreakAuto is the initial value: neither force nor forbid a break.
+	BreakAuto Break = iota
+	// BreakAvoid avoids a page break at this edge (avoid, avoid-page).
+	BreakAvoid
+	// BreakPage forces a page break: page, the legacy `always`, all, recto
+	// and verso — any forced break that does not also choose a page side.
+	BreakPage
+	// BreakLeft forces one or two page breaks so the next page is a left page.
+	BreakLeft
+	// BreakRight forces one or two page breaks so the next page is a right
+	// page.
+	BreakRight
+)
+
+// parseBreakKeyword maps a break-before / break-after keyword to its value,
+// reporting whether it was recognised. The legacy page-break-* spelling
+// `always` is accepted from either property family (it is the alias's only
+// value that differs from the modern one). The CSS-wide initial and unset
+// keywords both mean auto here: neither property is inherited.
+func parseBreakKeyword(s string) (Break, bool) {
+	switch s {
+	case "auto", "initial", "unset", "column", "avoid-column", "region", "avoid-region":
+		return BreakAuto, true
+	case "avoid", "avoid-page":
+		return BreakAvoid, true
+	case "page", "always", "all", "recto", "verso":
+		return BreakPage, true
+	case "left":
+		return BreakLeft, true
+	case "right":
+		return BreakRight, true
+	}
+	return BreakAuto, false
+}
+
+// BreakInside is a break-inside value for paged media.
+type BreakInside uint8
+
+const (
+	// BreakInsideAuto is the initial value: a page break may fall inside the
+	// box.
+	BreakInsideAuto BreakInside = iota
+	// BreakInsideAvoid asks that no page break fall inside the box (avoid,
+	// avoid-page). avoid-column / avoid-region say nothing about pages and
+	// map to BreakInsideAuto.
+	BreakInsideAvoid
+)
+
+// parseBreakInsideKeyword maps a break-inside keyword to its value, reporting
+// whether it was recognised; initial and unset both mean auto (not
+// inherited), as in parseBreakKeyword.
+func parseBreakInsideKeyword(s string) (BreakInside, bool) {
+	switch s {
+	case "auto", "initial", "unset", "avoid-column", "avoid-region":
+		return BreakInsideAuto, true
+	case "avoid", "avoid-page":
+		return BreakInsideAvoid, true
+	}
+	return BreakInsideAuto, false
+}
+
 // BoxSizing selects whether width/height apply to the content box or the
 // border box.
 type BoxSizing uint8
@@ -704,6 +775,18 @@ type Style struct {
 	// name. Neither is inherited; the initial value is ContainerNormal / "".
 	ContainerType ContainerType
 	ContainerName string
+
+	// Fragmentation (CSS Fragmentation Level 3), as far as paged media is
+	// concerned — this engine's own screen layout ignores all five; a
+	// paginating consumer (the paginate package, go-pdfkit/html2pdf) reads
+	// them. break-before / break-after / break-inside are NOT inherited
+	// (initial auto); the legacy page-break-before/after/inside properties
+	// are aliases (always → page). orphans / widows ARE inherited (initial
+	// 2; only a positive integer is a valid value, anything else leaves the
+	// declaration ignored).
+	BreakBefore, BreakAfter Break
+	BreakInside             BreakInside
+	Orphans, Widows         int
 }
 
 // BoxShadow is one box-shadow layer.
@@ -785,6 +868,9 @@ func initialStyle() Style {
 		GridColumnEnd:   GridLine{Auto: true},
 		GridRowStart:    GridLine{Auto: true},
 		GridRowEnd:      GridLine{Auto: true},
+
+		Orphans: 2, // CSS Fragmentation 3: initial value 2, inherited
+		Widows:  2,
 	}
 }
 
@@ -842,6 +928,15 @@ func inheritFrom(parent Style) Style {
 		// also the Go zero value, so this is a no-op left explicit for
 		// documentation alongside the rest of this reset list.
 		ContainerType: ContainerNormal,
+
+		// break-before/after/inside are not inherited: reset to auto (the
+		// zero value, listed here for documentation like ContainerType);
+		// orphans and widows are inherited.
+		BreakBefore: BreakAuto,
+		BreakAfter:  BreakAuto,
+		BreakInside: BreakInsideAuto,
+		Orphans:     parent.Orphans,
+		Widows:      parent.Widows,
 	}
 }
 
@@ -1052,8 +1147,40 @@ func clampByte(f float64) uint8 {
 	return uint8(f + 0.5)
 }
 
+// absoluteUnitPx is the size in px of every absolute length unit, per CSS
+// Values 4 §6.2: 1in = 96px = 2.54cm = 25.4mm = 72pt = 6pc, and 1Q is a
+// quarter of a millimetre. Before this table only px was understood, so a
+// `height:40mm`, `font-size:12pt` or `margin:1in` — routine in print
+// stylesheets, whose native units are mm and pt — fell through parseLength
+// unrecognised and laid out exactly as if the declaration were absent
+// (measured: a `<div style="height:40mm">` had H = 0; `height:151px` had
+// 151). Every property that resolves a length goes through parseLength
+// (calc() terms and line-height included), so this one table fixes them all.
+var absoluteUnitPx = map[string]float64{
+	"px": 1,
+	"in": 96,
+	"cm": 96 / 2.54,
+	"mm": 96 / 25.4,
+	"q":  96 / 25.4 / 4,
+	"pt": 96.0 / 72,
+	"pc": 16,
+}
+
+// splitUnit splits a dimension token into its number and its trailing
+// identifier unit: "40mm" → ("40", "mm"), "12" → ("12", ""). Only the unit's
+// letters are split off, so a keyword such as "thin" yields ("th", "in") and
+// then fails the numeric parse — a unit never swallows an identifier.
+func splitUnit(s string) (num, unit string) {
+	i := len(s)
+	for i > 0 && s[i-1] >= 'a' && s[i-1] <= 'z' {
+		i--
+	}
+	return strings.TrimSpace(s[:i]), s[i:]
+}
+
 // parseLength parses a length value against a reference font-size (for em).
-// It understands px, em, %, the keyword auto, and a bare 0.
+// It understands the absolute units (px, in, cm, mm, Q, pt, pc — see
+// absoluteUnitPx), em and rem, %, vw/vh, the keyword auto, and a bare 0.
 func parseLength(s string, emRef float64) (Length, bool) {
 	s = strings.ToLower(strings.TrimSpace(s))
 	if s == "auto" {
@@ -1063,12 +1190,6 @@ func parseLength(s string, emRef float64) (Length, bool) {
 		return Length{Px: 0}, true
 	}
 	switch {
-	case strings.HasSuffix(s, "px"):
-		f, err := strconv.ParseFloat(strings.TrimSpace(s[:len(s)-2]), 64)
-		if err != nil {
-			return Length{}, false
-		}
-		return Length{Px: f}, true
 	case strings.HasSuffix(s, "rem"):
 		// rem is relative to the root font-size; approximated as 16px (the
 		// Phase-0 root size, matching most pages). Checked before "em".
@@ -1099,5 +1220,16 @@ func parseLength(s string, emRef float64) (Length, bool) {
 		}
 		return Length{Percent: f / 100, IsPercent: true}, true
 	}
-	return Length{}, false
+	// Everything else is a number followed by an absolute unit, or not a
+	// length at all (a bare number, an unknown unit, a keyword).
+	num, unit := splitUnit(s)
+	scale, known := absoluteUnitPx[unit]
+	if !known {
+		return Length{}, false
+	}
+	f, err := strconv.ParseFloat(num, 64)
+	if err != nil {
+		return Length{}, false
+	}
+	return Length{Px: f * scale}, true
 }

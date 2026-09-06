@@ -3,7 +3,11 @@
 
 package css
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/go-webengine/engine/dom"
+)
 
 // TestMediaMatchesOnTypes pins the media-type half of a query: print vs
 // screen, "all", "only", "not", a comma list, and a type this engine never
@@ -72,5 +76,23 @@ func TestMediaAppliesToLinkMedia(t *testing.T) {
 	// The pre-Media entry point is screen.
 	if MediaApplies("print", 800) || !MediaApplies("screen", 800) {
 		t.Error("MediaApplies evaluates for screen")
+	}
+}
+
+// TestCascadeMediaPrint: CascadeMedia is the Media-typed cascade entry —
+// "@media print" rules apply under Print and "@media screen" ones do not.
+func TestCascadeMediaPrint(t *testing.T) {
+	root, err := dom.Parse(`<html><head><style>` +
+		`@media print { p { color: red } } @media screen { p { color: blue } }` +
+		`</style></head><body><p>x</p></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := dom.Find(root, "p")
+	if got := CascadeMedia(root, Media{Type: Print, Width: 1024}, nil)[p].Color; got != (Color{255, 0, 0, 255}) {
+		t.Errorf("print colour = %+v, want red", got)
+	}
+	if got := CascadeMedia(root, Media{Width: 1024}, nil)[p].Color; got != (Color{0, 0, 255, 255}) {
+		t.Errorf("screen colour = %+v, want blue", got)
 	}
 }

@@ -203,11 +203,16 @@ func applyFlexShorthand(s *Style, v string, emRef float64) {
 }
 
 // hasUnit reports whether a token carries a length unit (so a bare number is
-// treated as a flex factor rather than a basis).
+// treated as a flex factor rather than a basis): em/rem, %, auto, or any of
+// the absolute units parseLength understands (px, in, cm, mm, Q, pt, pc).
 func hasUnit(f string) bool {
 	f = strings.ToLower(f)
-	return strings.HasSuffix(f, "px") || strings.HasSuffix(f, "em") ||
-		strings.HasSuffix(f, "%") || f == "auto"
+	if strings.HasSuffix(f, "em") || strings.HasSuffix(f, "%") || f == "auto" {
+		return true
+	}
+	_, unit := splitUnit(f)
+	_, ok := absoluteUnitPx[unit]
+	return ok
 }
 
 // parseBorderRadius parses a border-radius value into a single uniform radius.

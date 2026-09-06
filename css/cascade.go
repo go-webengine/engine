@@ -349,6 +349,14 @@ func collectAuthorRules(root *dom.Node, m Media) []Rule {
 // separate collectAuthorRulesFrom(sr.Children, vw) call — never by this one,
 // and never by the document's — with no explicit check needed here.
 func collectAuthorRulesFrom(nodes []*dom.Node, m Media) []Rule {
+	return ParseStylesheetMedia(styleElementText(nodes), m)
+}
+
+// styleElementText concatenates the text of every <style> element under
+// nodes, in document order, one element per line: the document's embedded
+// stylesheet, as both the cascade (collectAuthorRulesFrom) and the page
+// context (DocumentPage, page.go) read it.
+func styleElementText(nodes []*dom.Node) string {
 	var sb strings.Builder
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
@@ -367,5 +375,5 @@ func collectAuthorRulesFrom(nodes []*dom.Node, m Media) []Rule {
 	for _, n := range nodes {
 		walk(n)
 	}
-	return ParseStylesheetMedia(sb.String(), m)
+	return sb.String()
 }
