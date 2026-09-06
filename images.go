@@ -11,8 +11,10 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-gfx/gfx/codec"
 	"github.com/go-gfx/gfx/raster"
@@ -549,8 +551,8 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 		return nil, false
 	}
 	req.Header.Set("User-Agent", e.UserAgent)
-	resp, err := e.Client.Do(req)
-	if err != nil {
+	resp, ok := e.doWithRateLimitRetry(ctx, req)
+	if !ok {
 		return nil, false
 	}
 	defer resp.Body.Close()
@@ -568,6 +570,77 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 		render.put(abs, data)
 	}
 	return data, true
+}
+
+// maxRateLimitRetries bounds how many times doWithRateLimitRetry will retry a
+// single request after a 429 — enough to ride out one shared rate-limit
+// window (confirmed live: Wikimedia's upload.wikimedia.org CDN, hit by this
+// engine's own concurrent per-page image fetching — up to imgWorkers requests
+// in flight at once against the SAME host for a single image-heavy article —
+// replies 429 with `Retry-After: 1` to whichever requests land outside its
+// window) without turning one rate-limited page into an unbounded retry
+// storm.
+const maxRateLimitRetries = 3
+
+// defaultRateLimitBackoff is used when a 429 response carries no Retry-After
+// header, or one this engine cannot parse (an HTTP-date is accepted by the
+// spec but not handled here — no confirmed caller has sent one; delay-seconds
+// is the form actually observed live).
+const defaultRateLimitBackoff = 500 * time.Millisecond
+
+// maxRateLimitBackoff caps how long a single retry will wait, regardless of
+// what a Retry-After header requests — a defensive ceiling so a misconfigured
+// or hostile server cannot stall a render by naming an absurd delay.
+const maxRateLimitBackoff = 5 * time.Second
+
+// doWithRateLimitRetry runs req via e.Client, retrying up to
+// maxRateLimitRetries times when the response is 429 Too Many Requests —
+// honouring the server's own Retry-After (delay-seconds form) when present,
+// falling back to defaultRateLimitBackoff otherwise. Any other status (or
+// response, including a real success) is returned immediately on the first
+// attempt: only a 429 triggers a wait-and-retry. req's body is nil (every
+// caller here is a bodyless GET), so the same *http.Request is safe to reuse
+// across attempts. ok is false only for a request-level error (network
+// failure, context cancelled) or exhausting all retries still 429 — never
+// for an ordinary non-2xx status, which the caller already handles.
+func (e *Engine) doWithRateLimitRetry(ctx context.Context, req *http.Request) (resp *http.Response, ok bool) {
+	for attempt := 0; ; attempt++ {
+		resp, err := e.Client.Do(req)
+		if err != nil {
+			return nil, false
+		}
+		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRateLimitRetries {
+			return resp, true
+		}
+		wait := retryAfterDelay(resp.Header.Get("Retry-After"))
+		resp.Body.Close()
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, false
+		}
+	}
+}
+
+// retryAfterDelay parses a Retry-After header's delay-seconds form (RFC 9110
+// §10.2.3 — a non-negative integer count of seconds; the alternative
+// HTTP-date form is not handled, see maxRateLimitRetries's doc comment) into
+// a duration, clamped to [0, maxRateLimitBackoff]. An empty, negative, or
+// unparseable value falls back to defaultRateLimitBackoff.
+func retryAfterDelay(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return defaultRateLimitBackoff
+	}
+	secs, err := strconv.Atoi(v)
+	if err != nil || secs < 0 {
+		return defaultRateLimitBackoff
+	}
+	d := time.Duration(secs) * time.Second
+	if d > maxRateLimitBackoff {
+		return maxRateLimitBackoff
+	}
+	return d
 }
 
 // imgByteCache is an ephemeral, in-memory, per-render cache of fetched image
