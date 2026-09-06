@@ -18,6 +18,81 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-06 (round 51) — `Node.prototype.isEqualNode` was entirely missing, throwing a TypeError on every call; a NEW corpus-wide diagnostic technique (reading `Engine.JSLog` across all 10 pages at once) found this plus two more real, unfixed bugs in a single pass (engine#131)
+
+**Methodology shift, not just a bug fix**: round 50 established that
+`Engine.JSLog` (console/diagnostic output — already wired through the whole
+render pipeline, just never READ in any prior round's diagnostics) surfaces
+uncaught script errors directly, without needing to guess a root cause from
+a visual symptom first. This round applied that technique PROACTIVELY across
+the entire bench corpus in one sweep (a small script fetching all 10 URLs,
+filtering `JSLog` output for `ReferenceError`/`TypeError`/"not defined"/"not
+a function") rather than picking one page and investigating reactively.
+**This single sweep surfaced THREE distinct real bugs at once**:
+
+1. **react.dev: `TypeError: Object has no member 'isEqualNode'`, repeated 8
+   times per render.** `Node.prototype.isEqualNode` (a standard, spec-
+   required DOM method — structural equality of two nodes: same type/tag/
+   attributes/text and recursively-equal children, in order; distinct from
+   `isSameNode`/`===`'s reference identity) did not exist anywhere in this
+   engine's JS/DOM bridge at all. react's hydration/reconciliation calls it
+   directly on real DOM nodes. **Fixed** — see below — this round.
+2. **go.dev/blog: `TypeError: Cannot read property 'createHTMLDocument' of
+   undefined or null` in jquery.js, immediately followed by `ReferenceError:
+   $ is not defined` in godocs.js.** jQuery's own bootstrap touches
+   `document.implementation.createHTMLDocument` and fails, so jQuery itself
+   never finishes initialising and the global `$` alias is never assigned —
+   go.dev's own script then fails outright trying to use it. NOT fixed this
+   round (a `document.implementation` gap, potentially broad — jQuery is
+   near-ubiquitous — but a fresh root cause, not yet scoped); flagged here so
+   a future round doesn't have to re-discover it from scratch.
+3. **caniuse.com: `TypeError: Object has no member 'nextNode'`, still
+   present after round 50's `customElements` fix.** Round 50 fixed the
+   FIRST crash in this bundle (which unblocked four real UI pieces); this is
+   a SECOND, later, different crash further into the same script — likely
+   `document.createTreeWalker(...).nextNode()` (`TreeWalker` support gap).
+   NOT fixed this round; flagged for later, since round 50 already extracted
+   the confirmed, high-value fix from this page.
+
+**This round fixes only #1** (react.dev's `isEqualNode`), keeping to one
+bug per round even though the sweep surfaced three — #2 and #3 are real,
+confirmed, and now documented, not silently dropped.
+
+- Implemented `isEqualNode` as a genuine recursive structural comparison
+  (`js/dom.go`): same `NodeType`, same `Tag`, same `Text`, same attribute
+  set (order-independent), same number of children with each corresponding
+  pair ALSO equal, recursively. Two nil arguments (both JS `null`) compare
+  equal; exactly one nil does not.
+- **Checked, rather than assumed, whether this explains react.dev's much
+  bigger, already-documented "washed-out prose" reskin gap** (rounds
+  10/19/42's `dynamic.go` settle-loop empty-render-guard defect, explicitly
+  scoped as "genuinely comparable to Shadow DOM… not attempted" and never
+  fixed) — a plausible hypothesis, since a live rendering error mid-settle
+  is exactly the trigger condition that gap depends on. **It does not**:
+  reconfirmed by rendering the real page after the fix and inspecting the
+  output — the reskin symptom (large sections of prose retaining light-mode
+  colours on a dark background) is unchanged. `isEqualNode` and the reskin
+  gap are two independent defects that happen to both live in the same
+  settle path; fixing one does not fix the other. Documented honestly
+  rather than overclaiming a fix for the corpus's longest-standing
+  known gap.
+- Verified live: react.dev's render produces ZERO `isEqualNode` (or any
+  other ReferenceError/TypeError) console output now, confirmed via the
+  same sweep script re-run after the fix. **Bench flat (SSIM/pixdiff both
+  unchanged)** — expected and consistent with the finding immediately
+  above: the fix is real (a genuine, previously-uncaught, repeated runtime
+  exception, now silenced) but the page's dominant visual defect is the
+  separate, still-unfixed reskin gap, which swamps this one at the pixel
+  level.
+- Added `isEqualNode` coverage to the existing `TestElementTreeAndManipulation`
+  (`js/js_test.go`, alongside the pre-existing `cloneNode`/`contains`
+  checks): self-equality, structural equality of two distinct-but-identical
+  elements, inequality on a differing attribute, inequality on a differing
+  tag, and the null-argument case. Confirmed to fail with the exact
+  predicted `TypeError` via a full `git stash` revert. Not one of the
+  coverage-gated packages (`js` isn't gated, same as round 50), so no floor
+  to hold, but the same revert-and-confirm-fail discipline applied anyway.
+
 ## 2026-09-06 (round 50) — a bare reference to the global `customElements` (no method call needed) threw an uncaught ReferenceError, silently aborting the REST of the script it appeared in — including unrelated code later in the same file (engine#130)
 
 caniuse.com re-investigated fresh. Live at 1024px: the nav bar was missing
