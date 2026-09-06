@@ -466,6 +466,34 @@ func TestDocumentImplementationCreateHTMLDocument(t *testing.T) {
 		"base=BASE href=https://example.com/")
 }
 
+func TestTreeWalkerNextNode(t *testing.T) {
+	// document.createTreeWalker returned a bare empty object, so calling
+	// nextNode() on it threw "Object has no member 'nextNode'" — confirmed
+	// live on caniuse.com, where lit-html (used by its own bundle for
+	// web-component templates) builds a walker exactly this way
+	// (`document.createTreeWalker(document, 129)`, then repeatedly calls
+	// nextNode() over a cloned template to find bound attributes) and
+	// aborted its OWN template-compilation code entirely — every web
+	// component built on lit-html was broken, not just one narrow feature
+	// (engine#134). whatToShow=1 is NodeFilter.SHOW_ELEMENT: the walk below
+	// must skip the text nodes entirely and visit only elements, in document
+	// order (children before siblings), and stop (return null) once it runs
+	// past the root's own subtree.
+	_, logs, _ := runJS(t, page(`
+		document.body.innerHTML = '<div id="a">x<span id="b">y</span></div><p id="c"></p>';
+		var w = document.createTreeWalker(document.body, 1);
+		var seen = [];
+		var n;
+		while ((n = w.nextNode()) !== null) { seen.push(n.id); }
+		console.log('seen='+seen.join(','));
+		console.log('current='+w.currentNode.id);
+		console.log('afterEnd='+w.nextNode());
+		w.currentNode = document.getElementById('a');
+		console.log('reset='+w.currentNode.id);
+	`))
+	mustHave(t, logs, "seen=a,b,c", "current=c", "afterEnd=null", "reset=a")
+}
+
 func TestNavigator(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		console.log('nav='+navigator.userAgent+'|'+navigator.language+'|'+navigator.languages.length+'|'+navigator.onLine+'|'+navigator.javaEnabled()+'|'+navigator.sendBeacon('u')+'|'+navigator.hardwareConcurrency+'|'+navigator.cookieEnabled+'|'+navigator.appName);
