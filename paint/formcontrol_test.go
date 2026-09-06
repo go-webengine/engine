@@ -5,6 +5,7 @@ package paint
 
 import (
 	"image"
+	"image/color"
 	"testing"
 
 	"github.com/go-webengine/engine/css"
@@ -191,6 +192,43 @@ func TestPaintFormControlNilStylePaintsBoxOnly(t *testing.T) {
 	edge := dst.RGBAAt(5, 5)
 	if got, want := (css.Color{R: edge.R, G: edge.G, B: edge.B, A: 255}), formBorder; got != want {
 		t.Errorf("nil-Style control still painted no border: got %+v want %+v", got, want)
+	}
+}
+
+// TestPaintFormControlIconDrawsBitmapCentered guards paintFormControl's
+// InlineItem.Icon path: an icon-only button (Label=="") must blit its
+// icon's own bitmap (looked up in imgs, the SAME map an ordinary Image item
+// uses) centred in the control's box, not leave it empty the way a bare
+// FormControl item with no text used to before this field existed.
+func TestPaintFormControlIconDrawsBitmapCentered(t *testing.T) {
+	n := elem("button", map[string]string{})
+	iconNode := elem("svg", map[string]string{})
+	icon := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	for y := 0; y < 10; y++ {
+		for x := 0; x < 10; x++ {
+			icon.Set(x, y, color.RGBA{R: 0xff, A: 0xff})
+		}
+	}
+	dst := white(50, 50)
+	item := &layout.InlineItem{
+		Node: n, FormControl: n, Icon: iconNode, Style: controlStyle(),
+		Width: 30, Ascent: 30, LineHeight: 30, X: 5, Y: 5,
+	}
+	box := &layout.Box{
+		Lines: []*layout.LineBox{{X: 5, Y: 5, W: 30, H: 30, Items: []*layout.InlineItem{item}}},
+		W:     40, H: 40,
+	}
+	PaintFull(dst, box, NewFonts(), map[*dom.Node]image.Image{iconNode: icon}, nil)
+	// Box spans x,y in [5,35); a 10x10 icon centred in it covers [15,25).
+	center := dst.RGBAAt(20, 20)
+	if center.R != 0xff || center.G != 0 || center.B != 0 {
+		t.Errorf("icon center pixel = %+v, want opaque red", center)
+	}
+	// Outside the icon but still inside the box: the control's own
+	// background, not the icon colour bleeding out.
+	corner := dst.RGBAAt(6, 6)
+	if corner.R == 0xff && corner.G == 0 && corner.B == 0 {
+		t.Errorf("icon painted outside its own bounds: corner = %+v", corner)
 	}
 }
 

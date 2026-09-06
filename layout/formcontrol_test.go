@@ -3,7 +3,12 @@
 
 package layout
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/go-webengine/engine/css"
+	"github.com/go-webengine/engine/dom"
+)
 
 // TestFormControlExplicitCSSSize covers the common real-world case: an
 // author-styled control (width/height in CSS, the way any real form does
@@ -316,4 +321,114 @@ func TestFormControlSizeCountsTowardPreferredWidth(t *testing.T) {
 	// 170 (text input UA default, see formControlDefaultSize) + 2px of the
 	// input's own UA-default 1px border on each side (see css/ua.go).
 	assertF(t, "wrap.W", wrap.W, 172)
+}
+
+// TestFormControlButtonIconSizesToIconAndIsPainted covers the common
+// entry point (appendElementInline, a plain unstyled inline <button> — the
+// normal case, see formControlDefaultSize's UA-default display:inline doc
+// comment) for an icon-only <button>: no visible text, a single svg child
+// with a known intrinsic size. Before buttonIcon existed, this sized to
+// just 2*formControlPadX/Y (a tiny padding-only box, the same "no
+// fabricated Submit label" floor a genuinely empty button gets) and the
+// icon was never referenced anywhere in the box tree — confirmed live on
+// developer.mozilla.org's <mdn-search-button> and cited in
+// formControlDefaultSize's own pre-existing doc comment for pkg.go.dev's
+// search-submit button.
+func TestFormControlButtonIconSizesToIconAndIsPainted(t *testing.T) {
+	src := `<html><body><button id="e"><svg id="icon"></svg></button></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	icon := dom.Find(root, "svg")
+	sizes := map[*dom.Node][2]float64{icon: {24, 24}}
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "body"))
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatalf("expected one form-control item, got %v", items)
+	}
+	item := items[0]
+	if item.Label != "" {
+		t.Fatalf("Label = %q, want empty (icon-only, no visible text)", item.Label)
+	}
+	if item.Icon != icon {
+		t.Fatalf("Icon = %v, want the svg child %v", item.Icon, icon)
+	}
+	// 24 (icon) + 2*formControlPadX(12) = 48; 24 + 2*formControlPadY(6) = 36.
+	assertF(t, "icon button width", item.Width, 48)
+	assertF(t, "icon button height", item.LineHeight, 36)
+}
+
+// TestFormControlDisplayBlockButtonIconRoutesThroughContents is
+// TestFormControlButtonIconSizesToIconAndIsPainted's counterpart for the
+// display:block entry point (contents(), not appendElementInline) — the
+// SAME icon-detection and sizing logic is duplicated at both entry points
+// (mirroring TestFormControlDisplayBlockRoutesThroughContents above for
+// plain sizing), and a first version of this fix only patched
+// appendElementInline: a display:block button (or any button reached via
+// contents() rather than inline collection) still lost its icon entirely
+// until this path was fixed too.
+func TestFormControlDisplayBlockButtonIconRoutesThroughContents(t *testing.T) {
+	src := `<html><body><button id="e" style="display:block"><svg id="icon"></svg></button></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	icon := dom.Find(root, "svg")
+	sizes := map[*dom.Node][2]float64{icon: {24, 24}}
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	btnBox := findBox(box, "button")
+	if btnBox == nil {
+		t.Fatal("display:block button did not get its own box")
+	}
+	items := firstLineItems(btnBox)
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatalf("display:block button's own box has no form-control item: %v", items)
+	}
+	if items[0].Icon != icon {
+		t.Fatalf("Icon = %v, want the svg child %v", items[0].Icon, icon)
+	}
+	assertF(t, "display:block icon button width", items[0].Width, 48)
+}
+
+// TestFormControlButtonIconFallsBackWhenAmbiguousOrUnsized covers
+// buttonIcon's deliberate refusal to guess: a button with visible text (even
+// alongside an icon), with more than one img/svg child (ambiguous — no
+// confirmed real caller mixes multiple bare icons under one button), or
+// whose lone icon's size never resolved (no imgSize entry and no width/
+// height attributes) all fall back to the pre-existing padding-only sizing
+// with no Icon set, exactly as before this feature existed.
+func TestFormControlButtonIconFallsBackWhenAmbiguousOrUnsized(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+	}{
+		{"visible text alongside icon", `<button id="e">Search<svg id="icon"></svg></button>`},
+		{"two icon children", `<button id="e"><svg id="icon"></svg><svg id="icon2"></svg></button>`},
+		{"icon size never resolved", `<button id="e"><svg id="icon"></svg></button>`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root, err := dom.Parse(`<html><body>` + c.src + `</body></html>`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sm := css.Cascade(root)
+			var sizes map[*dom.Node][2]float64
+			if c.name != "icon size never resolved" {
+				icon := dom.Find(root, "svg")
+				sizes = map[*dom.Node][2]float64{icon: {24, 24}}
+			}
+			box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+			items := firstLineItems(findBox(box, "body"))
+			if len(items) != 1 || items[0].FormControl == nil {
+				t.Fatalf("expected one form-control item, got %v", items)
+			}
+			if items[0].Icon != nil {
+				t.Fatalf("Icon = %v, want nil (fallback case)", items[0].Icon)
+			}
+		})
+	}
 }

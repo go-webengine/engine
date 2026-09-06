@@ -114,3 +114,24 @@ func TestImgByteCacheScopedPerContextNotGlobal(t *testing.T) {
 		t.Errorf("server saw %d requests, want 2 (one per independent render)", got)
 	}
 }
+
+// TestButtonIconOnlyRendersIcon is the end-to-end counterpart of the
+// layout- and paint-package unit tests for the same fix: a <button> whose
+// entire content is a single img/svg child and no visible text (e.g.
+// developer.mozilla.org's nav search button, pkg.go.dev's search-submit
+// button) used to size to a tiny padding-only box and paint nothing inside
+// it at all — the button was laid out as an atomic label-text-only box
+// (layout.formControlDefaultSize's pre-existing "button" case), discarding
+// any non-text child regardless of how correctly loadImages fetched and
+// rasterised it (a separate, already-fixed bug — see
+// TestShadowDOMInlineSVGIsDiscoveredForRasterization in shadowdom_test.go —
+// that on its own was NOT sufficient to fix this: a plain, shadow-DOM-free
+// button with an svg child lost its icon exactly the same way).
+func TestButtonIconOnlyRendersIcon(t *testing.T) {
+	src := `<html><body style="margin:0;background:#000">` +
+		`<button style="width:30px;height:30px">` +
+		`<svg width="16" height="16" viewBox="0 0 16 16"><rect width="16" height="16" fill="#ff0000"/></svg>` +
+		`</button></body></html>`
+	img := renderHTMLTest(t, src, 50, 50)
+	assertPixel(t, img, 15, 15, 0xff, 0x00, 0x00, "icon-only button should paint its svg child's bitmap, not leave it empty")
+}

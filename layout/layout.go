@@ -277,9 +277,14 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 			return b.y
 		}
 		w, h := l.formControlSize(node, st, cw)
+		label := l.buttonLabel(node)
+		var icon *dom.Node
+		if node.Tag == "button" {
+			icon, _, _ = l.buttonIcon(node)
+		}
 		b.commit()
 		item := &InlineItem{Node: node, FormControl: node, Style: st,
-			Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y, Label: l.buttonLabel(node)}
+			Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y, Label: label, Icon: icon}
 		box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: h, Items: []*InlineItem{item}}}
 		b.y += h
 		return b.y
@@ -772,10 +777,15 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
 			}
 			sb += l.takeMargin() + cs.Margin.Left
+			label := l.buttonLabel(el)
+			var icon *dom.Node
+			if el.Tag == "button" {
+				icon, _, _ = l.buttonIcon(el)
+			}
 			*items = append(*items, &InlineItem{
 				Style: cs, FormControl: el, Node: el,
 				Width: w, Ascent: h, LineHeight: h,
-				SpaceBefore: sb, Label: l.buttonLabel(el), decor: l.decor,
+				SpaceBefore: sb, Label: label, Icon: icon, decor: l.decor,
 			})
 			l.wsEmitted, l.wsPending = true, false
 			l.pendingMargin += cs.Margin.Right
@@ -963,8 +973,14 @@ func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (w, h f
 		// Unlike <input type=button/submit> (a real UA default label, see
 		// controlLabel), a <button> tag with no visible text renders with
 		// NO label at all in every major browser — an icon-only button
-		// (e.g. pkg.go.dev's search-submit button, an <img> child with no
-		// text) must size to just its padding, not a fabricated "Submit".
+		// (e.g. pkg.go.dev's search-submit button, an <img>/<svg> child with
+		// no text) sizes to its icon's own intrinsic size plus padding, the
+		// same box a real browser gives it, rather than the padding-only
+		// floor a fabricated empty label would leave (see buttonIcon).
+		if _, iw, ih := l.buttonIcon(node); iw > 0 && ih > 0 {
+			w, h = iw+2*formControlPadX, ih+2*formControlPadY
+			break
+		}
 		w, h = l.buttonSize(l.buttonLabel(node), st)
 	case "select":
 		// A real <select> sizes itself to its WIDEST option's label, not a
@@ -1048,6 +1064,40 @@ func (l *layouter) appendVisibleText(n *dom.Node, b *strings.Builder) {
 			l.appendVisibleText(c, b)
 		}
 	}
+}
+
+// buttonIcon returns a "button"-tag node's single img/svg DIRECT child and
+// its used size, when the button has no visible text (buttonLabel == "") —
+// the shape a real icon-only button takes on the live web (MDN's nav
+// <mdn-search-button>, pkg.go.dev's search-submit button): the icon IS the
+// button's whole visible content, not a label. It returns a nil node and
+// zero size for anything else, so a caller need only check the size: a
+// button WITH visible text (the icon/text-mixing case has no confirmed real
+// caller, so is intentionally not attempted), a button with no img/svg child
+// at all, MORE than one such child (ambiguous — no confirmed real case
+// mixes multiple icons under one bare button, so this doesn't guess which
+// one is "the" icon), or a lone child whose size never resolved (e.g. its
+// fetch failed or budget was exceeded) all fall back to the ordinary
+// padding-only sizing formControlDefaultSize already had.
+func (l *layouter) buttonIcon(node *dom.Node) (icon *dom.Node, w, h float64) {
+	if l.buttonLabel(node) != "" {
+		return nil, 0, 0
+	}
+	for _, c := range node.Children {
+		if c.Type == dom.Element && isReplacedTag(c.Tag) {
+			if icon != nil {
+				return nil, 0, 0
+			}
+			icon = c
+		}
+	}
+	if icon == nil {
+		return nil, 0, 0
+	}
+	if w, h = l.imageSize(icon); w <= 0 || h <= 0 {
+		return nil, 0, 0
+	}
+	return icon, w, h
 }
 
 func (l *layouter) imageSize(el *dom.Node) (float64, float64) {

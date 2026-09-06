@@ -103,11 +103,24 @@ type InlineItem struct {
 	// time because this is where the style map needed to check each
 	// descendant's computed display is available (paint operates on the box
 	// tree alone and has no such map). Only ever set for FormControl tag
-	// "button" (empty there means the button has no visible text, e.g. an
-	// icon-only button — paint falls back to "Submit"); every other
+	// "button" (empty there means the button has no visible text — a real
+	// browser draws NO label at all in that case, not a fabricated default;
+	// see Icon below for the common reason a button has no text); every other
 	// FormControl tag draws its label/value from an attribute instead (see
 	// paint.formControlDisplayText) and always leaves this empty.
 	Label string
+
+	// Icon is set when FormControl is a "button" with no visible text (Label
+	// == "") whose content is a single img/svg child instead — e.g. MDN's
+	// nav <mdn-search-button> or pkg.go.dev's search-submit button — so paint
+	// draws that replaced element's bitmap (looked up the same way a plain
+	// Image item is) centred in the control's box instead of leaving it
+	// empty. See layouter.buttonIcon: nil whenever the button has visible
+	// text, has no img/svg child, has more than one (ambiguous — no
+	// confirmed real case mixes them), or that child's size never resolved
+	// (e.g. its fetch failed), in which case the button falls back to the
+	// old padding-only sizing with nothing drawn inside.
+	Icon *dom.Node
 
 	LineBreak bool // a <br>: forces the current line to end
 
