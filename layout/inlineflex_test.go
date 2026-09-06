@@ -135,3 +135,51 @@ func TestInlineFlexInsidePreStillTranslates(t *testing.T) {
 	assertF(t, "NestedBox.X", items[0].NestedBox.X, items[0].X)
 	assertF(t, "NestedBox.Y", items[0].NestedBox.Y, items[0].Y)
 }
+
+// TestInlineFlexPreferredWidthIncludesTextAlongsideBlockChild covers a
+// SEPARATE preferredWidth sizing gap from TestFlexContainerMixedTextAndElement
+// (cover2_test.go, round 47): that fix only guarded the flex-row-SUM branch's
+// "bare text mixed with a real element child" case. Its sibling branch below
+// it — hasBlockLevelChild's own "max of ELEMENT children" loop, which ALSO
+// only ever visits Element children — has the identical blind spot, reached
+// instead of the sum branch whenever the element child computes display:block
+// specifically (not just any element) — e.g. an inline <svg>, which
+// Tailwind's own preflight reset (`img,svg,video,...{display:block}`) gives
+// display:block unconditionally. Before this fix, preferredWidth measured
+// ONLY the block child (silently dropping the text's own width entirely),
+// sizing the whole inline-flex container down to that child's tiny width —
+// forcing the bare text to wrap ONE WORD PER LINE inside it. Confirmed live
+// on tailwindcss.com's own "Become a sponsor →" button: an inline-flex <a>
+// whose content is bare text plus exactly this shape of icon.
+func TestInlineFlexPreferredWidthIncludesTextAlongsideBlockChild(t *testing.T) {
+	src := `<html><body style="margin:0">` +
+		`<b style="display:inline-flex">Become a sponsor<i style="display:block;width:10px;height:10px"></i></b>` +
+		`</body></html>`
+	items := firstLineItems(findBox(layoutHTML(t, src, 1024), "body"))
+	if len(items) != 1 || items[0].NestedBox == nil {
+		t.Fatalf("items = %v, want one item carrying a NestedBox", items)
+	}
+	nb := items[0].NestedBox
+	// "Become a sponsor" is 16 chars (fakeMeasurer: 10px/char) = 160px, so the
+	// container's shrink-to-fit width must reflect that, not just the 10px
+	// block child's own width.
+	if nb.W < 160 {
+		t.Errorf("NestedBox.W = %.0f, want >= ~160 (text width included, not just the 10px block child)", nb.W)
+	}
+	textItems := firstLineItems(nb)
+	if len(textItems) == 0 || textItems[0].Text == "" {
+		t.Fatalf("NestedBox's own text content missing: %v", textItems)
+	}
+	// The bug's visible symptom: the container was sized so narrow that the
+	// text wrapped after almost every word, landing "Become"/"a"/"sponsor"
+	// each on their own line instead of flowing as ONE run.
+	if len(textItems) < 3 || textItems[0].Text != "Become" || textItems[1].Text != "a" || textItems[2].Text != "sponsor" {
+		t.Fatalf("expected \"Become\"/\"a\"/\"sponsor\" as consecutive items on one line, got %v", texts(textItems))
+	}
+	for i := 1; i < len(textItems); i++ {
+		if textItems[i].Y != textItems[0].Y {
+			t.Fatalf("item %d (%q) is on a different line (Y=%.0f vs Y=%.0f) — text wrapped word-by-word instead of flowing on one line",
+				i, textItems[i].Text, textItems[i].Y, textItems[0].Y)
+		}
+	}
+}

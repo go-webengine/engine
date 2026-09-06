@@ -300,7 +300,18 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 			return sum + edges
 		}
 	}
-	if l.hasBlockLevelChild(node) {
+	// Skipped, like the flex-row-sum branch above, when node ALSO has direct
+	// text: this loop only ever visits Element children, so bare text mixed
+	// alongside a block-level child (e.g. an inline-flex `<a>Become a
+	// sponsor<svg style="display:block">`, confirmed live on tailwindcss.com
+	// — Tailwind's own preflight reset gives every inline `<svg>`
+	// `display:block`, which is enough to make THIS element's own child
+	// count as block-level) would have its width silently dropped, same as
+	// the flex-row-sum branch's own documented failure mode. Falling through
+	// to the inline-measurement fallback below measures text and elements
+	// together correctly, exactly as round 47 already established for the
+	// flex-row-sum case.
+	if l.hasBlockLevelChild(node) && !l.hasDirectText(node) {
 		var max float64
 		for _, c := range l.renderedChildren(node) {
 			if c.Type != dom.Element {
