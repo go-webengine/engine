@@ -121,8 +121,10 @@ type Engine struct {
 // New returns an Engine with a browser-like HTTP client (Chrome TLS
 // fingerprint, cookie jar, redirect following).
 func New() *Engine {
+	client := browserhttp.NewClient(30 * time.Second)
+	client.Transport = newPerHostLimitedTransport(client.Transport, maxPerHostConcurrency)
 	return &Engine{
-		Client:    browserhttp.NewClient(30 * time.Second),
+		Client:    client,
 		UserAgent: browserhttp.DefaultUserAgent,
 		MaxImages: 40,
 		// 400 comfortably covers icon-dense design systems (Material, Primer,
