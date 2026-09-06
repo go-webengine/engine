@@ -754,6 +754,32 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		case "none":
 			s.Clear = ClearNone
 		}
+	case "break-before", "page-break-before":
+		// CSS Fragmentation 3; the legacy page-break-* properties are
+		// aliases whose `always` means `page` (see parseBreakKeyword).
+		if b, ok := parseBreakKeyword(lv); ok {
+			s.BreakBefore = b
+		}
+	case "break-after", "page-break-after":
+		if b, ok := parseBreakKeyword(lv); ok {
+			s.BreakAfter = b
+		}
+	case "break-inside", "page-break-inside":
+		if b, ok := parseBreakInsideKeyword(lv); ok {
+			s.BreakInside = b
+		}
+	case "orphans":
+		if lv == "unset" { // unset is inherit for an inherited property
+			s.inheritProperty(d.Property, parent)
+		} else if n, ok := parseLineCount(lv); ok {
+			s.Orphans = n
+		}
+	case "widows":
+		if lv == "unset" {
+			s.inheritProperty(d.Property, parent)
+		} else if n, ok := parseLineCount(lv); ok {
+			s.Widows = n
+		}
 	case "position":
 		switch lv {
 		case "static":
@@ -1061,6 +1087,9 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 // spec) leave the field exactly as prior declarations left it, same as
 // before this keyword was understood at all.
 func (s *Style) inheritProperty(prop string, parent *Style) {
+	if parent == nil {
+		return // no parent style known (a bare apply): nothing to inherit from
+	}
 	switch prop {
 	case "color":
 		s.Color = parent.Color
@@ -1078,7 +1107,31 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.ListStyleType = parent.ListStyleType
 	case "list-style-position":
 		s.ListStylePosition = parent.ListStylePosition
+	case "orphans":
+		s.Orphans = parent.Orphans
+	case "widows":
+		s.Widows = parent.Widows
+	// The break properties are not inherited by default, but an explicit
+	// `inherit` still copies the parent's computed value, per CSS Cascade.
+	case "break-before", "page-break-before":
+		s.BreakBefore = parent.BreakBefore
+	case "break-after", "page-break-after":
+		s.BreakAfter = parent.BreakAfter
+	case "break-inside", "page-break-inside":
+		s.BreakInside = parent.BreakInside
 	}
+}
+
+// parseLineCount parses an orphans / widows value (CSS Fragmentation 3 §4):
+// a positive integer, or the CSS-wide initial (2). Zero, a negative number
+// and a non-integer are invalid and report false, so the declaration is
+// ignored and the inherited value stands.
+func parseLineCount(lv string) (int, bool) {
+	if lv == "initial" {
+		return 2, true
+	}
+	n, err := strconv.Atoi(lv)
+	return n, err == nil && n > 0
 }
 
 func applyEdge(dst *float64, v string, emRef float64) {

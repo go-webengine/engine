@@ -669,3 +669,13 @@ func TestApplyTransformTranslate(t *testing.T) {
 		t.Errorf("translateX(10px)+translateX(50%%) => %+v, want the later call (50%%)", s.TranslateX)
 	}
 }
+
+// TestDisplayContentsKeyword: `display: contents` parses to DisplayContents
+// (the element generates no box of its own — see the Display doc comment).
+func TestDisplayContentsKeyword(t *testing.T) {
+	var s Style
+	s.apply(Declaration{Property: "display", Value: "contents"}, 16, nil)
+	if s.Display != DisplayContents {
+		t.Errorf("display:contents = %v want DisplayContents", s.Display)
+	}
+}
