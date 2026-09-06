@@ -44,6 +44,15 @@ func CascadeVW(root *dom.Node, vw float64, externalSheets []string) StyleMap {
 	return CascadeVWContainers(root, vw, externalSheets, nil)
 }
 
+// CascadeMedia is CascadeVW evaluated against a Media rather than a bare
+// screen width: with Media{Type: Print, Width: w} the page's "@media print"
+// rules apply and its "@media screen" rules do not — a print preview's
+// cascade. externalSheets should then come from a fetch that selected
+// <link media> the same way (engine.LoadStylesheets with the same Media).
+func CascadeMedia(root *dom.Node, m Media, externalSheets []string) StyleMap {
+	return CascadeMediaContainers(root, m, externalSheets, nil)
+}
+
 // CascadeVWContainers is CascadeVW extended with container-query support:
 // containers maps a query-container element (one whose computed style sets
 // container-type) to its size as measured by the most recent layout pass.
@@ -61,6 +70,12 @@ func CascadeVW(root *dom.Node, vw float64, externalSheets []string) StyleMap {
 // for container queries that dynamic.go's settle loop plays for JavaScript:
 // same shape, bounded passes, deterministic termination).
 func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, containers map[*dom.Node]ContainerSize) StyleMap {
+	return CascadeMediaContainers(root, Media{Width: vw}, externalSheets, containers)
+}
+
+// CascadeMediaContainers is CascadeVWContainers against a Media — see
+// CascadeMedia.
+func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, containers map[*dom.Node]ContainerSize) StyleMap {
 	// root is the synthetic Document node dom.Parse returns, which is where
 	// Node.Quirks is set (see its doc comment) — read it once here rather
 	// than re-deriving it per element.
@@ -69,9 +84,9 @@ func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, co
 	// the head), so they take lower precedence at equal specificity.
 	var rules []Rule
 	for _, sheet := range externalSheets {
-		rules = append(rules, ParseStylesheetVW(sheet, vw)...)
+		rules = append(rules, ParseStylesheetMedia(sheet, m)...)
 	}
-	rules = append(rules, collectAuthorRules(root, vw)...)
+	rules = append(rules, collectAuthorRules(root, m)...)
 	sm := StyleMap{}
 	var counter int
 	// walk's rules and host parameters together identify the current
@@ -100,7 +115,7 @@ func CascadeVWContainers(root *dom.Node, vw float64, externalSheets []string, co
 		}
 		var shadowRules, hostRules []Rule
 		if n.Shadow != nil {
-			shadowRules = shadowStylesheet(n.Shadow, vw)
+			shadowRules = shadowStylesheet(n.Shadow, m)
 			hostRules = filterHostSelectors(shadowRules)
 		}
 		// hostRules — n's OWN shadow's ":host"/":host(...)" declarations, if
@@ -320,8 +335,8 @@ func cloneProps(m map[string]string) map[string]string {
 
 // collectAuthorRules parses every <style> element's text into rules, evaluating
 // @media width queries against viewport width vw.
-func collectAuthorRules(root *dom.Node, vw float64) []Rule {
-	return collectAuthorRulesFrom([]*dom.Node{root}, vw)
+func collectAuthorRules(root *dom.Node, m Media) []Rule {
+	return collectAuthorRulesFrom([]*dom.Node{root}, m)
 }
 
 // collectAuthorRulesFrom is collectAuthorRules generalised to a list of
@@ -333,7 +348,7 @@ func collectAuthorRules(root *dom.Node, vw float64) []Rule {
 // nested shadow tree's <style> is automatically picked up only by its own,
 // separate collectAuthorRulesFrom(sr.Children, vw) call — never by this one,
 // and never by the document's — with no explicit check needed here.
-func collectAuthorRulesFrom(nodes []*dom.Node, vw float64) []Rule {
+func collectAuthorRulesFrom(nodes []*dom.Node, m Media) []Rule {
 	var sb strings.Builder
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
@@ -352,5 +367,5 @@ func collectAuthorRulesFrom(nodes []*dom.Node, vw float64) []Rule {
 	for _, n := range nodes {
 		walk(n)
 	}
-	return ParseStylesheetVW(sb.String(), vw)
+	return ParseStylesheetMedia(sb.String(), m)
 }

@@ -620,6 +620,13 @@ const (
 // gracefully (that sheet is skipped, the page still renders). vw is used to
 // drop media-query-excluded links (e.g. print-only).
 func (e *Engine) fetchExternalSheets(ctx context.Context, doc *Document, vw float64) []string {
+	return e.loadStylesheets(ctx, doc, css.Media{Width: vw})
+}
+
+// loadStylesheets is fetchExternalSheets against a css.Media: under print,
+// a <link media="print"> and a print-only @import are fetched and the
+// screen-only ones skipped. Exported as LoadStylesheets.
+func (e *Engine) loadStylesheets(ctx context.Context, doc *Document, m css.Media) []string {
 	links := css.StylesheetLinks(doc.Root)
 	if len(links) == 0 {
 		return nil
@@ -640,7 +647,7 @@ func (e *Engine) fetchExternalSheets(ctx context.Context, doc *Document, vw floa
 		if len(pre) >= maxExternalSheets {
 			break
 		}
-		if !css.MediaApplies(ln.Media, vw) {
+		if !css.MediaAppliesTo(ln.Media, m) {
 			continue
 		}
 		if abs, ok := resolveURL(doc.URL, ln.Href); ok && !seenPre[abs] {
@@ -656,14 +663,14 @@ func (e *Engine) fetchExternalSheets(ctx context.Context, doc *Document, vw floa
 		if len(out) >= maxExternalSheets {
 			break
 		}
-		if !css.MediaApplies(ln.Media, vw) {
+		if !css.MediaAppliesTo(ln.Media, m) {
 			continue
 		}
 		abs, ok := resolveURL(doc.URL, ln.Href)
 		if !ok {
 			continue
 		}
-		out = e.appendSheet(ctx, abs, vw, seen, out, 0, cache)
+		out = e.appendSheet(ctx, abs, m, seen, out, 0, cache)
 	}
 	return out
 }
@@ -703,7 +710,7 @@ func (e *Engine) prefetchSheets(ctx context.Context, urls []string, cache map[st
 // appendSheet fetches the sheet at absURL (if not already seen and within
 // limits), recursively prepends its leading @import targets, then appends the
 // sheet's own text. It returns the possibly-extended out slice.
-func (e *Engine) appendSheet(ctx context.Context, absURL string, vw float64, seen map[string]bool, out []string, depth int, cache map[string]sheetResult) []string {
+func (e *Engine) appendSheet(ctx context.Context, absURL string, m css.Media, seen map[string]bool, out []string, depth int, cache map[string]sheetResult) []string {
 	if depth > maxImportDepth || len(out) >= maxExternalSheets || seen[absURL] {
 		return out
 	}
@@ -715,11 +722,11 @@ func (e *Engine) appendSheet(ctx context.Context, absURL string, vw float64, see
 	// @imports load (and thus cascade) before the importing sheet's own rules.
 	imports, medias := css.ImportURLs(text)
 	for i, imp := range imports {
-		if !css.MediaApplies(medias[i], vw) {
+		if !css.MediaAppliesTo(medias[i], m) {
 			continue
 		}
 		if abs, ok := resolveURL(absURL, imp); ok {
-			out = e.appendSheet(ctx, abs, vw, seen, out, depth+1, cache)
+			out = e.appendSheet(ctx, abs, m, seen, out, depth+1, cache)
 		}
 	}
 	return append(out, text)

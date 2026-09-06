@@ -11,8 +11,8 @@ import "github.com/go-webengine/engine/dom"
 // stylesheet applies only within that tree (plus, via ":host"/":host()", to
 // the host element itself; see filterHostSelectors) and is never seen by, or
 // leaked into, the surrounding document's cascade.
-func shadowStylesheet(sr *dom.ShadowRoot, vw float64) []Rule {
-	return collectAuthorRulesFrom(sr.Children, vw)
+func shadowStylesheet(sr *dom.ShadowRoot, m Media) []Rule {
+	return collectAuthorRulesFrom(sr.Children, m)
 }
 
 // filterHostSelectors returns a copy of rules keeping, for each rule, only
