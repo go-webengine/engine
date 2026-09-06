@@ -68,16 +68,13 @@ func linkRef(n *dom.Node) (LinkRef, bool) {
 // does, and min-width/max-width pixel features are honoured against vw. A
 // comma-separated media list matches if ANY component matches.
 func MediaApplies(media string, vw float64) bool {
-	media = strings.TrimSpace(media)
-	if media == "" {
-		return true
-	}
-	for _, q := range strings.Split(media, ",") {
-		if mediaMatches(strings.TrimSpace(q), vw) {
-			return true
-		}
-	}
-	return false
+	return MediaAppliesTo(media, Media{Width: vw})
+}
+
+// MediaAppliesTo is MediaApplies against a Media: a <link media="print">
+// applies under Media{Type: Print} and nowhere else, "screen" the reverse.
+func MediaAppliesTo(media string, m Media) bool {
+	return mediaMatchesOn(media, m)
 }
 
 // ImportURLs extracts the targets of leading @import at-rules from a stylesheet,

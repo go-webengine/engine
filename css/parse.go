@@ -145,10 +145,16 @@ func ParseStylesheet(src string) []Rule {
 // @keyframes, @supports, @import, ...). Malformed rules are skipped
 // defensively.
 func ParseStylesheetVW(src string, vw float64) []Rule {
-	return parseRules(stripComments(src), vw)
+	return ParseStylesheetMedia(src, Media{Width: vw})
 }
 
-func parseRules(src string, vw float64) []Rule {
+// ParseStylesheetMedia is ParseStylesheetVW evaluated against a Media — the
+// entry point that makes "@media print" blocks apply.
+func ParseStylesheetMedia(src string, m Media) []Rule {
+	return parseRules(stripComments(src), m)
+}
+
+func parseRules(src string, m Media) []Rule {
 	var rules []Rule
 	i := 0
 	for i < len(src) {
@@ -180,15 +186,15 @@ func parseRules(src string, vw float64) []Rule {
 			case strings.HasPrefix(lower, "@media"):
 				// Honour @media blocks whose width query matches the viewport; the
 				// inner body is itself a list of rules.
-				if mediaMatches(lower[len("@media"):], vw) {
-					rules = append(rules, parseRules(body, vw)...)
+				if mediaMatchesOn(lower[len("@media"):], m) {
+					rules = append(rules, parseRules(body, m)...)
 				}
 			case strings.HasPrefix(lower, "@layer"):
 				// A named layer's body is itself a list of rules; a bare "@layer
 				// name{...}" (anonymous or named) always applies — there is no
 				// width/media condition to test, only a cascade PRIORITY this
 				// engine does not model (see the doc comment above).
-				rules = append(rules, parseRules(body, vw)...)
+				rules = append(rules, parseRules(body, m)...)
 			case strings.HasPrefix(lower, "@container"):
 				// Unlike @media/@layer, an @container condition cannot be resolved
 				// here: it depends on an ANCESTOR ELEMENT's actual laid-out size,
@@ -201,7 +207,7 @@ func parseRules(src string, vw float64) []Rule {
 				// parseContainerCondition report ok=false, and the body is then
 				// dropped wholesale, like any other unrecognised at-rule.
 				if cond, ok := parseContainerCondition(prelude); ok {
-					inner := parseRules(body, vw)
+					inner := parseRules(body, m)
 					for i := range inner {
 						inner[i].Container = mergeContainerCondition(inner[i].Container, cond)
 					}
@@ -237,21 +243,22 @@ func parseRules(src string, vw float64) []Rule {
 // the opposite of what the rule means — because the wrapped feature (here,
 // "min-width:40rem") is exactly the condition that should be negated, and a
 // match without negation gives precisely the inverted answer.
+//
+// The general rule — a leading "not" negates the whole query — now lives in
+// mediaQueryMatches (media.go); this regexp is kept as the documented shape
+// of the idiom that first exposed the bug.
 var notAllAndPrefix = regexp.MustCompile(`(?i)^\s*not\s+all\s+and\s+`)
 
-// mediaMatches evaluates a simplified @media condition against viewport width
-// vw. print media never matches; a leading "not all and" negates the rest of
-// the condition (see notAllAndPrefix); min-width/max-width pixel features
-// (colon syntax and the Level 4 comparison syntax) are honoured (all must
-// hold); anything else (screen/all/unknown features) matches optimistically
-// so desktop layout rules are applied.
+// mediaMatches evaluates a @media condition for screen at viewport width vw
+// — see mediaMatchesOn (media.go) for the rules, and Media for print.
 func mediaMatches(cond string, vw float64) bool {
-	if strings.Contains(cond, "print") {
-		return false
-	}
-	if loc := notAllAndPrefix.FindStringIndex(cond); loc != nil {
-		return !mediaMatches(cond[loc[1]:], vw)
-	}
+	return mediaMatchesOn(cond, Media{Width: vw})
+}
+
+// widthFeaturesHold reports whether every min-width/max-width feature in cond
+// (colon syntax and the Level 4 comparison syntax, calc() resolved first)
+// holds at viewport width vw. A condition with no width feature holds.
+func widthFeaturesHold(cond string, vw float64) bool {
 	cond = evalMediaCalcs(cond)
 	for _, m := range mediaWidthRe.FindAllStringSubmatch(cond, -1) {
 		if _, err := strconv.ParseFloat(m[2], 64); err != nil {

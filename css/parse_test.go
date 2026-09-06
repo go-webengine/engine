@@ -427,11 +427,17 @@ func TestMediaMatchesNotAllAnd(t *testing.T) {
 	if !mediaMatches("NOT ALL AND (min-width:1024px)", 1023) {
 		t.Error("NOT ALL AND (min-width:1024px) should match at 1023px")
 	}
-	// A "not" that is not immediately followed by "all and" is left alone
-	// (unmodelled, matches optimistically) rather than misparsed — this
-	// engine only recognises the exact "not all and" idiom Tailwind emits.
-	if !mediaMatches("not screen", 1024) {
-		t.Error(`"not screen" (a different negation shape) should fall through to match optimistically`)
+	// "not" negates the whole query, whatever follows it (media.go) — so
+	// "not screen" is false on screen and true on print, as in a browser.
+	// Until Media existed this engine recognised only the exact "not all
+	// and" idiom and let any other "not" fall through to match; a page's
+	// `@media not screen` block then applied on screen, the reverse of what
+	// it says.
+	if mediaMatches("not screen", 1024) {
+		t.Error(`"not screen" must NOT match on screen`)
+	}
+	if !mediaMatchesOn("not screen", Media{Type: Print, Width: 1024}) {
+		t.Error(`"not screen" must match on print`)
 	}
 }
 
