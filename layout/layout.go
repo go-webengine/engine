@@ -314,6 +314,22 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		return bottom
 	}
 
+	return l.blockOrInlineContents(box, node, st, cx, cw, top, b)
+}
+
+// blockOrInlineContents lays node's children out as ordinary block-in-flow
+// content: a run of inline siblings collected between block-level children,
+// each block-level child placed in turn, floats and out-of-flow items handled
+// alongside. This is contents' own default (non-flex/grid/table) path, and is
+// ALSO what table's own zero-rows fallback calls: CSS's anonymous-table-object
+// synthesis (wrapping non-row/cell children of a display:table box in
+// implicit rows/cells) isn't implemented, so a table box with no real
+// table-row/table-cell descendant at all — e.g. MediaWiki's own thumbnail
+// figure, which uses `figure{display:table}` purely as a shrink-to-fit sizing
+// trick around a plain `display:block` image wrapper plus a `figcaption`, with
+// no table-row or table-cell anywhere — falls back to this instead of table
+// silently dropping the whole box. See table's own doc comment.
+func (l *layouter) blockOrInlineContents(box *Box, node *dom.Node, st *css.Style, cx, cw, top float64, b *bfc) float64 {
 	pre := st.WhiteSpace == css.WSPre
 	// white-space: nowrap collects like normal (whitespace collapsed) but
 	// places like pre (never wraps); pre implies both.

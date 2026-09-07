@@ -67,10 +67,26 @@ type column struct {
 // fill the table" did whenever the table was wide enough for all of them, so
 // that case is unchanged. Each row's height is the tallest cell. Returns the
 // content bottom y.
+//
+// A display:table box with no real table-row/table-cell descendant at all —
+// collectRows returns none — falls back to plain block-in-flow layout of its
+// children (blockOrInlineContents) rather than this function dropping the
+// whole box (returning top unchanged, as if it had no content whatsoever).
+// CSS's own anonymous-table-object generation would wrap such children in
+// implicit rows/cells instead; this engine doesn't implement that synthesis,
+// but MediaWiki's own thumbnail-figure markup relies on exactly this gap
+// being handled somehow: `figure[typeof~='mw:File/Thumb']{display:table}`
+// wraps a plain `display:block` `.mw-file-description` anchor (the image) and
+// a `figcaption` (itself a `display:table-caption` this engine doesn't
+// recognise either, so it stays the block its UA default already set it to)
+// — NEITHER child is ever a table-row or table-cell. Before this fallback,
+// the whole figure (image AND caption) rendered as empty space: confirmed
+// live on en.wikipedia.org's "Go (programming language)" article, whose
+// "Branding and styling" section lost its gopher-mascot drawing entirely.
 func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top float64, b *bfc) float64 {
 	rows := l.collectRows(node)
 	if len(rows) == 0 {
-		return top
+		return l.blockOrInlineContents(box, node, st, cx, cw, top, b)
 	}
 	ncols := 0
 	for _, r := range rows {
