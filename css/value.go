@@ -463,6 +463,9 @@ const (
 	WSNormal WhiteSpace = iota
 	// WSPre preserves spaces and newlines and does not wrap (as in <pre>).
 	WSPre
+	// WSNoWrap collapses whitespace like WSNormal but never wraps: the
+	// block's content stays on one line, however wide.
+	WSNoWrap
 )
 
 // ImageRendering selects the resampling filter used to scale a raster image

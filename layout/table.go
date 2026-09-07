@@ -4,6 +4,7 @@
 package layout
 
 import (
+	"math"
 	"strconv"
 	"strings"
 
@@ -41,9 +42,30 @@ func cellColSpan(cell *dom.Node) int {
 	return n
 }
 
-// table lays out a table box with basic auto layout: column widths are derived
-// from the max-content width of the cells in each column, then scaled to fill
-// the table's content width; each row's height is the tallest cell. Returns the
+// column is one table column's width constraints, gathered from its
+// single-span cells (CSS 2.1 §17.5.2.2).
+type column struct {
+	// min is the widest unbreakable unit in the column, max the widest line;
+	// a cell's declared definite width counts toward both, so a fixed column
+	// has min == max unless a word is longer than the declaration.
+	min, max float64
+	// pct is the largest percentage width declared on a cell, 0..1 (0: none).
+	pct float64
+	// fixed marks a column some cell sized with a definite width: it is
+	// handed exactly that width while the table can afford it, and only
+	// shares in surplus space when no auto column is left to take it.
+	fixed bool
+}
+
+// table lays out a table box with the automatic table layout of CSS 2.1
+// §17.5.2.2: each column collects the minimum and maximum widths of its
+// cells (see column), and the table's content width is distributed so that
+// no column is ever narrower than its minimum — a column that cannot hold
+// its longest word would let that word run into the next column. Surplus
+// beyond every maximum goes to the auto columns in proportion to their
+// maximums, which is also what the earlier "scale the max-content widths to
+// fill the table" did whenever the table was wide enough for all of them, so
+// that case is unchanged. Each row's height is the tallest cell. Returns the
 // content bottom y.
 func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top float64, b *bfc) float64 {
 	rows := l.collectRows(node)
@@ -62,40 +84,54 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 		return top
 	}
 
-	// Natural (max-content) width per column. A colspan>1 cell is excluded —
+	// Width constraints per column. A colspan>1 cell is excluded —
 	// distributing its content need across the columns it spans is the full
-	// spec algorithm's job, well past this table layout's own documented
-	// "basic auto layout" scope — but it still OCCUPIES those columns (see
-	// the row-layout loop below), so it does not shift a later plain cell in
-	// the same row out of alignment with the other rows' columns.
-	natural := make([]float64, ncols)
+	// spec algorithm's job, past this table layout's scope — but it still
+	// OCCUPIES those columns (see the row-layout loop below), so it does not
+	// shift a later plain cell in the same row out of alignment with the
+	// other rows' columns.
+	cols := make([]column, ncols)
 	for _, r := range rows {
 		for j, cell := range r.cells {
 			if r.colSpan[j] != 1 {
 				continue
 			}
 			cs := l.cellStyle(cell)
-			w := l.preferredWidth(cell, cs) + cs.Margin.Left + cs.Margin.Right
-			if col := r.colStart[j]; w > natural[col] {
-				natural[col] = w
+			m := cs.Margin.Left + cs.Margin.Right
+			col := &cols[r.colStart[j]]
+			max := l.preferredWidth(cell, cs) + m
+			// The cell's own declared width is a floor under both widths, not
+			// a ceiling on the minimum: "if the specified width of the cell
+			// is greater than the minimum content width, it becomes the
+			// minimum cell width" (§17.5.2.2) — a word longer than the
+			// declaration still wins, so it is measured with the width
+			// treated as auto and the declaration applied afterwards.
+			content := *cs
+			content.Width = css.Length{Auto: true}
+			min := l.minContentWidth(cell, &content) + m
+			switch {
+			case cs.Width.IsPercent:
+				if cs.Width.Percent > col.pct {
+					col.pct = cs.Width.Percent
+				}
+			case !cs.Width.Auto:
+				col.fixed = true
+				if max > min {
+					min = max
+				}
+			}
+			if max < min {
+				max = min
+			}
+			if min > col.min {
+				col.min = min
+			}
+			if max > col.max {
+				col.max = max
 			}
 		}
 	}
-	var sum float64
-	for _, n := range natural {
-		sum += n
-	}
-	colW := make([]float64, ncols)
-	if sum <= 0 {
-		for j := range colW {
-			colW[j] = cw / float64(ncols)
-		}
-	} else {
-		scale := cw / sum
-		for j := range colW {
-			colW[j] = natural[j] * scale
-		}
-	}
+	colW := distributeColumns(cols, cw)
 	colX := make([]float64, ncols)
 	acc := cx
 	for j := range colW {
@@ -199,4 +235,99 @@ func (l *layouter) cellStyle(cell *dom.Node) *css.Style {
 	return &css.Style{Display: css.DisplayTableCell, Width: css.Length{Auto: true},
 		MinWidth: css.Length{Auto: true}, MaxWidth: css.Length{Auto: true},
 		Height: css.Length{Auto: true}}
+}
+
+// distributeColumns turns the columns' constraints into widths summing to W
+// (CSS 2.1 §17.5.2.2, refined the way browsers do). Percentage columns are
+// served first — their share of W, never less than their minimum — and the
+// rest of the width goes to the remaining columns: each gets its minimum when
+// the table cannot afford more (the table then overflows, as a browser's
+// does); between the minimums and the maximums every column grows from its
+// minimum in proportion to how much it can still grow; beyond every maximum
+// the surplus goes to the auto columns in proportion to their maximums, to
+// the fixed ones only when no auto column is left to take it, and in equal
+// shares when no column has any content to be proportional to.
+func distributeColumns(cols []column, W float64) []float64 {
+	w := make([]float64, len(cols))
+	rest := W
+	var free []int // the non-percentage columns
+	for j, c := range cols {
+		if c.pct > 0 {
+			w[j] = math.Max(c.pct*W, c.min)
+			rest -= w[j]
+			continue
+		}
+		free = append(free, j)
+	}
+	if len(free) == 0 {
+		// Every column is a percentage: what they leave over is shared in
+		// proportion to their widths, so the table still fills W. (Each
+		// width is at least its share of a positive W, so their sum is
+		// positive whenever anything is left over.)
+		if rest > 0 {
+			var sum float64
+			for _, v := range w {
+				sum += v
+			}
+			for j := range w {
+				w[j] += rest * w[j] / sum
+			}
+		}
+		return w
+	}
+	var summin, summax float64
+	for _, j := range free {
+		summin += cols[j].min
+		summax += cols[j].max
+	}
+	switch {
+	case rest <= summin:
+		for _, j := range free {
+			w[j] = cols[j].min
+		}
+	case rest < summax:
+		f := (rest - summin) / (summax - summin)
+		for _, j := range free {
+			w[j] = cols[j].min + (cols[j].max-cols[j].min)*f
+		}
+	default:
+		extra := rest - summax
+		var recv []int
+		var base float64
+		for _, j := range free {
+			w[j] = cols[j].max
+			if !cols[j].fixed && cols[j].max > 0 {
+				recv = append(recv, j)
+				base += cols[j].max
+			}
+		}
+		if len(recv) == 0 {
+			for _, j := range free {
+				if cols[j].max > 0 {
+					recv = append(recv, j)
+					base += cols[j].max
+				}
+			}
+		}
+		if len(recv) == 0 {
+			for _, j := range free {
+				w[j] += extra / float64(len(free))
+			}
+			return w
+		}
+		if base == summax {
+			// Every content column receives: scaling is the same arithmetic
+			// the pre-§17.5.2.2 layout used, kept so identical inputs give
+			// bit-identical widths.
+			scale := rest / summax
+			for _, j := range recv {
+				w[j] = cols[j].max * scale
+			}
+			return w
+		}
+		for _, j := range recv {
+			w[j] += extra * cols[j].max / base
+		}
+	}
+	return w
 }

@@ -306,6 +306,9 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 	}
 
 	pre := st.WhiteSpace == css.WSPre
+	// white-space: nowrap collects like normal (whitespace collapsed) but
+	// places like pre (never wraps); pre implies both.
+	nowrap := pre || st.WhiteSpace == css.WSNoWrap
 	if !l.hasBlockLevelChild(node) {
 		b.commit()
 		items := l.collectInline(node, st, pre)
@@ -316,12 +319,12 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		// the exact previous box shape (box.Lines set directly); only the
 		// rarer mixed case pays for building box.Children instead.
 		if !hasBlockBreak(items) {
-			lines, bottom := l.layoutInline(items, st, cx, cw, b.y, pre)
+			lines, bottom := l.layoutInline(items, st, cx, cw, b.y, nowrap)
 			box.Lines = lines
 			b.y = bottom
 			return bottom
 		}
-		return l.placeInlineSegments(box, items, st, cx, cw, b, pre)
+		return l.placeInlineSegments(box, items, st, cx, cw, b, nowrap)
 	}
 
 	// List-item counter for this block's direct list-item children. It seeds from
@@ -344,7 +347,7 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		// placeInlineSegments handles both the plain case (one anonymous
 		// box, identical to what this function built directly before) and
 		// the mixed one (splitting around each promoted block box).
-		l.placeInlineSegments(box, items, st, cx, cw, b, pre)
+		l.placeInlineSegments(box, items, st, cx, cw, b, nowrap)
 	}
 
 	for _, c := range l.renderedChildren(node) {
@@ -460,7 +463,7 @@ func hasBlockBreak(items []*InlineItem) bool {
 // layout instead of having its content silently flattened into surrounding
 // text. With no sentinels at all, this produces exactly one anonymous box —
 // byte-identical to the plain (pre-BlockBreak) code this replaced.
-func (l *layouter) placeInlineSegments(box *Box, items []*InlineItem, st *css.Style, cx, cw float64, b *bfc, pre bool) float64 {
+func (l *layouter) placeInlineSegments(box *Box, items []*InlineItem, st *css.Style, cx, cw float64, b *bfc, nowrap bool) float64 {
 	var run []*InlineItem
 	flushRun := func() {
 		if len(run) == 0 {
@@ -468,7 +471,7 @@ func (l *layouter) placeInlineSegments(box *Box, items []*InlineItem, st *css.St
 		}
 		b.commit()
 		anonTop := b.y
-		lines, bottom := l.layoutInline(run, st, cx, cw, anonTop, pre)
+		lines, bottom := l.layoutInline(run, st, cx, cw, anonTop, nowrap)
 		run = nil
 		anon := &Box{Anonymous: true, Style: st, ContentX: cx, ContentY: anonTop, ContentW: cw}
 		anon.Lines = lines
@@ -1126,9 +1129,9 @@ func attrFloat(el *dom.Node, name string) float64 {
 // and any floats intruding into each line's vertical band. cx/cw are the content
 // origin x and width; y is the top of the first line. Returns lines and the
 // bottom y after the last line.
-func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y float64, pre bool) ([]*LineBox, float64) {
+func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y float64, nowrap bool) ([]*LineBox, float64) {
 	fbAsc, fbH := l.lineMetricsFor(st)
-	if pre {
+	if nowrap {
 		lines := WrapItems(items, math.MaxFloat32)
 		cursor := y
 		for _, line := range lines {
