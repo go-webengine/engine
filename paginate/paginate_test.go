@@ -5,6 +5,7 @@ package paginate
 
 import (
 	"testing"
+	"time"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
@@ -307,5 +308,34 @@ func TestWrapperRowIsDescendedIntoPlainRowIsOneAtom(t *testing.T) {
 	next := box(&css.Style{}, 20, 10, 1, 10)
 	if got := Breaks(root(plain, next), 15); !equal(got, []float64{20}) {
 		t.Errorf("plain row: breaks %v, want [20] (the row overflows whole, the cut is after it)", got)
+	}
+}
+
+// Ten thousand rows each asking not to be cut inside (a large table whose
+// print stylesheet sets break-inside: avoid on tr, as Wikipedia's does) must
+// paginate in well under a second: the blocked boundaries are computed once.
+func TestManyAvoidGroupsPaginateFast(t *testing.T) {
+	const rows = 10000
+	kids := make([]*layout.Box, rows)
+	for i := range kids {
+		kids[i] = &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "tr"}, Style: &css.Style{BreakInside: css.BreakInsideAvoid}, Y: float64(i) * 20, H: 20}
+	}
+	r := root(&layout.Box{Style: &css.Style{}, Y: 0, H: rows * 20, Children: kids})
+	start := time.Now()
+	got := Breaks(r, 1000)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("pagination took %v", d)
+	}
+	if len(got) != rows*20/1000-1 {
+		t.Fatalf("breaks: %d, want %d", len(got), rows*20/1000-1)
+	}
+	// A group that straddles the page end with room to move: the cut lands
+	// before it, and a group taller than a page is cut through.
+	tall := &layout.Box{Style: &css.Style{BreakInside: css.BreakInsideAvoid, Orphans: 1, Widows: 1}, Y: 0, H: 3000}
+	for i := 0; i < 150; i++ {
+		tall.Lines = append(tall.Lines, &layout.LineBox{Y: float64(i) * 20, H: 20})
+	}
+	if got := Breaks(root(tall), 1000); len(got) != 2 {
+		t.Fatalf("tall avoid box: breaks %v, want two plain cuts", got)
 	}
 }
