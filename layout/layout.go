@@ -7,6 +7,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
@@ -33,6 +34,13 @@ type layouter struct {
 	// state threaded through the recursive collection rather than per text node.
 	wsPending bool
 	wsEmitted bool
+
+	// preCol is the column the next preserved-whitespace character lands
+	// in, counted from the start of the current line across every segment
+	// that shares it, so a tab reaches its tab stop (see expandTabs). Reset
+	// wherever a line starts: the inline context, a forced break, a
+	// promoted block.
+	preCol int
 
 	// pendingMargin accumulates the margin-left of a plain inline element about
 	// to be entered, plus the margin-right of one just left, until the next
@@ -74,6 +82,7 @@ type layouter struct {
 // at the top of an inline formatting context.
 func (l *layouter) beginInlineContext() {
 	l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0
+	l.preCol = 0
 	l.decor = nil
 }
 
@@ -671,6 +680,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 		// collapses, and any pending margin has nothing left on this line to
 		// apply to (same reasoning as the BlockBreak case below).
 		l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0
+		l.preCol = 0
 	case "img", "svg":
 		w, h := l.imageSize(el)
 		if w > 0 && h > 0 {
@@ -759,6 +769,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			// dropped the same way: nothing remains on this line to apply it
 			// to once a hard block break ends it.
 			l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0
+			l.preCol = 0
 			return
 		}
 		// A form control defaults to display:inline (see css/ua.go) and so is
@@ -824,7 +835,9 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 		for i, seg := range strings.Split(text, "\n") {
 			if i > 0 {
 				*items = append(*items, &InlineItem{LineBreak: true, Style: st, Node: origin})
+				l.preCol = 0
 			}
+			seg = l.expandTabs(seg)
 			if seg == "" {
 				continue
 			}
@@ -842,12 +855,18 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 		return
 	}
 	space := l.m.Measure(" ", st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
-	words := strings.Fields(text)
+	// Words split on collapsible whitespace ONLY (isSpace) — never on
+	// strings.Fields' unicode.IsSpace, which also splits on the no-break
+	// space U+00A0. A no-break space is part of its word: it is drawn at its
+	// own width and never breaks (a French "428 630,96 €", a "15.2.1.  100"
+	// table-of-contents entry, confirmed live on rfc-editor.org where the
+	// dropped spaces glued "." to "100" in the PDF export).
+	words := strings.FieldsFunc(text, isSpace)
 	if len(words) == 0 {
 		// A whitespace-only (or empty) text node between inline content carries a
 		// single collapsible space to the next word — unless nothing has been
 		// emitted yet, in which case leading whitespace collapses to nothing.
-		if strings.TrimSpace(text) == "" && text != "" {
+		if text != "" {
 			l.wsPending = true
 		}
 		return
@@ -889,6 +908,38 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 // collapsing (space, tab, newline, carriage return, form feed).
 func isSpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
+}
+
+// tabSize is the CSS `tab-size` initial value: a tab in preserved text
+// advances to the next multiple of this many spaces.
+const tabSize = 8
+
+// expandTabs replaces each tab of a preserved-whitespace segment with the
+// spaces that reach the next tab stop, counting columns from the start of
+// the line (preCol persists across the segments that share a line — a
+// `<span>` in the middle of a `<pre>` line — and resets at each line
+// break). A tab left in the text has no glyph: the measurer gave it no
+// width while a PDF exporter drew it as the font's .notdef box, so the
+// text after it overran its neighbour by one box (confirmed live on
+// pkg.go.dev's source listings: "= 100 // RFC" printed as "= 100// RFC"
+// behind a tofu box).
+func (l *layouter) expandTabs(seg string) string {
+	if !strings.ContainsRune(seg, '\t') {
+		l.preCol += utf8.RuneCountInString(seg)
+		return seg
+	}
+	var b strings.Builder
+	for _, r := range seg {
+		if r != '\t' {
+			b.WriteRune(r)
+			l.preCol++
+			continue
+		}
+		n := tabSize - l.preCol%tabSize
+		b.WriteString(strings.Repeat(" ", n))
+		l.preCol += n
+	}
+	return b.String()
 }
 
 // lineMetricsFor returns the ascent and line height for a style, honouring an
