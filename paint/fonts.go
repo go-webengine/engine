@@ -129,12 +129,30 @@ func (f *Fonts) styleFace(fam css.FontFamily, sizePx float64, weight int, italic
 	return f.face(fam, sizePx, weight >= 600, italic)
 }
 
-// Measure implements layout.Measurer: the advance width of text in the resolved
-// face. Bold and italic are real bundled faces, so no faux widening is applied.
+// Measure returns the advance width of text in CSS px at the exact size
+// asked: the glyphs' advances in font units scaled to sizePx, unrounded,
+// for the family's face and for the fallback face on the runs that need
+// it (see Runs). The raster painter still draws with a face at the nearest
+// whole-pixel size and whole-pixel advances, so its glyphs sit on the pixel
+// grid; layout, though, measures the truth — a consumer that draws at the
+// true size (a PDF) then finds the words where the layout put them. Before
+// this, a 14.4 px bold word was measured with a 14 px face, 2.8 % short,
+// and printed at 14.4 px it ran into the space after it.
 func (f *Fonts) Measure(text string, fam css.FontFamily, sizePx float64, weight int, italic bool) float64 {
 	w := 0.0
 	for _, run := range f.Runs(text, fam, weight, italic) {
-		w += float64(f.runFace(run, fam, sizePx, weight, italic).Measure(run.Text))
+		font := f.font(styleKey{fam, weight >= 600, italic})
+		if run.Fallback {
+			font = f.fallbackFont(weight >= 600, italic)
+		}
+		upem := float64(font.UnitsPerEm())
+		for _, r := range run.Text {
+			gid, ok := font.GlyphIndex(r)
+			if !ok {
+				continue
+			}
+			w += float64(font.GlyphAdvance(gid)) * sizePx / upem
+		}
 	}
 	return w
 }

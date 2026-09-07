@@ -82,3 +82,32 @@ func TestFallbackGlyphsAreMeasuredAndDrawn(t *testing.T) {
 		t.Error("a sub-pixel size still yields a face")
 	}
 }
+
+// Measure is exact and linear in the size — no whole-pixel face, no
+// whole-pixel advances — so a consumer drawing at the true size places
+// words where the layout put them.
+func TestMeasureIsExactAndLinear(t *testing.T) {
+	f := NewFonts()
+	for _, fam := range []css.FontFamily{css.Sans, css.Serif, css.Mono} {
+		w16 := f.Measure("configurations", fam, 16, 400, false)
+		w144 := f.Measure("configurations", fam, 14.4, 700, false)
+		w288 := f.Measure("configurations", fam, 28.8, 700, false)
+		if w16 <= 0 || w144 <= 0 {
+			t.Fatalf("%v: widths %v %v", fam, w16, w144)
+		}
+		if d := w288 - 2*w144; d > 1e-9 || d < -1e-9 {
+			t.Errorf("%v: Measure(28.8) = %v, want exactly twice Measure(14.4) = %v", fam, w288, w144)
+		}
+		if w16 == float64(int(w16)) && f.Measure("configurations", fam, 16.01, 400, false) == w16 {
+			t.Errorf("%v: Measure looks quantised to whole pixels", fam)
+		}
+	}
+	// A run set in the fallback face measures with the fallback's advances;
+	// a character neither face has (CJK) measures nothing, as it draws nothing.
+	if w := f.Measure("─", css.Sans, 16, 400, false); w <= 0 {
+		t.Errorf("fallback glyph measures %v", w)
+	}
+	if w := f.Measure("中", css.Sans, 16, 400, false); w != 0 {
+		t.Errorf("uncovered glyph measures %v, want 0", w)
+	}
+}
