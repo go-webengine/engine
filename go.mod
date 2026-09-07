@@ -8,8 +8,8 @@ require (
 	github.com/go-browserhttp/browserhttp v0.2.0
 	github.com/go-gfx/gfx v0.19.0
 	github.com/go-images/images v0.0.0-20260814204114-5f83e6345a72
-	github.com/go-opentype/fonts v0.5.0
-	github.com/go-opentype/opentype v0.5.0
+	github.com/go-opentype/fonts v0.9.1-0.20260907071658-dd9656234a3d
+	github.com/go-opentype/opentype v0.12.0
 	github.com/go-webengine/esbuildsandbox v0.1.0
 	github.com/go-widgets/painter v0.12.0
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c

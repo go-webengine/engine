@@ -822,14 +822,16 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 // form-control label/value painting (paintFormControl) so both letter glyphs
 // identically. Returns the pen position after the last glyph.
 func drawText(dst *image.RGBA, f *Fonts, st *css.Style, s string, x, baseline int, col css.Color, clip image.Rectangle) int {
-	fc := f.styleFace(st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 	penX := x
-	for _, r := range s {
-		bounds, mask, maskp, advance, ok := fc.GlyphMask(r, penX, baseline)
-		if ok && mask != nil {
-			blitMask(dst, bounds, mask, maskp, col, clip)
+	for _, run := range f.Runs(s, st.FontFamily, st.FontWeight, st.Italic) {
+		fc := f.runFace(run, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+		for _, r := range run.Text {
+			bounds, mask, maskp, advance, ok := fc.GlyphMask(r, penX, baseline)
+			if ok && mask != nil {
+				blitMask(dst, bounds, mask, maskp, col, clip)
+			}
+			penX += advance
 		}
-		penX += advance
 	}
 	return penX
 }

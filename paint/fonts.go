@@ -8,6 +8,9 @@
 package paint
 
 import (
+	"strings"
+
+	"github.com/go-opentype/fonts/dejavusans"
 	"github.com/go-opentype/fonts/gomono"
 	"github.com/go-opentype/fonts/inter"
 	"github.com/go-opentype/fonts/lora"
@@ -31,6 +34,25 @@ type styleKey struct {
 type Fonts struct {
 	fonts map[styleKey]*opentype.Font
 	faces map[faceKey]*opentype.Face
+
+	// fallback is the last-resort family — DejaVu Sans, for its coverage
+	// (arrows, enclosed alphanumerics, mathematical operators, box drawing,
+	// Greek, Cyrillic, …) rather than its looks — set per character the
+	// family's own face has no glyph for; see Runs. A browser falls back
+	// per character to the system's fonts; a self-contained engine bundles
+	// its equivalent. CJK is beyond it: a character neither face covers
+	// stays with the family and draws as nothing, as before.
+	fallback      map[faceStyle]*opentype.Font
+	fallbackFaces map[fallbackKey]*opentype.Face
+}
+
+// faceStyle is a weight/slant pair, the part of a styleKey a fallback
+// face still varies by.
+type faceStyle struct{ bold, italic bool }
+
+type fallbackKey struct {
+	faceStyle
+	size int
 }
 
 type faceKey struct {
@@ -44,7 +66,12 @@ type faceKey struct {
 // only if a bundled font fails to parse, which would be a build-time defect in
 // the fonts module, not a runtime condition.
 func NewFonts() *Fonts {
-	f := &Fonts{fonts: map[styleKey]*opentype.Font{}, faces: map[faceKey]*opentype.Face{}}
+	f := &Fonts{fonts: map[styleKey]*opentype.Font{}, faces: map[faceKey]*opentype.Face{},
+		fallback: map[faceStyle]*opentype.Font{}, fallbackFaces: map[fallbackKey]*opentype.Face{}}
+	f.fallback[faceStyle{false, false}] = mustParseFont(dejavusans.TTF)
+	f.fallback[faceStyle{true, false}] = mustParseFont(dejavusans.BoldTTF)
+	f.fallback[faceStyle{false, true}] = mustParseFont(dejavusans.ItalicTTF)
+	f.fallback[faceStyle{true, true}] = mustParseFont(dejavusans.BoldItalicTTF)
 	set := func(fam css.FontFamily, reg, bold, italic, boldItalic []byte) {
 		f.fonts[styleKey{fam, false, false}] = mustParseFont(reg)
 		f.fonts[styleKey{fam, true, false}] = mustParseFont(bold)
@@ -105,7 +132,92 @@ func (f *Fonts) styleFace(fam css.FontFamily, sizePx float64, weight int, italic
 // Measure implements layout.Measurer: the advance width of text in the resolved
 // face. Bold and italic are real bundled faces, so no faux widening is applied.
 func (f *Fonts) Measure(text string, fam css.FontFamily, sizePx float64, weight int, italic bool) float64 {
-	return float64(f.styleFace(fam, sizePx, weight, italic).Measure(text))
+	w := 0.0
+	for _, run := range f.Runs(text, fam, weight, italic) {
+		w += float64(f.runFace(run, fam, sizePx, weight, italic).Measure(run.Text))
+	}
+	return w
+}
+
+// Run is a maximal stretch of a text set in one face: the family's own, or
+// — Fallback — the last-resort family's, because the family has no glyph
+// for those characters.
+type Run struct {
+	Text     string
+	Fallback bool
+}
+
+// Runs splits s into the runs the family's face and the fallback face set
+// between them: a character goes to the fallback exactly when the family
+// has no glyph for it and the fallback has; one neither covers stays with
+// the family. A space or other whitespace joins whichever run it is in,
+// so "① ②" is one fallback run rather than three. Measure and the painter
+// walk these runs, and a consumer that sets the same text elsewhere (a PDF
+// exporter embedding both fonts) must walk them too, so its glyphs come
+// from the faces the layout measured with.
+func (f *Fonts) Runs(s string, fam css.FontFamily, weight int, italic bool) []Run {
+	prim := f.font(styleKey{fam, weight >= 600, italic})
+	fb := f.fallbackFont(weight >= 600, italic)
+	var runs []Run
+	var b strings.Builder
+	cur := -1 // 0 family, 1 fallback, -1 none yet
+	flush := func() {
+		if b.Len() > 0 {
+			runs = append(runs, Run{Text: b.String(), Fallback: cur == 1})
+			b.Reset()
+		}
+	}
+	for _, r := range s {
+		use := 0
+		switch {
+		case r == ' ' || r == '\t' || r == '\n' || r == '\u00a0':
+			use = cur // whitespace never starts a run of its own
+			if use < 0 {
+				use = 0
+			}
+		default:
+			if _, ok := prim.GlyphIndex(r); !ok {
+				if _, ok := fb.GlyphIndex(r); ok {
+					use = 1
+				}
+			}
+		}
+		if use != cur {
+			flush()
+			cur = use
+		}
+		b.WriteRune(r)
+	}
+	flush()
+	return runs
+}
+
+// fallbackFont returns the last-resort font for a weight/slant.
+func (f *Fonts) fallbackFont(bold, italic bool) *opentype.Font {
+	return f.fallback[faceStyle{bold, italic}]
+}
+
+// fallbackFace returns the last-resort face at sizePx, cached.
+func (f *Fonts) fallbackFace(sizePx float64, bold, italic bool) *opentype.Face {
+	size := int(sizePx + 0.5)
+	if size < 1 {
+		size = 1
+	}
+	key := fallbackKey{faceStyle{bold, italic}, size}
+	if fc, ok := f.fallbackFaces[key]; ok {
+		return fc
+	}
+	fc := f.fallbackFont(bold, italic).NewFace(size)
+	f.fallbackFaces[key] = fc
+	return fc
+}
+
+// runFace is the face a run is set in.
+func (f *Fonts) runFace(run Run, fam css.FontFamily, sizePx float64, weight int, italic bool) *opentype.Face {
+	if run.Fallback {
+		return f.fallbackFace(sizePx, weight >= 600, italic)
+	}
+	return f.styleFace(fam, sizePx, weight, italic)
 }
 
 // Metrics implements layout.Measurer: ascent and line height.
