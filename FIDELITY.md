@@ -18,6 +18,16 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-07 (round 64) — a round with NO code change: two real defects were found and precisely characterised, both confirmed to live in third-party dependencies with no fix possible in this engine's own codebase
+
+No fresh issue was filed this round (checked `gh issue list` again) and a fresh full-corpus JSLog sweep came back clean except the already-known caniuse.com ad-script error, confirming that lead is genuinely exhausted. Investigated three leads in sequence, each requiring real work to confirm rather than assume, and each ultimately landing outside this repo's own scope:
+
+- **Round 63's own flagged Wikipedia "Appearance" toggle icon, revisited and cleanly ABANDONED as more tangled than a one-round fix.** Traced the real markup: the icon lives in a `.vector-appearance-landmark` element that appears TWICE in the DOM (once in the masthead, once in the sidebar), gated by CSS rules keyed to a `vector-feature-appearance-pinned-clientpref-N` class this page's own inline bootstrap script sets synchronously from a default value (no cookie needed) — yet neither of the two fetched stylesheet modules contains a rule that actually SHOWS the landmark in either location, only rules that HIDE it under various pinned-state combinations. This points to either a third stylesheet module not yet fetched, or genuine JS-driven DOM manipulation client-side — determining which would need meaningfully more digging into MediaWiki's own Vector-skin preference system, a page-specific rabbit hole disproportionate to the actual defect. Abandoned cleanly, matching round 44/57's own precedent for over-scoped leads.
+- **A NEW defect, precisely characterised: the bundled Go Mono font's comma glyph loses its tail below 14px**, found chasing pkg.go.dev's own code blocks (`resp, err := ...` reading as `resp. err`). Narrowed to an exact size threshold (10-14px broken, 15px+ correct) via a systematic sweep, and to the COMMA GLYPH SPECIFICALLY (not a general small-size clipping issue) by confirming Go Mono's own letter descenders (g/j/p/q/y) render correctly at the SAME 14px, and proportional-font commas (Inter/Lora) also render correctly at 14px. Traced as far as this repo's own boundary: the font (`go-opentype/fonts/gomono`) and its rasteriser (`go-opentype/opentype`) are both separate dependencies; hinting is confirmed OFF in this engine's own font setup, ruling out a local misconfiguration. See "Known gaps" below for the full writeup.
+- **A SECOND real-world example of round 25's already-documented oksvg defect**: GitHub's own octocat logo (linked from tailwindcss.com's header) renders as a small wrong-shaped crescent instead of its full silhouette. Isolated with a minimal, CSS-free, class-free standalone `<svg><path>` repro using the exact real path data — reproducing the identical broken shape and ruling out any involvement of this engine's own SVG/CSS handling. See "Known gaps" below.
+
+**No PR opened this round**: both findings are real, confirmed, and precisely isolated, but neither has a possible fix within this engine's own codebase (the font/rasteriser and SVG rasteriser are both separate dependencies) — there is no code change to ship. Reported honestly as a documentation-only round rather than forcing an unrelated change just to have something to commit. `go test ./...` reconfirmed green (untouched) before closing out the round.
+
 ## 2026-09-07 (round 63) — `display:inline-block` was parsed but never actually implemented: it silently fell through to plain `display:inline`, so an EMPTY inline-block element (the common shape of a CSS-only icon) contributed no box — and no mask-image/background — at all (engine#152)
 
 No fresh lead was filed this round (checked `gh issue list` — only the Renovate Dependency Dashboard is open), so returned to a full corpus re-scan rather than assuming round 62's rankings still held. en.wikipedia.org remained the corpus's worst page (SSIM 0.434, essentially unchanged in magnitude despite three consecutive prior rounds' fixes there) — re-examined its top masthead, which an earlier round's crop had shown missing a search icon and a language-switcher icon, neither previously root-caused.
@@ -4194,6 +4204,44 @@ columns.
   bumping the dependency. Fixing (or forking) a third-party rasteriser's own
   path-fill-rule/subpath handling is outside this engine's own codebase —
   not attempted.
+- **The bundled "Go Mono" font's comma glyph loses its descending tail below
+  14px, rendering as a period.** Found live on pkg.go.dev's own code blocks
+  (round 64, 2026-09-07; `pre,textarea.code{font-family:SFMono-Regular,
+  Consolas,Liberation Mono,Menlo,monospace;font-size:.875rem}` — none of the
+  named faces are bundled, so it falls to the generic `monospace` keyword,
+  this engine's Go Mono), where `resp, err := http.Get(...)` reads as
+  `resp. err`. Isolated to an EXACT size threshold via a 10-24px sweep:
+  10-14px render the comma with no visible tail at all, 15px and above render
+  it correctly — and isolated to Go Mono specifically, not a general small-
+  size rasterisation issue: the SAME 14px size renders proportional-font
+  (Inter/Lora) commas correctly, and even Go Mono's OWN letter descenders
+  (g/j/p/q/y) render with normal, clearly visible tails at 14px — only the
+  comma glyph is affected. The font itself comes from a separate dependency
+  (`github.com/go-opentype/fonts/gomono`, not vendored in this repo), and its
+  rasterisation goes through `github.com/go-opentype/opentype`'s own
+  `Face.render`/`rasterize` — hinting is confirmed OFF by default in this
+  engine's own font setup (`paint/fonts.go` never calls `SetHinting`), ruling
+  out a hinting misconfiguration on this engine's side. Whether the actual
+  defect is in the font's own glyph outline or in the rasteriser's handling
+  of a small, thin, curved shape was not determined — narrowing further
+  requires instrumenting go-opentype's own rasteriser directly, outside this
+  repo. Not fixed here: the font and its rasteriser are both a separate
+  dependency, not this engine's own code.
+- **The third-party SVG rasteriser (`github.com/srwiley/oksvg`) mis-renders a
+  SECOND real-world complex `<path>`**, extending round 25's already-
+  documented finding (the MDN wordmark) with a concrete new example: GitHub's
+  own octocat logo (the exact `<path>` tailwindcss.com's header links to
+  `github.com/tailwindlabs/tailwindcss` with) renders as a small, wrong-shaped
+  white crescent instead of the full silhouette. Isolated with a minimal
+  standalone repro — a bare `<svg viewBox="0 0 20 20"><path fill="white"
+  d="...">` with the exact real path data, NO Tailwind classes, NO CSS, NO
+  other markup at all — reproducing the identical broken shape, ruling out
+  any involvement of this engine's own class/style handling (fill-opacity
+  utilities, `serializeSVG`'s XML regeneration, viewBox scaling) and
+  confirming the defect is purely inside oksvg's own path-fill rasterisation,
+  matching round 25's own conclusion pattern exactly. Not fixed here, for the
+  same reason: a third-party rasteriser's own path-handling is outside this
+  engine's codebase.
 - **An inline element's box decoration is painted (round 48) but not
   completely**: solid `background-color`, `border` and `padding` fragment per
   line box with `box-decoration-break: slice`, and `border-radius` is honoured
