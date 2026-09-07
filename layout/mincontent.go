@@ -97,23 +97,47 @@ func (l *layouter) minContentWidth(node *dom.Node, st *css.Style) float64 {
 		return max + edges
 	}
 	// Inline content: every item is a break opportunity from the next, so the
-	// widest single item — a word with its inline edges, an image, a promoted
-	// block measured by its own min-content — is the minimum.
+	// widest single item is the minimum — EXCEPT where an item's SpaceBefore
+	// is 0 (appendWords/appendElementInline leave it there precisely when no
+	// collapsible whitespace and no margin gap preceded it), which means
+	// there is no CSS Text line-breaking opportunity at that boundary at
+	// all: it is glued to the item before it into one unbreakable run, and
+	// the minimum must count the whole run, not each piece separately.
+	// Confirmed live: a table cell's own footnote marker `152,3<sup>†</sup>`
+	// (engine#149) needs the width of "152,3†" together as its floor — the
+	// SAME zero-SpaceBefore signal wrapOneLine/WrapItems now honour (see
+	// glueRun in linebreak.go) for the actual line-breaking decision this
+	// value exists to protect against ever being violated.
 	items := l.collectInline(node, st, false)
-	var widest float64
+	var widest, run float64
+	hasRun := false
+	flush := func() {
+		if run > widest {
+			widest = run
+		}
+		run, hasRun = 0, false
+	}
 	for _, it := range items {
 		if it.LineBreak {
+			flush()
 			continue
 		}
-		var w float64
 		if it.BlockBreak != nil {
-			w = l.minContentWidth(it.BlockBreak, it.Style) + it.Style.Margin.Left + it.Style.Margin.Right
-		} else {
-			w = it.padLead + it.Width + it.padTrail
+			flush()
+			w := l.minContentWidth(it.BlockBreak, it.Style) + it.Style.Margin.Left + it.Style.Margin.Right
+			if w > widest {
+				widest = w
+			}
+			continue
 		}
-		if w > widest {
-			widest = w
+		w := it.padLead + it.Width + it.padTrail
+		if hasRun && it.SpaceBefore == 0 {
+			run += w
+		} else {
+			flush()
+			run, hasRun = w, true
 		}
 	}
+	flush()
 	return widest + edges
 }
