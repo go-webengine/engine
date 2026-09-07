@@ -72,6 +72,7 @@ func Paginate(root *layout.Box, o Options) []float64 {
 	if len(atoms) == 0 {
 		return nil
 	}
+	blocked := blockedBoundaries(atoms, groups, o.PageHeight)
 	var tops []float64
 	pageTop := 0.0
 	pageH := o.PageHeight
@@ -102,7 +103,7 @@ func Paginate(root *layout.Box, o Options) []float64 {
 		case j < i:
 			cut = i + 1 // the first atom alone overflows: let it, and cut after it
 		default:
-			cut = choose(atoms, groups, i, j+1, pageH)
+			cut = choose(atoms, blocked, i, j+1)
 		}
 		if cut >= len(atoms) {
 			return tops
@@ -194,16 +195,47 @@ func collect(root *layout.Box) ([]*atom, []group) {
 	return atoms, groups
 }
 
+// blockedBoundaries marks, once for the document, every boundary b (a cut
+// before atoms[b]) that falls strictly inside a break-inside: avoid box
+// small enough to be kept on a page. One sweep over the groups with a
+// binary search each, so a table of ten thousand rows each asking not to
+// be cut costs a log factor rather than a scan per boundary per page — the
+// per-boundary scan made a Wikipedia table page take thirteen seconds.
+func blockedBoundaries(atoms []*atom, groups []group, pageH float64) []bool {
+	blocked := make([]bool, len(atoms)+1)
+	diff := make([]int, len(atoms)+2)
+	for _, g := range groups {
+		if g.bottom-g.top > pageH+epsilon {
+			continue // cannot be kept whole: its boundaries are fair game
+		}
+		// atoms whose top is strictly inside (g.top, g.bottom)
+		lo := sort.Search(len(atoms), func(i int) bool { return atoms[i].top > g.top+epsilon })
+		hi := sort.Search(len(atoms), func(i int) bool { return atoms[i].top >= g.bottom-epsilon })
+		if lo < hi {
+			diff[lo]++
+			diff[hi]--
+		}
+	}
+	depth := 0
+	for b := range blocked {
+		if b < len(diff) {
+			depth += diff[b]
+		}
+		blocked[b] = depth > 0
+	}
+	return blocked
+}
+
 // choose picks the boundary to cut at on a page holding atoms[i:max]
 // (max is the first atom that does not fit, always a real atom here): the
 // largest b in (i, max] allowed by the constraints; when none is, the
 // orphans/widows rule is dropped and the search repeated; when still none
 // is, the avoid rules are dropped too and the page is simply filled — the
 // spec's own order of relaxation.
-func choose(atoms []*atom, groups []group, i, max int, pageH float64) int {
+func choose(atoms []*atom, blocked []bool, i, max int) int {
 	for tier := 0; tier < 2; tier++ {
 		for b := max; b > i; b-- {
-			if allowed(atoms, groups, b, pageH, tier) {
+			if allowed(atoms, blocked, b, tier) {
 				return b
 			}
 		}
@@ -213,16 +245,10 @@ func choose(atoms []*atom, groups []group, i, max int, pageH float64) int {
 
 // allowed reports whether cutting before atoms[b] respects the constraints
 // still in force at tier: 0 all of them, 1 without orphans/widows.
-func allowed(atoms []*atom, groups []group, b int, pageH float64, tier int) bool {
+func allowed(atoms []*atom, blocked []bool, b int, tier int) bool {
 	prev, next := atoms[b-1], atoms[b]
-	if prev.avoidAfter || next.avoidBefore {
+	if prev.avoidAfter || next.avoidBefore || blocked[b] {
 		return false
-	}
-	y := next.top
-	for _, g := range groups {
-		if g.bottom-g.top <= pageH+epsilon && g.top < y-epsilon && y < g.bottom-epsilon {
-			return false // inside an avoid box that could be kept whole
-		}
 	}
 	if tier < 1 && prev.block != nil && prev.block == next.block {
 		st := prev.block.Style
