@@ -1246,8 +1246,11 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 
 // wrapOneLine greedily fills one line from items within maxW, stopping at a
 // forced break. Returns the line and how many items it consumed (incl. a
-// consumed LineBreak). A leading item wider than maxW is not taken (consumed==0)
-// so the caller can try to drop past a float first.
+// consumed LineBreak). A leading item — or an unbreakable glued run (see
+// glueRun in linebreak.go) — wider than maxW is not taken (consumed==0) so the
+// caller can try to drop past a float first; if that doesn't help either, the
+// caller's forceOne places just the run's first item, splitting the run only
+// as an overflow-of-last-resort, never as an ordinary wrap point.
 func wrapOneLine(items []*InlineItem, maxW float64) (line *LineBox, consumed int, brokeAtEnd bool) {
 	line = &LineBox{}
 	w := 0.0
@@ -1260,21 +1263,22 @@ func wrapOneLine(items []*InlineItem, maxW float64) (line *LineBox, consumed int
 		}
 		// An inline element's own leading/trailing border+padding is part of
 		// what the item occupies on the line (see InlineItem.padLead), so it
-		// counts toward the break decision exactly like the word's own width.
-		own := it.padLead + it.Width + it.padTrail
-		add := own
+		// counts toward the break decision exactly like the word's own width —
+		// glueRun folds every item's own padLead/Width/padTrail into runW.
+		j, runW := glueRun(items, i)
+		add := runW
 		if len(line.Items) > 0 {
 			add += it.SpaceBefore
 		}
 		if len(line.Items) > 0 && w+add > maxW {
 			return line, i, false
 		}
-		if len(line.Items) == 0 && own > maxW {
+		if len(line.Items) == 0 && runW > maxW {
 			return line, i, false
 		}
-		line.Items = append(line.Items, it)
+		line.Items = append(line.Items, items[i:j]...)
 		w += add
-		i++
+		i = j
 	}
 	return line, i, false
 }
