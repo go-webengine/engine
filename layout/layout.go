@@ -749,6 +749,30 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			l.pendingMargin += es.Margin.Right
 			return
 		}
+		// display:inline-block is likewise an INLINE-level atomic box whose
+		// content is a genuine nested formatting context — see
+		// layoutNestedInlineBlock's own doc comment (found live on
+		// en.wikipedia.org: an EMPTY `<span style="display:inline-block;
+		// width:1rem;height:1rem">` styled entirely via mask-image, which
+		// only ever paints through the real Box path this engine previously
+		// never gave a plain display:inline-block element at all).
+		if es := l.sm[el]; es != nil && es.Display == css.DisplayInlineBlock {
+			wasWsEmitted, wasWsPending := l.wsEmitted, l.wsPending
+			box := l.layoutNestedInlineBlock(el, es)
+			sb := 0.0
+			if wasWsEmitted && wasWsPending {
+				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
+			}
+			sb += l.takeMargin() + es.Margin.Left
+			*items = append(*items, &InlineItem{
+				Style: es, NestedBox: box, Node: el,
+				Width: box.W, Ascent: box.H, LineHeight: box.H,
+				SpaceBefore: sb, decor: l.decor,
+			})
+			l.wsEmitted, l.wsPending = true, false
+			l.pendingMargin += es.Margin.Right
+			return
+		}
 		// A genuinely block-level element (display:block/flex/grid/table, or
 		// a form control explicitly given one of those) found while
 		// collecting INLINE content must be promoted to a real sibling box,
