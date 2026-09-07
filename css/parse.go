@@ -641,7 +641,9 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		switch lv {
 		case "pre", "pre-wrap", "pre-line":
 			s.WhiteSpace = WSPre
-		case "normal", "nowrap":
+		case "nowrap":
+			s.WhiteSpace = WSNoWrap
+		case "normal":
 			s.WhiteSpace = WSNormal
 		}
 	case "image-rendering":
