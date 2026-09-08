@@ -47,9 +47,11 @@ var mediaTypes = map[string]bool{
 // reads (see notAllAndPrefix for the history); a leading media type selects
 // on m.Type — "print" matches only print, "screen" only screen, "all"
 // always, any other type never; then every min-width/max-width feature (colon
-// and Level 4 comparison syntax) must hold against m.Width; anything else
-// (colour, hover, unknown features) matches optimistically so desktop layout
-// rules are applied.
+// and Level 4 comparison syntax) must hold against m.Width, and every
+// hover/pointer feature (see inputFeaturesHold) must hold for this engine's
+// one assumed mouse-equipped desktop rendering context; anything else
+// (colour, resolution, truly unknown features) matches optimistically so
+// desktop layout rules are applied.
 func mediaMatchesOn(cond string, m Media) bool {
 	for _, q := range splitMediaList(cond) {
 		if mediaQueryMatches(q, m) {
@@ -84,7 +86,7 @@ func mediaQueryMatches(q string, m Media) bool {
 		}
 		q = rest
 	}
-	return widthFeaturesHold(q, m.Width)
+	return widthFeaturesHold(q, m.Width) && inputFeaturesHold(q)
 }
 
 // leadingWord splits a leading identifier ([a-z-]+) off q when one is there

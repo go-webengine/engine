@@ -433,6 +433,33 @@ func TestPaintVisibilityHiddenSkipsOwnPaintButNotChildren(t *testing.T) {
 	}
 }
 
+// TestPaintItemVisibilityHiddenSkipsInlineImage covers a SEPARATE entry point
+// from the box-level test above: an inline <img>/<svg> is always represented
+// as an InlineItem (see contents()'s isReplacedTag branch), never a
+// layout.Box, so it is painted via paintItem, which never consulted the
+// item's own Visibility at all before this fix — unconditionally blitting it
+// regardless of `visibility:hidden`. A real, independent defect on its own
+// (any inline image/icon with an explicit `visibility:hidden` painted
+// anyway), found while investigating github.com's Markdown-heading permalink
+// icons — though those specific icons turned out to be gated by `opacity` via
+// a real layout.Box, not this InlineItem path (see css/parse.go's
+// hover/pointer media-feature fix for what actually closes that thread).
+func TestPaintItemVisibilityHiddenSkipsInlineImage(t *testing.T) {
+	dst := white(20, 20)
+	node := &dom.Node{Type: dom.Element, Tag: "svg"}
+	src := solid(10, 10, css.Color{R: 255, A: 255})
+	imgs := map[*dom.Node]image.Image{node: src}
+	st := &css.Style{Visibility: css.VisibilityHidden}
+	it := &layout.InlineItem{Image: node, Style: st, X: 0, Y: 0, ImgW: 10, ImgH: 10}
+	line := &layout.LineBox{X: 0, Y: 0, W: 10, H: 10, Items: []*layout.InlineItem{it}}
+	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "p"}, Style: &css.Style{},
+		X: 0, Y: 0, W: 20, H: 20, Lines: []*layout.LineBox{line}}
+	PaintFull(dst, box, NewFonts(), imgs, nil)
+	if c := dst.RGBAAt(5, 5); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("visibility:hidden inline image painted: %+v want untouched white", c)
+	}
+}
+
 func TestPaintSubPixelBorderNotDrawn(t *testing.T) {
 	// A sub-pixel border width rounds to 0 px; the zero-size fill guard skips it
 	// without panicking or painting.

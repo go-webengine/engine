@@ -787,6 +787,22 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 		paintBox(dst, pp, it.NestedBox, f, imgs, bgImgs, clip)
 		return
 	}
+	// visibility:hidden on the item's OWN element paints nothing here — the
+	// same "reserve the space, paint none of it" rule paintBoxContent already
+	// applies to a Box (see its own Visibility doc comment above); an
+	// InlineItem is the equivalent leaf for an image/form-control/text run
+	// that never gets a real Box at all. This function never consulted the
+	// item's own Visibility at all before this and always blitted it
+	// regardless — found while investigating github.com's Markdown-heading
+	// permalink icons (though those turned out to be gated by `opacity`, via
+	// a real layout.Box, not this path — see the hover/pointer media-feature
+	// fix in css/parse.go for the fix that actually closes that thread). A
+	// minimal `<h1>text<a><svg style="visibility:hidden">…</a></h1>` repro
+	// confirms this is a real, independent defect on its own: any inline
+	// image/icon with an explicit `visibility:hidden` painted anyway.
+	if it.Style != nil && it.Style.Visibility != css.VisibilityVisible {
+		return
+	}
 	if it.Image != nil {
 		if src, ok := imgs[it.Image]; ok {
 			// Every <img> — block or inline — is represented as an InlineItem,

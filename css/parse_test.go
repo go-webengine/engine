@@ -497,6 +497,54 @@ func TestMediaMatchesSimpleCalc(t *testing.T) {
 	}
 }
 
+// TestMediaMatchesHoverAndPointer covers the interaction media features
+// (hover/any-hover/pointer/any-pointer), which — unlike an ordinary unknown
+// feature — must NOT fall through to "match optimistically": this engine
+// models exactly one rendering context, a mouse-equipped desktop browser
+// (matching the headless Chrome this project measures itself against), so a
+// touch-oriented query must evaluate false. Found live on github.com: a
+// Markdown heading's permalink icon is `opacity:0` by default (shown on
+// hover/focus), with `@media (pointer:coarse){.anchor{opacity:1}}` as its
+// touch-device fallback (a device with no fine pointer can never trigger
+// :hover, so this makes the icon permanently visible for touch users) — this
+// touch-only fallback wrongly matched here, showing the icon on every single
+// Markdown heading unconditionally, and a whole family of near-identical
+// query pairs (`hover:none`/`any-hover:none`) carries the exact same risk.
+func TestMediaMatchesHoverAndPointer(t *testing.T) {
+	if mediaMatches("(hover:none)", 1024) {
+		t.Error("(hover:none) should NOT match a mouse-equipped desktop context")
+	}
+	if !mediaMatches("(hover:hover)", 1024) {
+		t.Error("(hover:hover) SHOULD match a mouse-equipped desktop context")
+	}
+	if mediaMatches("(any-hover:none)", 1024) {
+		t.Error("(any-hover:none) should NOT match")
+	}
+	if !mediaMatches("(any-hover:hover)", 1024) {
+		t.Error("(any-hover:hover) SHOULD match")
+	}
+	if mediaMatches("(pointer:coarse)", 1024) {
+		t.Error("(pointer:coarse) — GitHub's real touch-fallback query — should NOT match")
+	}
+	if mediaMatches("(pointer:none)", 1024) {
+		t.Error("(pointer:none) should NOT match")
+	}
+	if !mediaMatches("(pointer:fine)", 1024) {
+		t.Error("(pointer:fine) SHOULD match")
+	}
+	if mediaMatches("(any-pointer:coarse)", 1024) {
+		t.Error("(any-pointer:coarse) should NOT match")
+	}
+	if !mediaMatches("(any-pointer:fine)", 1024) {
+		t.Error("(any-pointer:fine) SHOULD match")
+	}
+	// A genuinely unrelated/unknown feature still matches optimistically,
+	// unaffected by this — only hover/pointer get the stricter treatment.
+	if !mediaMatches("(color-gamut:p3)", 1024) {
+		t.Error("an unrelated unknown feature should still match optimistically")
+	}
+}
+
 // TestFlipCmp covers every operator flipCmp reverses, plus the defensive
 // default (an operator outside the four mediaWidthCmpRe can ever capture).
 func TestFlipCmp(t *testing.T) {
