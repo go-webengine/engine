@@ -31,6 +31,48 @@ var mediaWidthRe = regexp.MustCompile(`(min|max)-width\s*:\s*([0-9.]+)(px|rem)`)
 var mediaWidthCmpRe = regexp.MustCompile(
 	`width\s*(<=|>=|<|>)\s*([0-9.]+)(px|rem)|([0-9.]+)(px|rem)\s*(<=|>=|<|>)\s*width`)
 
+// mediaHoverRe and mediaPointerRe capture the input-capability media
+// features (Level 4's "interaction media features"), each with an optional
+// "any-" prefix ("hover"/"any-hover" report the PRIMARY vs. ANY available
+// input mechanism — this engine draws no distinction between the two, since
+// it models exactly one, mouse-equipped input device either way). Unlike
+// min-width/max-width and calc() above, these are NOT resolved via the
+// generic "unknown feature: assume it matches" default (see
+// mediaQueryMatches's own doc comment) — that default is right for a feature
+// like colour-gamut, where optimistically matching still describes a
+// plausible desktop browser, but wrong here: `(hover:none)`/`(pointer:
+// coarse)` specifically ask "is the input a touchscreen", and this engine's
+// one rendering context is a mouse-equipped desktop browser (matching the
+// headless Chrome this project measures itself against), so those queries
+// must evaluate false, not "match optimistically". Found live on
+// github.com: `@media (hover:none){.markdown-body h1 .octicon-link,...{
+// visibility:visible!important}}` — a touch-device fallback making a
+// heading's hover-revealed permalink icon always visible, since a
+// touchscreen user can never trigger `:hover` to reveal it another way —
+// wrongly matched here and showed the icon on every heading unconditionally.
+var (
+	mediaHoverRe   = regexp.MustCompile(`(?:any-)?hover\s*:\s*(hover|none)`)
+	mediaPointerRe = regexp.MustCompile(`(?:any-)?pointer\s*:\s*(fine|coarse|none)`)
+)
+
+// inputFeaturesHold reports whether every hover/pointer feature in cond holds
+// for this engine's single assumed rendering context: a mouse-equipped
+// desktop browser. A condition with no such feature holds (unaffected by this
+// check either way).
+func inputFeaturesHold(cond string) bool {
+	for _, m := range mediaHoverRe.FindAllStringSubmatch(cond, -1) {
+		if m[1] != "hover" {
+			return false
+		}
+	}
+	for _, m := range mediaPointerRe.FindAllStringSubmatch(cond, -1) {
+		if m[1] != "fine" {
+			return false
+		}
+	}
+	return true
+}
+
 // evalMediaCalcs replaces every calc(...) call in cond with its evaluated
 // pixel length (via the general calc() evaluator in calc.go — resolveCalc's
 // own evalCalcExpr, already used for ordinary property values), so
