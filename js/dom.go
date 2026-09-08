@@ -1060,7 +1060,19 @@ func isEqualNode(a, b *dom.Node) bool {
 	return true
 }
 
+// cloneNode returns nil for a nil n — the same "no match, don't crash"
+// treatment contains/isEqualNode above already give a nil node. Reachable
+// live via `document.importNode(x, deep)`, whose own binding passes
+// b.node(call.Argument(0)) straight through: b.node returns nil for any
+// argument that isn't a real, already-wrapped node (null/undefined, or an
+// object from an unrelated API this binding never registered in b.cache) —
+// found live on caniuse.com, whose real ad-network bundle.js calls
+// importNode with exactly such a value, panicking with a nil-pointer
+// dereference on n.Type below and aborting that script entirely.
 func cloneNode(n *dom.Node, deep bool) *dom.Node {
+	if n == nil {
+		return nil
+	}
 	c := &dom.Node{Type: n.Type, Tag: n.Tag, Text: n.Text}
 	if n.Attr != nil {
 		c.Attr = map[string]string{}

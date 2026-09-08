@@ -92,6 +92,29 @@ func TestDocumentExtraMethods(t *testing.T) {
 	}
 }
 
+// TestImportNodeWithNonNodeArgumentDoesNotPanic covers document.importNode
+// called with a value that does not resolve to a real bound node (null,
+// undefined, or an ordinary object from an unrelated API) — cloneNode used to
+// dereference its argument unconditionally, panicking with a nil-pointer
+// dereference. Found live on caniuse.com: its real ad-network bundle.js calls
+// importNode with exactly such a value, which used to abort that whole
+// script with an unrecovered-looking panic (caught only by execute's
+// top-level recover, not handled as an ordinary JS-level error the way every
+// other malformed DOM call is). The script after the call still runs (the
+// trailing console.log fires), matching the "one bad argument fails that one
+// call, not the whole script" behaviour every other binding here already has.
+func TestImportNodeWithNonNodeArgumentDoesNotPanic(t *testing.T) {
+	logs := evalLog(t, `
+		console.log('null=' + (document.importNode(null, true) === null));
+		console.log('undef=' + (document.importNode(undefined, true) === null));
+		console.log('obj=' + (document.importNode({}, true) === null));
+		console.log('done=true');
+	`)
+	for _, k := range []string{"null=true", "undef=true", "obj=true", "done=true"} {
+		wantLog(t, logs, k)
+	}
+}
+
 // TestConsoleSurfacesStack proves console.error on an Error object surfaces its
 // stack (the diagnostics improvement), while a plain object logs normally.
 func TestConsoleSurfacesStack(t *testing.T) {
