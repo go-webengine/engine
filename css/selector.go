@@ -52,6 +52,19 @@ type compound struct {
 	// instead of all-but-the-first, hiding an entire "Did you know?" tip
 	// list's text that should have shown its first entry.
 	FirstChild bool
+	// LastChild is set by the ":last-child" structural pseudo-class — the
+	// element has no following element sibling. FirstChild's own doc comment
+	// once deferred this ("would need a new forward-walking helper that
+	// doesn't exist yet, a bigger step not justified by any confirmed need");
+	// this is that confirmed need, found live by the exact same failure shape:
+	// pkg.go.dev's own breadcrumb rule `.go-Breadcrumb li:last-child>a{color:
+	// var(--color-text-subtle)}` (dimming only the current, unlinked, final
+	// crumb) degraded — unmodelled — to plain `.go-Breadcrumb li>a`, so EVERY
+	// breadcrumb link (not just the last) lost its distinct link colour from
+	// the earlier `a,a:link,a:visited{color:var(--color-brand-primary)}`
+	// rule: a higher-specificity compound that should only win for the one
+	// last child instead won for all of them.
+	LastChild bool
 	// Empty is set by the ":empty" structural pseudo-class — the element has
 	// no child nodes at all (this engine's tree has no comment-node type, so
 	// "no children" is exactly "no element AND no text children", matching
@@ -238,6 +251,9 @@ func (c compound) matches(n *dom.Node) bool {
 		return false
 	}
 	if c.FirstChild && prevElementSibling(n) != nil {
+		return false
+	}
+	if c.LastChild && nextElementSibling(n) != nil {
 		return false
 	}
 	if c.Empty && len(n.Children) != 0 {
@@ -460,6 +476,22 @@ func prevElementSibling(n *dom.Node) *dom.Node {
 		}
 	}
 	return prev
+}
+
+func nextElementSibling(n *dom.Node) *dom.Node {
+	if n.Parent == nil {
+		return nil
+	}
+	found := false
+	for _, c := range n.Parent.Children {
+		if found && c.Type == dom.Element {
+			return c
+		}
+		if c == n {
+			found = true
+		}
+	}
+	return nil
 }
 
 // ParseSelectorList parses a comma-separated selector list, skipping empty and
@@ -800,6 +832,8 @@ func parseSimple(s string) (compound, bool) {
 			c.Checked = true
 		case "first-child":
 			c.FirstChild = true
+		case "last-child":
+			c.LastChild = true
 		case "empty":
 			c.Empty = true
 		case "not":
@@ -885,7 +919,7 @@ func parseSimple(s string) (compound, bool) {
 	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
 	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 {
+		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 {
 		return compound{}, false
 	}
 	return c, true

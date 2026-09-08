@@ -337,6 +337,66 @@ func TestFirstChildPseudo(t *testing.T) {
 	}
 }
 
+// TestLastChildPseudo covers ":last-child", the symmetric counterpart to
+// TestFirstChildPseudo above, and the exact compound shape that made it
+// load-bearing live: pkg.go.dev's own breadcrumb rule
+// `.go-Breadcrumb li:last-child>a{color:var(--color-text-subtle)}` dims only
+// the final, unlinked crumb. Before this, ":last-child" was an unmodelled
+// pseudo like ":nth-child", so the compound degraded to plain
+// `.go-Breadcrumb li>a` — matching every breadcrumb link, not just the last —
+// and since this rule has higher specificity than the page's generic
+// `a,a:link,a:visited{color:var(--color-brand-primary)}` link-colour rule, it
+// wrongly overrode the colour on EVERY breadcrumb link, not only the current
+// page's.
+func TestLastChildPseudo(t *testing.T) {
+	root, err := dom.Parse(`<html><body><ul class="go-Breadcrumb">
+		<li class="go-Breadcrumb-item"><a href="/">first</a></li>
+		<li class="go-Breadcrumb-item"><a href="/std">second</a></li>
+		<li class="go-Breadcrumb-item"><a href="/net">third</a></li>
+	</ul></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ul := dom.Find(root, "ul")
+	var items []*dom.Node
+	for _, c := range ul.Children {
+		if c.Type == dom.Element {
+			items = append(items, c)
+		}
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 <li> children, got %d", len(items))
+	}
+	first, second, third := items[0], items[1], items[2]
+
+	lc, ok := parseComplex(":last-child")
+	if !ok {
+		t.Fatal(":last-child should parse")
+	}
+	if lc.Matches(first) || lc.Matches(second) {
+		t.Error(":last-child should NOT match the first or second <li>")
+	}
+	if !lc.Matches(third) {
+		t.Error(":last-child should match the third (last) <li>")
+	}
+
+	// The real pkg.go.dev rule: dim only the current (last) crumb's link.
+	sel, ok := parseComplex(".go-Breadcrumb-item:last-child>a")
+	if !ok {
+		t.Fatal(".go-Breadcrumb-item:last-child>a should parse")
+	}
+	firstA := dom.Find(first, "a")
+	secondA := dom.Find(second, "a")
+	thirdA := dom.Find(third, "a")
+	if sel.Matches(firstA) || sel.Matches(secondA) {
+		t.Error(".go-Breadcrumb-item:last-child>a must NOT match an earlier crumb's <a> " +
+			"(it would wrongly override that link's colour too)")
+	}
+	if !sel.Matches(thirdA) {
+		t.Error(".go-Breadcrumb-item:last-child>a should match the last crumb's <a>")
+	}
+}
+
 // TestEmptyPseudo covers the ":empty" structural pseudo-class, using
 // pkg.go.dev's own real rule shape as the fixture:
 // `.Documentation-toc:empty{display:none}` is meant to hide a genuinely
