@@ -1175,7 +1175,20 @@ func isPseudoElement(p string) bool {
 		// WRONGLY matched the real element instead of matching nothing — its
 		// display:none then hid the summary's entire real content, not just
 		// a marker glyph nothing in this engine ever draws anyway.
-		"-webkit-details-marker":
+		"-webkit-details-marker",
+		// ::-ms-clear (legacy IE/Edge's own "clear this field" X button) and
+		// its near-inseparable sibling ::-ms-reveal (the "show password" eye
+		// icon) — the SAME bug class as -webkit-details-marker above, found
+		// live on caniuse.com: `.ciu-search__input::-ms-clear{display:none}`
+		// (a theme hiding IE's own native decoration, the same intent as the
+		// -webkit-scrollbar family above) degraded to plain
+		// `.ciu-search__input` and hid the REAL search input with
+		// display:none — total invisibility, not a rendering nuance. Listed
+		// together for the same reason the scrollbar family lists every
+		// variant once one is confirmed live, rather than just the single
+		// rule that happened to be hit first: real-world resets targeting
+		// one of this pair overwhelmingly target both.
+		"-ms-clear", "-ms-reveal":
 		return true
 	}
 	return false

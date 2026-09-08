@@ -739,6 +739,23 @@ func TestPseudoElementMatchesNothing(t *testing.T) {
 	} else if s.Matches(summary) {
 		t.Error("summary::-webkit-details-marker must not match the real <summary> element")
 	}
+	// The SAME bug class, found live on caniuse.com: `.ciu-search__input
+	// ::-ms-clear{display:none}` (a theme hiding IE/Edge's own native
+	// "clear field" X button) degraded to plain `.ciu-search__input` before
+	// -ms-clear was added to isPseudoElement, WRONGLY matching the real
+	// search <input> and hiding it entirely (Display computed to
+	// DisplayNone) — not a rendering nuance, total invisibility.
+	// -ms-reveal (the "show password" eye icon) is -ms-clear's own
+	// near-inseparable sibling, added alongside it for the same reason.
+	input := el("input", "feat_search", "ciu-search__input")
+	if !isPseudoElement("-ms-clear") || !isPseudoElement("-ms-reveal") {
+		t.Error("-ms-clear and -ms-reveal must both be classified as pseudo-elements")
+	}
+	if s, ok := parseComplex(".ciu-search__input::-ms-clear"); !ok {
+		t.Fatal("parseComplex(.ciu-search__input::-ms-clear) should parse")
+	} else if s.Matches(input) {
+		t.Error(".ciu-search__input::-ms-clear must not match the real <input> element")
+	}
 }
 
 // TestStripTrailingSelfCombinator covers stripTrailingSelfCombinator's own

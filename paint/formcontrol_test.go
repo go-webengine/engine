@@ -134,6 +134,40 @@ func TestPaintFormControlHonoursAuthorReset(t *testing.T) {
 	}
 }
 
+// TestPaintFormControlPerSideBorder covers a real regression, found live on
+// caniuse.com: `border:0;border-bottom:1px solid #fff` (the author's own
+// search input) previously drew NOTHING at all, since paintFormControl's own
+// border check inspected ONLY Style.Border.Top's width/style/colour and
+// stroked one uniform-colour rectangle for all four sides when it painted —
+// `border:0` zeroes every side first, then `border-bottom:...` overrides
+// only the bottom one, so Border.Top stayed at zero and the whole check
+// (and everything it gated) was skipped. Now routed through paintEdges, the
+// SAME per-side helper a real layout.Box's own border already used.
+func TestPaintFormControlPerSideBorder(t *testing.T) {
+	n := elem("input", map[string]string{"id": "e"})
+	// A distinct, non-white border colour: paintControlStyled's canvas starts
+	// all-white, so a white border pixel would be indistinguishable from an
+	// unpainted (still-white) one — this colour makes "did the bottom edge
+	// actually get painted, and did the top edge correctly NOT" unambiguous.
+	borderColor := css.Color{R: 255, A: 255}
+	style := &css.Style{FontFamily: css.Sans, FontSize: 14, FontWeight: 400, Color: css.Color{A: 255},
+		Background: css.Color{}, // border:0;background:transparent, like the real page
+		Border: css.Borders{
+			Bottom: css.BorderSide{Width: 1, Style: css.BorderSolid, Color: borderColor},
+		},
+	}
+	dst := paintControlStyled(t, n, 100, 24, style)
+
+	bottom := dst.RGBAAt(50, 5+24-1)
+	if got, want := (css.Color{R: bottom.R, G: bottom.G, B: bottom.B, A: 255}), borderColor; got != want {
+		t.Errorf("bottom edge = %+v, want the border-bottom colour %+v", got, want)
+	}
+	top := dst.RGBAAt(50, 5)
+	if got := (css.Color{R: top.R, G: top.G, B: top.B, A: 255}); got == borderColor {
+		t.Errorf("top edge = %+v, a border-bottom-only style must not also paint the top edge", got)
+	}
+}
+
 // TestPaintCheckboxCheckedVsUnchecked covers the one kind with a state-
 // dependent fill: unchecked is the plain field background, checked is the
 // accent colour — the visible signal a login "remember me" box relies on.
