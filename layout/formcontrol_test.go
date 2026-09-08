@@ -23,6 +23,26 @@ func TestFormControlExplicitCSSSize(t *testing.T) {
 	assertF(t, "height", items[0].LineHeight, 24)
 }
 
+// TestFormControlPercentWidthResolvesAgainstContainer covers engine#(pending):
+// a form control reached through ordinary inline collection (the common
+// case — ANY input as a plain child of a div/label/form takes this path, not
+// the rarer display:block-routed one) previously had NO containing width to
+// resolve a percentage against at all, hardcoding cw=0 — so
+// `width:40%` degraded straight to formControlDefaultSize's UA-shaped
+// default (170px for a text input) regardless of the real container width.
+// Confirmed live on caniuse.com's own `.ciu-search__input{width:40%}`.
+// A wide container makes the two outcomes clearly distinguishable (170px
+// default vs. 400px at 40% of 1000px) rather than coincidentally close.
+func TestFormControlPercentWidthResolvesAgainstContainer(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:1000px">` +
+		`<input id="e" style="width:40%"></div></body></html>`
+	items := firstLineItems(findBox(layoutHTML(t, src, 1024), "div"))
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatalf("expected one form-control item, got %v", items)
+	}
+	assertF(t, "width", items[0].Width, 400)
+}
+
 // TestFormControlSpaceBeforeWhenPrecededByText covers the case a bare
 // "<input>" fixture never exercises: a control preceded by inline text
 // with trailing whitespace ("Label <input>", the normal shape of a real

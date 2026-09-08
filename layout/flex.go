@@ -62,7 +62,7 @@ func (l *layouter) flex(box *Box, node *dom.Node, st *css.Style, cx, cw, top flo
 		// that also has real flex items).
 		b.commit()
 		pre := st.WhiteSpace == css.WSPre
-		inline := l.collectInline(node, st, pre)
+		inline := l.collectInline(node, st, pre, cw)
 		if len(inline) == 0 {
 			return top
 		}
