@@ -239,7 +239,7 @@ func TestCollectInlineFromNilStyle(t *testing.T) {
 	span := &dom.Node{Type: dom.Element, Tag: "span"}
 	span.Children = []*dom.Node{{Type: dom.Text, Text: "hi"}}
 	st := &css.Style{FontSize: 16, LineHeight: css.LineHeight{Normal: true}}
-	items := l.collectInlineFrom([]*dom.Node{span}, st, false)
+	items := l.collectInlineFrom([]*dom.Node{span}, st, false, 0)
 	if len(items) != 1 || items[0].Text != "hi" {
 		t.Fatalf("nil-style inline = %v", texts(items))
 	}

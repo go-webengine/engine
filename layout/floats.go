@@ -346,7 +346,10 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	// current line instead of starting a new one (see the BlockBreak
 	// doc comment and round 40's fix): a float does not break flow the way a
 	// genuine block does, so it keeps consuming space alongside its siblings.
-	items := l.collectInline(node, st, st.WhiteSpace == css.WSPre)
+	// 0: this is an intrinsic-width computation (max-content), not real
+	// layout — no containing width exists yet for a form control's own
+	// percentage to resolve against (see collectInline's own doc comment).
+	items := l.collectInline(node, st, st.WhiteSpace == css.WSPre, 0)
 	var line, maxLine float64
 	flushLine := func() {
 		if line > maxLine {

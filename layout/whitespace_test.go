@@ -67,7 +67,7 @@ func TestInlineWhitespaceCollapsing(t *testing.T) {
 			sm := css.Cascade(root)
 			l := &layouter{sm: sm, m: fakeMeasurer{}, floats: &floatCtx{}}
 			p := dom.Find(root, "p")
-			items := l.collectInline(p, sm[p], false)
+			items := l.collectInline(p, sm[p], false, 0)
 			if got := renderInline(items); got != c.want {
 				t.Errorf("collapse(%q) = %q, want %q", c.body, got, c.want)
 			}

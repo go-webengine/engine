@@ -108,7 +108,10 @@ func (l *layouter) minContentWidth(node *dom.Node, st *css.Style) float64 {
 	// SAME zero-SpaceBefore signal wrapOneLine/WrapItems now honour (see
 	// glueRun in linebreak.go) for the actual line-breaking decision this
 	// value exists to protect against ever being violated.
-	items := l.collectInline(node, st, false)
+	// 0: an intrinsic-width computation (min-content), not real layout — see
+	// collectInline's own doc comment on why a form control's percentage
+	// width has no containing block to resolve against here.
+	items := l.collectInline(node, st, false, 0)
 	var widest, run float64
 	hasRun := false
 	flush := func() {

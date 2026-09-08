@@ -336,7 +336,7 @@ func (l *layouter) blockOrInlineContents(box *Box, node *dom.Node, st *css.Style
 	nowrap := pre || st.WhiteSpace == css.WSNoWrap
 	if !l.hasBlockLevelChild(node) {
 		b.commit()
-		items := l.collectInline(node, st, pre)
+		items := l.collectInline(node, st, pre, cw)
 		// hasBlockLevelChild only looks at node's DIRECT children — a
 		// block-level element nested deeper, under an inline-context
 		// ancestor (e.g. `<a><div>...</div></a>`), still shows up here as a
@@ -362,7 +362,7 @@ func (l *layouter) blockOrInlineContents(box *Box, node *dom.Node, st *css.Style
 		if len(run) == 0 {
 			return
 		}
-		items := l.collectInlineFrom(run, st, pre)
+		items := l.collectInlineFrom(run, st, pre, cw)
 		run = nil
 		if len(items) == 0 {
 			return
@@ -638,15 +638,26 @@ func usedHeight(st *css.Style, bw css.Edges, cw float64) (float64, bool) {
 
 // ---- inline collection -----------------------------------------------------
 
-func (l *layouter) collectInline(node *dom.Node, st *css.Style, pre bool) []*InlineItem {
+// cw, on every function in this section, is the containing block width a
+// form control's own percentage width/height resolves against — see
+// appendElementInline's isFormControlTag branch, the one place it's actually
+// read. Pass the block's real content width from a genuine in-flow layout
+// call site (contents/blockOrInlineContents, flex's mixed-text fallback);
+// pass 0 from an INTRINSIC-sizing call site (preferredWidth's/
+// minContentWidth's own inline fallbacks in floats.go/mincontent.go), where
+// a percentage is meaningless — CSS itself treats a percentage against an
+// indeterminate (max-content/min-content) containing block as auto, which a
+// 0 here already degrades to (formControlSize's own UA-default fallback),
+// so passing 0 in those two places is correct behaviour, not a shortcut.
+func (l *layouter) collectInline(node *dom.Node, st *css.Style, pre bool, cw float64) []*InlineItem {
 	var items []*InlineItem
 	l.beginInlineContext()
-	l.appendInline(node, st, &items, pre)
+	l.appendInline(node, st, &items, pre, cw)
 	resolveInlineEdges(items)
 	return items
 }
 
-func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool) []*InlineItem {
+func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool, cw float64) []*InlineItem {
 	var items []*InlineItem
 	l.beginInlineContext()
 	for _, n := range nodes {
@@ -657,14 +668,14 @@ func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool)
 			if cs == nil {
 				cs = st
 			}
-			l.appendElementInline(n, cs, &items, pre)
+			l.appendElementInline(n, cs, &items, pre, cw)
 		}
 	}
 	resolveInlineEdges(items)
 	return items
 }
 
-func (l *layouter) appendInline(node *dom.Node, st *css.Style, items *[]*InlineItem, pre bool) {
+func (l *layouter) appendInline(node *dom.Node, st *css.Style, items *[]*InlineItem, pre bool, cw float64) {
 	for _, c := range l.renderedChildren(node) {
 		if c.Type == dom.Text {
 			l.appendWords(c.Text, st, items, pre, node)
@@ -674,11 +685,11 @@ func (l *layouter) appendInline(node *dom.Node, st *css.Style, items *[]*InlineI
 		if cs == nil {
 			cs = st
 		}
-		l.appendElementInline(c, cs, items, pre)
+		l.appendElementInline(c, cs, items, pre, cw)
 	}
 }
 
-func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*InlineItem, pre bool) {
+func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*InlineItem, pre bool, cw float64) {
 	if cs.Display == css.DisplayNone {
 		return
 	}
@@ -817,15 +828,20 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 		// common case (an <input> inside a <div>/<label>/<form>). It is
 		// still an atomic box like img/svg, just sized differently (no
 		// intrinsic bitmap — formControlSize resolves explicit CSS or a
-		// UA-shaped default; cw is unavailable in this inline-collection
-		// context so a percentage width/height degrades to the default
-		// rather than resolving against the containing block, a known,
-		// narrow limitation).
+		// UA-shaped default). cw is this function's own parameter (see the
+		// doc comment above collectInline), threaded down from whatever real
+		// containing width the caller's OWN layout pass has resolved — a
+		// percentage width/height on a form control reached through ordinary
+		// inline collection (e.g. caniuse.com's own `.ciu-search__input
+		// {width:40%}`, previously always resolving to the UA-shaped default
+		// regardless of the input's real container, effectively invisible at
+		// a few pixels wide) now resolves against it exactly like the
+		// display:block-routed form-control branch above already could.
 		if isFormControlTag(el.Tag) {
 			if el.Tag == "input" && strings.EqualFold(el.Attr["type"], "hidden") {
 				return
 			}
-			w, h := l.formControlSize(el, cs, 0)
+			w, h := l.formControlSize(el, cs, cw)
 			sb := 0.0
 			if l.wsEmitted && l.wsPending {
 				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
@@ -863,7 +879,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 		l.pendingMargin += cs.Margin.Left
 		saved := l.decor
 		l.decor = l.pushDecor(el, cs)
-		l.appendInline(el, cs, items, pre || cs.WhiteSpace == css.WSPre)
+		l.appendInline(el, cs, items, pre || cs.WhiteSpace == css.WSPre, cw)
 		l.decor = saved
 		l.pendingMargin += cs.Margin.Right
 	}
