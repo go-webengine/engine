@@ -870,27 +870,33 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 	// hardcoded colour — so an author reset (`background:0 0;border:0`, the
 	// exact rule github.com's own top-nav <button>s use to look like plain
 	// text links) is honoured instead of overridden by fake generic chrome.
-	// formFieldBg/formButtonBg/formBorder below are only the defensive
-	// fallback for the pathological case of a nil Style (never real for an
-	// actual page element, but paintControl's own unit-test helper can
-	// construct one).
-	bg, borderCol, drawBorder := formFieldBg, formBorder, true
+	// formFieldBg/formBorder below are only the defensive fallback for the
+	// pathological case of a nil Style (never real for an actual page
+	// element, but paintControl's own unit-test helper can construct one).
+	bg := formFieldBg
 	if kind == controlButtonLike || kind == controlSelect {
 		bg = formButtonBg
 	}
 	if it.Style != nil {
 		bg = it.Style.Background
-		side := it.Style.Border.Top
-		drawBorder = side.Width > 0 && side.Style != css.BorderNone && side.Color.A > 0
-		if drawBorder {
-			borderCol = side.Color
-		}
 	}
 	if bg.A > 0 {
 		fillRectClipped(pp, r, bg, clip)
 	}
-	if drawBorder {
-		strokeRect1px(pp, r, borderCol, clip)
+	if it.Style != nil {
+		// Per-side border painting, via the SAME paintEdges helper a real
+		// layout.Box's own border uses (paintBorders) — previously this
+		// control's own check inspected ONLY Border.Top's width/style/colour
+		// and, if it painted, stroked one uniform-colour rectangle for all
+		// four sides. An author style setting just ONE side (`border:0;
+		// border-bottom:1px solid #fff`, confirmed live on caniuse.com's own
+		// search input, round 65's own flagged follow-up) left Border.Top at
+		// its zeroed `border:0` value regardless of what border-bottom set,
+		// so drawBorder was false and NOTHING painted at all despite the
+		// author clearly intending a visible bottom rule.
+		paintEdges(pp, it.Style.Border, r.X, r.Y, r.W, r.H, 0, true, true, clip)
+	} else {
+		strokeRect1px(pp, r, formBorder, clip)
 	}
 
 	// An icon-only <button> (Label == "", see layout.InlineItem.Icon's doc
