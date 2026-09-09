@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dop251/goja"
+
 	"github.com/go-webengine/engine/dom"
 )
 
@@ -125,6 +127,102 @@ func TestSessionRunPending(t *testing.T) {
 	if strings.Count(strings.Join(logs, "\n"), "inj v=") != 1 {
 		t.Fatalf("injected script ran more than once: %v", logs)
 	}
+}
+
+// TestSessionInjectedScriptOnloadAndOnerrorFire covers the standard webpack/
+// Turbopack chunk-loading idiom directly: document.createElement('script');
+// s.onload=fn; s.src=...; parent.appendChild(s) — for both outcomes (the
+// script fetches and runs; the fetch fails). Before this, no element had an
+// onload/onerror PROPERTY at all (a plain, silently-ignored assignment), and
+// runScripts never dispatched "load"/"error" on a <script> after handling
+// it, so neither outcome was ever observable to the page's own code — a
+// dynamic loader's promise could never settle either way.
+func TestSessionInjectedScriptOnloadAndOnerrorFire(t *testing.T) {
+	src := `<html><head></head><body><script>
+		var ok=document.createElement('script');
+		ok.onload=function(){ console.log('ok-onload'); };
+		ok.onerror=function(){ console.log('ok-onerror (should not fire)'); };
+		ok.textContent='console.log("ok-ran");';
+		document.body.appendChild(ok);
+
+		var bad=document.createElement('script');
+		bad.onload=function(){ console.log('bad-onload (should not fire)'); };
+		bad.onerror=function(){ console.log('bad-onerror'); };
+		bad.src='https://demo.test/does-not-exist.js';
+		document.body.appendChild(bad);
+	</script></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	sess := Begin(root, Options{PageURL: "https://demo.test/", Timeout: 3 * time.Second,
+		Log: func(l string) { logs = append(logs, l) }})
+	defer sess.Close()
+	sess.RunInitial()
+	sess.RunPending()
+	mustHaveJS(t, logs, "ok-ran", "ok-onload", "bad-onerror")
+	joined := strings.Join(logs, "\n")
+	if strings.Contains(joined, "should not fire") {
+		t.Fatalf("a handler fired for the wrong outcome: %v", logs)
+	}
+}
+
+// TestSessionRunPendingReportsPendingScriptAppendedDuringDrainTimers covers a
+// narrower case than TestSessionRunPending above: a <script> that appears in
+// the DOM not because THIS call's own runScripts found and ran a script that
+// appended it, but because a timer job — already sitting in the queue from
+// an earlier phase, exactly like webpack/Turbopack's own chunk-loading
+// "give up after N ms" fallback surviving to fire later — is what drainTimers
+// fires DURING this same RunPending call. Before this was fixed, RunPending
+// decided its "ran" return value from runScripts alone, BEFORE drainTimers
+// (called right after) had a chance to inject anything — so a script
+// appended this way sat in the DOM, correctly never re-executed, but
+// invisible to the caller: dynamic.go's settle loop reads a false "ran" as
+// "nothing left to do" and stops iterating, so this <script> was NEVER RUN
+// AT ALL. Confirmed live on react.dev's own webpack chunk-loading bundle via
+// direct instrumentation (see FIDELITY.md): a dynamically-created
+// <script src="…f809.js"> was correctly appended to <head> with the right
+// src, but its fetch was never even attempted.
+func TestSessionRunPendingReportsPendingScriptAppendedDuringDrainTimers(t *testing.T) {
+	root, err := dom.Parse(`<html><head></head><body></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	sess := Begin(root, Options{PageURL: "https://demo.test/", Timeout: 3 * time.Second,
+		Log: func(l string) { logs = append(logs, l) }})
+	defer sess.Close()
+	sess.RunInitial()
+
+	// Simulate a timer job that only fires NOW, as part of THIS RunPending's
+	// own drainTimers step, by enqueuing it directly rather than via a
+	// script runScripts would itself discover and run first (which would
+	// set "ran" true from that alone, never exercising the bug).
+	fnVal, err := sess.b.vm.RunString(`(function(){
+		var s = document.createElement('script');
+		s.textContent = 'window.__v=(window.__v||0)+1; console.log("inj v="+window.__v);';
+		document.body.appendChild(s);
+	})`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn, ok := goja.AssertFunction(fnVal)
+	if !ok {
+		t.Fatal("expected a callable function value")
+	}
+	sess.b.jobs = append(sess.b.jobs, timerJob{fn: fn})
+
+	if !sess.RunPending() {
+		t.Fatal("RunPending should report true: drainTimers just appended a script that is now waiting to run")
+	}
+	// The appended script is deliberately NOT run inline within the same
+	// call (see RunPending's own doc comment on why, and
+	// TestSettleFixpointCap for what breaks if it were) — a follow-up call,
+	// matching how dynamic.go's settle loop actually behaves on ran==true,
+	// is what runs it.
+	sess.RunPending()
+	mustHaveJS(t, logs, "inj v=1")
 }
 
 // TestMarkJSEnabled covers the exported pre-cascade signal helper.
