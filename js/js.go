@@ -88,6 +88,13 @@ type binder struct {
 	windowNode *dom.Node // sentinel node keying window-level listeners
 	docNode    *dom.Node // sentinel node keying document-level listeners
 	listeners  map[*dom.Node]map[string][]goja.Value
+	// onHandlers tracks the current "onX" IDL event-handler-attribute value per
+	// (node, type) — e.g. `el.onload = fn` — as ONE slot that a later
+	// assignment replaces, unlike addEventListener's list. Implemented as a
+	// registered listener under the hood (see setOnHandler) so dispatch needs
+	// no separate code path; this map exists only so a reassignment can find
+	// and remove the PREVIOUS handler before adding the new one.
+	onHandlers map[*dom.Node]map[string]goja.Value
 
 	jobs     []timerJob
 	nextID   int64
@@ -143,11 +150,22 @@ func (b *binder) runScripts(res *Result) {
 		b.executed[s.node] = true
 		src, ok := b.scriptSource(s)
 		if !ok {
+			// A real browser fires "error" on the <script> element itself when
+			// fetching its src fails (404, network error, …), distinct from a
+			// runtime exception during execution (which still fires "load" on
+			// the element — see below — reporting the exception separately via
+			// window's own error event instead). Dynamically-injected script
+			// loaders (webpack/Turbopack's own chunk-loading helper, confirmed
+			// load-bearing live on react.dev) set onerror/onload on the element
+			// specifically to detect this outcome; without it, a failed fetch
+			// left their loading promise pending forever.
+			b.dispatch(s.node, "error", b.newEvent("error"))
 			continue
 		}
 		b.currentScript = s.node
 		ok = b.execute(src, s.name)
 		b.currentScript = nil
+		b.dispatch(s.node, "load", b.newEvent("load"))
 		if ok {
 			res.ScriptsRun++
 		} else {
@@ -274,6 +292,18 @@ func collectScripts(root *dom.Node) []script {
 	}
 	walk(root)
 	return out
+}
+
+// hasPendingScripts reports whether the tree now holds a <script> element that
+// runScripts has not executed yet — see RunPending's own doc comment for why
+// this is checked without actually running anything here.
+func (b *binder) hasPendingScripts() bool {
+	for _, s := range collectScripts(b.root) {
+		if !b.executed[s.node] {
+			return true
+		}
+	}
+	return false
 }
 
 // scriptIsJS reports whether a <script>'s type is (classic) JavaScript. Module,

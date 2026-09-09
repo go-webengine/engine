@@ -28,6 +28,41 @@ func (b *binder) addListener(n *dom.Node, typ string, handler goja.Value) {
 	b.listeners[n][typ] = append(b.listeners[n][typ], handler)
 }
 
+// setOnHandler implements an "onX" IDL event-handler-attribute assignment
+// (`el.onload = fn`): removes whatever handler this exact (n, typ) slot
+// previously held (a real browser lets a later assignment replace, not
+// stack, unlike addEventListener), then registers the new one the same way
+// addEventListener would — dispatch needs no separate code path for onX
+// handlers versus addEventListener ones. A non-function value (including
+// null/undefined, the standard way script clears a handler) only removes.
+func (b *binder) setOnHandler(n *dom.Node, typ string, v goja.Value) {
+	if m := b.onHandlers[n]; m != nil {
+		if old, ok := m[typ]; ok {
+			b.removeListener(n, typ, old)
+			delete(m, typ)
+		}
+	}
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return
+	}
+	if _, ok := goja.AssertFunction(v); !ok {
+		return
+	}
+	b.addListener(n, typ, v)
+	if b.onHandlers[n] == nil {
+		b.onHandlers[n] = map[string]goja.Value{}
+	}
+	b.onHandlers[n][typ] = v
+}
+
+// onHandler returns the current onX handler for (n, typ), or nil.
+func (b *binder) onHandler(n *dom.Node, typ string) goja.Value {
+	if m := b.onHandlers[n]; m != nil {
+		return m[typ]
+	}
+	return nil
+}
+
 // removeListener unregisters a previously added handler.
 func (b *binder) removeListener(n *dom.Node, typ string, handler goja.Value) {
 	m := b.listeners[n]

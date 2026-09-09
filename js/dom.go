@@ -262,6 +262,21 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		b.dispatch(n, eventType(call.Argument(0)), call.Argument(0))
 		return b.vm.ToValue(true)
 	})
+	// onload/onerror: the "el.onload = fn" idiom, as common as
+	// addEventListener for these two specifically — webpack's own classic
+	// chunk-loading helper (__webpack_require__.l) sets both directly as
+	// properties on a dynamically-created <script>, never via
+	// addEventListener. Confirmed load-bearing live on react.dev: with
+	// neither this property wiring NOR a dispatched load/error event (see
+	// runScripts), a code-split chunk's own onload/onerror never fired at
+	// all, so webpack's chunk-loading promise never settled and eventually
+	// reported "ChunkLoadError: ... failed" via ITS OWN timeout fallback.
+	b.accessor(o, "onload",
+		func() goja.Value { return orUndefined(b.onHandler(n, "load")) },
+		func(v goja.Value) { b.setOnHandler(n, "load", v) })
+	b.accessor(o, "onerror",
+		func() goja.Value { return orUndefined(b.onHandler(n, "error")) },
+		func(v goja.Value) { b.setOnHandler(n, "error", v) })
 
 	// Layout/geometry: backed by the real laid-out box tree when a Metrics source
 	// is installed (the engine's settle loop), else zeros (the legacy no-layout

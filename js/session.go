@@ -71,6 +71,7 @@ func Begin(root *dom.Node, opt Options) *Session {
 		windowNode: &dom.Node{Type: dom.Element, Tag: "#window"},
 		docNode:    root,
 		listeners:  map[*dom.Node]map[string][]goja.Value{},
+		onHandlers: map[*dom.Node]map[string]goja.Value{},
 		storage:    map[string]*storageArea{},
 		executed:   map[*dom.Node]bool{},
 		deadman:    time.Now().Add(opt.Timeout),
@@ -164,7 +165,26 @@ func (s *Session) RunInitial() {
 
 // RunPending executes any <script> elements inserted into the DOM since the last
 // run (the core of a ResourceLoader-style dynamic loader) in document order,
-// then drains the async loop. It reports whether at least one new script ran.
+// then drains the async loop. It reports whether at least one new script ran
+// OR is now waiting to run — the latter matters because a callback drained
+// just now (a timer, a promise) can itself inject a brand-new <script> (the
+// standard webpack/Turbopack chunk-loading idiom: document.createElement
+// ('script'); s.onload=...; s.src=chunkURL; document.head.appendChild(s)),
+// which this call's own runScripts, having already run, never sees. Before
+// this, such a script sat newly-appended in the DOM but ScriptsRun+
+// ScriptsFailed hadn't moved, so "ran" reported false and the caller's
+// settle loop (dynamic.go) broke immediately instead of ever iterating again
+// to give it a chance — confirmed live on react.dev: instrumentation showed
+// the chunk-loader's own dynamically-created <script src="…f809.js"> WAS
+// correctly created and appended to <head> with the right src, but its
+// fetch was NEVER even attempted, because the settle loop had already
+// stopped. Deliberately NOT executed inline here (an earlier version of
+// this fix called runScripts a second time within this same call, which
+// over-eagerly ran a whole SYNCHRONOUS self-replicating script chain in one
+// pass instead of one generation per outer settle iteration, breaking
+// TestSettleFixpointCap's bounded-passes guarantee) — reporting "pending"
+// keeps the existing one-generation-per-pass pacing: the NEXT call to
+// RunPending (from the next outer iteration) is what actually runs it.
 func (s *Session) RunPending() (ran bool) {
 	s.guard(func() {
 		before := s.res.ScriptsRun + s.res.ScriptsFailed
@@ -173,6 +193,9 @@ func (s *Session) RunPending() (ran bool) {
 			ran = true
 		}
 		s.b.drainTimers(&s.res)
+		if !ran && s.b.hasPendingScripts() {
+			ran = true
+		}
 	})
 	return ran
 }
