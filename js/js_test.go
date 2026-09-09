@@ -340,7 +340,7 @@ func TestDocumentMisc(t *testing.T) {
 		console.log('cmt='+document.createComment('c').nodeType);
 		console.log('frag='+document.createDocumentFragment().tagName);
 		document.write('x'); document.writeln('y'); document.open(); document.close();
-		console.log('active='+document.activeElement.tagName+' scroll='+document.scrollingElement.tagName+' cur='+document.currentScript);
+		console.log('active='+document.activeElement.tagName+' scroll='+document.scrollingElement.tagName+' cur='+(document.currentScript instanceof HTMLScriptElement));
 		console.log('meta='+document.characterSet+' '+document.compatMode+' '+document.hidden+' '+document.visibilityState+' '+document.readyState+' '+document.nodeType);
 		document.cookie='a=1; path=/';
 		document.cookie='b=2';
@@ -348,8 +348,29 @@ func TestDocumentMisc(t *testing.T) {
 		document.cookie=';;';
 		console.log('cookie='+document.cookie);
 	`))
-	mustHave(t, logs, "ns=RECT", "cmt=3", "frag=#FRAGMENT", "active=BODY scroll=HTML cur=null",
+	mustHave(t, logs, "ns=RECT", "cmt=3", "frag=#FRAGMENT", "active=BODY scroll=HTML cur=true",
 		"meta=UTF-8 CSS1Compat false visible complete 9", "cookie=a=1; b=2")
+}
+
+// TestDocumentCurrentScriptIdentifiesTheRightScriptAndClearsAfterwards covers
+// document.currentScript beyond "is it non-null": it must identify THIS
+// specific <script> among several (not just any script on the page), and
+// must go back to null once synchronous execution ends — during a queued
+// timer callback, exactly as a real browser's spec-mandated behaviour. A
+// real bundler's own base-URL detection (Webpack/Turbopack's common
+// `document.currentScript.src` idiom, confirmed load-bearing live on
+// tailwindcss.com — see js/dom.go's own doc comment) reads this once per
+// script and would silently miscompute for every later chunk if either of
+// these held only sometimes.
+func TestDocumentCurrentScriptIdentifiesTheRightScriptAndClearsAfterwards(t *testing.T) {
+	_, logs, _ := runJS(t, `<html><body>
+		<script data-id="first">console.log('first='+document.currentScript.getAttribute('data-id'));</script>
+		<script data-id="second">
+			console.log('second='+document.currentScript.getAttribute('data-id'));
+			setTimeout(function() { console.log('timer='+document.currentScript); }, 0);
+		</script>
+	</body></html>`)
+	mustHave(t, logs, "first=first", "second=second", "timer=null")
 }
 
 func TestDocumentTitleAndCookie(t *testing.T) {

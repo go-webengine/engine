@@ -104,6 +104,12 @@ type binder struct {
 	// runs only scripts injected since the previous pass (in document order),
 	// never re-running a script.
 	executed map[*dom.Node]bool
+	// currentScript is the <script> element synchronously executing right now
+	// (nil between scripts, during callbacks/timers, and during module-bundle
+	// execution — matching the real document.currentScript spec: non-null only
+	// for a synchronously-running classic script). Set/cleared by runScripts
+	// around each execute call.
+	currentScript *dom.Node
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled
@@ -139,7 +145,10 @@ func (b *binder) runScripts(res *Result) {
 		if !ok {
 			continue
 		}
-		if b.execute(src, s.name) {
+		b.currentScript = s.node
+		ok = b.execute(src, s.name)
+		b.currentScript = nil
+		if ok {
 			res.ScriptsRun++
 		} else {
 			res.ScriptsFailed++

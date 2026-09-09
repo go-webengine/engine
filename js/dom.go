@@ -783,7 +783,15 @@ func (b *binder) installDocument() *goja.Object {
 	d.Set("writeln", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 	d.Set("open", func(goja.FunctionCall) goja.Value { return d })
 	d.Set("close", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
-	b.accessor(d, "currentScript", func() goja.Value { return goja.Null() }, nil)
+	// document.currentScript: non-null only while a classic <script> is
+	// synchronously executing (see binder.currentScript's own doc comment).
+	// Hardcoded to always-null before this — real bundlers commonly read
+	// currentScript.src to compute their OWN base URL for later chunk
+	// loads; always-null made that base URL empty. Found live on
+	// tailwindcss.com: its Turbopack runtime threw "chunk path empty but
+	// not in a worker" for every non-worker chunk load, since the base path
+	// it derives this way came back empty.
+	b.accessor(d, "currentScript", func() goja.Value { return b.wrap(b.currentScript) }, nil)
 	b.accessor(d, "activeElement", func() goja.Value { return b.wrap(dom.Find(b.root, "body")) }, nil)
 	b.accessor(d, "scrollingElement", func() goja.Value { return b.wrap(dom.Find(b.root, "html")) }, nil)
 	if p := b.protos["Document"]; p != nil {
