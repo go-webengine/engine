@@ -3,7 +3,7 @@ module github.com/go-webengine/engine
 go 1.26.4
 
 require (
-	github.com/dop251/goja v0.0.0-20260911104922-fabc3b8078ad
+	github.com/dop251/goja v0.0.0-20260915173639-b3fa02110dbd
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
 	github.com/go-gfx/gfx v0.24.0
