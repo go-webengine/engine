@@ -4,6 +4,7 @@
 package js
 
 import (
+	"sort"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -166,6 +167,24 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	o.Set("hasAttribute", func(call goja.FunctionCall) goja.Value {
 		_, ok := n.Attribute(strings.ToLower(call.Argument(0).String()))
 		return b.vm.ToValue(ok)
+	})
+	o.Set("hasAttributes", func(call goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(len(n.Attr) > 0)
+	})
+	// getAttributeNames should return names in attribute-insertion order, but
+	// dom.Node stores attributes in a plain Go map (see dom.Node.Attr's own
+	// doc comment) with no recorded insertion order — sorting alphabetically
+	// is the deterministic choice available from that storage. Real callers
+	// (enumerating/copying an element's attributes, checking "any data-*
+	// attribute") don't depend on the exact order, only on seeing every name
+	// exactly once, which this preserves.
+	o.Set("getAttributeNames", func(call goja.FunctionCall) goja.Value {
+		names := make([]string, 0, len(n.Attr))
+		for name := range n.Attr {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return b.vm.ToValue(names)
 	})
 	o.Set("toggleAttribute", func(call goja.FunctionCall) goja.Value {
 		name := strings.ToLower(call.Argument(0).String())
