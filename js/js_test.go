@@ -195,6 +195,7 @@ func TestElementTreeAndManipulation(t *testing.T) {
 func TestAttributes(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		var d=document.getElementById('d');
+		console.log('hasAttrs0='+d.hasAttributes()+' names0='+d.getAttributeNames().join(','));
 		d.setAttribute('data-x','1');
 		console.log('ga='+d.getAttribute('data-x')+' has='+d.hasAttribute('data-x')+' miss='+d.getAttribute('nope'));
 		d.removeAttribute('data-x');
@@ -206,9 +207,13 @@ func TestAttributes(t *testing.T) {
 		d.checked=true; console.log('chk='+d.checked); d.checked=false; console.log('chk2='+d.checked);
 		d.href='h'; d.src='s'; d.title='ti';
 		console.log('props='+d.href+d.src+d.title);
+		var bare=document.createElement('span');
+		console.log('hasAttrsBare='+bare.hasAttributes()+' namesBare='+bare.getAttributeNames().join(','));
 	`))
-	mustHave(t, logs, "ga=1 has=true miss=null", "ta=true ta2=false",
-		"hid=true", "hid2=false", "id=newid", "cn=x y", "val=v", "chk=true", "chk2=false", "props=hsti")
+	mustHave(t, logs, "hasAttrs0=true names0=class,data-existing,id",
+		"ga=1 has=true miss=null", "ta=true ta2=false",
+		"hid=true", "hid2=false", "id=newid", "cn=x y", "val=v", "chk=true", "chk2=false", "props=hsti",
+		"hasAttrsBare=false namesBare=")
 }
 
 func TestSelectOptions(t *testing.T) {
