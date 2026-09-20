@@ -149,6 +149,20 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 				b.removeAttr(n, "hidden")
 			}
 		})
+	// type is a real, standard reflected attribute on many elements (script,
+	// input, button, style, ol, link, …) — without this accessor, the common
+	// idiom `el.type = 'module'` (setting it as a plain property rather than
+	// via setAttribute) silently created an ordinary, disconnected JS property
+	// on the wrapper object instead of touching n.Attr at all, so the real
+	// attribute stayed empty. Confirmed load-bearing live: pkg.go.dev's own
+	// loadScript() helper creates a <script> and does exactly `s.type =
+	// 'module'` before appending it — with no accessor, collectModuleScripts
+	// (which reads the real "type" attribute) never recognised it as a module
+	// script at all, so it silently ran as an ordinary classic script instead
+	// of going through the ES-module bundling pipeline.
+	b.accessor(o, "type",
+		func() goja.Value { v, _ := n.Attribute("type"); return b.vm.ToValue(v) },
+		func(v goja.Value) { b.setAttr(n, "type", v.String()) })
 
 	o.Set("getAttribute", func(call goja.FunctionCall) goja.Value {
 		if v, ok := n.Attribute(strings.ToLower(call.Argument(0).String())); ok {

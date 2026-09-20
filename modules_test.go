@@ -120,6 +120,60 @@ func TestInlineModuleExecutes(t *testing.T) {
 	}
 }
 
+// TestDynamicScriptTypeModuleSeesLoadEvent covers a real hand-rolled
+// ResourceLoader idiom (confirmed live on pkg.go.dev's own loadScript()
+// helper): a classic inline script creates a <script>, sets its type via the
+// PROPERTY (`s.type = 'module'`, not setAttribute), sets its src, and appends
+// it — and the module's own top-level code (a genuine ES module: it imports a
+// second file, which only the module-bundle path, not a plain classic-script
+// run, can resolve) registers a window "load" listener. Two separate,
+// causally-linked bugs had to both be fixed for this to work: the missing
+// generic `.type` accessor (without it, the property assignment never touched
+// the real attribute, so the module-bundle pass never recognised the script
+// as a module at all — it silently ran as an ordinary classic script instead,
+// where the bare `import` below would itself throw a SyntaxError) and
+// settle()'s ordering (window "load" — a one-shot event — used to fire before
+// the module-bundle pass ran, so even a correctly-recognised module's own
+// "load" listener registered too late to ever be called).
+func TestDynamicScriptTypeModuleSeesLoadEvent(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<html><body><div id="app">x</div><script>
+			var s = document.createElement('script');
+			s.type = 'module';
+			s.src = '/mod.js';
+			document.head.appendChild(s);
+		</script></body></html>`))
+	})
+	mux.HandleFunc("/mod.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		_, _ = w.Write([]byte(`import { text } from "/lib.js";
+			window.addEventListener('load', function() {
+				document.getElementById('app').textContent = text;
+			});`))
+	})
+	mux.HandleFunc("/lib.js", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/javascript")
+		_, _ = w.Write([]byte(`export const text = "LOADED";`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	e := New()
+	e.Client = srv.Client()
+	doc, err := e.Fetch(context.Background(), srv.URL+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.RenderDocument(context.Background(), doc, image.Rect(0, 0, 300, 200)); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(dom.TextContent(findByID(doc.Root, "app"))); got != "LOADED" {
+		t.Fatalf("dynamically-created module script's load listener did not fire: #app = %q, want %q", got, "LOADED")
+	}
+}
+
 // TestModuleFetch404Fallback covers the fetch-failure path: an import of a
 // missing (404) module fails the bundle gracefully, leaving the DOM untouched.
 func TestModuleFetch404Fallback(t *testing.T) {
