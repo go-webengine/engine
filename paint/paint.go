@@ -830,14 +830,14 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 	if it.Text == "" || it.Style == nil {
 		return
 	}
-	drawText(dst, f, it.Style, it.Text, int(it.X), int(it.Y+it.Ascent), it.Style.Color, clip)
+	drawText(dst, pp, f, it.Style, it.Text, int(it.X), int(it.Y+it.Ascent), it.Style.Color, clip)
 }
 
 // drawText draws s left-aligned with its baseline at (x, baseline) in col, at
 // st's font, clipped to clip. Shared by the plain text-run path above and
 // form-control label/value painting (paintFormControl) so both letter glyphs
 // identically. Returns the pen position after the last glyph.
-func drawText(dst *image.RGBA, f *Fonts, st *css.Style, s string, x, baseline int, col css.Color, clip image.Rectangle) int {
+func drawText(dst *image.RGBA, pp *painter.PixelPainter, f *Fonts, st *css.Style, s string, x, baseline int, col css.Color, clip image.Rectangle) int {
 	penX := x
 	for _, run := range f.Runs(s, st.FontFamily, st.FontWeight, st.Italic) {
 		fc := f.runFace(run, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
@@ -848,6 +848,20 @@ func drawText(dst *image.RGBA, f *Fonts, st *css.Style, s string, x, baseline in
 			}
 			penX += advance
 		}
+	}
+	if st.Underline && penX > x {
+		// A single solid line the full advance width, in the text's own
+		// colour (text-decoration-color is not modelled — see Style.
+		// Underline's own doc comment). Thickness and offset are a fixed,
+		// reasonable approximation scaled off font size rather than a real
+		// font's own underline-position/-thickness metrics, which this
+		// engine's font faces do not expose.
+		thick := int(st.FontSize / 14)
+		if thick < 1 {
+			thick = 1
+		}
+		y := baseline + thick + 1
+		fillRectClipped(pp, painter.Rect{X: x, Y: y, W: penX - x, H: thick}, col, clip)
 	}
 	return penX
 }
@@ -945,7 +959,7 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 		tw := f.Measure(text, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 		x = r.X + int((float64(r.W)-tw)/2)
 	}
-	drawText(dst, f, st, text, x, baseline, col, clip)
+	drawText(dst, pp, f, st, text, x, baseline, col, clip)
 }
 
 // strokeRect1px draws a plain (non-rounded) 1px border around r — the simple

@@ -559,6 +559,31 @@ type Style struct {
 	FontWeight int     // 400 = normal, 700 = bold
 	FontFamily FontFamily
 	Italic     bool // font-style: italic|oblique (inherited)
+	// Underline is set by `text-decoration`/`text-decoration-line: underline`,
+	// cleared by any other explicit line value (including "none"). Real CSS
+	// text-decoration-line is NOT an inherited property — instead, a line set
+	// on a block/inline CONTAINER visually propagates through its descendant
+	// inline boxes unless a descendant sets its own line explicitly. This
+	// engine approximates that (real) propagation the same way an actually-
+	// inherited property would: copied from parent to child, then
+	// overwritten by an explicit declaration on the child itself — correct
+	// for the overwhelming majority of real content (an <a> or a heading
+	// carries `text-decoration:underline`; its own descendant <strong>/<code>
+	// inherits the line via this field exactly as it should), and only wrong
+	// for the rare case of a descendant deliberately opting OUT with its own
+	// `text-decoration-line:none` while an ancestor's line is meant to still
+	// show through — not modelled here. Only the "underline" line is tracked
+	// (line-through/overline/blink are not) and text-decoration-color/style/
+	// thickness are not modelled: the rendered line is always solid, in the
+	// text's own current colour — deliberately narrow, matching the
+	// overwhelmingly common real-world "a hyperlink is underlined" pattern
+	// this was found missing for entirely: text-decoration had NO Style
+	// field, no parser case and no paint code at all before this — every
+	// underline on every page this engine has ever rendered was silently
+	// dropped, confirmed live on developer.mozilla.org's own in-article
+	// links (`:is(.content-section a):not([href^="#"])
+	// {text-decoration:underline}`, present in real Chrome, absent here).
+	Underline bool
 
 	// Fill/Stroke are the SVG paint properties (inherited, like Color).
 	// FillSet/StrokeSet distinguish "CSS resolved a concrete colour" from
@@ -897,6 +922,7 @@ func inheritFrom(parent Style) Style {
 		FontWeight:     parent.FontWeight,
 		FontFamily:     parent.FontFamily,
 		Italic:         parent.Italic,      // inherited
+		Underline:      parent.Underline,   // propagated (see its own doc comment)
 		Width:          Length{Auto: true}, // reset
 		MinWidth:       Length{Auto: true},
 		MaxWidth:       Length{Auto: true},
