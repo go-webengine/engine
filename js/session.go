@@ -156,9 +156,48 @@ func (s *Session) Dispatch(n *dom.Node, typ string, init EventInit) (defaultPrev
 // RunInitial executes every page <script> in document order, then dispatches
 // DOMContentLoaded/load, draining queued timers/promises/XHR callbacks to
 // quiescence within the budget. Contained against panics.
+//
+// Callers with a module-bundle step of their own (the engine's settle loop,
+// dynamic.go) should use RunInitialScripts and DispatchLifecycle separately
+// instead — see DispatchLifecycle for why.
 func (s *Session) RunInitial() {
+	s.RunInitialScripts()
+	s.DispatchLifecycle()
+}
+
+// RunInitialScripts executes every page <script> in document order, WITHOUT
+// dispatching DOMContentLoaded/load — the first half of RunInitial, split out
+// for a caller that needs to do more work in between. See DispatchLifecycle.
+func (s *Session) RunInitialScripts() {
 	s.guard(func() {
 		s.b.runScripts(&s.res)
+	})
+}
+
+// DispatchLifecycle fires DOMContentLoaded then load (draining queued timers
+// between and after) — the second half of RunInitial, split out so the
+// engine's settle loop (dynamic.go) can bundle and run the page's ES module
+// graph, via RunPending, BETWEEN the two halves rather than after both.
+//
+// Real-world module loaders commonly gate their own setup on
+// window.addEventListener("load", ...) (confirmed live: pkg.go.dev's own
+// frontend.js does exactly this to show its cookie-consent banner and wire up
+// several other widgets) — a real, standard, one-shot browser event that
+// never fires twice. Before this split, RunInitial fired it unconditionally
+// right after the page's CLASSIC scripts ran, before dynamic.go had even
+// bundled the page's <script type="module"> graph (goja cannot run ES modules
+// natively, so they are transpiled to one classic script and injected several
+// lines later, in settle's own module-bundling step) — so a module's own
+// "load" listener always registered too late, after the one-and-only event
+// had already come and gone, and so it never ran, regardless of how fast or
+// slow that module's own network fetch was. Running the module-bundle pass
+// first, and firing "load" only afterwards, gives such a listener the same
+// chance to register in time that it has in a real browser (where an ES
+// module fetched from the same origin typically completes well before the
+// page's OWN "load" event, which additionally waits on slower resources this
+// engine's JS timeline does not model, such as images).
+func (s *Session) DispatchLifecycle() {
+	s.guard(func() {
 		s.b.dispatchLifecycle(&s.res)
 	})
 }

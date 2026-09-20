@@ -274,24 +274,37 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 	// Signature of the DOM the INITIAL layout was computed from (client-js already
 	// applied), captured before the scripts run so a mutation is detectable.
 	sig := domSignature(doc.Root)
-	sess.RunInitial()
+	sess.RunInitialScripts()
 
 	// ES modules run after classic scripts (they are deferred). goja cannot run a
 	// module graph natively, so transpile the page's <script type="module"> graph
 	// to one classic IIFE with esbuild, inject it as a classic script, and run it
 	// through the same pass. Strictly gated: a page with no module scripts skips
 	// this entirely. Best-effort — a bundle failure leaves the page as-is.
+	//
+	// Deliberately BEFORE DispatchLifecycle below, not after: a classic script
+	// above may have just created the page's <script type="module"> element(s)
+	// itself (a hand-rolled ResourceLoader, e.g. pkg.go.dev's own loadScript()
+	// helper) whose own top-level code registers a window "load" listener —
+	// see DispatchLifecycle's own doc comment for why that listener must get a
+	// chance to register before "load" fires, not after.
 	if !e.DisableJS {
 		if bundled, mstats, ok := e.bundleModuleScripts(ctx, doc); ok {
 			e.jslog(fmt.Sprintf("modules: bundled %d entr(y/ies) -> %d modules, %d->%d bytes in %s",
 				mstats.entries, mstats.fetched, mstats.bytesIn, mstats.bytesOut, mstats.wallClock))
 			injectBundledScript(doc.Root, bundled)
-			sess.RunPending()
 		} else if mstats.entries > 0 {
 			e.jslog(fmt.Sprintf("modules: %d module script(s) not bundled (fetched=%d, errors=%d, first=%q)",
 				mstats.entries, mstats.fetched, mstats.errors, mstats.firstErr))
 		}
 	}
+	// Unconditional, not just after a successful module bundle: a classic
+	// script above may equally well have appended a plain, non-module <script>
+	// of its own (the same hand-rolled-ResourceLoader idiom, e.g. pkg.go.dev's
+	// loadScript() also loads a plain dialog-polyfill.js this way) — it too
+	// needs to run before "load" fires, for the same reason.
+	sess.RunPending()
+	sess.DispatchLifecycle()
 
 	deadline, hasDeadline := ctx.Deadline()
 	layoutDur := initialLayout

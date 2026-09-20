@@ -209,9 +209,14 @@ func TestAttributes(t *testing.T) {
 		console.log('props='+d.href+d.src+d.title);
 		var bare=document.createElement('span');
 		console.log('hasAttrsBare='+bare.hasAttributes()+' namesBare='+bare.getAttributeNames().join(','));
+		var scr=document.createElement('script');
+		console.log('type0='+JSON.stringify(scr.type));
+		scr.type='module';
+		console.log('type1='+scr.type+' attr1='+scr.getAttribute('type'));
 	`))
 	mustHave(t, logs, "hasAttrs0=true names0=class,data-existing,id",
 		"ga=1 has=true miss=null", "ta=true ta2=false",
+		"type0=\"\"", "type1=module attr1=module",
 		"hid=true", "hid2=false", "id=newid", "cn=x y", "val=v", "chk=true", "chk2=false", "props=hsti",
 		"hasAttrsBare=false namesBare=")
 }

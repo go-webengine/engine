@@ -223,11 +223,17 @@ func TestSettleFixpointCap(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("settle loop did not terminate")
 	}
-	// The seed appends script#1 (run in pass 0); passes 0..2 each run one injected
-	// script, so exactly maxSettlePasses increments land before the cap stops it.
+	// The seed appends script#1. settle() now runs one pending script BEFORE the
+	// pass-counted loop even starts (a RunPending() call ahead of
+	// DispatchLifecycle, so a script a classic script just appended — e.g. a
+	// hand-rolled ResourceLoader's own dynamically-created <script> — gets a
+	// chance to register a window "load" listener before "load" fires; see
+	// settle's own comment). That pre-loop pass runs script#1, so passes 0..2
+	// of the maxSettlePasses-bounded loop each run one FURTHER generation —
+	// one more than before this existed — before the cap stops it.
 	body := dom.Find(doc.Root, "body")
-	if got, _ := body.Attribute("data-d"); got != "3" {
-		t.Fatalf("data-d = %q, want %q (exactly maxSettlePasses passes)", got, "3")
+	if got, _ := body.Attribute("data-d"); got != "4" {
+		t.Fatalf("data-d = %q, want %q (one pre-loop pass plus exactly maxSettlePasses loop passes)", got, "4")
 	}
 }
 
