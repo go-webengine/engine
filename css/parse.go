@@ -664,6 +664,13 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		case "normal":
 			s.Italic = false
 		}
+	case "text-decoration", "text-decoration-line":
+		// The shorthand and the longhand are treated alike: only the
+		// "underline" line is tracked (see Style.Underline's own doc
+		// comment for the full scope and why). Any other explicit value —
+		// "none", "line-through", … — clears it, matching the real,
+		// non-additive replace-on-cascade semantics of this property.
+		s.Underline = strings.Contains(lv, "underline")
 	case "font-family":
 		s.FontFamily = parseFontFamily(lv)
 	case "text-align":

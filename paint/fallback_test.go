@@ -61,7 +61,7 @@ func TestFallbackGlyphsAreMeasuredAndDrawn(t *testing.T) {
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, 60, 30))
 	st := &css.Style{FontFamily: css.Serif, FontSize: 20, FontWeight: 400, Color: css.Color{R: 0, G: 0, B: 0, A: 255}}
-	end := drawText(dst, f, st, "↔", 2, 22, st.Color, dst.Bounds())
+	end := drawText(dst, newTestPainter(dst), f, st, "↔", 2, 22, st.Color, dst.Bounds())
 	if end <= 2 {
 		t.Fatalf("pen did not advance: %d", end)
 	}

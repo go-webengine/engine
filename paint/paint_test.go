@@ -148,6 +148,49 @@ func TestPaintEndToEnd(t *testing.T) {
 	}
 }
 
+// TestDrawTextUnderline covers text-decoration:underline — confirmed live on
+// developer.mozilla.org, whose real in-article links
+// (`:is(.content-section a):not([href^="#"]){text-decoration:underline}`)
+// rendered with no line at all before this: text-decoration had no Style
+// field, no parser case and no paint code whatsoever, so every underline on
+// every page this engine has ever rendered was silently dropped.
+func TestDrawTextUnderline(t *testing.T) {
+	f := NewFonts()
+	underlined := &css.Style{Color: css.Color{A: 255}, FontSize: 20, FontWeight: 400, FontFamily: css.Sans, Underline: true}
+	plain := &css.Style{Color: css.Color{A: 255}, FontSize: 20, FontWeight: 400, FontFamily: css.Sans}
+
+	box := func(st *css.Style) *layout.Box {
+		return &layout.Box{
+			Style: &css.Style{},
+			X:     0, Y: 0, W: 60, H: 40,
+			Lines: []*layout.LineBox{{Items: []*layout.InlineItem{
+				{Text: "link", Style: st, X: 2, Y: 2, Ascent: 16, Width: 40},
+			}}},
+		}
+	}
+
+	under := white(60, 40)
+	PaintFull(under, box(underlined), f, nil, nil)
+	if !hasDarkInk(under, image.Rect(2, 19, 30, 23)) {
+		t.Error("expected an underline stroke below the baseline, found none")
+	}
+
+	none := white(60, 40)
+	PaintFull(none, box(plain), f, nil, nil)
+	if hasDarkInk(none, image.Rect(2, 19, 30, 23)) {
+		t.Error("text-decoration:none (the default) painted a line anyway")
+	}
+
+	// A tiny font size (FontSize/14 rounds to 0) must still draw a visible
+	// 1px line, not vanish entirely.
+	tiny := &css.Style{Color: css.Color{A: 255}, FontSize: 1, FontWeight: 400, FontFamily: css.Sans, Underline: true}
+	tinyDst := white(60, 40)
+	PaintFull(tinyDst, box(tiny), f, nil, nil)
+	if !hasDarkInk(tinyDst, image.Rect(2, 0, 30, 40)) {
+		t.Error("a tiny underlined font painted nothing at all")
+	}
+}
+
 func TestPaintBorders(t *testing.T) {
 	f := NewFonts()
 	dst := white(20, 20)

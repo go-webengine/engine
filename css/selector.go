@@ -1174,9 +1174,25 @@ func scanCompound(s string) (tag string, parts []compoundPart) {
 // leading colon stripped by the caller's split) is a dynamic interaction pseudo-
 // class that cannot match in a static screenshot. Functional forms keep their
 // argument list (e.g. "focus-within"); we match on the leading keyword only.
+//
+// ":visited" belongs here for the same reason: this engine renders a single
+// fresh fetch with no browsing history, so no real hyperlink can ever BE
+// visited — exactly like ":hover" being always-false for a page nothing is
+// pointing at. Before this, ":visited" was simply unmodelled, and the
+// generic "reduce, don't drop" default degraded it to matching its base
+// selector unconditionally — wrong here specifically because ":visited" and
+// its sibling ":link" style OPPOSITE, complementary states of the very same
+// element: a `some-selector:visited{color:purple}` rule, meant to apply to
+// NONE of a fresh page's links, instead applied to ALL of them, and — since
+// it is inevitably written with equal or higher specificity than the
+// plain-link default it is meant to override only for visited links — WON
+// the cascade over the correct, unvisited colour. Found live on
+// developer.mozilla.org: `:is(.content-section a):visited{color:var(
+// --color-link-visited)}` (purple) beat the page's own plain `a{color:var(
+// --color-link-normal)}` (blue) for literally every in-article link.
 func isDynamicPseudo(p string) bool {
 	switch p {
-	case "hover", "active", "focus", "focus-within", "focus-visible", "target":
+	case "hover", "active", "focus", "focus-within", "focus-visible", "target", "visited":
 		return true
 	}
 	return false

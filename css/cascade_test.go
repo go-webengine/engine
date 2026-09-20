@@ -70,6 +70,30 @@ func TestCascadeInheritance(t *testing.T) {
 	}
 }
 
+// TestTextDecorationUnderlinePropagates covers text-decoration: real
+// text-decoration-line is not an inherited property — a line set on a
+// container instead visually propagates through descendant inline boxes
+// that do not declare their own. Style.Underline approximates that by being
+// copied parent-to-child like a genuinely inherited property (see its own
+// doc comment for the one edge case this gets wrong), so both the shorthand
+// and the longhand, "none" clearing it, and a descendant's own explicit
+// "none" overriding an ancestor's line all need checking.
+func TestTextDecorationUnderlinePropagates(t *testing.T) {
+	if st := styleOf(t, `<html><body><a style="text-decoration:underline">x<b>y</b></a></body></html>`, "b"); !st.Underline {
+		t.Error("text-decoration:underline should propagate to a descendant with no decoration of its own")
+	}
+	if st := styleOf(t, `<html><body><a style="text-decoration:none">x</a></body></html>`, "a"); st.Underline {
+		t.Error("text-decoration:none should not set Underline")
+	}
+	if st := styleOf(t, `<html><body><a style="text-decoration-line:underline">x</a></body></html>`, "a"); !st.Underline {
+		t.Error("the text-decoration-line longhand should also set Underline")
+	}
+	if st := styleOf(t, `<html><body><a style="text-decoration:underline">`+
+		`<b style="text-decoration:none">y</b></a></body></html>`, "b"); st.Underline {
+		t.Error("a descendant's own text-decoration:none should override the propagated line")
+	}
+}
+
 func TestCascadeImageRenderingInherits(t *testing.T) {
 	// image-rendering is an inherited property: a value set on an ancestor reaches
 	// a descendant <img> that never declares it.
@@ -170,6 +194,31 @@ func TestCascadeSpecificityOrdering(t *testing.T) {
 		`<body><p class="c">x</p></body></html>`
 	if st := styleOf(t, src3, "p"); st.Color != (Color{0, 128, 0, 255}) {
 		t.Errorf("later rule should win, got %v", st.Color)
+	}
+}
+
+// TestCascadeVisitedNeverMatches covers ":visited": this engine renders a
+// single fresh fetch with no browsing history, so no real hyperlink can ever
+// BE visited — the same "always false statically" treatment ":hover"
+// already gets. Before this, ":visited" was simply unmodelled, and the
+// generic "reduce, don't drop" default degraded it to matching its base
+// selector unconditionally. That is actively wrong specifically because
+// ":visited" and ":link" style opposite states of the SAME element: a
+// higher-specificity `:visited` rule (inevitable, since it exists only to
+// override the plain, lower-specificity unvisited default for the narrower
+// "is visited" case) then won the cascade for EVERY link, not zero of them.
+// Found live on developer.mozilla.org: `:is(.content-section a):visited
+// {color:purple}` beat the page's own plain `a{color:blue}` for literally
+// every in-article link.
+func TestCascadeVisitedNeverMatches(t *testing.T) {
+	src := `<html><head><style>
+		a{color:blue}
+		:is(.content-section a):visited{color:purple}
+	</style></head><body>
+		<div class="content-section"><a href="/foo">a link</a></div>
+	</body></html>`
+	if st := styleOf(t, src, "a"); st.Color != (Color{0, 0, 255, 255}) {
+		t.Errorf(":visited wrongly matched a fresh, history-less render: color = %v, want blue", st.Color)
 	}
 }
 
