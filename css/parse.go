@@ -523,6 +523,19 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.Display = DisplayNone
 		case "contents":
 			s.Display = DisplayContents
+		case "initial", "unset":
+			// display is not an inherited property, so CSS-wide `unset` resolves
+			// to `initial` here (same rule already applied to background/orphans/
+			// widows below) — and display's own initial value is `inline`.
+			// Confirmed load-bearing live: pkg.go.dev's own
+			// `.UnitBuildContext-link{display:none} @media (width>=30rem){
+			// .UnitBuildContext-link{display:initial}}` (its "Rendered for"
+			// label, shown only above a width breakpoint) silently stayed at
+			// `none` on any viewport — `initial` matched none of this switch's
+			// cases, so the declaration was ignored entirely rather than
+			// resetting the property, leaving the earlier, unconditional
+			// `display:none` rule in effect no matter how wide the viewport was.
+			s.Display = DisplayInline
 		}
 	case "visibility":
 		switch lv {

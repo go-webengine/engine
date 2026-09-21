@@ -588,6 +588,16 @@ func TestApplyProperties(t *testing.T) {
 	if s.Display != DisplayTable {
 		t.Error("display table")
 	}
+	apply("display", "none", 16)
+	apply("display", "initial", 16)
+	if s.Display != DisplayInline {
+		t.Errorf("display initial = %v, want DisplayInline (its real spec initial value)", s.Display)
+	}
+	apply("display", "none", 16)
+	apply("display", "unset", 16)
+	if s.Display != DisplayInline {
+		t.Errorf("display unset = %v, want DisplayInline (display is not inherited, so unset = initial)", s.Display)
+	}
 	apply("display", "block", 16)
 	apply("background", "  #fff other", 16)
 	if s.Background != (Color{255, 255, 255, 255}) {

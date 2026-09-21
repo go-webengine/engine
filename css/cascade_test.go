@@ -222,6 +222,25 @@ func TestCascadeVisitedNeverMatches(t *testing.T) {
 	}
 }
 
+// TestCascadeMediaOverrideDisplayInitial covers the real shape pkg.go.dev
+// uses to show its "Rendered for" build-context label only above a width
+// breakpoint: an unconditional `display:none`, overridden by
+// `display:initial` inside a matching `@media (width>=…)` block. Before
+// this, "initial" matched none of the display switch's cases, so the
+// declaration was silently ignored — leaving the earlier `display:none`
+// in effect no matter how wide the viewport was, which is exactly the
+// live symptom (a "Rendered for" label with a correctly-recognised,
+// correctly-MATCHING media query that still never showed).
+func TestCascadeMediaOverrideDisplayInitial(t *testing.T) {
+	src := `<html><head><style>
+		.a{display:none}
+		@media (width>=30rem){.a{display:initial}}
+	</style></head><body><a class="a">a</a></body></html>`
+	if st := styleOf(t, src, "a"); st.Display != DisplayInline {
+		t.Errorf("display = %v, want DisplayInline (a real 1024px viewport is well above the 30rem breakpoint)", st.Display)
+	}
+}
+
 // TestCascadeImportantBeatsSpecificity covers the cascade tier added for
 // `!important`: a low-specificity class rule marked !important must win over a
 // higher-specificity id rule that is not — the opposite of the normal
