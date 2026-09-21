@@ -164,6 +164,7 @@ func TestElementTreeAndManipulation(t *testing.T) {
 		var t=document.createTextNode('txt');
 		d.appendChild(t);
 		console.log('counts='+d.children.length+','+d.childNodes.length+','+d.childElementCount);
+		console.log('hasChildren='+d.hasChildNodes()+' hasNone='+document.createElement('i').hasChildNodes());
 		console.log('first='+d.firstChild.nodeType+' fe='+d.firstElementChild.tagName+' last='+d.lastChild.nodeType+' le='+d.lastElementChild.tagName);
 		console.log('nsib='+(s.nextElementSibling)+' psib='+(s.previousElementSibling));
 		console.log('nextSib='+s.nextSibling.nodeType+' prevSib='+(t.previousSibling.tagName));
@@ -186,7 +187,8 @@ func TestElementTreeAndManipulation(t *testing.T) {
 		console.log('conn='+d.isConnected+','+document.createElement('z').isConnected);
 	`))
 	mustHave(t, logs, "parent=BODYBODY", "nsib=null", "afterInsert=Q", "afterReplace=R", "conn=true,false",
-		"eqSelf=true eqStructural=true eqDiffAttr=false eqDiffTag=false eqNull=false")
+		"eqSelf=true eqStructural=true eqDiffAttr=false eqDiffTag=false eqNull=false",
+		"hasChildren=true hasNone=false")
 	if dom.Find(root, "div") == nil {
 		t.Fatal("div vanished")
 	}
