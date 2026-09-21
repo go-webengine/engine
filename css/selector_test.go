@@ -481,6 +481,86 @@ func TestHasPseudo(t *testing.T) {
 	}
 }
 
+// TestNthChildPseudo covers ":nth-child(An+B)", using the single most common
+// real-world shape — zebra-striping a table's rows — confirmed across nearly
+// every corpus stylesheet this session has fetched (tailwindcss.com,
+// developer.mozilla.org, github.com, pkg.go.dev, ...): `tr:nth-child(2n)`.
+// Before this was modelled, it degraded to matching EVERY row (not just even
+// ones), collapsing an alternating-background table to one solid colour.
+func TestNthChildPseudo(t *testing.T) {
+	root, err := dom.Parse(`<html><body><table>
+		<tr id="r1"><td>1</td></tr>
+		<tr id="r2"><td>2</td></tr>
+		<tr id="r3"><td>3</td></tr>
+		<tr id="r4"><td>4</td></tr>
+	</table></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r1, r2, r3, r4 := findByID(root, "r1"), findByID(root, "r2"), findByID(root, "r3"), findByID(root, "r4")
+
+	// "2n" and the named "even" keyword are equivalent forms of the same thing.
+	for _, arg := range []string{"2n", "even"} {
+		sel, ok := parseComplex("tr:nth-child(" + arg + ")")
+		if !ok {
+			t.Fatalf("tr:nth-child(%s) should parse", arg)
+		}
+		if sel.Matches(r1) || sel.Matches(r3) {
+			t.Errorf("tr:nth-child(%s) must NOT match an odd row (the previous default made EVERY row match)", arg)
+		}
+		if !sel.Matches(r2) || !sel.Matches(r4) {
+			t.Errorf("tr:nth-child(%s) should match every even row", arg)
+		}
+	}
+
+	// "odd" and "2n+1" are equivalent named/explicit forms of the same thing.
+	for _, arg := range []string{"odd", "2n+1"} {
+		sel, ok := parseComplex("tr:nth-child(" + arg + ")")
+		if !ok {
+			t.Fatalf("tr:nth-child(%s) should parse", arg)
+		}
+		if !sel.Matches(r1) || !sel.Matches(r3) || sel.Matches(r2) || sel.Matches(r4) {
+			t.Errorf("tr:nth-child(%s) should match only the odd rows", arg)
+		}
+	}
+
+	// A bare integer B (no "n" at all) matches only that single position.
+	if sel, ok := parseComplex("tr:nth-child(3)"); !ok || sel.Matches(r1) || sel.Matches(r2) || !sel.Matches(r3) || sel.Matches(r4) {
+		t.Error("tr:nth-child(3) should match ONLY the third row")
+	}
+
+	// A negative coefficient ("-n+3", GitHub's own AvatarStack overflow idiom
+	// in reverse: "the first 3") caps matches at the low end.
+	if sel, ok := parseComplex("tr:nth-child(-n+3)"); !ok || !sel.Matches(r1) || !sel.Matches(r2) || !sel.Matches(r3) || sel.Matches(r4) {
+		t.Error("tr:nth-child(-n+3) should match the first three rows and no more")
+	}
+
+	// "n+4" (GitHub's own AvatarStack overflow rule, hiding items past the
+	// 4th) matches everything from the 4th position onward.
+	if sel, ok := parseComplex("tr:nth-child(n+4)"); !ok || sel.Matches(r1) || sel.Matches(r2) || sel.Matches(r3) || !sel.Matches(r4) {
+		t.Error("tr:nth-child(n+4) should match from the fourth row onward")
+	}
+
+	// A malformed argument falls through to the generic unmodelled case
+	// (matches the base tag alone) rather than panicking or matching nothing.
+	if sel, ok := parseComplex("tr:nth-child(not-a-formula)"); !ok || !sel.Matches(r1) {
+		t.Error("an unparseable :nth-child argument should fall back to matching the base tag")
+	}
+
+	// An explicit leading "+" on the coefficient ("+2n+1", equivalent to
+	// "2n+1"/"odd") is valid per spec and exercises parseAnB's own "+" branch.
+	if sel, ok := parseComplex("tr:nth-child(+2n+1)"); !ok || !sel.Matches(r1) || sel.Matches(r2) {
+		t.Error("tr:nth-child(+2n+1) should behave exactly like tr:nth-child(2n+1)")
+	}
+
+	// A node with no parent at all is always position 1 — elementPosition's
+	// own base case, distinct from walking a real Children list.
+	orphan := el("div", "", "")
+	if elementPosition(orphan) != 1 {
+		t.Errorf("elementPosition(orphan) = %d, want 1", elementPosition(orphan))
+	}
+}
+
 // TestEmptyPseudo covers the ":empty" structural pseudo-class, using
 // pkg.go.dev's own real rule shape as the fixture:
 // `.Documentation-toc:empty{display:none}` is meant to hide a genuinely
