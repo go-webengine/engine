@@ -397,6 +397,90 @@ func TestLastChildPseudo(t *testing.T) {
 	}
 }
 
+// TestHasPseudo covers ":has(...)": the confirmed real shape from
+// tailwindcss.com's own Typography plugin (`.prose h2:has(+h3)`, giving an h2
+// immediately followed by an h3 a distinct "eyebrow" style), plus the other
+// three relationship kinds this engine models (child, descendant, subsequent
+// sibling), and the fail-closed default for an unmodelled alternative — the
+// deliberate opposite of most other pseudo-classes in this file, since
+// :has() is always a real narrowing constraint an author wrote for a reason.
+func TestHasPseudo(t *testing.T) {
+	root, err := dom.Parse(`<html><body>
+		<div class="prose">
+			<h2 id="paired">Paired</h2>
+			<h3>subtitle</h3>
+			<h2 id="alone">Alone</h2>
+			<p>text</p>
+		</div>
+		<div id="parent"><span id="kid">x</span></div>
+		<div id="grandparent"><section><span id="deep">y</span></section></div>
+		<ul>
+			<li id="li1">one</li>
+			<li id="li2">two</li>
+			<li class="target" id="li3">three</li>
+		</ul>
+	</body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// "+ X" — the real tailwindcss.com shape.
+	sel, ok := parseComplex(".prose h2:has(+h3)")
+	if !ok {
+		t.Fatal(".prose h2:has(+h3) should parse")
+	}
+	if !sel.Matches(findByID(root, "paired")) {
+		t.Error(":has(+h3) should match the h2 immediately followed by an h3")
+	}
+	if sel.Matches(findByID(root, "alone")) {
+		t.Error(":has(+h3) must NOT match an h2 with no following h3 (the previous default made EVERY h2 match)")
+	}
+
+	// "> X" — a direct child.
+	if sel, ok := parseComplex("#parent:has(> span)"); !ok || !sel.Matches(findByID(root, "parent")) {
+		t.Error(":has(> span) should match a parent with a direct <span> child")
+	}
+	if sel, ok := parseComplex("#grandparent:has(> span)"); !ok || sel.Matches(findByID(root, "grandparent")) {
+		t.Error(":has(> span) must NOT match when the <span> is a grandchild, not a direct child")
+	}
+
+	// Bare "X" — any descendant, at any depth.
+	if sel, ok := parseComplex("#grandparent:has(span)"); !ok || !sel.Matches(findByID(root, "grandparent")) {
+		t.Error(":has(span) (bare, descendant) should match a <span> at any depth")
+	}
+
+	// "~ X" — any following sibling.
+	if sel, ok := parseComplex("#li1:has(~ .target)"); !ok || !sel.Matches(findByID(root, "li1")) {
+		t.Error(":has(~ .target) should match when a later sibling has the class")
+	}
+	if sel, ok := parseComplex("#li3:has(~ .target)"); !ok || sel.Matches(findByID(root, "li3")) {
+		t.Error(":has(~ .target) must NOT match the .target element itself (no LATER sibling has it)")
+	}
+
+	// An unmodelled alternative (a multi-compound chain) fails CLOSED — the
+	// compound must match NOTHING, not degrade to "no constraint" the way
+	// every other unmodelled pseudo in this file does.
+	sel, ok = parseComplex("#parent:has(div span)")
+	if !ok {
+		t.Fatal("#parent:has(div span) should still parse (has() itself is recognised)")
+	}
+	if sel.Matches(findByID(root, "parent")) {
+		t.Error(":has() with an unmodelled (multi-compound) argument must match NOTHING, not everything")
+	}
+
+	// A dynamic-pseudo alternative (never matches statically) is skipped, same
+	// as an unmodelled one — still fails closed, not open.
+	if sel, ok := parseComplex("#parent:has(:hover)"); !ok || sel.Matches(findByID(root, "parent")) {
+		t.Error(":has(:hover) (a dynamic, always-false-statically alternative) must match NOTHING")
+	}
+
+	// A blank alternative in the list (a trailing/empty comma entry) is
+	// skipped without affecting the others.
+	if sel, ok := parseComplex(".prose h2:has(, +h3)"); !ok || !sel.Matches(findByID(root, "paired")) {
+		t.Error(":has(, +h3) should still match via the second, non-empty alternative")
+	}
+}
+
 // TestEmptyPseudo covers the ":empty" structural pseudo-class, using
 // pkg.go.dev's own real rule shape as the fixture:
 // `.Documentation-toc:empty{display:none}` is meant to hide a genuinely

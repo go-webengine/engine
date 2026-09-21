@@ -82,6 +82,32 @@ type compound struct {
 	// A ":not()" argument that is a dynamic pseudo (never matches statically) is
 	// dropped here, since negating an always-false selector imposes no constraint.
 	Not []compound
+	// Has and HasPresent model ":has(<relative-selector-list>)" — see
+	// hasRelative's own doc comment for the four relationship kinds modelled
+	// (bare = any descendant, "> X" = a direct child, "+ X" = the immediate
+	// next sibling, "~ X" = any following sibling). Each alternative is a
+	// SINGLE compound (no combinators inside it) — real-world :has() usage is
+	// overwhelmingly this shape (":has(img)", ":has(+h3)", ":has(> svg)");
+	// a multi-compound argument ("`:has(.a .b)`") is not modelled.
+	//
+	// Deliberately the OPPOSITE default from every other unmodelled/partially-
+	// modelled pseudo in this file: elsewhere, "reduce, don't drop" (impose no
+	// constraint) is correct because most unmodelled pseudos are either
+	// dynamic (already always-false) or rare enough that failing open barely
+	// matters. :has() is different — it is ALWAYS a real, narrowing existence
+	// check a page's author wrote for a reason (found live on tailwindcss.com:
+	// `.prose h2:has(+h3){...}` gives an h2 immediately followed by an h3 a
+	// distinct "eyebrow" style — smaller, uppercase, monospace). Degrading
+	// that the usual way makes EVERY h2 in prose content look like an eyebrow,
+	// not just the ones actually paired with an h3 — a far more visible wrong
+	// answer than the enhancement simply not applying. So an alternative this
+	// engine can't model is skipped (contributes nothing), and if NONE of a
+	// present ":has()"'s alternatives could be modelled, the whole compound
+	// matches NOTHING (HasPresent distinguishes "no :has() at all", which
+	// imposes no constraint, from "a :has() was written but reduced to zero
+	// modelled alternatives").
+	Has        []hasRelative
+	HasPresent bool
 	// PseudoElement is set when the compound carries a pseudo-ELEMENT (::before,
 	// ::after, ::first-line, ::marker, ::placeholder, …). Unlike a pseudo-CLASS —
 	// which only constrains WHICH real element matches, so an unmodelled one may
@@ -267,6 +293,21 @@ func (c compound) matches(n *dom.Node) bool {
 	// ":not(...)" — the compound fails as soon as any negated selector matches.
 	for i := range c.Not {
 		if c.Not[i].matches(n) {
+			return false
+		}
+	}
+	// ":has(...)" — the compound fails unless at least one alternative finds a
+	// matching relative (see compound.Has's own doc comment for why an empty
+	// Has with HasPresent true means "matches nothing", not "no constraint").
+	if c.HasPresent {
+		matched := false
+		for _, h := range c.Has {
+			if h.matches(n) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			return false
 		}
 	}
@@ -492,6 +533,97 @@ func nextElementSibling(n *dom.Node) *dom.Node {
 		}
 	}
 	return nil
+}
+
+// hasKind identifies how a ":has(...)" alternative's compound relates to the
+// element under test — see compound.Has's own doc comment for the scope
+// (single-compound alternatives only) and why an unmodelled one fails closed.
+type hasKind uint8
+
+const (
+	hasDescendant        hasKind = iota // bare "X" — any descendant, at any depth
+	hasChild                            // "> X" — a direct child
+	hasNextSibling                      // "+ X" — the immediately following sibling
+	hasSubsequentSibling                // "~ X" — any following sibling
+)
+
+// hasRelative is one ":has()" alternative: a relationship kind plus the
+// compound the related element(s) must match.
+type hasRelative struct {
+	kind hasKind
+	sel  compound
+}
+
+// matches reports whether any element in n's relationship (per kind) matches
+// sel.
+func (h hasRelative) matches(n *dom.Node) bool {
+	switch h.kind {
+	case hasChild:
+		for _, c := range n.Children {
+			if c.Type == dom.Element && h.sel.matches(c) {
+				return true
+			}
+		}
+	case hasNextSibling:
+		if next := nextElementSibling(n); next != nil {
+			return h.sel.matches(next)
+		}
+	case hasSubsequentSibling:
+		for sib := nextElementSibling(n); sib != nil; sib = nextElementSibling(sib) {
+			if h.sel.matches(sib) {
+				return true
+			}
+		}
+	default: // hasDescendant
+		return hasMatchingDescendant(n, h.sel)
+	}
+	return false
+}
+
+// hasMatchingDescendant reports whether any descendant of n (at any depth)
+// matches sel — the bare ":has(X)" form.
+func hasMatchingDescendant(n *dom.Node, sel compound) bool {
+	for _, c := range n.Children {
+		if c.Type != dom.Element {
+			continue
+		}
+		if sel.matches(c) || hasMatchingDescendant(c, sel) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseHasSelectorList parses a ":has(...)" argument into its alternatives.
+// Each is a comma-separated single compound, optionally prefixed by a
+// combinator (">"/"+"/"~"; absent means "bare", i.e. any descendant). An
+// alternative that doesn't reduce to a single modelled compound (a
+// multi-compound chain, an unmodelled/dynamic pseudo, ...) is skipped —
+// never treated as "no constraint" (see compound.Has's own doc comment for
+// why :has() specifically fails closed rather than open).
+func parseHasSelectorList(arg string) []hasRelative {
+	var out []hasRelative
+	for _, alt := range splitSelectorCommas(arg) {
+		alt = strings.TrimSpace(alt)
+		if alt == "" {
+			continue
+		}
+		kind := hasDescendant
+		switch alt[0] {
+		case '>':
+			kind, alt = hasChild, strings.TrimSpace(alt[1:])
+		case '+':
+			kind, alt = hasNextSibling, strings.TrimSpace(alt[1:])
+		case '~':
+			kind, alt = hasSubsequentSibling, strings.TrimSpace(alt[1:])
+		}
+		sel, ok := parseSimple(alt)
+		if !ok || sel.Dynamic {
+			continue
+		}
+		out = append(out, hasRelative{kind: kind, sel: sel})
+	}
+	return out
 }
 
 // ParseSelectorList parses a comma-separated selector list, skipping empty and
@@ -843,6 +975,12 @@ func parseSimple(s string) (compound, bool) {
 			// (see below), so `:not([data-theme])` is now a real negation, not a
 			// no-op.
 			c.Not = append(c.Not, parseSimpleSelectorList(arg)...)
+		case "has":
+			// ":has(<relative-selector-list>)" — see compound.Has's own doc
+			// comment for the scope (single-compound alternatives, four
+			// relationship kinds) and why this fails closed rather than open.
+			c.HasPresent = true
+			c.Has = parseHasSelectorList(arg)
 		case "host":
 			// ":host" / ":host(<selector-list>)" — see compound.Host's doc
 			// comment. ":host-context(...)" is a real, related pseudo (matches
@@ -919,7 +1057,7 @@ func parseSimple(s string) (compound, bool) {
 	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
 	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 {
+		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent {
 		return compound{}, false
 	}
 	return c, true
