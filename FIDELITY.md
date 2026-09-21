@@ -18,6 +18,15 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-21 (round 79) — a round with NO code change: en.wikipedia.org's own site wordmark/tagline logos (the current 25th-anniversary SVG variants) render with garbled black shapes overlapping several letters — confirmed conclusively to be the SAME already-documented third-party `oksvg` complex-path defect (rounds 25, 64), a THIRD real-world example, not fixable in this engine's own codebase
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 78's merge, no drift. Visual scan this round targeted en.wikipedia.org — the corpus's worst-scoring page by a wide margin, but not the SOURCE of a new discrete fix in many rounds (its already-documented "Wiki Loves Monuments" banner drives most of its SSIM gap, and cascades a diffuse vertical offset through the whole ~24,800px article that makes deeper-page visual diffing unreliable) — so this round instead focused on the near-top infobox region, less affected by that offset.
+
+- **A first lead, investigated and cleanly abandoned once observation error was caught**: the infobox's own `<th class="infobox-above" style="background-color:#e0e0e0">` header appeared, in a downscaled thumbnail crop of the committed bench montage, to have NO grey background at all. A minimal isolated repro (identical inline style, `colspan`, and surrounding table markup) rendered the background correctly; a live `getComputedStyle` probe on the actual fetched page confirmed the correct colour AND `display:table-cell` were both already being computed correctly. Re-examining the SAME crop at full resolution (not the downscaled thumbnail used for the initial visual scan) showed the grey band WAS there all along, just faint — a genuine observation error on a small/compressed image, caught and corrected before it became a wasted "fix" for a bug that never existed. A concrete reminder of why this session insists on checking pixels directly rather than trusting a single glance, even when the glance is one's own.
+- **The real finding**: zooming into the Wikipedia logo area (top-left) revealed a real, striking defect independent of the above — the "WIKIPEDIA" wordmark shows a black bowtie/hourglass shape overlapping the "IK"/"PE" letterforms, and the tagline "25 years of the free encyclopedia" shows small solid black dots in place of certain letters (the "y" in "years", the "c" in "encyclopedia"). Traced the source: both are `<img>`-referenced EXTERNAL SVG files (`wikipedia-wordmark-en-25.svg`, `wikipedia-tagline-en-25.svg` — the site's CURRENT 25th-anniversary logo variants), each drawing its letterforms as complex vector `<path>` data — structurally the exact same "wordmark as a single complex path" shape as round 25's already-documented MDN finding and round 64's GitHub octocat finding.
+- **Confirmed conclusively with the SAME two-step methodology round 64 established**, not assumed from visual similarity alone: (1) an isolated `<img src="data:image/svg+xml;base64,...">` repro using the real fetched SVG bytes verbatim, with NO other page markup, CSS, or engine code path beyond image decoding — reproduced the identical garbled shapes for both logos; (2) a standalone Go program calling `oksvg.ReadIconStream`/`rasterx.NewDasher` DIRECTLY, with literally zero go-webengine code anywhere in the call path — reproduced the SAME garbled shapes again, for both logos, conclusively proving this lives entirely inside the third-party `oksvg`/`rasterx` dependency's own path-fill handling, not anywhere in this engine's own SVG/CSS/image code.
+- **No PR opened this round**: the finding is real, precisely characterised, and extends an already-documented "Known gaps" entry with a third independent real-world instance, but there is no code change to ship — a third-party rasteriser's own path-fill-rule handling is outside this repo's scope, exactly matching rounds 25 and 64's own precedent. `go test ./...` reconfirmed green (untouched); no bench run needed since nothing changed to compare.
+
 ## 2026-09-21 (round 78) — TWO independent, causally-linked-only-by-investigation fixes on developer.mozilla.org: `@supports` conditions were unconditionally dropped wholesale, so this engine's own genuine `light-dark()` support was never recognised by real CSS's own feature-detection polyfill; and a non-inset `box-shadow` never excluded the box's OWN footprint, so a common "small-offset fake border" idiom on a background-less box painted as an almost-solid fill instead of a thin sliver (engine#169)
 
 No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 77's merge, no drift, no PR-number collision — predicted #169 confirmed via `gh pr list` both before and after pushing. Chose a visual scan of the bench montage's worst-scoring pages this round, focusing on developer.mozilla.org (not deeply investigated since round 72), rather than a fresh `Engine.JSLog` sweep.
@@ -4422,6 +4431,20 @@ columns.
   matching round 25's own conclusion pattern exactly. Not fixed here, for the
   same reason: a third-party rasteriser's own path-handling is outside this
   engine's codebase.
+- **A THIRD confirmed real-world example (round 79, 2026-09-21)**: en.wikipedia.org's
+  own site wordmark and tagline logos (`wikipedia-wordmark-en-25.svg`,
+  `wikipedia-tagline-en-25.svg` — the current 25th-anniversary variants,
+  vector letterforms as complex `<path>` data, the same general shape as
+  round 25's MDN wordmark) both render with garbled black shapes overlapping
+  several letters (a bowtie/hourglass blob across "IK"/"PE" in "WIKIPEDIA";
+  small solid dots in place of "y"/"c" in the tagline "25 years of the free
+  encyclopedia"). Isolated with the SAME two-step methodology as round 64: an
+  `<img src="data:image/svg+xml;base64,...">` repro with the real fetched SVG
+  bytes and NO other page markup, then a standalone Go program calling
+  `oksvg.ReadIconStream`/`rasterx.NewDasher` DIRECTLY with zero go-webengine
+  code anywhere in the call path — both reproduce the identical garbled
+  shapes for both logos. Not fixed, for the same reason as the two prior
+  instances: this is oksvg's own path rasterisation, not this engine's.
 - **An inline element's box decoration is painted (round 48) but not
   completely**: solid `background-color`, `border` and `padding` fragment per
   line box with `box-decoration-break: slice`, and `border-radius` is honoured
