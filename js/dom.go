@@ -260,6 +260,9 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	o.Set("isEqualNode", func(call goja.FunctionCall) goja.Value {
 		return b.vm.ToValue(isEqualNode(n, b.node(call.Argument(0))))
 	})
+	o.Set("hasChildNodes", func(call goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(len(n.Children) > 0)
+	})
 
 	o.Set("querySelector", func(call goja.FunctionCall) goja.Value {
 		if got := b.query(n, call.Argument(0).String(), true); len(got) > 0 {
