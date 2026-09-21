@@ -255,8 +255,18 @@ func parseRules(src string, m Media) []Rule {
 					}
 					rules = append(rules, inner...)
 				}
+			case strings.HasPrefix(lower, "@supports"):
+				// See supportsConditionHolds's own doc comment: this engine answers
+				// only the one specific feature test real CSS ships (whether it
+				// supports light-dark(), which it genuinely does) honestly; any
+				// other condition still drops the block wholesale, unchanged from
+				// before this existed.
+				if supportsConditionHolds(lower[len("@supports"):]) {
+					rules = append(rules, parseRules(body, m)...)
+				}
 			}
-			// Every other at-rule (@font-face, @keyframes, @supports, ...) is
+			// Every other at-rule (@font-face, @keyframes, an @supports whose
+			// condition supportsConditionHolds does not recognise, ...) is
 			// skipped wholesale, as before.
 			continue
 		}
