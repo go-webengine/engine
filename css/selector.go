@@ -4,6 +4,8 @@
 package css
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/go-webengine/engine/dom"
@@ -77,6 +79,25 @@ type compound struct {
 	// empty table-of-contents list) degraded to `.Documentation-toc`,
 	// unconditionally hiding a real, non-empty table of contents.
 	Empty bool
+	// NthChildSet/NthChildA/NthChildB model ":nth-child(<An+B>)" — the
+	// element's 1-based position among its element siblings (see
+	// elementPosition) must equal A*k+B for some integer k>=0 ("odd"/"even"
+	// are the well-known A=2,B=1/A=2,B=0 shorthands; a bare integer B is
+	// A=0,B=<that integer>). Modelled for the SAME reason as FirstChild/
+	// LastChild/Empty above — the single most common real-world argument by
+	// far, confirmed across nearly every fetched corpus stylesheet this
+	// session (tailwindcss.com, developer.mozilla.org, github.com, pkg.go.dev,
+	// ...), is "2n" (or "2n+1"/"odd") for zebra-striping a table's rows: an
+	// unmodelled ":nth-child(2n)" degrades to matching EVERY row, not just
+	// the even ones, collapsing the whole table to one solid background
+	// colour instead of alternating rows. ":nth-of-type"/":nth-last-child"
+	// use the identical An+B grammar but a different position count (same-
+	// tag siblings only, or counted from the end) — not modelled here, a
+	// narrower, deliberately-scoped gap for a future round if a real need
+	// surfaces (this round's own corpus check found ":nth-child" alone
+	// already covers the overwhelming majority of real usage).
+	NthChildSet          bool
+	NthChildA, NthChildB int
 	// Not holds the compound selectors of every ":not(...)" attached to this
 	// compound. The compound matches only when NONE of them matches the element.
 	// A ":not()" argument that is a dynamic pseudo (never matches statically) is
@@ -283,6 +304,9 @@ func (c compound) matches(n *dom.Node) bool {
 		return false
 	}
 	if c.Empty && len(n.Children) != 0 {
+		return false
+	}
+	if c.NthChildSet && !matchesAnB(elementPosition(n), c.NthChildA, c.NthChildB) {
 		return false
 	}
 	for _, am := range c.Attrs {
@@ -533,6 +557,82 @@ func nextElementSibling(n *dom.Node) *dom.Node {
 		}
 	}
 	return nil
+}
+
+// elementPosition returns n's 1-based position among its parent's element
+// children, in document order (":first-child" is position 1, matching
+// ":nth-child(1)") — a node with no parent (the document root) is always
+// position 1.
+func elementPosition(n *dom.Node) int {
+	if n.Parent == nil {
+		return 1
+	}
+	pos := 0
+	for _, c := range n.Parent.Children {
+		if c.Type == dom.Element {
+			pos++
+		}
+		if c == n {
+			return pos
+		}
+	}
+	return pos
+}
+
+// nthAnBRe matches the "An+B" grammar's general form: an optional signed
+// coefficient before a literal "n" (group 1 — "", "+", "-", or a signed/
+// unsigned integer), then an optional "+B"/"-B" offset (group 2, internal
+// whitespace after the sign permitted per spec, e.g. "2n + 1"). It does NOT
+// match a bare integer with no "n" at all (":nth-child(3)"); that shorter
+// form is checked directly in parseAnB before this regexp is tried.
+var nthAnBRe = regexp.MustCompile(`^([+-]?\d*)n\s*([+-]\s*\d+)?$`)
+
+// parseAnB parses a ":nth-child(<An+B>)"-shaped argument (also shared, in a
+// future round, by ":nth-of-type"/":nth-last-child", which use the identical
+// grammar) into its A and B coefficients. "odd"/"even" are the spec's own
+// named shorthands for 2n+1/2n; a bare integer B means A=0 (matches only the
+// single Bth child); "n" alone means A=1,B=0 (matches every child from the
+// first on). Returns ok=false for anything that doesn't fit this grammar.
+func parseAnB(arg string) (a, b int, ok bool) {
+	arg = strings.ToLower(strings.TrimSpace(arg))
+	switch arg {
+	case "odd":
+		return 2, 1, true
+	case "even":
+		return 2, 0, true
+	}
+	if n, err := strconv.Atoi(arg); err == nil {
+		return 0, n, true
+	}
+	m := nthAnBRe.FindStringSubmatch(arg)
+	if m == nil {
+		return 0, 0, false
+	}
+	switch m[1] {
+	case "", "+":
+		a = 1
+	case "-":
+		a = -1
+	default:
+		a, _ = strconv.Atoi(m[1])
+	}
+	if m[2] != "" {
+		b, _ = strconv.Atoi(strings.ReplaceAll(m[2], " ", ""))
+	}
+	return a, b, true
+}
+
+// matchesAnB reports whether position (1-based) equals a*k+b for some
+// integer k>=0 — the ":nth-child(An+B)" matching rule.
+func matchesAnB(position, a, b int) bool {
+	if a == 0 {
+		return position == b
+	}
+	diff := position - b
+	if diff%a != 0 {
+		return false
+	}
+	return diff/a >= 0
 }
 
 // hasKind identifies how a ":has(...)" alternative's compound relates to the
@@ -968,6 +1068,15 @@ func parseSimple(s string) (compound, bool) {
 			c.LastChild = true
 		case "empty":
 			c.Empty = true
+		case "nth-child":
+			// An unparseable argument (essentially never seen in real,
+			// non-hand-written CSS) leaves NthChildSet false — the same
+			// "falls through to the generic unmodelled case" outcome as not
+			// recognising ":nth-child" at all, since there is no argument-
+			// free form of it to fail back to (unlike ":first-child" etc.).
+			if a, b, ok := parseAnB(arg); ok {
+				c.NthChildSet, c.NthChildA, c.NthChildB = true, a, b
+			}
 		case "not":
 			// An unmodelled ":not()" argument imposes NO constraint rather than
 			// dropping the rule — the same "reduce, don't drop" philosophy applied
@@ -1057,7 +1166,7 @@ func parseSimple(s string) (compound, bool) {
 	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
 	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent {
+		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet {
 		return compound{}, false
 	}
 	return c, true
