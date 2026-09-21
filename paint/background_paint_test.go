@@ -487,15 +487,28 @@ func TestScaleTileIdentityAndError(t *testing.T) {
 	}
 }
 
+// TestPaintDropShadowSharp covers a hard-edged (blur 0) offset shadow: it is
+// visible ONLY in the sliver the offset exposes beyond the box's own edge,
+// never inside the box's own (un-shifted) footprint — a drop shadow never
+// shows through a box's own interior, transparent background or not, per
+// spec; the box's own content is what would normally cover it there, but
+// that must hold even for a box with no background of its own (this
+// engine's earlier behaviour, painting the shadow unconditionally, made a
+// small-offset "fake border" box-shadow on a transparent box look like a
+// solid fill — confirmed live on developer.mozilla.org's own "In this
+// article" table-of-contents links, which use exactly this idiom, and
+// cross-checked against a real headless Chrome screenshot of the identical
+// markup).
 func TestPaintDropShadowSharp(t *testing.T) {
-	// Blur 0 gives a hard-edged shadow: pixels just outside the (offset) rect get
-	// zero coverage and are skipped, while inside the rect is fully shadowed.
 	dst := white(30, 30)
-	st := &css.Style{BoxShadows: []css.BoxShadow{{OffsetX: 0, OffsetY: 0, Blur: 0, Color: css.Color{A: 255}}}}
+	st := &css.Style{BoxShadows: []css.BoxShadow{{OffsetX: 4, OffsetY: 0, Blur: 0, Color: css.Color{A: 255}}}}
 	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "div"}, Style: st, X: 10, Y: 10, W: 8, H: 8}
 	PaintFull(dst, box, NewFonts(), nil, nil)
-	if c := dst.RGBAAt(13, 13); c.R != 0 {
-		t.Errorf("sharp shadow interior = %+v want black", c)
+	if c := dst.RGBAAt(16, 13); c.R != 255 {
+		t.Errorf("inside the box's own footprint (also inside the shifted shadow rect) = %+v want white, excluded", c)
+	}
+	if c := dst.RGBAAt(20, 13); c.R != 0 {
+		t.Errorf("sliver the +4 offset exposes beyond the box's own right edge = %+v want black", c)
 	}
 	if c := dst.RGBAAt(5, 5); c.R != 255 {
 		t.Errorf("just outside sharp shadow = %+v want white", c)

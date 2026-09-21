@@ -527,7 +527,27 @@ func blitTileClipped(dst *image.RGBA, tile image.Image, dx, dy int, bx image.Rec
 
 // paintDropShadow paints an outset box-shadow: a soft rect the size of the
 // border box, expanded by spread and offset, Gaussian-blurred by the blur
-// radius (approximated with an exact erf box; rounded corners are ignored).
+// radius (approximated with an exact erf box; rounded corners are ignored for
+// the blur shape, though the exclusion below still follows rad).
+//
+// A drop shadow never shows THROUGH the box's own original (un-offset)
+// footprint, regardless of that box's own background being transparent —
+// per spec, box-shadow is clipped to exclude the border box it belongs to,
+// so only the part of the shifted/spread shadow that extends BEYOND the
+// box's own edges is ever visible; the box's own content paints over
+// whatever the shadow would have shown within its own footprint anyway.
+// Before this exclusion existed, a small offset (common for a css-only
+// "fake border" trick: box-shadow:-2px 0 0 <colour> in place of a real
+// border-left, avoiding the layout shift a real border/padding change would
+// cause) on a box with no background of its own left almost the WHOLE
+// shadow rectangle visible — nearly indistinguishable from a solid fill —
+// since nothing else ever painted over the overlap with the box's own
+// (unshifted) area. Confirmed live and cross-checked against a real
+// headless Chrome screenshot of the identical minimal markup: real Chrome
+// shows only the thin sliver the -2px offset actually exposes; this engine
+// showed what looked like the link's entire background filled solid grey
+// (developer.mozilla.org's own "In this article" table-of-contents links,
+// which use exactly this shape for their left-border indicator).
 func paintDropShadow(dst *image.RGBA, box *layout.Box, sh css.BoxShadow, rad int, clip image.Rectangle) {
 	if sh.Color.A == 0 {
 		return
@@ -539,8 +559,12 @@ func paintDropShadow(dst *image.RGBA, box *layout.Box, sh css.BoxShadow, rad int
 	sigma := sh.Blur / 2
 	pad := int(math.Ceil(sigma*3)) + 1
 	area := image.Rect(int(x0)-pad, int(y0)-pad, int(x1)+pad+1, int(y1)+pad+1).Intersect(dst.Rect).Intersect(clip)
+	own := rectOf(box)
 	for y := area.Min.Y; y < area.Max.Y; y++ {
 		for x := area.Min.X; x < area.Max.X; x++ {
+			if insideRoundRect(x, y, own, rad) {
+				continue
+			}
 			cov := erfBoxCoverage(float64(x)+0.5, float64(y)+0.5, x0, y0, x1, y1, sigma)
 			if cov <= 0 {
 				continue

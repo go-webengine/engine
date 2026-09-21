@@ -274,6 +274,35 @@ func TestParseStylesheetOtherAtRulesStillSkipped(t *testing.T) {
 	}
 }
 
+// TestParseStylesheetSupportsLightDark covers supportsConditionHolds: the one
+// @supports feature test this engine answers honestly (light-dark(), which it
+// genuinely supports — see lightdark.go) — reproducing postcss-preset-env's
+// own light-dark() polyfill shape (confirmed live on developer.mozilla.org): a
+// POSITIVE `@supports (color: light-dark(...))` block using the native
+// function, and its NEGATIVE `@supports not (...)` counterpart, of which only
+// one should ever apply.
+func TestParseStylesheetSupportsLightDark(t *testing.T) {
+	css := `
+	@supports (color: light-dark(red, red)) { .a { color: red } }
+	@supports not (color: light-dark(tan, tan)) { .b { background: blue } }
+	@supports (display: grid) { .c { font-weight: bold } }
+	@supports not (display: grid) { .d { text-align: center } }
+	`
+	got := declValues(ParseStylesheetVW(css, 1024))
+	if got["color"] != "red" {
+		t.Errorf("positive light-dark() @supports should be included, got %+v", got)
+	}
+	if v, ok := got["background"]; ok {
+		t.Errorf("negative light-dark() @supports should be excluded, got background=%q", v)
+	}
+	if v, ok := got["font-weight"]; ok {
+		t.Errorf("unrecognised @supports condition should still be excluded, got font-weight=%q", v)
+	}
+	if got["text-align"] != "center" {
+		t.Errorf("negated unrecognised @supports condition should be included (not of a false holds), got %+v", got)
+	}
+}
+
 func TestMediaMatches(t *testing.T) {
 	if mediaMatches("print", 1024) {
 		t.Error("print should not match")
