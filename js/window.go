@@ -63,20 +63,27 @@ func (b *binder) install() {
 // installTimers wires setTimeout/setInterval/rAF etc. onto g, all of which queue
 // their callback for the bounded drain pass.
 func (b *binder) installTimers(g *goja.Object) {
-	queue := func(v goja.Value) goja.Value {
+	// queue honours the caller's requested delay (defaulting to 0, clamped to
+	// non-negative) as an ordering hint for drainTimers — see its own doc
+	// comment for why delay order, not just enqueue order, matters.
+	queue := func(v, delayArg goja.Value) goja.Value {
 		if fn, ok := goja.AssertFunction(v); ok {
-			b.jobs = append(b.jobs, timerJob{fn: fn, self: goja.Undefined()})
+			delay := numOr(delayArg, 0)
+			if delay < 0 {
+				delay = 0
+			}
+			b.jobs = append(b.jobs, timerJob{fn: fn, self: goja.Undefined(), delay: delay})
 		}
 		b.nextID++
 		return b.vm.ToValue(b.nextID)
 	}
-	g.Set("setTimeout", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
+	g.Set("setTimeout", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), call.Argument(1)) })
 	// setInterval runs its callback once (never loops) to stay bounded.
-	g.Set("setInterval", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
-	g.Set("requestAnimationFrame", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
-	g.Set("requestIdleCallback", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
-	g.Set("queueMicrotask", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
-	g.Set("setImmediate", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0)) })
+	g.Set("setInterval", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), call.Argument(1)) })
+	g.Set("requestAnimationFrame", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined()) })
+	g.Set("requestIdleCallback", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined()) })
+	g.Set("queueMicrotask", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined()) })
+	g.Set("setImmediate", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined()) })
 	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
 	for _, name := range []string{"clearTimeout", "clearInterval", "cancelAnimationFrame", "cancelIdleCallback"} {
 		g.Set(name, noop)

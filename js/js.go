@@ -69,8 +69,9 @@ type Result struct {
 
 // timerJob is a queued callback from setTimeout/requestAnimationFrame/etc.
 type timerJob struct {
-	fn   goja.Callable
-	self goja.Value
+	fn    goja.Callable
+	self  goja.Value
+	delay int64 // requested delay in ms (setTimeout/setInterval only; 0 otherwise)
 }
 
 // binder holds the runtime and all live state for one page execution.
@@ -216,16 +217,29 @@ func (b *binder) dispatchLifecycle(res *Result) {
 	b.drainTimers(res)
 }
 
-// drainTimers runs queued callbacks FIFO until the queue empties, the job cap is
-// hit, or the budget expires. Callbacks may enqueue more work, which is honoured
-// within those bounds.
+// drainTimers runs queued callbacks in ascending order of their own requested
+// delay (ties broken FIFO by original enqueue order), until the queue empties,
+// the job cap is hit, or the budget expires. This is not a real clock — no
+// wall-clock waiting happens between jobs — but ordering by delay rather than
+// pure enqueue order matters: real page code commonly races a near-immediate
+// setTimeout(fn, 0) retry/continuation against a much later
+// setTimeout(giveUp, 30000+) safety-net timeout, and draining strict FIFO can
+// let the safety-net job run first purely because it happened to be enqueued
+// earlier, when every real browser would run the smaller-delay job first.
+// Callbacks may enqueue more work, which is honoured within those bounds.
 func (b *binder) drainTimers(res *Result) {
 	for len(b.jobs) > 0 {
 		if res.TimersRun >= maxTimerJobs || b.expired() {
 			return
 		}
-		job := b.jobs[0]
-		b.jobs = b.jobs[1:]
+		best := 0
+		for i := 1; i < len(b.jobs); i++ {
+			if b.jobs[i].delay < b.jobs[best].delay {
+				best = i
+			}
+		}
+		job := b.jobs[best]
+		b.jobs = append(b.jobs[:best], b.jobs[best+1:]...)
 		res.TimersRun++
 		b.callSafely(job.fn, job.self)
 	}

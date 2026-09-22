@@ -572,6 +572,81 @@ func TestTimers(t *testing.T) {
 	}
 }
 
+// TestTimerDelayOrdering confirms setTimeout honours its own requested delay
+// as a real ordering signal, not just enqueue order. Real page code commonly
+// races a near-immediate retry/continuation against a much later safety-net
+// timeout (confirmed live on react.dev's own chunk-loading machinery); a
+// naive FIFO drain can let the later-delay job "win" a race it should always
+// lose purely because it happened to be enqueued first.
+func TestTimerDelayOrdering(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		setTimeout(function(){console.log('slow')}, 30000);
+		setTimeout(function(){console.log('fast')}, 0);
+		setTimeout(function(){console.log('mid')}, 10);
+	`))
+	mustHave(t, logs, "fast", "mid", "slow")
+	fast, mid, slow := -1, -1, -1
+	for i, l := range logs {
+		switch l {
+		case "log: fast":
+			fast = i
+		case "log: mid":
+			mid = i
+		case "log: slow":
+			slow = i
+		}
+	}
+	if !(fast < mid && mid < slow) {
+		t.Fatalf("expected delay-ascending order fast<mid<slow, got positions fast=%d mid=%d slow=%d (logs=%v)", fast, mid, slow, logs)
+	}
+}
+
+// TestTimerNegativeDelayClampsToZero confirms a negative delay (real browsers
+// clamp it, never treating it as "before everything else") doesn't invert
+// ordering against a genuine zero-delay job.
+func TestTimerNegativeDelayClampsToZero(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		setTimeout(function(){console.log('a')}, 0);
+		setTimeout(function(){console.log('b')}, -50);
+	`))
+	mustHave(t, logs, "a", "b")
+	var order []string
+	for _, l := range logs {
+		if l == "log: a" || l == "log: b" {
+			order = append(order, l)
+		}
+	}
+	want := "log: a log: b"
+	got := strings.Join(order, " ")
+	if got != want {
+		t.Fatalf("expected negative delay clamped to 0, keeping FIFO order %q, got %q", want, got)
+	}
+}
+
+// TestTimerDelayTiesAreFIFO confirms equal (or default-zero) delays still
+// resolve in enqueue order — the pre-existing, already-tested behaviour for
+// every timer kind that doesn't pass an explicit delay (rAF, queueMicrotask,
+// ...) must stay unchanged by delay-based ordering.
+func TestTimerDelayTiesAreFIFO(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		setTimeout(function(){console.log('a')}, 5);
+		setTimeout(function(){console.log('b')}, 5);
+		setTimeout(function(){console.log('c')}, 5);
+	`))
+	mustHave(t, logs, "a", "b", "c")
+	var order []string
+	for _, l := range logs {
+		if l == "log: a" || l == "log: b" || l == "log: c" {
+			order = append(order, l)
+		}
+	}
+	want := "log: a log: b log: c"
+	got := strings.Join(order, " ")
+	if got != want {
+		t.Fatalf("expected FIFO order among equal delays %q, got %q", want, got)
+	}
+}
+
 func TestConstructors(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		var e=new Event('x',{bubbles:true,cancelable:true});
