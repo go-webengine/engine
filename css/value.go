@@ -605,15 +605,15 @@ type Style struct {
 	StrokeSet  bool
 	StrokeNone bool
 
-	Margin Edges
-	Padding    Edges
-	Border     Borders
-	Width      Length // Auto by default
-	MinWidth   Length // Auto (== none) by default
-	MaxWidth   Length // Auto (== none) by default
-	Height     Length // Auto by default
-	MinHeight  Length // Auto (== none) by default
-	MaxHeight  Length // Auto (== none) by default
+	Margin    Edges
+	Padding   Edges
+	Border    Borders
+	Width     Length // Auto by default
+	MinWidth  Length // Auto (== none) by default
+	MaxWidth  Length // Auto (== none) by default
+	Height    Length // Auto by default
+	MinHeight Length // Auto (== none) by default
+	MaxHeight Length // Auto (== none) by default
 	// AspectRatio is the preferred width/height ratio from `aspect-ratio:
 	// <W>/<H>` (0 means "auto", i.e. unset — no ratio constrains sizing).
 	// Confirmed load-bearing live (round 86): Next.js's own auto-generated
@@ -845,6 +845,27 @@ type Style struct {
 	// place rather than resetting to some sentinel (0 is itself a valid,
 	// meaningful value: "don't render tabs").
 	TabSize int
+
+	// TextWrapBalance (CSS Text Module Level 4, `text-wrap`/`text-wrap-style`)
+	// is INHERITED, initial false ("auto", ordinary greedy wrapping) — `true`
+	// requests the `balance` value: redistribute a SHORT block's own line
+	// breaks so each line's leftover space is more even (a real browser's own
+	// algorithm is UA-defined; layout's own balanceLines approximates it by
+	// finding the narrowest width that still wraps to the SAME line count a
+	// plain greedy wrap already produces, then re-breaking at that width —
+	// the spec's own explicit invariant: balancing must never change the line
+	// count for 5 lines or fewer, and a UA "may" give up and fall back to
+	// `auto` past 10). Confirmed live (round 93): tailwindcss.com's own hero
+	// `<h1 class="... text-balance ...">` heading. Only `balance` itself is
+	// modelled — `pretty`/`stable`/`avoid-short-last-line` have no confirmed
+	// real use in this engine's own corpus and fall back to ordinary
+	// wrapping, same as the property's own initial `auto`. `text-wrap`'s
+	// sibling `text-wrap-mode` value `nowrap` (`.text-nowrap{text-wrap:
+	// nowrap}`, ALSO confirmed live on the same page's code-toolbar filename
+	// labels) is a SEPARATE, independently-real gap this field does not
+	// track — deliberately left for a future round rather than folded in
+	// here, matching this session's own one-narrow-fix-per-round precedent.
+	TextWrapBalance bool
 }
 
 // BoxShadow is one box-shadow layer.
@@ -992,12 +1013,13 @@ func inheritFrom(parent Style) Style {
 		// break-before/after/inside are not inherited: reset to auto (the
 		// zero value, listed here for documentation like ContainerType);
 		// orphans and widows are inherited.
-		BreakBefore: BreakAuto,
-		BreakAfter:  BreakAuto,
-		BreakInside: BreakInsideAuto,
-		Orphans:     parent.Orphans,
-		Widows:      parent.Widows,
-		TabSize:     parent.TabSize,
+		BreakBefore:     BreakAuto,
+		BreakAfter:      BreakAuto,
+		BreakInside:     BreakInsideAuto,
+		Orphans:         parent.Orphans,
+		Widows:          parent.Widows,
+		TabSize:         parent.TabSize,
+		TextWrapBalance: parent.TextWrapBalance,
 	}
 }
 

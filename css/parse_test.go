@@ -831,3 +831,58 @@ func TestApplyTabSize(t *testing.T) {
 		t.Errorf("tab-size:unset = %d, want 2 (inherited from parent)", s2.TabSize)
 	}
 }
+
+func TestApplyTextWrapBalance(t *testing.T) {
+	if initialStyle().TextWrapBalance {
+		t.Error("initialStyle().TextWrapBalance = true, want false (initial value is auto)")
+	}
+
+	s := initialStyle()
+	apply := func(prop, v string) { s.apply(Declaration{Property: prop, Value: v}, 16, nil) }
+
+	apply("text-wrap", "balance")
+	if !s.TextWrapBalance {
+		t.Error("text-wrap:balance left TextWrapBalance false")
+	}
+	apply("text-wrap", "wrap")
+	if s.TextWrapBalance {
+		t.Error("text-wrap:wrap left TextWrapBalance true")
+	}
+	apply("text-wrap-style", "balance")
+	if !s.TextWrapBalance {
+		t.Error("text-wrap-style:balance (longhand) left TextWrapBalance false")
+	}
+	// The shorthand's grammar allows either order and either half omitted —
+	// "wrap balance" should still select balance via the mode/style split.
+	apply("text-wrap", "wrap")
+	apply("text-wrap", "wrap balance")
+	if !s.TextWrapBalance {
+		t.Error(`text-wrap:"wrap balance" left TextWrapBalance false`)
+	}
+	// A recognised-but-not-modelled keyword (pretty/stable/avoid-short-last-
+	// line/nowrap) is valid CSS, just resolves to false, same as auto.
+	for _, v := range []string{"pretty", "stable", "avoid-short-last-line", "nowrap"} {
+		apply("text-wrap", "balance")
+		apply("text-wrap", v)
+		if s.TextWrapBalance {
+			t.Errorf("text-wrap:%s left TextWrapBalance true", v)
+		}
+	}
+	// An unrecognised token is invalid CSS and must leave the value UNCHANGED,
+	// not silently reset to false.
+	apply("text-wrap", "balance")
+	apply("text-wrap", "not-a-real-value")
+	if !s.TextWrapBalance {
+		t.Error("text-wrap:not-a-real-value (invalid) reset TextWrapBalance, want unchanged")
+	}
+
+	// unset on an inherited property re-inherits the parent's value.
+	parent := initialStyle()
+	parent.TextWrapBalance = true
+	s2 := initialStyle()
+	s2.TextWrapBalance = false
+	s2.apply(Declaration{Property: "text-wrap", Value: "unset"}, 16, &parent)
+	if !s2.TextWrapBalance {
+		t.Error("text-wrap:unset did not inherit true from parent")
+	}
+}
