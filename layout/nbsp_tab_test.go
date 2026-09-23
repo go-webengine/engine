@@ -90,3 +90,33 @@ func TestPreBrResetsTabColumn(t *testing.T) {
 		t.Fatalf("after <br> = %q, want the tab expanded from column 0", got)
 	}
 }
+
+// TestPreTabSizeHonoursCSSProperty is the confirmed real-world regression
+// (round 91): pkg.go.dev's own `pre,textarea.code{tab-size:4}` on its real,
+// tab-indented Go source samples — expandTabs previously ignored the
+// property entirely and always expanded to 8 (CSS's own initial value, but
+// not necessarily the author's), doubling the real indentation.
+func TestPreTabSizeHonoursCSSProperty(t *testing.T) {
+	src := "<html><body style=\"margin:0\"><pre style=\"tab-size:4\">a\tb\naa\tb</pre></body></html>"
+	pre := findBox(layoutHTML(t, src, 800), "pre")
+	if len(pre.Lines) != 2 {
+		t.Fatalf("lines = %d, want 2", len(pre.Lines))
+	}
+	if got := pre.Lines[0].Items[0].Text; got != "a   b" {
+		t.Fatalf("line 0 = %q, want \"a   b\" (tab to column 4, not the default 8)", got)
+	}
+	if got := pre.Lines[1].Items[0].Text; got != "aa  b" {
+		t.Fatalf("line 1 = %q, want \"aa  b\" (same tab stop reached from column 2)", got)
+	}
+}
+
+// TestPreTabSizeZeroRendersNoTab covers the CSS Text 3 spec's own explicit
+// zero case ("preserved tabs are not rendered"): the tab contributes no
+// glyph and no column advance at all, rather than crashing on modulo-by-zero.
+func TestPreTabSizeZeroRendersNoTab(t *testing.T) {
+	src := "<html><body style=\"margin:0\"><pre style=\"tab-size:0\">a\tb</pre></body></html>"
+	pre := findBox(layoutHTML(t, src, 800), "pre")
+	if got := pre.Lines[0].Items[0].Text; got != "ab" {
+		t.Fatalf("tab-size:0 = %q, want \"ab\" (tab renders nothing)", got)
+	}
+}

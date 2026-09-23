@@ -869,6 +869,12 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if n, ok := parseLineCount(lv); ok {
 			s.Widows = n
 		}
+	case "tab-size":
+		if lv == "unset" { // unset is inherit for an inherited property
+			s.inheritProperty(d.Property, parent)
+		} else if n, ok := parseTabSize(lv); ok {
+			s.TabSize = n
+		}
 	case "position":
 		switch lv {
 		case "static":
@@ -1200,6 +1206,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.Orphans = parent.Orphans
 	case "widows":
 		s.Widows = parent.Widows
+	case "tab-size":
+		s.TabSize = parent.TabSize
 	// The break properties are not inherited by default, but an explicit
 	// `inherit` still copies the parent's computed value, per CSS Cascade.
 	case "break-before", "page-break-before":
@@ -1221,6 +1229,19 @@ func parseLineCount(lv string) (int, bool) {
 	}
 	n, err := strconv.Atoi(lv)
 	return n, err == nil && n > 0
+}
+
+// parseTabSize parses a `tab-size` value (CSS Text 3 §4.3): a bare,
+// non-negative integer (0 is valid — it means "don't render tabs"), or the
+// CSS-wide initial (8). The sibling `<length>` form (spec-flagged "at risk")
+// is not parsed — no confirmed real use — so it reports false and the
+// declaration is ignored, same as a negative or non-integer value.
+func parseTabSize(lv string) (int, bool) {
+	if lv == "initial" {
+		return 8, true
+	}
+	n, err := strconv.Atoi(lv)
+	return n, err == nil && n >= 0
 }
 
 func applyEdge(dst *float64, v string, emRef float64) {

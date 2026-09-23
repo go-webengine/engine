@@ -831,6 +831,20 @@ type Style struct {
 	BreakBefore, BreakAfter Break
 	BreakInside             BreakInside
 	Orphans, Widows         int
+
+	// TabSize (CSS Text Module Level 3) is INHERITED, initial 8 — a preserved
+	// tab (white-space:pre/pre-wrap) advances to the next multiple of this
+	// many space-widths, counted as columns from the line's own start (see
+	// layout's own expandTabs). Confirmed live (round 91): pkg.go.dev's own
+	// `pre,textarea.code{tab-size:4}` on its real, tab-indented Go source
+	// samples — this engine's tab expansion already existed but read a
+	// hardcoded 8 regardless of this property, over-indenting by 2x. Only a
+	// bare, non-negative `<number>` is parsed; the sibling `<length>` form is
+	// spec-flagged "at risk" (may be dropped) and has no confirmed real use
+	// here, so an unparseable/negative value leaves the inherited value in
+	// place rather than resetting to some sentinel (0 is itself a valid,
+	// meaningful value: "don't render tabs").
+	TabSize int
 }
 
 // BoxShadow is one box-shadow layer.
@@ -915,6 +929,7 @@ func initialStyle() Style {
 
 		Orphans: 2, // CSS Fragmentation 3: initial value 2, inherited
 		Widows:  2,
+		TabSize: 8, // CSS Text 3: initial value 8, inherited
 	}
 }
 
@@ -982,6 +997,7 @@ func inheritFrom(parent Style) Style {
 		BreakInside: BreakInsideAuto,
 		Orphans:     parent.Orphans,
 		Widows:      parent.Widows,
+		TabSize:     parent.TabSize,
 	}
 }
 
