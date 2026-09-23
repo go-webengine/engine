@@ -614,6 +614,17 @@ type Style struct {
 	Height     Length // Auto by default
 	MinHeight  Length // Auto (== none) by default
 	MaxHeight  Length // Auto (== none) by default
+	// AspectRatio is the preferred width/height ratio from `aspect-ratio:
+	// <W>/<H>` (0 means "auto", i.e. unset — no ratio constrains sizing).
+	// Confirmed load-bearing live (round 86): Next.js's own auto-generated
+	// image-placeholder wrapper divs (tailwindcss.com's blog/changelog cover
+	// images) size themselves ENTIRELY via `aspect-ratio` plus a resolved
+	// width, with no explicit height at all — reserving the correct space
+	// before the image itself loads, to avoid a layout shift. Only the
+	// width-known/height-auto direction is resolved (see usedHeight); the
+	// reverse (height known, width auto) has no confirmed real caller and is
+	// not attempted.
+	AspectRatio float64
 	BoxSizing  BoxSizing
 	TextAlign  TextAlign
 	WhiteSpace WhiteSpace
@@ -1261,4 +1272,29 @@ func parseLength(s string, emRef float64) (Length, bool) {
 		return Length{}, false
 	}
 	return Length{Px: f * scale}, true
+}
+
+// parseAspectRatio parses an `aspect-ratio` value's <ratio> grammar: a bare
+// number ("1.333") or "<W>/<H>" ("16/9"). The real, mixed "auto <ratio>" /
+// "<ratio> auto" forms (letting content size override the ratio) and the
+// bare "auto" keyword are not distinguished from any other unparseable
+// value here — both return ok=false, which the caller (applyProperty) turns
+// into AspectRatio=0, this style's own "no ratio" value, matching the
+// pre-existing convention every other unmodelled/reset keyword in this file
+// already follows (see e.g. min-width/max-height's own "none" handling).
+func parseAspectRatio(v string) (float64, bool) {
+	v = strings.TrimSpace(v)
+	w, h, ok := strings.Cut(v, "/")
+	wf, err := strconv.ParseFloat(strings.TrimSpace(w), 64)
+	if err != nil || wf <= 0 {
+		return 0, false
+	}
+	if !ok {
+		return wf, true
+	}
+	hf, err := strconv.ParseFloat(strings.TrimSpace(h), 64)
+	if err != nil || hf <= 0 {
+		return 0, false
+	}
+	return wf / hf, true
 }

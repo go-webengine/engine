@@ -383,9 +383,13 @@ func gapLen(l css.Length) float64 {
 }
 
 // flexCrossHeight returns the flex container's definite cross height (row) and
-// whether it is definite. cw is used only for box-sizing.
+// whether it is definite. cw is used only for box-sizing. Passes 0 for
+// usedHeight's own contentW (aspect-ratio) parameter: a flex container sized
+// by its own aspect-ratio has no confirmed real caller, unlike the plain
+// block-box case usedHeight's other call site (layout.go's place) resolves —
+// see css.Style.AspectRatio's own doc comment.
 func flexCrossHeight(st *css.Style, cw float64) (float64, bool) {
-	if h, ok := usedHeight(st, st.Border.Widths(), cw); ok {
+	if h, ok := usedHeight(st, st.Border.Widths(), cw, 0); ok {
 		return h, true
 	}
 	return 0, false

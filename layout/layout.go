@@ -232,7 +232,7 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 
 	contentBottom := l.contents(box, node, st, contentX, contentW, contentTopY, b, sep)
 
-	if h, ok := usedHeight(st, bw, cw); ok {
+	if h, ok := usedHeight(st, bw, cw, contentW); ok {
 		// An explicit height fixes the content box height; taller content
 		// overflows (overflow:visible) rather than growing the box.
 		contentBottom = contentTopY + h
@@ -650,9 +650,19 @@ func widthBound(l css.Length, cw, extra float64, bs css.BoxSizing) (float64, boo
 }
 
 // usedHeight returns an explicit content height when height is set (box-sizing
-// aware), else (0,false). Percentage heights are skipped (no definite basis).
-func usedHeight(st *css.Style, bw css.Edges, cw float64) (float64, bool) {
+// aware), else — when height is auto/unresolvable but aspect-ratio is set and
+// this box's own resolved content width (contentW) is known — the height that
+// ratio implies, else (0,false). Percentage heights are skipped (no definite
+// basis); contentW is already in content-box terms (resolveWidths' own
+// box-sizing adjustment already applied), so no further box-sizing correction
+// is needed for the aspect-ratio branch. Only width-known/height-auto is
+// resolved — see css.Style.AspectRatio's own doc comment for why the reverse
+// direction isn't attempted.
+func usedHeight(st *css.Style, bw css.Edges, cw, contentW float64) (float64, bool) {
 	if st.Height.Auto || st.Height.IsPercent {
+		if st.AspectRatio > 0 && contentW > 0 {
+			return contentW / st.AspectRatio, true
+		}
 		return 0, false
 	}
 	h := st.Height.Px
