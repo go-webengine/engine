@@ -1044,23 +1044,39 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 	x := r.X + formControlPadX
 	tw := f.Measure(text, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 
-	// A text label WITH a trailing icon (github.com's own nav dropdown
-	// triggers — "Platform▾" and friends, round 85; see layout's own
-	// buttonIcon doc comment) centres the label+gap+icon group as a whole,
-	// then draws the icon immediately after the label — layout already
-	// reserved exactly this width (buttonIconGap) when sizing the control's
-	// box, so no further layout decision is made here, only painting it.
-	if it.Icon != nil {
-		if src, ok := imgs[it.Icon]; ok {
-			b := src.Bounds()
-			total := tw + buttonIconGap + float64(b.Dx())
-			x = r.X + int((float64(r.W)-total)/2)
-			drawText(dst, pp, f, st, text, x, baseline, col, clip)
+	// A text label with a leading and/or trailing icon — github.com's own
+	// Primer "<> Code ▾" button has BOTH at once (round 92); its nav
+	// dropdown triggers (round 85, "Platform▾" and friends) have only a
+	// trailing one. The whole group (icon+gap+label+gap+icon, omitting
+	// whichever side has no icon) centres as a unit — layout already
+	// reserved exactly this width (buttonIconGap per side present) when
+	// sizing the control's box, so no further layout decision is made
+	// here, only painting each present piece in document order.
+	leadSrc, hasLead := imgs[it.LeadingIcon]
+	trailSrc, hasTrail := imgs[it.Icon]
+	if hasLead || hasTrail {
+		total := tw
+		if hasLead {
+			total += float64(leadSrc.Bounds().Dx()) + buttonIconGap
+		}
+		if hasTrail {
+			total += float64(trailSrc.Bounds().Dx()) + buttonIconGap
+		}
+		x = r.X + int((float64(r.W)-total)/2)
+		if hasLead {
+			b := leadSrc.Bounds()
+			iy := r.Y + (r.H-b.Dy())/2
+			blitImage(dst, leadSrc, x, iy, clip)
+			x += b.Dx() + buttonIconGap
+		}
+		drawText(dst, pp, f, st, text, x, baseline, col, clip)
+		if hasTrail {
+			b := trailSrc.Bounds()
 			ix := x + int(tw) + buttonIconGap
 			iy := r.Y + (r.H-b.Dy())/2
-			blitImage(dst, src, ix, iy, clip)
-			return
+			blitImage(dst, trailSrc, ix, iy, clip)
 		}
+		return
 	}
 
 	if kind == controlButtonLike {

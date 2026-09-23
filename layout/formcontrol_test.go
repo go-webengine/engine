@@ -514,3 +514,109 @@ func TestFormControlButtonTextAndIconHeightUsesTallerOfTheTwo(t *testing.T) {
 	// Height: max(fontSize=16, iconHeight=40) + 2*formControlPadY(6) = 52.
 	assertF(t, "text+tall-icon button height", items[0].LineHeight, 52)
 }
+
+// TestFormControlButtonLeadingTallIconAndTextHeightUsesTallerOfTheTwo mirrors
+// TestFormControlButtonTextAndIconHeightUsesTallerOfTheTwo for a LEADING icon
+// (formControlDefaultSize's leading and trailing height comparisons are two
+// independent if-blocks — see buttonIconGap's own doc comment on round 92 —
+// so a tall trailing icon alone does not exercise the tall-leading-icon path).
+func TestFormControlButtonLeadingTallIconAndTextHeightUsesTallerOfTheTwo(t *testing.T) {
+	src := `<html><body><button id="e"><svg id="icon"></svg>OK</button></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	icon := dom.Find(root, "svg")
+	sizes := map[*dom.Node][2]float64{icon: {40, 40}} // well taller than the default 16px font size
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "body"))
+	if len(items) != 1 {
+		t.Fatalf("expected one form-control item, got %v", items)
+	}
+	// Height: max(fontSize=16, iconHeight=40) + 2*formControlPadY(6) = 52.
+	assertF(t, "leading-tall-icon+text button height", items[0].LineHeight, 52)
+}
+
+// TestFormControlButtonLeadingIconAndTextBothPaint is the mirror of
+// TestFormControlButtonTextAndIconBothPaint: an icon found BEFORE the
+// button's own text (github.com's own Primer buttons commonly lead with an
+// icon, e.g. the "<> Code" button — see the sibling leading+trailing test
+// below for that exact real shape). buttonIcons splits purely on document
+// order, so this is the same mechanism, just the icon on the other side.
+func TestFormControlButtonLeadingIconAndTextBothPaint(t *testing.T) {
+	src := `<html><body><button id="e"><svg id="icon"></svg>Platform</button></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	icon := dom.Find(root, "svg")
+	sizes := map[*dom.Node][2]float64{icon: {16, 16}}
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "body"))
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatalf("expected one form-control item, got %v", items)
+	}
+	item := items[0]
+	if item.Label != "Platform" {
+		t.Fatalf("Label = %q, want %q", item.Label, "Platform")
+	}
+	if item.LeadingIcon != icon {
+		t.Fatalf("LeadingIcon = %v, want the svg child %v", item.LeadingIcon, icon)
+	}
+	if item.Icon != nil {
+		t.Fatalf("Icon (trailing) = %v, want nil — the icon precedes the text", item.Icon)
+	}
+	// Same arithmetic as TestFormControlButtonTextAndIconBothPaint (only the
+	// icon's SIDE differs, not the total reserved space): 124 x 28.
+	assertF(t, "leading-icon+text button width", item.Width, 124)
+	assertF(t, "leading-icon+text button height", item.LineHeight, 28)
+}
+
+// TestFormControlButtonLeadingAndTrailingIconBothPaint is the confirmed
+// real-world shape (round 92): github.com's own Primer "<> Code ▾" button
+// wraps a LEADING icon (a code-bracket glyph) and a TRAILING icon (a
+// dropdown chevron) around its own "Code" label, each icon nested inside a
+// non-replaced `<span data-component="leadingVisual"/"trailingVisual">`
+// wrapper rather than being a direct child — buttonIcons searches ALL
+// descendants, not just direct children, specifically for this shape.
+// Previously buttonIcon (direct children only, single icon only) found
+// NEITHER icon at all: not a direct child of the button, and the button's
+// own DIRECT children were both wrapper spans (2 of them), tripping the
+// "more than one candidate" ambiguity bail-out even before considering
+// nesting depth.
+func TestFormControlButtonLeadingAndTrailingIconBothPaint(t *testing.T) {
+	// Uses distinct replaced tags (svg for the leading icon, img for the
+	// trailing one) purely so the test can locate each by tag name — real
+	// markup uses <svg> for both, which buttonIcons treats identically.
+	src := `<html><body><button id="e"><span><svg id="lead"></svg></span>Code<span><img id="trail"></span></button></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	lead := dom.Find(root, "svg")
+	trail := dom.Find(root, "img")
+	sizes := map[*dom.Node][2]float64{lead: {16, 16}, trail: {16, 16}}
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "body"))
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatalf("expected one form-control item, got %v", items)
+	}
+	item := items[0]
+	if item.Label != "Code" {
+		t.Fatalf("Label = %q, want %q", item.Label, "Code")
+	}
+	if item.LeadingIcon != lead {
+		t.Fatalf("LeadingIcon = %v, want %v (nested inside a wrapper span)", item.LeadingIcon, lead)
+	}
+	if item.Icon != trail {
+		t.Fatalf("Icon (trailing) = %v, want %v (nested inside a wrapper span)", item.Icon, trail)
+	}
+	// "Code" (4 runes) measures 40px: 40 (label) + 2*formControlPadX(12) +
+	// leading(16+gap4) + trailing(16+gap4) = 104. Height ties all three at
+	// 16px: 16 + 2*formControlPadY(6) = 28.
+	assertF(t, "leading+trailing-icon button width", item.Width, 104)
+	assertF(t, "leading+trailing-icon button height", item.LineHeight, 28)
+}

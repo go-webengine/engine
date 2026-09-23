@@ -317,13 +317,20 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		}
 		w, h := l.formControlSize(node, st, cw)
 		label := l.buttonLabel(node)
-		var icon *dom.Node
+		var leadingIcon, icon *dom.Node
 		if node.Tag == "button" {
-			icon, _, _ = l.buttonIcon(node)
+			leadingIcon, icon, _, _, _, _ = l.buttonIcons(node)
+			if label == "" && icon == nil && leadingIcon != nil {
+				// An icon-only button's sole icon is found "before" the
+				// (nonexistent) text by buttonIcons — there's no label for
+				// it to be leading/trailing OF, so normalise it into Icon,
+				// the field paint's own icon-only case actually reads.
+				icon, leadingIcon = leadingIcon, nil
+			}
 		}
 		b.commit()
 		item := &InlineItem{Node: node, FormControl: node, Style: st,
-			Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y, Label: label, Icon: icon}
+			Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y, Label: label, Icon: icon, LeadingIcon: leadingIcon}
 		box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: h, Items: []*InlineItem{item}}}
 		b.y += h
 		return b.y
@@ -889,14 +896,19 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			}
 			sb += l.takeMargin() + cs.Margin.Left
 			label := l.buttonLabel(el)
-			var icon *dom.Node
+			var leadingIcon, icon *dom.Node
 			if el.Tag == "button" {
-				icon, _, _ = l.buttonIcon(el)
+				leadingIcon, icon, _, _, _, _ = l.buttonIcons(el)
+				if label == "" && icon == nil && leadingIcon != nil {
+					// See the mirror comment at contents()'s own identical
+					// normalisation above.
+					icon, leadingIcon = leadingIcon, nil
+				}
 			}
 			*items = append(*items, &InlineItem{
 				Style: cs, FormControl: el, Node: el,
 				Width: w, Ascent: h, LineHeight: h,
-				SpaceBefore: sb, Label: label, Icon: icon, decor: l.decor,
+				SpaceBefore: sb, Label: label, Icon: icon, LeadingIcon: leadingIcon, decor: l.decor,
 			})
 			l.wsEmitted, l.wsPending = true, false
 			l.pendingMargin += cs.Margin.Right
@@ -1147,25 +1159,44 @@ func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (w, h f
 		// same box a real browser gives it, rather than the padding-only
 		// floor a fabricated empty label would leave (see buttonIcon).
 		label := l.buttonLabel(node)
-		icon, iw, ih := l.buttonIcon(node)
+		leading, trailing, lw, lh, tw, th := l.buttonIcons(node)
 		switch {
-		case icon != nil && label == "":
-			w, h = iw+2*formControlPadX, ih+2*formControlPadY
-		case icon != nil:
-			// Text label PLUS a trailing icon (github.com's own nav dropdown
-			// triggers — see buttonIcon's own doc comment): width is the
-			// label's own measured width, the fixed icon gap (buttonIconGap,
-			// shared with paint's own drawing of the same layout), and the
-			// icon's width, all plus the usual padding; height is whichever
-			// of the text's own line height or the icon's height is taller.
-			tw := l.m.Measure(label, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
-			w = tw + buttonIconGap + iw + 2*formControlPadX
-			lh := st.FontSize
-			if ih > lh {
-				lh = ih
+		case label == "" && leading != nil:
+			// buttonIcons only ever populates "before" when no visible text
+			// preceded it (see its seenText walk) — so an empty label (which
+			// requires every text node in the same subtree to be whitespace-
+			// only) can NEVER leave trailing populated instead: label=="" and
+			// trailing!=nil is not a reachable combination, only this one is.
+			w, h = lw+2*formControlPadX, lh+2*formControlPadY
+		case label != "" && (leading != nil || trailing != nil):
+			// Text label plus a leading and/or trailing icon — github.com's
+			// own Primer "<> Code ▾" button has BOTH at once (round 92); its
+			// nav dropdown triggers (round 85, "Platform▾") have only a
+			// trailing one. Width is the label's own measured width plus a
+			// fixed gap (buttonIconGap, shared with paint's own drawing of
+			// the same layout) on each side that has an icon, plus that
+			// icon's own width; height is the tallest of the text's own
+			// line height and either icon's height.
+			labelW := l.m.Measure(label, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+			w = labelW + 2*formControlPadX
+			lineH := st.FontSize
+			if leading != nil {
+				w += lw + buttonIconGap
+				if lh > lineH {
+					lineH = lh
+				}
 			}
-			h = lh + 2*formControlPadY
+			if trailing != nil {
+				w += tw + buttonIconGap
+				if th > lineH {
+					lineH = th
+				}
+			}
+			h = lineH + 2*formControlPadY
 		default:
+			// No icon at all, or an ambiguous icon-only case (both sides
+			// present with no text — no confirmed real need): the plain
+			// padding-only sizing, same as a labelless, icon-less button.
 			w, h = l.buttonSize(label, st)
 		}
 	case "select":
@@ -1252,38 +1283,70 @@ func (l *layouter) appendVisibleText(n *dom.Node, b *strings.Builder) {
 	}
 }
 
-// buttonIcon returns a "button"-tag node's single img/svg DIRECT child and
-// its used size. Fires REGARDLESS of whether the button also has visible
-// text: an icon-only button (MDN's nav <mdn-search-button>, pkg.go.dev's
-// search-submit button) is the shape this was originally written for, but a
-// button with BOTH a text label AND a trailing icon is equally real and
-// common — confirmed live on github.com's own site-wide nav dropdown
-// triggers (round 85: "Platform▾"/"Solutions▾"/etc., `<button>Platform<svg
-// class="octicon-triangle-right ...">`), previously documented here as
-// having "no confirmed real caller" and deliberately not attempted; that
-// confirmed need is what changed this function's own scope. Callers
-// distinguish the two shapes via the LABEL they already have (empty vs
-// non-empty), not via anything returned here. Returns a nil node and zero
-// size when there's no img/svg child at all, MORE than one such child
-// (ambiguous — no confirmed real case mixes multiple icons under one bare
-// button, so this doesn't guess which one is "the" icon), or a lone child
-// whose size never resolved (e.g. its fetch failed or budget was exceeded).
-func (l *layouter) buttonIcon(node *dom.Node) (icon *dom.Node, w, h float64) {
-	for _, c := range node.Children {
-		if c.Type == dom.Element && isReplacedTag(c.Tag) {
-			if icon != nil {
-				return nil, 0, 0
+// buttonIcons returns a "button"-tag node's own leading and/or trailing
+// icon (an img/svg found respectively before/after the button's own visible
+// text, in document order) and their used sizes. Searches ALL descendants,
+// not just direct children — real markup commonly wraps an icon in a
+// non-replaced wrapper element (confirmed live, round 92: github.com's own
+// Primer `<button><span data-component="leadingVisual"><svg .../></span>
+// <span>Code</span><span data-component="trailingVisual"><svg .../></span>
+// </button>` — a WYSIWYG-generated wrapper span this engine has no reason to
+// special-case by class name, so the split is purely "before the text" vs
+// "after the text", the same signal a real browser's own layout would use
+// were it asked the same question). This is the same real "Code" button
+// that motivated the two-icon case: github.com's nav dropdown triggers
+// (round 85, "Platform▾" — a single TRAILING icon) established the
+// label+icon shape; the Code button additionally has a LEADING icon,
+// alongside the pkg.go.dev-style icon-ONLY button (no text at all, so
+// every icon found counts as "leading" by this same rule, with no trailing
+// side — callers needing the icon-only shape read whichever of the two
+// returned nodes is non-nil). Fires regardless of whether the button also
+// has visible text — see InlineItem.Icon/LeadingIcon's own doc comment for
+// how callers use the label they already have to pick a drawing shape. A
+// side reports a nil node and zero size when it has no img/svg at all, MORE
+// than one on that SAME side (ambiguous — no confirmed real case mixes two
+// icons on one side), or its lone candidate's size never resolved (e.g. its
+// fetch failed or budget was exceeded); the OTHER side is resolved
+// independently and unaffected by that.
+func (l *layouter) buttonIcons(node *dom.Node) (leading, trailing *dom.Node, lw, lh, tw, th float64) {
+	seenText := false
+	var before, after []*dom.Node
+	var walk func(n *dom.Node)
+	walk = func(n *dom.Node) {
+		for _, c := range n.Children {
+			if cs := l.sm[c]; cs != nil && cs.Display == css.DisplayNone {
+				continue
 			}
-			icon = c
+			switch c.Type {
+			case dom.Text:
+				if strings.TrimSpace(c.Text) != "" {
+					seenText = true
+				}
+			case dom.Element:
+				if isReplacedTag(c.Tag) {
+					if seenText {
+						after = append(after, c)
+					} else {
+						before = append(before, c)
+					}
+					continue // an <img>/<svg> is atomic; never descend into its own children
+				}
+				walk(c)
+			}
 		}
 	}
-	if icon == nil {
-		return nil, 0, 0
+	walk(node)
+	if len(before) == 1 {
+		if w, h := l.imageSize(before[0]); w > 0 && h > 0 {
+			leading, lw, lh = before[0], w, h
+		}
 	}
-	if w, h = l.imageSize(icon); w <= 0 || h <= 0 {
-		return nil, 0, 0
+	if len(after) == 1 {
+		if w, h := l.imageSize(after[0]); w > 0 && h > 0 {
+			trailing, tw, th = after[0], w, h
+		}
 	}
-	return icon, w, h
+	return
 }
 
 func (l *layouter) imageSize(el *dom.Node) (float64, float64) {
