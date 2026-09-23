@@ -50,6 +50,30 @@ type BgSize struct {
 	H    Length // meaningful when SizeExplicit; Auto keeps aspect ratio
 }
 
+// ObjectFit selects how a replaced element's (img/video) own content is
+// scaled to its box, when that box's size (from width/height/aspect-ratio)
+// doesn't match the content's own intrinsic aspect ratio — the equivalent of
+// background-size for a foreground element rather than a background layer.
+// Confirmed live (round 89) as `object-fit:cover`, the standard Tailwind
+// `object-cover` utility: react.dev's own avatar/video-thumbnail images and
+// tailwindcss.com's own gallery images. `object-position` is not modelled —
+// no confirmed non-centered real use — so cover/contain always centre.
+type ObjectFit uint8
+
+const (
+	// ObjectFitFill stretches the content to exactly fill the box, distorting
+	// its aspect ratio if the box's doesn't match — the initial value, and
+	// this engine's own prior behaviour for every image before this existed.
+	ObjectFitFill ObjectFit = iota
+	// ObjectFitCover scales the content, preserving its aspect ratio, to
+	// cover the whole box, cropping any overflow — same mechanism as
+	// background-size:cover, applied to a foreground element.
+	ObjectFitCover
+	// ObjectFitContain scales the content, preserving its aspect ratio, to
+	// fit entirely inside the box, letterboxing any remainder.
+	ObjectFitContain
+)
+
 // BgPosition is a resolved background-position (percent/px per axis). The
 // initial value is the top-left corner (0%, 0%).
 type BgPosition struct {

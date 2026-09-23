@@ -625,6 +625,11 @@ type Style struct {
 	// reverse (height known, width auto) has no confirmed real caller and is
 	// not attempted.
 	AspectRatio float64
+	// ObjectFit controls how a replaced element's OWN content (the loaded
+	// image bitmap) is scaled into its box when the two aspect ratios don't
+	// match — see ObjectFit's own doc comment. Fill (the zero value) is this
+	// engine's own pre-existing behaviour (stretch to exactly fill the box).
+	ObjectFit  ObjectFit
 	BoxSizing  BoxSizing
 	TextAlign  TextAlign
 	WhiteSpace WhiteSpace

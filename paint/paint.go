@@ -874,6 +874,27 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 			// resample path background-image tiles already go through) rather
 			// than in the loader, so the loaded bitmap's own resolution stays
 			// an upper bound and this stays a pure display-size concern.
+			// object-fit:cover/contain (round 89) preserve the bitmap's OWN
+			// aspect ratio instead of independently stretching each axis to
+			// the box -- the exact mechanism background-size:cover/contain
+			// already implements for a background layer, reused here via the
+			// same coverContain/blitTileClipped helpers for a foreground
+			// element. object-position is not modelled (no confirmed non-
+			// centred real use), so the scaled content is always centred.
+			fit := css.ObjectFitFill
+			if it.Style != nil {
+				fit = it.Style.ObjectFit
+			}
+			if bw, bh := it.Width, it.LineHeight; fit != css.ObjectFitFill && bw > 0 && bh > 0 {
+				iw, ih := float64(src.Bounds().Dx()), float64(src.Bounds().Dy())
+				tw, th := coverContain(iw, ih, bw, bh, fit == css.ObjectFitCover)
+				tile := scaleTile(src, int(math.Round(tw)), int(math.Round(th)), bgMode(it.Style))
+				bx := image.Rect(int(it.X), int(it.Y), int(it.X+bw), int(it.Y+bh))
+				ox := int(it.X) + int(math.Round((bw-tw)/2))
+				oy := int(it.Y) + int(math.Round((bh-th)/2))
+				blitTileClipped(dst, tile, ox, oy, bx, 0, clip)
+				return
+			}
 			if tw, th := int(math.Round(it.Width)), int(math.Round(it.LineHeight)); tw > 0 && th > 0 &&
 				(tw != src.Bounds().Dx() || th != src.Bounds().Dy()) {
 				src = scaleTile(src, tw, th, bgMode(it.Style))

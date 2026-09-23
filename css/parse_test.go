@@ -756,3 +756,33 @@ func TestApplyAspectRatio(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyObjectFit covers the confirmed real-world values (round 89):
+// `cover` (react.dev's/tailwindcss.com's own `object-cover` utility) and its
+// sibling `contain`; every other/unrecognised keyword — including the
+// initial `fill` — must resolve to ObjectFitFill, this engine's own prior
+// (and still correct) unconditional-stretch behaviour.
+func TestApplyObjectFit(t *testing.T) {
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "object-fit", Value: v}, 16, nil) }
+
+	apply("cover")
+	if s.ObjectFit != ObjectFitCover {
+		t.Errorf("object-fit:cover = %v, want ObjectFitCover", s.ObjectFit)
+	}
+	apply("contain")
+	if s.ObjectFit != ObjectFitContain {
+		t.Errorf("object-fit:contain = %v, want ObjectFitContain", s.ObjectFit)
+	}
+	apply("fill")
+	if s.ObjectFit != ObjectFitFill {
+		t.Errorf("object-fit:fill = %v, want ObjectFitFill", s.ObjectFit)
+	}
+	// Re-set to a non-fill value, then confirm an unrecognised keyword resets
+	// to fill rather than leaving the PREVIOUS value in effect.
+	apply("cover")
+	apply("scale-down")
+	if s.ObjectFit != ObjectFitFill {
+		t.Errorf("object-fit:scale-down (unrecognised) = %v, want ObjectFitFill, not the prior cover", s.ObjectFit)
+	}
+}
