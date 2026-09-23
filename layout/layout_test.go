@@ -245,6 +245,25 @@ func TestInlineImageNoCSSSizeStaysAtIntrinsicWidth(t *testing.T) {
 	assertF(t, "img.LineHeight", img.LineHeight, 500)
 }
 
+// TestInlineImageExplicitHeightWinsOverAspectRatio is the confirmed
+// real-world regression (round 90, found via object-fit's own verification):
+// tailwindcss.com's own gallery `<img>`s set BOTH `width:100%` AND an
+// independent explicit `height` (Tailwind's `w-full h-40`) — but
+// resolvedReplacedSize derived height purely from the resolved width and the
+// source's own aspect ratio, discarding the author's explicit height
+// entirely. Real symptom: the oversized image (285px tall instead of the
+// intended 160px) spilled downward over the listing card's own title/text
+// sitting right below it. An explicit height must always win, exactly like
+// an explicit width does — never overridden by an aspect-ratio derivation.
+func TestInlineImageExplicitHeightWinsOverAspectRatio(t *testing.T) {
+	root, sm, sizes := imgSizeHTML(t, `<html><body><div style="width:200px"><img style="width:100%;height:80px"></div></body></html>`, 1000, 500)
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "div"))
+	img := items[0]
+	assertF(t, "img.Width (from width:100%)", img.Width, 200)
+	assertF(t, "img.LineHeight (explicit height, not aspect-derived 100)", img.LineHeight, 80)
+}
+
 // TestBlockImageMaxWidthPercentResolvesAgainstContainer covers the sibling
 // block-level replaced-element path (contents()'s isReplacedTag branch,
 // reached when e.g. a stylesheet's preflight reset makes img display:block) —
@@ -258,6 +277,29 @@ func TestBlockImageMaxWidthPercentResolvesAgainstContainer(t *testing.T) {
 	}
 	assertF(t, "img.W (clamped to container)", img.W, 200)
 	assertF(t, "img.H (scaled by aspect ratio)", img.H, 100)
+}
+
+// TestBlockImageExplicitHeightWinsOverAspectRatio is the block-level sibling
+// of TestInlineImageExplicitHeightWinsOverAspectRatio, covering the same
+// round-90 regression in contents()'s isReplacedTag branch. Checks the box's
+// own Lines[0].Items[0] (what paint actually reads to scale the bitmap), not
+// img.H/ContentH: place()'s PRE-EXISTING usedHeight override already forces
+// the outer box's own reported height to the explicit CSS value regardless of
+// this fix (confirmed with a plain non-replaced `<div style="height:80px">`,
+// which shows the identical override, unrelated to images entirely) — so
+// checking img.H/ContentH here would pass even with this round's fix
+// reverted, a false-positive test that isn't exercising the actual
+// regression at all.
+func TestBlockImageExplicitHeightWinsOverAspectRatio(t *testing.T) {
+	root, sm, sizes := imgSizeHTML(t, `<html><body><div style="width:200px"><img style="display:block;width:100%;height:80px"></div></body></html>`, 1000, 500)
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	img := findBox(box, "img")
+	if img == nil || len(img.Lines) != 1 || len(img.Lines[0].Items) != 1 {
+		t.Fatalf("expected one img box with one line item, got %v", img)
+	}
+	item := img.Lines[0].Items[0]
+	assertF(t, "item.Width (from width:100%)", item.Width, 200)
+	assertF(t, "item.LineHeight (explicit height, not aspect-derived 100)", item.LineHeight, 80)
 }
 
 func TestImageSizeMapOverride(t *testing.T) {

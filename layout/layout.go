@@ -1300,9 +1300,21 @@ func (l *layouter) imageSize(el *dom.Node) (float64, float64) {
 // constrains the used width below it, matching prior behaviour exactly for
 // the — overwhelmingly common — no-CSS-size case. Mirrors CSS's own
 // replaced-element sizing algorithm for the common single-explicit-dimension
-// case (an explicit width scales height by the same intrinsic aspect ratio);
-// deliberately does not also resolve `height`/`max-height`, since a
-// height-driven resize has no confirmed real caller yet.
+// case (an explicit width scales height by the same intrinsic aspect ratio) —
+// UNLESS an explicit, definite `height` is ALSO set, in which case it always
+// wins outright, exactly like an explicit width, never overridden by an
+// aspect-ratio-derived value. Found missing (round 90) via `object-fit`'s own
+// verification: tailwindcss.com's gallery `<img>`s set BOTH `w-full` AND
+// `h-40` independently, but this function derived height purely from the
+// resolved width and the source's own aspect ratio, silently discarding the
+// author's explicit height (285px derived vs. the CSS-intended 160px) — which
+// also, as a side effect, made the box's aspect ratio always equal the
+// source's own, masking `object-fit:cover`/`contain`'s entire visible effect
+// on every image this path reached. A percentage height is NOT resolved
+// (deliberately, matching `max-width`'s own containing-block requirement
+// above) — no containing-block HEIGHT is available/meaningful at this call
+// site, unlike width's own `cw` parameter — and `max-height` has no confirmed
+// real caller yet either.
 func resolvedReplacedSize(st *css.Style, iw, ih, cw float64) (float64, float64) {
 	if st == nil || iw <= 0 || ih <= 0 {
 		return iw, ih
@@ -1317,6 +1329,9 @@ func resolvedReplacedSize(st *css.Style, iw, ih, cw float64) (float64, float64) 
 		if maxW := st.MaxWidth.Resolve(cw); maxW > 0 && maxW < w {
 			w = maxW
 		}
+	}
+	if !st.Height.Auto && !st.Height.IsPercent && st.Height.Px > 0 {
+		return w, st.Height.Px
 	}
 	if w == iw {
 		return iw, ih
