@@ -135,7 +135,36 @@ func collapse(a, c float64) float64 {
 // width viewportW (CSS pixels), returning the root Box and the total content
 // height. imgSize provides intrinsic image dimensions keyed by <img> node; it
 // may be nil (images then fall back to width/height attributes).
+//
+// This is LayoutDocumentViewport with no real viewport height available (most
+// existing callers, including nearly every test in this repo): a
+// position:fixed element is then anchored against the full document height
+// instead of a real viewport, the pre-existing approximation this package has
+// always used — see LayoutDocumentViewport's own doc comment for why that is
+// wrong for a full-page capture and when it matters.
 func LayoutDocument(root *dom.Node, sm css.StyleMap, viewportW float64, m Measurer, imgSize map[*dom.Node][2]float64) (*Box, float64) {
+	return LayoutDocumentViewport(root, sm, viewportW, 0, m, imgSize)
+}
+
+// LayoutDocumentViewport is LayoutDocument with an explicit viewport height,
+// used to anchor position:fixed content against the ACTUAL requested
+// viewport rather than the full document height. Real browsers keep a
+// position:fixed element pinned to the ORIGINAL viewport bounds even when a
+// full-page screenshot captures far more than one viewport's worth of
+// content (confirmed against real headless Chrome's own captureBeyondViewport
+// behaviour); this engine previously had no viewport height available at
+// this entry point at all and used the eventual document height instead, so
+// a `bottom:0` fixed element (e.g. a cookie-consent banner) landed at the
+// very BOTTOM of the whole page rather than near the top where a real browser
+// places it — confirmed live on pkg.go.dev/net/http's own cookie banner
+// (round 84) and already flagged, but not fixed, as a separate architectural
+// gap after round 74's react.dev investigation.
+//
+// viewportH<=0 falls back to the same full-document-height approximation
+// LayoutDocument has always used (needed by callers, mostly tests, with no
+// real viewport height to give — the fixed-position CONTAINING BLOCK is the
+// only thing this affects; everything else about layout is unchanged).
+func LayoutDocumentViewport(root *dom.Node, sm css.StyleMap, viewportW, viewportH float64, m Measurer, imgSize map[*dom.Node][2]float64) (*Box, float64) {
 	l := &layouter{sm: sm, m: m, imgSize: imgSize, floats: &floatCtx{}}
 	start := firstElement(root)
 	if start == nil {
@@ -151,7 +180,7 @@ func LayoutDocument(root *dom.Node, sm css.StyleMap, viewportW float64, m Measur
 	// Positioned pass: apply relative offsets, then place out-of-flow
 	// (absolute/fixed) boxes against their containing blocks. May grow the page
 	// height to cover absolutely-positioned content.
-	total = l.positioned(box, viewportW, total)
+	total = l.positioned(box, viewportW, viewportH, total)
 	return box, total
 }
 

@@ -29,12 +29,17 @@ type posBox struct {
 //     in-flow content — an approximate but stable stacking order), sorted by
 //     z-index.
 //
-// The initial containing block is the viewport: width viewportW, and — lacking
-// a separate viewport height in this entry point — height equal to the in-flow
-// document height (a documented approximation used only to resolve bottom/right
-// offsets and percentages of viewport-anchored boxes). It returns the page
-// height, grown to cover any absolutely-positioned content.
-func (l *layouter) positioned(root *Box, viewportW, total float64) float64 {
+// The initial containing block used for an ABSOLUTE box with no positioned
+// ancestor is the viewport: width viewportW, and — lacking a separate
+// viewport height in this entry point — height equal to the in-flow document
+// height (a documented approximation, unchanged; absolute content scrolls
+// with the page, so the document is the relevant canvas it can occupy). A
+// FIXED box instead uses fixedH (viewportH if positive, else that same
+// document-height approximation) — see LayoutDocumentViewport's own doc
+// comment for why fixed specifically needs the real viewport, not the
+// document, to match a real browser's full-page-screenshot behaviour. It
+// returns the page height, grown to cover any absolutely-positioned content.
+func (l *layouter) positioned(root *Box, viewportW, viewportH, total float64) float64 {
 	nb := map[*dom.Node]*Box{}
 	indexBoxes(root, nb)
 
@@ -44,6 +49,11 @@ func (l *layouter) positioned(root *Box, viewportW, total float64) float64 {
 	applyRelative(root, viewportW, total)
 
 	icb := cbRect{x: 0, y: 0, w: viewportW, h: total}
+	fixedH := viewportH
+	if fixedH <= 0 {
+		fixedH = total
+	}
+	fixedICB := cbRect{x: 0, y: 0, w: viewportW, h: fixedH}
 	var placed []*posBox
 	// A growing queue: laying out a positioned subtree may itself collect nested
 	// out-of-flow boxes, which are appended and processed in turn.
@@ -53,7 +63,7 @@ func (l *layouter) positioned(root *Box, viewportW, total float64) float64 {
 		// Every collection site appends only nodes with a non-nil out-of-flow
 		// style, so l.sm[n] is guaranteed present here.
 		st := l.sm[n]
-		cb := l.resolveContainingBlock(n, st, nb, icb)
+		cb := l.resolveContainingBlock(n, st, nb, icb, fixedICB)
 		box := l.placeAbsolute(n, st, cb, item)
 		nb[n] = box // register so a nested absolute descendant can find it
 		placed = append(placed, &posBox{box: box, z: zIndexValue(st), order: i})
@@ -146,12 +156,12 @@ func relativeOffset(st *css.Style, cbW, cbH float64) (dx, dy float64) {
 }
 
 // resolveContainingBlock returns the containing block rectangle for an
-// out-of-flow box: for fixed, the initial containing block; for absolute, the
+// out-of-flow box: for fixed, the viewport (fixedICB); for absolute, the
 // padding box of the nearest positioned ancestor, else the initial containing
-// block.
-func (l *layouter) resolveContainingBlock(n *dom.Node, st *css.Style, nb map[*dom.Node]*Box, icb cbRect) cbRect {
+// block (icb).
+func (l *layouter) resolveContainingBlock(n *dom.Node, st *css.Style, nb map[*dom.Node]*Box, icb, fixedICB cbRect) cbRect {
 	if st.Position == css.PositionFixed {
-		return icb
+		return fixedICB
 	}
 	for p := elementParentOf(n); p != nil; p = elementParentOf(p) {
 		ps := l.sm[p]

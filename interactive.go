@@ -176,8 +176,8 @@ func (d *LiveDocument) resettle(ctx context.Context) {
 			d.prevLinks = k
 		}
 		newSm := css.CascadeVW(d.doc.Root, float64(d.vpW), d.rp.sheets)
-		newBox, newHeight := layout.LayoutDocument(d.doc.Root, newSm, float64(d.vpW), d.fonts, d.rp.imgSize)
-		newSm, newBox, newHeight = layoutWithContainers(d.doc.Root, d.rp.sheets, float64(d.vpW), d.fonts, d.rp.imgSize, newSm, newBox, newHeight)
+		newBox, newHeight := layout.LayoutDocumentViewport(d.doc.Root, newSm, float64(d.vpW), float64(d.vpH), d.fonts, d.rp.imgSize)
+		newSm, newBox, newHeight = layoutWithContainers(d.doc.Root, d.rp.sheets, float64(d.vpW), float64(d.vpH), d.fonts, d.rp.imgSize, newSm, newBox, newHeight)
 
 		// Same wipe-guard settle applies: never let a pass erase an
 		// already-good render (see dynamic.go's settle for the full
@@ -204,8 +204,8 @@ func (d *LiveDocument) resettle(ctx context.Context) {
 	if relaidOut {
 		d.rp.imgSize, d.rp.imgs = d.e.loadImages(ctx, d.doc, d.rp.sm, d.vpW)
 		d.rp.bgImgs = d.e.loadBackgroundImages(ctx, d.doc, d.rp.sm)
-		d.rp.box, d.rp.height = layout.LayoutDocument(d.doc.Root, d.rp.sm, float64(d.vpW), d.fonts, d.rp.imgSize)
-		d.rp.sm, d.rp.box, d.rp.height = layoutWithContainers(d.doc.Root, d.rp.sheets, float64(d.vpW), d.fonts, d.rp.imgSize, d.rp.sm, d.rp.box, d.rp.height)
+		d.rp.box, d.rp.height = layout.LayoutDocumentViewport(d.doc.Root, d.rp.sm, float64(d.vpW), float64(d.vpH), d.fonts, d.rp.imgSize)
+		d.rp.sm, d.rp.box, d.rp.height = layoutWithContainers(d.doc.Root, d.rp.sheets, float64(d.vpW), float64(d.vpH), d.fonts, d.rp.imgSize, d.rp.sm, d.rp.box, d.rp.height)
 	}
 }
 
