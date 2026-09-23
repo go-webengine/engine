@@ -381,7 +381,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// gates the first styled paint. The batch path (onStage==nil) skips this so it
 	// does exactly one layout, keeping its output byte-identical to before.
 	if onStage != nil {
-		rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, nil)
+		rp.box, rp.height = layout.LayoutDocumentViewport(doc.Root, rp.sm, float64(vpW), float64(vpH), fonts, nil)
 		onStage("initial", rp)
 	}
 
@@ -393,7 +393,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
 
 	start := time.Now()
-	rp.box, rp.height = layout.LayoutDocument(doc.Root, rp.sm, float64(vpW), fonts, rp.imgSize)
+	rp.box, rp.height = layout.LayoutDocumentViewport(doc.Root, rp.sm, float64(vpW), float64(vpH), fonts, rp.imgSize)
 	// Resolve @container queries against real geometry: rp.sm above necessarily
 	// had every @container rule inactive (CascadeVW passes no container sizes),
 	// so re-cascade/re-layout to a bounded fixpoint now that a real layout
@@ -401,7 +401,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// anywhere returns immediately after one cheap BuildIndex walk. This runs
 	// BEFORE the JS settle loop (like the image load above) so a script reading
 	// geometry back already sees the container-query-resolved layout.
-	rp.sm, rp.box, rp.height = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), fonts, rp.imgSize, rp.sm, rp.box, rp.height)
+	rp.sm, rp.box, rp.height = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), float64(vpH), fonts, rp.imgSize, rp.sm, rp.box, rp.height)
 	initialLayout := time.Since(start)
 
 	// Refinement frame: the same styled page WITH images placed. The caller dedups

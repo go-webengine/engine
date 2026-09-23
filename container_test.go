@@ -27,7 +27,7 @@ func TestLayoutWithContainersNoOp(t *testing.T) {
 	sm := css.CascadeVW(root, 800, nil)
 	box, height := layout.LayoutDocument(root, sm, 800, fonts, nil)
 
-	gotSM, gotBox, gotHeight := layoutWithContainers(root, nil, 800, fonts, nil, sm, box, height)
+	gotSM, gotBox, gotHeight := layoutWithContainers(root, nil, 800, 0, fonts, nil, sm, box, height)
 	if gotBox != box {
 		t.Error("expected the same *layout.Box back (no container in the tree, no re-layout)")
 	}
@@ -61,7 +61,7 @@ func TestLayoutWithContainersBasic(t *testing.T) {
 	}
 	box, height := layout.LayoutDocument(root, sm, 800, fonts, nil)
 
-	sm, _, _ = layoutWithContainers(root, nil, 800, fonts, nil, sm, box, height)
+	sm, _, _ = layoutWithContainers(root, nil, 800, 0, fonts, nil, sm, box, height)
 	if sm[target].Color != (css.Color{R: 255, A: 255}) {
 		t.Errorf("condition should match once #box (500px) is measured, got %+v", sm[target].Color)
 	}
@@ -106,7 +106,7 @@ func TestLayoutWithContainersMultiPassConvergence(t *testing.T) {
 	sm := css.CascadeVW(root, 800, nil)
 	box, height := layout.LayoutDocument(root, sm, 800, fonts, nil)
 
-	sm, box, _ = layoutWithContainers(root, nil, 800, fonts, nil, sm, box, height)
+	sm, box, _ = layoutWithContainers(root, nil, 800, 0, fonts, nil, sm, box, height)
 	if sm[target].Color != (css.Color{R: 255, A: 255}) {
 		t.Errorf("expected #target to turn red after convergence, got %+v", sm[target].Color)
 	}
@@ -154,7 +154,7 @@ func TestLayoutWithContainersBoundedPassCap(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		layoutWithContainers(root, nil, 800, fonts, nil, sm, box, height)
+		layoutWithContainers(root, nil, 800, 0, fonts, nil, sm, box, height)
 		close(done)
 	}()
 	select {

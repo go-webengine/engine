@@ -42,7 +42,7 @@ const maxContainerPasses = 4
 // on the first check, at the cost of one BuildIndex walk — cheap, and it
 // keeps this function safe to call unconditionally from every layout call
 // site rather than requiring each caller to pre-check for container-type.
-func layoutWithContainers(root *dom.Node, sheets []string, vw float64, m layout.Measurer, imgSize map[*dom.Node][2]float64, sm css.StyleMap, box *layout.Box, height float64) (css.StyleMap, *layout.Box, float64) {
+func layoutWithContainers(root *dom.Node, sheets []string, vw, vh float64, m layout.Measurer, imgSize map[*dom.Node][2]float64, sm css.StyleMap, box *layout.Box, height float64) (css.StyleMap, *layout.Box, float64) {
 	var prevSizes map[*dom.Node]css.ContainerSize
 	for pass := 0; pass < maxContainerPasses; pass++ {
 		sizes := gatherContainerSizes(sm, layout.BuildIndex(box))
@@ -54,7 +54,7 @@ func layoutWithContainers(root *dom.Node, sheets []string, vw float64, m layout.
 		}
 		prevSizes = sizes
 		sm = css.CascadeVWContainers(root, vw, sheets, sizes)
-		box, height = layout.LayoutDocument(root, sm, vw, m, imgSize)
+		box, height = layout.LayoutDocumentViewport(root, sm, vw, vh, m, imgSize)
 	}
 	return sm, box, height
 }

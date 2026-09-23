@@ -354,6 +354,49 @@ func TestPositionedPageHeightGrowsForAbsolute(t *testing.T) {
 	}
 }
 
+// TestFixedAnchorsToRealViewportNotDocumentHeight confirms LayoutDocumentViewport
+// resolves a fixed box's containing block against the REAL viewport height
+// passed in, not the eventual (much taller) document height — the bug
+// confirmed live on pkg.go.dev/net/http's own `position:fixed;bottom:0`
+// cookie-consent banner (round 84): without a real viewport height, `bottom:0`
+// resolved against the full document height and landed the banner at the very
+// bottom of a 78,000px+ page instead of near the top, the opposite of what a
+// real browser's full-page screenshot shows (a fixed element stays pinned to
+// the ORIGINAL viewport bounds). LayoutDocument (no viewport height given)
+// keeps the old document-height approximation unchanged.
+func TestFixedAnchorsToRealViewportNotDocumentHeight(t *testing.T) {
+	src := `<html><body style="margin:0;padding:0">` +
+		`<div id="tall" style="height:5000px"></div>` +
+		`<div id="banner" style="position:fixed;bottom:0;left:0;width:10px;height:20px"></div>` +
+		`</body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+
+	// With a real viewport height of 768, the banner's bottom:0 resolves
+	// against 768, not the ~5000px document — it should land near the TOP.
+	viewportBox, _ := LayoutDocumentViewport(root, sm, 300, 768, fakeMeasurer{}, nil)
+	banner := findBoxByID(viewportBox, "banner")
+	wantY := 768.0 - 20 // bottom:0 in a 768px viewport, box height 20
+	assertF(t, "banner.Y (real viewport height)", banner.Y, wantY)
+
+	// LayoutDocument (no viewport height) keeps the pre-existing
+	// document-height approximation: bottom:0 resolves against the full
+	// ~5000px document instead, landing the banner near the BOTTOM.
+	docHeightBox, docHeight := LayoutDocument(root, sm, 300, fakeMeasurer{}, nil)
+	banner2 := findBoxByID(docHeightBox, "banner")
+	wantY2 := docHeight - 20
+	assertF(t, "banner.Y (document-height approximation)", banner2.Y, wantY2)
+
+	// The two must differ substantially — confirming this really is a
+	// different containing block, not a coincidental match.
+	if banner2.Y-banner.Y < 1000 {
+		t.Errorf("expected the two placements to differ by thousands of px, got viewport=%.0f docHeight=%.0f", banner.Y, banner2.Y)
+	}
+}
+
 // TestAbsoluteChildOfFlexContainerIsNotAFlexItem confirms an absolutely
 // positioned child of a flex container is taken out of flex flow (it does not
 // consume a flex track) and is placed against its containing block.
