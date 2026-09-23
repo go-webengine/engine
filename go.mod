@@ -6,7 +6,7 @@ require (
 	github.com/dop251/goja v0.0.0-20260917113740-793a2a65c13b
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
-	github.com/go-gfx/gfx v0.24.0
+	github.com/go-gfx/gfx v0.26.0
 	github.com/go-images/images v0.0.0-20260912071231-12ebfec58453
 	github.com/go-opentype/fonts v0.9.1-0.20260907071658-dd9656234a3d
 	github.com/go-opentype/opentype v0.12.0
@@ -20,10 +20,10 @@ require (
 
 require (
 	github.com/ajroetker/go-highway v0.0.4 // indirect
-	github.com/ajroetker/go-jpeg2000 v0.0.2 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
+	github.com/go-images/jpeg2000 v0.1.0 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect
