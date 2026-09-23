@@ -934,7 +934,11 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 				*items = append(*items, &InlineItem{LineBreak: true, Style: st, Node: origin})
 				l.preCol = 0
 			}
-			seg = l.expandTabs(seg)
+			ts := 8
+			if st != nil {
+				ts = st.TabSize
+			}
+			seg = l.expandTabs(seg, ts)
 			if seg == "" {
 				continue
 			}
@@ -1007,10 +1011,6 @@ func isSpace(r rune) bool {
 	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
 }
 
-// tabSize is the CSS `tab-size` initial value: a tab in preserved text
-// advances to the next multiple of this many spaces.
-const tabSize = 8
-
 // expandTabs replaces each tab of a preserved-whitespace segment with the
 // spaces that reach the next tab stop, counting columns from the start of
 // the line (preCol persists across the segments that share a line — a
@@ -1020,7 +1020,14 @@ const tabSize = 8
 // text after it overran its neighbour by one box (confirmed live on
 // pkg.go.dev's source listings: "= 100 // RFC" printed as "= 100// RFC"
 // behind a tofu box).
-func (l *layouter) expandTabs(seg string) string {
+//
+// tabSize is the element's own CSS `tab-size` (INHERITED; 8 is the CSS
+// initial value, not a hardcoded assumption — see css.Style.TabSize's own
+// doc comment). Confirmed live (round 91): pkg.go.dev's own
+// `pre,textarea.code{tab-size:4}` on its real, tab-indented Go source
+// samples — this function previously ignored the property entirely and
+// always expanded to 8, doubling the real indentation on every such page.
+func (l *layouter) expandTabs(seg string, tabSize int) string {
 	if !strings.ContainsRune(seg, '\t') {
 		l.preCol += utf8.RuneCountInString(seg)
 		return seg
@@ -1031,6 +1038,9 @@ func (l *layouter) expandTabs(seg string) string {
 			b.WriteRune(r)
 			l.preCol++
 			continue
+		}
+		if tabSize <= 0 {
+			continue // CSS Text 3: tab-size:0 (or an unresolved property) renders no tab at all
 		}
 		n := tabSize - l.preCol%tabSize
 		b.WriteString(strings.Repeat(" ", n))

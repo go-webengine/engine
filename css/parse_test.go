@@ -786,3 +786,48 @@ func TestApplyObjectFit(t *testing.T) {
 		t.Errorf("object-fit:scale-down (unrecognised) = %v, want ObjectFitFill, not the prior cover", s.ObjectFit)
 	}
 }
+
+// TestApplyTabSize is the confirmed real-world regression (round 91):
+// pkg.go.dev's own `pre,textarea.code{tab-size:4}` on its real, tab-indented
+// Go source samples. tab-size is INHERITED (CSS Text 3), initial 8.
+func TestApplyTabSize(t *testing.T) {
+	if got := initialStyle().TabSize; got != 8 {
+		t.Errorf("initialStyle().TabSize = %d, want 8 (CSS Text 3 initial value)", got)
+	}
+
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "tab-size", Value: v}, 16, nil) }
+
+	apply("4")
+	if s.TabSize != 4 {
+		t.Errorf("tab-size:4 = %d, want 4", s.TabSize)
+	}
+	apply("0")
+	if s.TabSize != 0 {
+		t.Errorf("tab-size:0 = %d, want 0 (a valid value: no tabs rendered)", s.TabSize)
+	}
+	// Re-set to a real value, then confirm each invalid form leaves it
+	// UNCHANGED (0 is itself a valid, meaningful value, so an unparseable
+	// declaration must not silently reset to it).
+	for _, bad := range []string{"-1", "not-a-number", "1.5"} {
+		apply("4")
+		apply(bad)
+		if s.TabSize != 4 {
+			t.Errorf("tab-size:%q (invalid) = %d, want 4 (unchanged, not silently reset)", bad, s.TabSize)
+		}
+	}
+	apply("initial")
+	if s.TabSize != 8 {
+		t.Errorf("tab-size:initial = %d, want 8", s.TabSize)
+	}
+
+	// unset on an inherited property re-inherits the parent's value.
+	parent := initialStyle()
+	parent.TabSize = 2
+	s2 := initialStyle()
+	s2.TabSize = 4
+	s2.apply(Declaration{Property: "tab-size", Value: "unset"}, 16, &parent)
+	if s2.TabSize != 2 {
+		t.Errorf("tab-size:unset = %d, want 2 (inherited from parent)", s2.TabSize)
+	}
+}
