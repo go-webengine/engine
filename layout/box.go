@@ -83,12 +83,17 @@ type InlineItem struct {
 	// own element; anonymous runs never occur here).
 	Node *dom.Node
 
-	Width       float64 // advance of the word / width of the image
+	Width       float64 // advance of the word / DISPLAY width of the image
 	SpaceBefore float64 // width of a space in this item's font
 	Ascent      float64
 	LineHeight  float64
 
-	Image      *dom.Node // non-nil when this item is an <img>
+	// Image is non-nil when this item is an <img>. ImgW/ImgH are the loaded
+	// bitmap's own pixel size; Width/LineHeight (see resolvedReplacedSize) are
+	// the DISPLAY size after the element's own width/max-width is resolved
+	// against its real containing width, and can be smaller than ImgW/ImgH —
+	// paint scales the bitmap down to fit when they differ.
+	Image      *dom.Node
 	ImgW, ImgH float64
 
 	// FormControl is non-nil when this item is a form control

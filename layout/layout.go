@@ -295,11 +295,12 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 	// precedes the flex/grid/table display dispatch.
 	if node.Type == dom.Element && isReplacedTag(node.Tag) {
 		if w, h := l.imageSize(node); w > 0 && h > 0 {
+			dw, dh := resolvedReplacedSize(st, w, h, cw)
 			b.commit()
 			item := &InlineItem{Image: node, Style: st, ImgW: w, ImgH: h,
-				Width: w, Ascent: h, LineHeight: h, X: cx, Y: b.y}
-			box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: h, Items: []*InlineItem{item}}}
-			b.y += h
+				Width: dw, Ascent: dh, LineHeight: dh, X: cx, Y: b.y}
+			box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: dh, Items: []*InlineItem{item}}}
+			b.y += dh
 			return b.y
 		}
 	}
@@ -750,6 +751,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 	case "img", "svg":
 		w, h := l.imageSize(el)
 		if w > 0 && h > 0 {
+			dw, dh := resolvedReplacedSize(cs, w, h, cw)
 			sb := 0.0
 			if l.wsEmitted && l.wsPending {
 				sb = l.m.Measure(" ", cs.FontFamily, cs.FontSize, cs.FontWeight, cs.Italic)
@@ -757,7 +759,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			sb += l.takeMargin() + cs.Margin.Left
 			*items = append(*items, &InlineItem{
 				Style: cs, Image: el, Node: el, ImgW: w, ImgH: h,
-				Width: w, Ascent: h, LineHeight: h,
+				Width: dw, Ascent: dh, LineHeight: dh,
 				SpaceBefore: sb, decor: l.decor,
 			})
 			l.wsEmitted, l.wsPending = true, false
@@ -1281,6 +1283,45 @@ func (l *layouter) imageSize(el *dom.Node) (float64, float64) {
 		}
 	}
 	return attrFloat(el, "width"), attrFloat(el, "height")
+}
+
+// resolvedReplacedSize computes a replaced element's (img/svg) DISPLAY size
+// from its own CSS width/max-width, resolved against cw — the REAL available
+// containing width at this exact point in layout. This is something the
+// pre-layout image-loading step (images.go) cannot do: it only knows the
+// page's viewport width, not any nested container's narrower one, so it sizes
+// a percentage width against the viewport and otherwise leaves the image at
+// its full loaded resolution. Confirmed live on github.com/golang/go's own
+// README: `<img style="max-width:100%">` sits in a ~646px-wide article
+// column on a 1024px-wide page — the loader's own viewport-relative sizing
+// left the image at its full ~1262px intrinsic width, overflowing the
+// article and misaligning everything below it. iw,ih is the element's own
+// loaded/intrinsic size; returns it UNCHANGED when neither property
+// constrains the used width below it, matching prior behaviour exactly for
+// the — overwhelmingly common — no-CSS-size case. Mirrors CSS's own
+// replaced-element sizing algorithm for the common single-explicit-dimension
+// case (an explicit width scales height by the same intrinsic aspect ratio);
+// deliberately does not also resolve `height`/`max-height`, since a
+// height-driven resize has no confirmed real caller yet.
+func resolvedReplacedSize(st *css.Style, iw, ih, cw float64) (float64, float64) {
+	if st == nil || iw <= 0 || ih <= 0 {
+		return iw, ih
+	}
+	w := iw
+	if !st.Width.Auto && (!st.Width.IsPercent || cw > 0) {
+		if width := st.Width.Resolve(cw); width > 0 {
+			w = width
+		}
+	}
+	if !st.MaxWidth.Auto && (!st.MaxWidth.IsPercent || cw > 0) {
+		if maxW := st.MaxWidth.Resolve(cw); maxW > 0 && maxW < w {
+			w = maxW
+		}
+	}
+	if w == iw {
+		return iw, ih
+	}
+	return w, ih * w / iw
 }
 
 func attrFloat(el *dom.Node, name string) float64 {

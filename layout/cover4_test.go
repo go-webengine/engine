@@ -118,6 +118,19 @@ func TestWidthBoundBorderBoxNegative(t *testing.T) {
 	}
 }
 
+func TestResolvedReplacedSizeDefensiveGuards(t *testing.T) {
+	// A nil style or a non-positive intrinsic size returns the intrinsic size
+	// unchanged (defensive: both real call sites already guard w>0&&h>0 and
+	// always pass a real *css.Style, so this never fires in practice — mirrors
+	// cssImageSize's own identical nil/zero guard in images.go).
+	if w, h := resolvedReplacedSize(nil, 100, 50, 200); w != 100 || h != 50 {
+		t.Errorf("nil style = %v,%v want 100,50", w, h)
+	}
+	if w, h := resolvedReplacedSize(&css.Style{}, 0, 50, 200); w != 0 || h != 50 {
+		t.Errorf("zero intrinsic width = %v,%v want 0,50", w, h)
+	}
+}
+
 func TestForceOneSkipsLeadingBreak(t *testing.T) {
 	items := []*InlineItem{{LineBreak: true}, {Text: "w", Width: 10}}
 	line, consumed := forceOne(items)

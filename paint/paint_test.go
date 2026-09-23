@@ -503,6 +503,36 @@ func TestPaintItemVisibilityHiddenSkipsInlineImage(t *testing.T) {
 	}
 }
 
+// TestPaintItemScalesImageToDisplaySize is the paint-side half of round 88's
+// fix: layout resolves an <img>'s DISPLAY size (Width/LineHeight) from its own
+// width/max-width against its real containing width, which can be smaller
+// than the loaded bitmap's own pixel size (ImgW/ImgH) — the loader only ever
+// sizes against the page's viewport, not any nested container's narrower one.
+// Painting must scale the bitmap down to the smaller display size rather than
+// blitting it at its own native resolution, which would spill past the box
+// into whatever content follows.
+func TestPaintItemScalesImageToDisplaySize(t *testing.T) {
+	dst := white(20, 20)
+	node := &dom.Node{Type: dom.Element, Tag: "img"}
+	src := solid(10, 10, css.Color{R: 255, A: 255}) // a 10x10 red square
+	imgs := map[*dom.Node]image.Image{node: src}
+	// Display size (5x5) is HALF the loaded bitmap's own size (ImgW/ImgH=10x10).
+	it := &layout.InlineItem{Image: node, Style: &css.Style{}, X: 0, Y: 0,
+		ImgW: 10, ImgH: 10, Width: 5, Ascent: 5, LineHeight: 5}
+	line := &layout.LineBox{X: 0, Y: 0, W: 5, H: 5, Items: []*layout.InlineItem{it}}
+	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "p"}, Style: &css.Style{},
+		X: 0, Y: 0, W: 20, H: 20, Lines: []*layout.LineBox{line}}
+	PaintFull(dst, box, NewFonts(), imgs, nil)
+	if c := dst.RGBAAt(3, 3); c.R < 200 || c.G > 60 {
+		t.Errorf("inside the 5x5 display box = %+v want red", c)
+	}
+	// Column 7 is inside the UNSCALED 10x10 bitmap's own extent but outside the
+	// scaled-down 5x5 display box — must stay untouched white, not red.
+	if c := dst.RGBAAt(7, 3); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("past the scaled-down display box = %+v want untouched white (image not scaled down)", c)
+	}
+}
+
 func TestPaintSubPixelBorderNotDrawn(t *testing.T) {
 	// A sub-pixel border width rounds to 0 px; the zero-size fill guard skips it
 	// without panicking or painting.
