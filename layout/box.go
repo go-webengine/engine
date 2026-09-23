@@ -115,18 +115,24 @@ type InlineItem struct {
 	// paint.formControlDisplayText) and always leaves this empty.
 	Label string
 
-	// Icon is set when FormControl is a "button" whose content includes a
-	// single img/svg child — either as the button's WHOLE content (Label ==
-	// "", e.g. MDN's nav <mdn-search-button> or pkg.go.dev's search-submit
+	// Icon is set when FormControl is a "button" whose content includes an
+	// img/svg child found AFTER its own visible text in document order (a
+	// TRAILING icon) — either as the button's WHOLE content (Label == "",
+	// e.g. MDN's nav <mdn-search-button> or pkg.go.dev's search-submit
 	// button, drawn centred in the control's box) or alongside a text label
 	// (Label != "", e.g. github.com's own nav dropdown triggers —
 	// "Platform▾" and friends — drawn after the label with a small gap; see
-	// paintFormControl). See layouter.buttonIcon: nil when the button has no
-	// img/svg child, has more than one (ambiguous — no confirmed real case
-	// mixes them), or that child's size never resolved (e.g. its fetch
-	// failed), in which case the button falls back to the old padding-only
-	// sizing with nothing drawn inside.
-	Icon *dom.Node
+	// paintFormControl). LeadingIcon is the mirror case: an img/svg found
+	// BEFORE the text (e.g. github.com's own Primer "<> Code ▾" button,
+	// round 92 — which in fact has BOTH a leading AND a trailing icon
+	// alongside its label, so the two fields are independent and either,
+	// neither, or both may be set on the same item). See layouter.
+	// buttonIcons: a side is nil when the button has no img/svg on that
+	// side, has more than one on that SAME side (ambiguous — no confirmed
+	// real case mixes two on one side), or that child's size never resolved
+	// (e.g. its fetch failed) — in which case that side simply draws
+	// nothing, independent of the other side's own outcome.
+	Icon, LeadingIcon *dom.Node
 
 	LineBreak bool // a <br>: forces the current line to end
 

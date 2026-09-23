@@ -314,6 +314,89 @@ func TestPaintFormControlTextAndIconBothDraw(t *testing.T) {
 	}
 }
 
+// TestPaintFormControlLeadingAndTrailingIconBothDraw guards paintFormControl's
+// leading+trailing+label path (github.com's own Primer "<> Code ▾" button,
+// round 92): a leading icon, a trailing icon and a label together must each
+// draw at their own DOCUMENT-ORDER position — leading strictly left of the
+// label's own pixels, trailing strictly right of them — not just "present
+// somewhere" (TestPaintFormControlTextAndIconBothDraw already guards that
+// weaker property for the single-icon case).
+func TestPaintFormControlLeadingAndTrailingIconBothDraw(t *testing.T) {
+	n := elem("button", map[string]string{})
+	leadNode := elem("svg", map[string]string{})
+	trailNode := elem("img", map[string]string{})
+	lead := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	trail := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	for y := 0; y < 10; y++ {
+		for x := 0; x < 10; x++ {
+			lead.Set(x, y, color.RGBA{R: 0xff, A: 0xff})  // pure red
+			trail.Set(x, y, color.RGBA{G: 0xff, A: 0xff}) // pure green
+		}
+	}
+	dst := white(140, 50)
+	st := controlStyle()
+	item := &layout.InlineItem{
+		Node: n, FormControl: n, LeadingIcon: leadNode, Icon: trailNode, Label: "OK", Style: st,
+		Width: 130, Ascent: 30, LineHeight: 30, X: 5, Y: 5,
+	}
+	box := &layout.Box{
+		Lines: []*layout.LineBox{{X: 5, Y: 5, W: 130, H: 30, Items: []*layout.InlineItem{item}}},
+		W:     140, H: 40,
+	}
+	PaintFull(dst, box, NewFonts(), map[*dom.Node]image.Image{leadNode: lead, trailNode: trail}, nil)
+
+	var redX, greenX, darkX []int
+	for y := 5; y < 35; y++ {
+		for x := 5; x < 135; x++ {
+			c := dst.RGBAAt(x, y)
+			switch {
+			case c.R == 0xff && c.G == 0 && c.B == 0:
+				redX = append(redX, x)
+			case c.G == 0xff && c.R == 0 && c.B == 0:
+				greenX = append(greenX, x)
+			case c.R < 100 && c.G < 100 && c.B < 100:
+				darkX = append(darkX, x)
+			}
+		}
+	}
+	if len(redX) == 0 {
+		t.Fatal("leading icon (red) not found anywhere in the control's box")
+	}
+	if len(greenX) == 0 {
+		t.Fatal("trailing icon (green) not found anywhere in the control's box")
+	}
+	if len(darkX) == 0 {
+		t.Fatal("label text not found anywhere in the control's box")
+	}
+	maxRed, minGreen, minDark, maxDark := max(redX), min(greenX), min(darkX), max(darkX)
+	if maxRed >= minDark {
+		t.Errorf("leading icon (rightmost red x=%d) not strictly left of label (leftmost dark x=%d)", maxRed, minDark)
+	}
+	if minGreen <= maxDark {
+		t.Errorf("trailing icon (leftmost green x=%d) not strictly right of label (rightmost dark x=%d)", minGreen, maxDark)
+	}
+}
+
+func max(xs []int) int {
+	m := xs[0]
+	for _, x := range xs[1:] {
+		if x > m {
+			m = x
+		}
+	}
+	return m
+}
+
+func min(xs []int) int {
+	m := xs[0]
+	for _, x := range xs[1:] {
+		if x < m {
+			m = x
+		}
+	}
+	return m
+}
+
 func hasNonBackgroundPixel(img *image.RGBA, bg css.Color) bool {
 	for y := 7; y < 20; y++ { // inside the box, away from the border
 		for x := 7; x < 90; x++ {
