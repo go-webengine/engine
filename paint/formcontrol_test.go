@@ -266,6 +266,54 @@ func TestPaintFormControlIconDrawsBitmapCentered(t *testing.T) {
 	}
 }
 
+// TestPaintFormControlTextAndIconBothDraw guards paintFormControl's combined
+// text+icon path (github.com's own nav dropdown triggers — "Platform▾" and
+// friends, round 85): a button item with BOTH a non-empty Label AND a
+// non-nil Icon must draw the icon's own bitmap SOMEWHERE in its box, not
+// just the label text — the icon was previously silently dropped whenever a
+// label was also present (an early return before it was ever reached).
+func TestPaintFormControlTextAndIconBothDraw(t *testing.T) {
+	n := elem("button", map[string]string{})
+	iconNode := elem("svg", map[string]string{})
+	icon := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	for y := 0; y < 10; y++ {
+		for x := 0; x < 10; x++ {
+			icon.Set(x, y, color.RGBA{B: 0xff, A: 0xff}) // pure blue, unlike any text/bg colour here
+		}
+	}
+	dst := white(100, 50)
+	st := controlStyle()
+	item := &layout.InlineItem{
+		Node: n, FormControl: n, Icon: iconNode, Label: "OK", Style: st,
+		Width: 80, Ascent: 30, LineHeight: 30, X: 5, Y: 5,
+	}
+	box := &layout.Box{
+		Lines: []*layout.LineBox{{X: 5, Y: 5, W: 80, H: 30, Items: []*layout.InlineItem{item}}},
+		W:     90, H: 40,
+	}
+	PaintFull(dst, box, NewFonts(), map[*dom.Node]image.Image{iconNode: icon}, nil)
+
+	foundBlue := false
+	foundDark := false
+	for y := 5; y < 35; y++ {
+		for x := 5; x < 85; x++ {
+			c := dst.RGBAAt(x, y)
+			if c.B == 0xff && c.R == 0 && c.G == 0 {
+				foundBlue = true
+			}
+			if c.R < 100 && c.G < 100 && c.B < 100 {
+				foundDark = true
+			}
+		}
+	}
+	if !foundBlue {
+		t.Error("icon bitmap not found anywhere in the control's box (Icon silently dropped alongside Label)")
+	}
+	if !foundDark {
+		t.Error("label text not found anywhere in the control's box")
+	}
+}
+
 func hasNonBackgroundPixel(img *image.RGBA, bg css.Color) bool {
 	for y := 7; y < 20; y++ { // inside the box, away from the border
 		for x := 7; x < 90; x++ {

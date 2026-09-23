@@ -414,20 +414,22 @@ func TestFormControlDisplayBlockButtonIconRoutesThroughContents(t *testing.T) {
 }
 
 // TestFormControlButtonIconFallsBackWhenAmbiguousOrUnsized covers
-// buttonIcon's deliberate refusal to guess: a button with visible text (even
-// alongside an icon), with more than one img/svg child (ambiguous — no
-// confirmed real caller mixes multiple bare icons under one button), or
-// whose lone icon's size never resolved (no imgSize entry and no width/
-// height attributes) all fall back to the pre-existing padding-only sizing
-// with no Icon set, exactly as before this feature existed.
+// buttonIcon's deliberate refusal to guess: a button with more than one
+// img/svg child (ambiguous — no confirmed real caller mixes multiple bare
+// icons under one button), or whose lone icon's size never resolved (no
+// imgSize entry and no width/height attributes), falls back to the
+// pre-existing padding-only (or text-only) sizing with no Icon set, exactly
+// as before this feature existed. A button with visible text ALONGSIDE a
+// (resolvable, unambiguous) icon is no longer a fallback case — see
+// TestFormControlButtonTextAndIconBothPaint below.
 func TestFormControlButtonIconFallsBackWhenAmbiguousOrUnsized(t *testing.T) {
 	cases := []struct {
 		name string
 		src  string
 	}{
-		{"visible text alongside icon", `<button id="e">Search<svg id="icon"></svg></button>`},
 		{"two icon children", `<button id="e"><svg id="icon"></svg><svg id="icon2"></svg></button>`},
 		{"icon size never resolved", `<button id="e"><svg id="icon"></svg></button>`},
+		{"text alongside icon whose size never resolved", `<button id="e">Search<svg id="icon"></svg></button>`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -437,7 +439,7 @@ func TestFormControlButtonIconFallsBackWhenAmbiguousOrUnsized(t *testing.T) {
 			}
 			sm := css.Cascade(root)
 			var sizes map[*dom.Node][2]float64
-			if c.name != "icon size never resolved" {
+			if c.name == "two icon children" {
 				icon := dom.Find(root, "svg")
 				sizes = map[*dom.Node][2]float64{icon: {24, 24}}
 			}
@@ -451,4 +453,64 @@ func TestFormControlButtonIconFallsBackWhenAmbiguousOrUnsized(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFormControlButtonTextAndIconBothPaint covers the confirmed real case
+// buttonIcon's own doc comment now describes: github.com's own nav dropdown
+// triggers ("Platform▾" and friends) are a <button> with BOTH a visible text
+// label AND a trailing icon — previously an unconfirmed, deliberately
+// unattempted case that fell back to text-only sizing with the icon silently
+// dropped (never painted at all, not merely mis-sized), found live round 85.
+func TestFormControlButtonTextAndIconBothPaint(t *testing.T) {
+	src := `<html><body><button id="e">Platform<svg id="icon"></svg></button></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	icon := dom.Find(root, "svg")
+	sizes := map[*dom.Node][2]float64{icon: {16, 16}}
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "body"))
+	if len(items) != 1 || items[0].FormControl == nil {
+		t.Fatalf("expected one form-control item, got %v", items)
+	}
+	item := items[0]
+	if item.Label != "Platform" {
+		t.Fatalf("Label = %q, want %q", item.Label, "Platform")
+	}
+	if item.Icon != icon {
+		t.Fatalf("Icon = %v, want the svg child %v (must not be silently dropped)", item.Icon, icon)
+	}
+	// fakeMeasurer measures 10px per rune (see its own definition), so
+	// "Platform" (8 runes) measures 80px: 80 (label) + buttonIconGap(4) +
+	// 16 (icon) + 2*formControlPadX(12) = 124. Height: max(fontSize, 16) +
+	// 2*formControlPadY(6) — the default font size (16, css.Cascade's own
+	// root default) ties the icon's own height, so 16 + 12 = 28.
+	assertF(t, "text+icon button width", item.Width, 124)
+	assertF(t, "text+icon button height", item.LineHeight, 28)
+}
+
+// TestFormControlButtonTextAndIconHeightUsesTallerOfTheTwo exercises the
+// OTHER side of the height formula TestFormControlButtonTextAndIconBothPaint
+// left untested (that fixture's icon height happened to tie the default font
+// size, so the "icon taller than the label's own line" branch never ran): an
+// icon taller than the default font size must win the button's height, not
+// be clipped down to the text's own line height.
+func TestFormControlButtonTextAndIconHeightUsesTallerOfTheTwo(t *testing.T) {
+	src := `<html><body><button id="e">OK<svg id="icon"></svg></button></body></html>`
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	icon := dom.Find(root, "svg")
+	sizes := map[*dom.Node][2]float64{icon: {40, 40}} // well taller than the default 16px font size
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "body"))
+	if len(items) != 1 {
+		t.Fatalf("expected one form-control item, got %v", items)
+	}
+	// Height: max(fontSize=16, iconHeight=40) + 2*formControlPadY(6) = 52.
+	assertF(t, "text+tall-icon button height", items[0].LineHeight, 52)
 }
