@@ -533,6 +533,79 @@ func TestPaintItemScalesImageToDisplaySize(t *testing.T) {
 	}
 }
 
+// twoTone returns a w×h bitmap, red in its left half and blue in its right
+// half — used to distinguish object-fit:cover's uniform-scale-then-crop from
+// a plain independent-axis stretch, which a single-colour source can't.
+func twoTone(w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			c := color.RGBA{R: 255, A: 255}
+			if x >= w/2 {
+				c = color.RGBA{B: 255, A: 255}
+			}
+			img.SetRGBA(x, y, c)
+		}
+	}
+	return img
+}
+
+// TestPaintItemObjectFitCoverCropsToBox is the confirmed real-world case
+// (round 89): `object-fit:cover` (Tailwind's `object-cover` utility) on
+// react.dev's own avatar/thumbnail images and tailwindcss.com's own gallery
+// images. A 20x10 source into a 10x10 box: cover's uniform scale is
+// max(10/20, 10/10)=1 (no scale at all), so the visible box shows a centred
+// crop of the ALREADY-full-size source — the left 5px of red then the next
+// 5px of blue — never a squashed, non-uniformly-stretched full image (the
+// old default, still ObjectFitFill's own behaviour).
+func TestPaintItemObjectFitCoverCropsToBox(t *testing.T) {
+	dst := white(10, 10)
+	node := &dom.Node{Type: dom.Element, Tag: "img"}
+	src := twoTone(20, 10)
+	imgs := map[*dom.Node]image.Image{node: src}
+	it := &layout.InlineItem{Image: node, Style: &css.Style{ObjectFit: css.ObjectFitCover}, X: 0, Y: 0,
+		ImgW: 20, ImgH: 10, Width: 10, Ascent: 10, LineHeight: 10}
+	line := &layout.LineBox{X: 0, Y: 0, W: 10, H: 10, Items: []*layout.InlineItem{it}}
+	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "p"}, Style: &css.Style{},
+		X: 0, Y: 0, W: 10, H: 10, Lines: []*layout.LineBox{line}}
+	PaintFull(dst, box, NewFonts(), imgs, nil)
+	if c := dst.RGBAAt(2, 5); c.R < 200 || c.B > 60 {
+		t.Errorf("left column of the cover crop = %+v want red", c)
+	}
+	if c := dst.RGBAAt(7, 5); c.B < 200 || c.R > 60 {
+		t.Errorf("right column of the cover crop = %+v want blue", c)
+	}
+}
+
+// TestPaintItemObjectFitContainLetterboxes covers the sibling `contain`
+// value: the same 20x10 source into a 10x10 box scales down uniformly by
+// min(10/20, 10/10)=0.5 to a 10x5 tile, letterboxed (centred) rather than
+// stretched to fill the full 10-tall box — leaving the box's own top/bottom
+// strips untouched (its background paints there, not the image).
+func TestPaintItemObjectFitContainLetterboxes(t *testing.T) {
+	dst := white(10, 10)
+	node := &dom.Node{Type: dom.Element, Tag: "img"}
+	src := twoTone(20, 10)
+	imgs := map[*dom.Node]image.Image{node: src}
+	it := &layout.InlineItem{Image: node, Style: &css.Style{ObjectFit: css.ObjectFitContain}, X: 0, Y: 0,
+		ImgW: 20, ImgH: 10, Width: 10, Ascent: 10, LineHeight: 10}
+	line := &layout.LineBox{X: 0, Y: 0, W: 10, H: 10, Items: []*layout.InlineItem{it}}
+	box := &layout.Box{Node: &dom.Node{Type: dom.Element, Tag: "p"}, Style: &css.Style{},
+		X: 0, Y: 0, W: 10, H: 10, Lines: []*layout.LineBox{line}}
+	PaintFull(dst, box, NewFonts(), imgs, nil)
+	// The letterboxed tile is only 5px tall, centred (rows 2..7); row 0 must
+	// stay untouched white, not stretched image content.
+	if c := dst.RGBAAt(2, 0); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("letterbox strip = %+v want untouched white (image squashed to fill instead of letterboxed)", c)
+	}
+	if c := dst.RGBAAt(2, 4); c.R < 200 || c.B > 60 {
+		t.Errorf("inside the letterboxed tile, left = %+v want red", c)
+	}
+	if c := dst.RGBAAt(7, 4); c.B < 200 || c.R > 60 {
+		t.Errorf("inside the letterboxed tile, right = %+v want blue", c)
+	}
+}
+
 func TestPaintSubPixelBorderNotDrawn(t *testing.T) {
 	// A sub-pixel border width rounds to 0 px; the zero-size fill guard skips it
 	// without panicking or painting.

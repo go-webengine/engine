@@ -776,6 +776,15 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else {
 			s.AspectRatio = 0 // "auto" or unparseable: no ratio constraint
 		}
+	case "object-fit":
+		switch lv {
+		case "cover":
+			s.ObjectFit = ObjectFitCover
+		case "contain":
+			s.ObjectFit = ObjectFitContain
+		default: // "fill" and every other/unrecognised keyword: this engine's own prior stretch behaviour
+			s.ObjectFit = ObjectFitFill
+		}
 	case "box-sizing":
 		switch lv {
 		case "border-box":
