@@ -875,6 +875,12 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if n, ok := parseTabSize(lv); ok {
 			s.TabSize = n
 		}
+	case "text-wrap", "text-wrap-style":
+		if lv == "unset" { // unset is inherit for an inherited property
+			s.inheritProperty(d.Property, parent)
+		} else if b, ok := parseTextWrapBalance(lv); ok {
+			s.TextWrapBalance = b
+		}
 	case "position":
 		switch lv {
 		case "static":
@@ -1208,6 +1214,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.Widows = parent.Widows
 	case "tab-size":
 		s.TabSize = parent.TabSize
+	case "text-wrap", "text-wrap-style":
+		s.TextWrapBalance = parent.TextWrapBalance
 	// The break properties are not inherited by default, but an explicit
 	// `inherit` still copies the parent's computed value, per CSS Cascade.
 	case "break-before", "page-break-before":
@@ -1242,6 +1250,31 @@ func parseTabSize(lv string) (int, bool) {
 	}
 	n, err := strconv.Atoi(lv)
 	return n, err == nil && n >= 0
+}
+
+// parseTextWrapBalance parses a `text-wrap` or `text-wrap-style` value,
+// reporting whether it's a recognised keyword at all (an unrecognised token
+// leaves the inherited value in place, matching every other property here
+// that distinguishes "invalid, ignore" from "valid, but not `balance`") and,
+// if so, whether it selects `balance`. `text-wrap`'s own grammar is
+// `<text-wrap-mode> || <text-wrap-style>` (either order, either omitted), so
+// a multi-token value like "wrap balance" is checked token-by-token rather
+// than as a whole. Only `balance` has a distinguishing implementation (see
+// TextWrapBalance's own doc comment) — every other real keyword (wrap,
+// nowrap, auto, stable, pretty, avoid-short-last-line) is recognised, just
+// resolves to false, identical to the property's own initial value.
+func parseTextWrapBalance(lv string) (balance, ok bool) {
+	for _, tok := range strings.Fields(lv) {
+		switch tok {
+		case "balance":
+			balance, ok = true, true
+		case "wrap", "nowrap", "auto", "stable", "pretty", "avoid-short-last-line", "initial":
+			ok = true
+		default:
+			return false, false
+		}
+	}
+	return balance, ok
 }
 
 func applyEdge(dst *float64, v string, emRef float64) {

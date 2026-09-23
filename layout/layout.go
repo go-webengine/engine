@@ -1433,14 +1433,24 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 	fbAsc, fbH := l.lineMetricsFor(st)
 	if nowrap {
 		lines := WrapItems(items, math.MaxFloat32)
-		cursor := y
-		for _, line := range lines {
-			lineH, baseline, used := lineMetrics(line, fbH, fbAsc)
-			placeLine(line, cx+alignOffset(st.TextAlign, cw, used), cursor, baseline)
-			line.X, line.Y, line.W, line.H = cx, cursor, cw, lineH
-			cursor += lineH
+		return lines, placeSimpleLines(lines, cx, cw, y, st, fbH, fbAsc)
+	}
+
+	// text-wrap:balance re-breaks a short, float-free run at the narrowest
+	// width that still uses the SAME number of lines as an ordinary greedy
+	// wrap (see balanceWidth's own doc comment) — scoped to no floats at all
+	// anywhere in the document yet, since a per-line float-narrowed width
+	// (the general case just below) has no single "cw" this fast path could
+	// binary-search against. Confirmed live (round 93): tailwindcss.com's own
+	// hero `<h1 class="text-balance">` heading, never inside a floated
+	// column in this corpus.
+	if st.TextWrapBalance && len(l.floats.lefts) == 0 && len(l.floats.rights) == 0 {
+		if n := len(WrapItems(items, cw)); n > 1 && n <= 10 {
+			lines := WrapItems(items, balanceWidth(items, cw, n))
+			if len(lines) == n { // defensive: binary search must preserve n
+				return lines, placeSimpleLines(lines, cx, cw, y, st, fbH, fbAsc)
+			}
 		}
-		return lines, cursor
 	}
 
 	var lines []*LineBox
@@ -1528,6 +1538,22 @@ func forceOne(items []*InlineItem) (*LineBox, int) {
 		i++
 	}
 	return line, i
+}
+
+// placeSimpleLines positions a pre-wrapped sequence of lines that all share
+// the SAME available width cw at a fixed cx (no floats narrowing any of
+// them individually) — the shape both layoutInline's `nowrap` case and its
+// `text-wrap:balance` fast path produce. Returns the cursor y just past the
+// last line.
+func placeSimpleLines(lines []*LineBox, cx, cw, y float64, st *css.Style, fbH, fbAsc float64) float64 {
+	cursor := y
+	for _, line := range lines {
+		lineH, baseline, used := lineMetrics(line, fbH, fbAsc)
+		placeLine(line, cx+alignOffset(st.TextAlign, cw, used), cursor, baseline)
+		line.X, line.Y, line.W, line.H = cx, cursor, cw, lineH
+		cursor += lineH
+	}
+	return cursor
 }
 
 // lineMetrics computes a line box's height, common baseline offset and used

@@ -129,6 +129,53 @@ func TestTextAlignCenterAndRight(t *testing.T) {
 	assertF(t, "right.offset", itr.X-right.ContentX, 80)
 }
 
+// TestTextWrapBalanceRedistributesLineBreaks guards the `text-wrap:balance`
+// fast path in layoutInline (round 93): a plain greedy wrap of "a b c d e"
+// (each word 10px, space 10px) at width 80px produces the classic uneven
+// "orphan" split — "a b c d" (70px used) then a lone "e" (10px) — while
+// `text-wrap:balance` must re-break at the SAME line count (2) but more
+// evenly: the narrowest width that still wraps to 2 lines is 50px, giving
+// "a b c" / "d e" (50px / 30px used) — see balanceWidth's own doc comment
+// for why 50 is exactly that width.
+func TestTextWrapBalanceRedistributesLineBreaks(t *testing.T) {
+	greedy := findBox(layoutHTML(t,
+		`<html><body style="margin:0"><div style="width:80px">a b c d e</div></body></html>`, 1024), "div")
+	if len(greedy.Lines) != 2 {
+		t.Fatalf("greedy: expected 2 lines, got %d", len(greedy.Lines))
+	}
+	if lineText(greedy.Lines[0]) != "a b c d" || lineText(greedy.Lines[1]) != "e" {
+		t.Fatalf("greedy split = %q / %q, want %q / %q", lineText(greedy.Lines[0]), lineText(greedy.Lines[1]), "a b c d", "e")
+	}
+
+	balanced := findBox(layoutHTML(t,
+		`<html><body style="margin:0"><div style="width:80px;text-wrap:balance">a b c d e</div></body></html>`, 1024), "div")
+	if len(balanced.Lines) != 2 {
+		t.Fatalf("balanced: expected 2 lines (balance must not change the line count), got %d", len(balanced.Lines))
+	}
+	if lineText(balanced.Lines[0]) != "a b c" || lineText(balanced.Lines[1]) != "d e" {
+		t.Errorf("balanced split = %q / %q, want %q / %q", lineText(balanced.Lines[0]), lineText(balanced.Lines[1]), "a b c", "d e")
+	}
+}
+
+// TestTextWrapBalanceSkipsWhenFloatsPresent confirms the fast path's own
+// documented scope limit: with any float placed anywhere in the document
+// already, balancing is skipped entirely and ordinary greedy wrapping
+// applies — layoutInline has no single "cw" a float-narrowed line's own
+// balance search could run against.
+func TestTextWrapBalanceSkipsWhenFloatsPresent(t *testing.T) {
+	box := findBox(layoutHTML(t, `<html><body style="margin:0">`+
+		`<aside style="float:left;width:10px;height:10px"></aside>`+
+		`<div style="width:80px;text-wrap:balance">a b c d e</div>`+
+		`</body></html>`, 1024), "div")
+	if len(box.Lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d", len(box.Lines))
+	}
+	if lineText(box.Lines[0]) != "a b c d" || lineText(box.Lines[1]) != "e" {
+		t.Errorf("split = %q / %q, want unbalanced greedy %q / %q (floats present, balance skipped)",
+			lineText(box.Lines[0]), lineText(box.Lines[1]), "a b c d", "e")
+	}
+}
+
 func TestPrePreservesWhitespaceAndNewlines(t *testing.T) {
 	src := "<html><body style=\"margin:0\"><pre style=\"margin:0;padding:0\">x  y\nzz</pre></body></html>"
 	pre := findBox(layoutHTML(t, src, 1024), "pre")

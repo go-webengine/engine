@@ -145,3 +145,32 @@ func TestWrapItemsLineBreak(t *testing.T) {
 		t.Errorf("break lines = %q / %d / %q", lineText(lines[0]), len(lines[1].Items), lineText(lines[2]))
 	}
 }
+
+// TestBalanceWidthKeepsLineCountButRedistributes guards balanceWidth's own
+// core property (see its doc comment): re-wrapping at the width it returns
+// must use the SAME line count as the caller's own already-computed n, but
+// distribute content more evenly than the plain greedy wrap does. Widths:
+// a-e each 20px, SpaceBefore 1 (word's own fixed value) → cumulative content
+// widths after 1/2/3/4/5 words are 20/41/62/83/104. At maxW=90 greedy fits
+// four words (83) then strands the fifth alone (20) — the classic "orphan"
+// split; the narrowest width that STILL wraps to 2 lines is exactly 62 (the
+// three-word cumulative), giving a much more even 62/41 split instead.
+func TestBalanceWidthKeepsLineCountButRedistributes(t *testing.T) {
+	items := []*InlineItem{word("a", 20), word("b", 20), word("c", 20), word("d", 20), word("e", 20)}
+	greedy := WrapItems(items, 90)
+	if len(greedy) != 2 {
+		t.Fatalf("greedy setup: expected 2 lines, got %d", len(greedy))
+	}
+	if lineText(greedy[0]) != "a b c d" || lineText(greedy[1]) != "e" {
+		t.Fatalf("greedy setup: unexpected split %q / %q", lineText(greedy[0]), lineText(greedy[1]))
+	}
+
+	w := balanceWidth(items, 90, 2)
+	balanced := WrapItems(items, w)
+	if len(balanced) != 2 {
+		t.Fatalf("balanceWidth(...)=%v re-wraps to %d lines, want 2 (must preserve the greedy line count)", w, len(balanced))
+	}
+	if lineText(balanced[0]) != "a b c" || lineText(balanced[1]) != "d e" {
+		t.Errorf("balanced split = %q / %q, want %q / %q", lineText(balanced[0]), lineText(balanced[1]), "a b c", "d e")
+	}
+}

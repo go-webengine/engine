@@ -70,3 +70,27 @@ func WrapItems(items []*InlineItem, maxW float64) []*LineBox {
 	lines = append(lines, cur)
 	return lines
 }
+
+// balanceWidth finds the narrowest width in [0,cw] at which WrapItems(items,
+// ·) still produces exactly n lines — the width `text-wrap:balance` should
+// actually wrap at (see TextWrapBalance's own doc comment for why this
+// approximates the spec's UA-defined algorithm: since WrapItems's own line
+// count is monotonically non-increasing as its width grows, for any width in
+// [balanceWidth,cw] the count is already exactly n — cw itself witnesses
+// that — and narrower than balanceWidth it's provably more than n, so this
+// is the widest content-column that still forces every line's own leftover
+// space to shrink as much as possible without adding a line). n is assumed
+// to already be len(WrapItems(items,cw)) — the caller's own already-computed
+// baseline — so this never needs to invoke WrapItems at cw itself.
+func balanceWidth(items []*InlineItem, cw float64, n int) float64 {
+	lo, hi := 0.0, cw
+	for i := 0; i < 30 && hi-lo > 0.25; i++ {
+		mid := (lo + hi) / 2
+		if len(WrapItems(items, mid)) <= n {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	return hi
+}
