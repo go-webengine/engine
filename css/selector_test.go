@@ -561,6 +561,168 @@ func TestNthChildPseudo(t *testing.T) {
 	}
 }
 
+// TestNthOfTypePseudo covers ":nth-of-type()", using github.com's own real
+// "AvatarStack" overflow-widget shape as the fixture: a row of contributor
+// avatars, each `.avatar`, where `:nth-of-type(n+3)` is meant to hide every
+// avatar past the second in favour of a "+N more" overflow badge. An
+// unmodelled ":nth-of-type" previously left every avatar visible.
+func TestNthOfTypePseudo(t *testing.T) {
+	root, err := dom.Parse(`<div>
+		<span class="avatar" id="a1">1</span>
+		<span class="avatar" id="a2">2</span>
+		<span class="avatar" id="a3">3</span>
+		<b id="notavatar">not an avatar</b>
+		<span class="avatar" id="a4">4</span>
+	</div>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1, a2, a3, a4 := findByID(root, "a1"), findByID(root, "a2"), findByID(root, "a3"), findByID(root, "a4")
+	notavatar := findByID(root, "notavatar")
+
+	sel, ok := parseComplex("span:nth-of-type(n+3)")
+	if !ok {
+		t.Fatal("span:nth-of-type(n+3) should parse")
+	}
+	if sel.Matches(a1) || sel.Matches(a2) {
+		t.Error("span:nth-of-type(n+3) must NOT match the first two spans")
+	}
+	if !sel.Matches(a3) || !sel.Matches(a4) {
+		t.Error("span:nth-of-type(n+3) should match the third span onward")
+	}
+	// A <b> interleaved between spans must not shift the same-tag count —
+	// a4 is the FOURTH span overall but only the third <b>-excluding count,
+	// confirming elementPositionOfType counts same-tag siblings only, not
+	// every element sibling (that would be elementPosition, already tested).
+	if sel2, ok := parseComplex("span:nth-of-type(4)"); !ok || !sel2.Matches(a4) {
+		t.Error("span:nth-of-type(4) should match the 4th <span>, unaffected by the interleaved <b>")
+	}
+	if sel3, ok := parseComplex("b:nth-of-type(1)"); !ok || !sel3.Matches(notavatar) {
+		t.Error("b:nth-of-type(1) should match the only <b>, which is position 1 among <b> siblings")
+	}
+}
+
+// TestNthLastChildPseudo covers ":nth-last-child()", counting position from
+// the END of the element siblings rather than the start.
+func TestNthLastChildPseudo(t *testing.T) {
+	root, err := dom.Parse(`<ul>
+		<li id="l1">a</li>
+		<li id="l2">b</li>
+		<li id="l3">c</li>
+	</ul>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l1, l2, l3 := findByID(root, "l1"), findByID(root, "l2"), findByID(root, "l3")
+
+	// The LAST child is position 1 counted from the end.
+	if sel, ok := parseComplex("li:nth-last-child(1)"); !ok || sel.Matches(l1) || sel.Matches(l2) || !sel.Matches(l3) {
+		t.Error("li:nth-last-child(1) should match only the LAST li")
+	}
+	// "2" from the end is the second-to-last.
+	if sel, ok := parseComplex("li:nth-last-child(2)"); !ok || sel.Matches(l1) || !sel.Matches(l2) || sel.Matches(l3) {
+		t.Error("li:nth-last-child(2) should match only the second-to-last li")
+	}
+	// "even" counted from the end still alternates, just from the other side.
+	if sel, ok := parseComplex("li:nth-last-child(even)"); !ok || sel.Matches(l1) || !sel.Matches(l2) || sel.Matches(l3) {
+		t.Error("li:nth-last-child(even) should match only l2 (2nd from the end, of 3)")
+	}
+}
+
+// TestNthLastOfTypePseudo covers ":nth-last-of-type()", combining
+// same-tag-only counting with counting from the end.
+func TestNthLastOfTypePseudo(t *testing.T) {
+	root, err := dom.Parse(`<div>
+		<span id="s1">1</span>
+		<b id="mid">x</b>
+		<span id="s2">2</span>
+		<span id="s3">3</span>
+	</div>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1, s2, s3 := findByID(root, "s1"), findByID(root, "s2"), findByID(root, "s3")
+
+	// s3 is the last <span> overall, so it's position 1 from the end among
+	// spans, even though an interleaved <b> sits between s1 and s2.
+	if sel, ok := parseComplex("span:nth-last-of-type(1)"); !ok || !sel.Matches(s3) || sel.Matches(s1) || sel.Matches(s2) {
+		t.Error("span:nth-last-of-type(1) should match only the LAST span")
+	}
+	if sel, ok := parseComplex("span:nth-last-of-type(2)"); !ok || !sel.Matches(s2) || sel.Matches(s1) || sel.Matches(s3) {
+		t.Error("span:nth-last-of-type(2) should match only the second-to-last span")
+	}
+}
+
+// TestOnlyChildAndOfTypeVariants covers ":only-child", ":first-of-type",
+// ":last-of-type", and ":only-of-type" together, since they share the same
+// small "no sibling on one/either side" shape as the already-tested
+// FirstChild/LastChild.
+func TestOnlyChildAndOfTypeVariants(t *testing.T) {
+	root, err := dom.Parse(`<div>
+		<div id="solo-wrap"><span id="solo" class="item">only</span></div>
+		<div id="multi-wrap">
+			<span id="m1" class="item">a</span>
+			<span id="m2" class="item">b</span>
+		</div>
+		<article>
+			<p id="p1">first</p>
+			<p id="p2">mid</p>
+			<p id="p3">last</p>
+		</article>
+	</div>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	solo, m1, m2 := findByID(root, "solo"), findByID(root, "m1"), findByID(root, "m2")
+	p1, p2, p3 := findByID(root, "p1"), findByID(root, "p2"), findByID(root, "p3")
+
+	if sel, ok := parseComplex(".item:only-child"); !ok || !sel.Matches(solo) || sel.Matches(m1) || sel.Matches(m2) {
+		t.Error(".item:only-child should match only the sibling-less span")
+	}
+	if sel, ok := parseComplex(".item:only-of-type"); !ok || !sel.Matches(solo) || sel.Matches(m1) || sel.Matches(m2) {
+		t.Error(".item:only-of-type should match only the sibling-less span (same-tag count of 1)")
+	}
+	if sel, ok := parseComplex("p:first-of-type"); !ok || !sel.Matches(p1) || sel.Matches(p2) || sel.Matches(p3) {
+		t.Error("p:first-of-type should match only the first <p>")
+	}
+	if sel, ok := parseComplex("p:last-of-type"); !ok || sel.Matches(p1) || sel.Matches(p2) || !sel.Matches(p3) {
+		t.Error("p:last-of-type should match only the last <p>")
+	}
+
+	// A node with no parent at all is always position 1 from either
+	// direction — elementPositionOfType/elementPositionOfTypeFromEnd's own
+	// base case, matching elementPosition's precedent above.
+	orphan := el("div", "", "")
+	if elementPositionOfType(orphan) != 1 {
+		t.Errorf("elementPositionOfType(orphan) = %d, want 1", elementPositionOfType(orphan))
+	}
+	if elementPositionFromEnd(orphan) != 1 {
+		t.Errorf("elementPositionFromEnd(orphan) = %d, want 1", elementPositionFromEnd(orphan))
+	}
+	if elementPositionOfTypeFromEnd(orphan) != 1 {
+		t.Errorf("elementPositionOfTypeFromEnd(orphan) = %d, want 1", elementPositionOfTypeFromEnd(orphan))
+	}
+
+	// A node that claims a Parent but isn't actually among that parent's
+	// Children (never happens via real parsing/DOM mutation — every node in
+	// this tree is reached by walking Children — but each function's loop
+	// still has a defensive post-loop fallback for it) exercises that
+	// fallback line directly, since real DOM structure can't reach it.
+	parent := el("div", "", "")
+	detached := el("span", "", "")
+	detached.Parent = parent
+	parent.Children = []*dom.Node{el("span", "", "")} // some OTHER child, not detached
+	if got := elementPositionOfType(detached); got != 1 {
+		t.Errorf("elementPositionOfType(detached-but-parented) = %d, want 1 (post-loop fallback)", got)
+	}
+	if got := elementPositionFromEnd(detached); got != 1 {
+		t.Errorf("elementPositionFromEnd(detached-but-parented) = %d, want 1 (post-loop fallback)", got)
+	}
+	if got := elementPositionOfTypeFromEnd(detached); got != 1 {
+		t.Errorf("elementPositionOfTypeFromEnd(detached-but-parented) = %d, want 1 (post-loop fallback)", got)
+	}
+}
+
 // TestEmptyPseudo covers the ":empty" structural pseudo-class, using
 // pkg.go.dev's own real rule shape as the fixture:
 // `.Documentation-toc:empty{display:none}` is meant to hide a genuinely

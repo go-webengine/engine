@@ -92,12 +92,48 @@ type compound struct {
 	// the even ones, collapsing the whole table to one solid background
 	// colour instead of alternating rows. ":nth-of-type"/":nth-last-child"
 	// use the identical An+B grammar but a different position count (same-
-	// tag siblings only, or counted from the end) — not modelled here, a
-	// narrower, deliberately-scoped gap for a future round if a real need
-	// surfaces (this round's own corpus check found ":nth-child" alone
-	// already covers the overwhelming majority of real usage).
+	// tag siblings only, or counted from the end) — see NthOfTypeSet/
+	// NthLastChildSet/NthLastOfTypeSet below, added once a real need
+	// surfaced (round 83): GitHub's own "AvatarStack" overflow widget uses
+	// `.avatar:nth-of-type(3)` / `:nth-of-type(n+6)` to show only the first
+	// few contributor avatars and hide the rest.
 	NthChildSet          bool
 	NthChildA, NthChildB int
+	// OnlyChild is ":only-child" — the element has neither a preceding nor a
+	// following element sibling (equivalently: FirstChild AND LastChild).
+	// Modelled for the same reason as FirstChild/LastChild: a real,
+	// sometimes-true structural fact, not a dynamic pseudo, so degrading an
+	// unmodelled use to "matches its base alone" would be actively wrong
+	// wherever it narrows a rule that would otherwise over-apply.
+	OnlyChild bool
+	// FirstOfType/LastOfType/OnlyOfType are the "same-tag-only" analogues of
+	// FirstChild/LastChild/OnlyChild — the element has no preceding (resp.
+	// following, resp. either) SAME-TAG element sibling, using
+	// elementPositionOfType instead of elementPosition.
+	FirstOfType bool
+	LastOfType  bool
+	OnlyOfType  bool
+	// NthOfTypeSet/A/B model ":nth-of-type(<An+B>)" — like NthChildSet, but
+	// counting only same-tag siblings (elementPositionOfType, not
+	// elementPosition). Confirmed load-bearing live on github.com's own
+	// Primer CSS "AvatarStack" component (round 83): `.avatar:nth-of-type(3)`
+	// / `.avatar:nth-of-type(4)` / `.avatar:nth-of-type(5)` progressively
+	// narrow the avatar row as more contributors are shown, and
+	// `.avatar:nth-of-type(n+6)` hides every avatar past the 5th in favour of
+	// a "+N" overflow badge — an unmodelled ":nth-of-type" left every avatar
+	// visible, showing the full uncapped list instead of a bounded stack.
+	NthOfTypeSet           bool
+	NthOfTypeA, NthOfTypeB int
+	// NthLastChildSet/A/B model ":nth-last-child(<An+B>)" — like NthChildSet,
+	// but counting position from the END of the element siblings
+	// (elementPositionFromEnd), where the LAST element sibling is position 1.
+	NthLastChildSet              bool
+	NthLastChildA, NthLastChildB int
+	// NthLastOfTypeSet/A/B model ":nth-last-of-type(<An+B>)" — combines
+	// NthOfTypeSet's same-tag-only counting with NthLastChildSet's
+	// counted-from-the-end direction (elementPositionOfTypeFromEnd).
+	NthLastOfTypeSet               bool
+	NthLastOfTypeA, NthLastOfTypeB int
 	// Not holds the compound selectors of every ":not(...)" attached to this
 	// compound. The compound matches only when NONE of them matches the element.
 	// A ":not()" argument that is a dynamic pseudo (never matches statically) is
@@ -307,6 +343,27 @@ func (c compound) matches(n *dom.Node) bool {
 		return false
 	}
 	if c.NthChildSet && !matchesAnB(elementPosition(n), c.NthChildA, c.NthChildB) {
+		return false
+	}
+	if c.OnlyChild && (prevElementSibling(n) != nil || nextElementSibling(n) != nil) {
+		return false
+	}
+	if c.FirstOfType && elementPositionOfType(n) != 1 {
+		return false
+	}
+	if c.LastOfType && elementPositionOfTypeFromEnd(n) != 1 {
+		return false
+	}
+	if c.OnlyOfType && (elementPositionOfType(n) != 1 || elementPositionOfTypeFromEnd(n) != 1) {
+		return false
+	}
+	if c.NthOfTypeSet && !matchesAnB(elementPositionOfType(n), c.NthOfTypeA, c.NthOfTypeB) {
+		return false
+	}
+	if c.NthLastChildSet && !matchesAnB(elementPositionFromEnd(n), c.NthLastChildA, c.NthLastChildB) {
+		return false
+	}
+	if c.NthLastOfTypeSet && !matchesAnB(elementPositionOfTypeFromEnd(n), c.NthLastOfTypeA, c.NthLastOfTypeB) {
 		return false
 	}
 	for _, am := range c.Attrs {
@@ -570,6 +627,67 @@ func elementPosition(n *dom.Node) int {
 	pos := 0
 	for _, c := range n.Parent.Children {
 		if c.Type == dom.Element {
+			pos++
+		}
+		if c == n {
+			return pos
+		}
+	}
+	return pos
+}
+
+// elementPositionOfType is elementPosition's same-tag-only analogue, for
+// ":nth-of-type"/":first-of-type": n's 1-based position among its parent's
+// element children that share n's own tag, in document order. A node with no
+// parent is always position 1.
+func elementPositionOfType(n *dom.Node) int {
+	if n.Parent == nil {
+		return 1
+	}
+	pos := 0
+	for _, c := range n.Parent.Children {
+		if c.Type == dom.Element && c.Tag == n.Tag {
+			pos++
+		}
+		if c == n {
+			return pos
+		}
+	}
+	return pos
+}
+
+// elementPositionFromEnd is elementPosition counted from the END instead of
+// the start, for ":nth-last-child"/":last-child"-shaped needs: n's last
+// element sibling (or n itself, if n has none) is position 1. A node with no
+// parent is always position 1.
+func elementPositionFromEnd(n *dom.Node) int {
+	if n.Parent == nil {
+		return 1
+	}
+	pos := 0
+	for i := len(n.Parent.Children) - 1; i >= 0; i-- {
+		c := n.Parent.Children[i]
+		if c.Type == dom.Element {
+			pos++
+		}
+		if c == n {
+			return pos
+		}
+	}
+	return pos
+}
+
+// elementPositionOfTypeFromEnd combines elementPositionOfType's same-tag-only
+// counting with elementPositionFromEnd's from-the-end direction, for
+// ":nth-last-of-type"/":last-of-type".
+func elementPositionOfTypeFromEnd(n *dom.Node) int {
+	if n.Parent == nil {
+		return 1
+	}
+	pos := 0
+	for i := len(n.Parent.Children) - 1; i >= 0; i-- {
+		c := n.Parent.Children[i]
+		if c.Type == dom.Element && c.Tag == n.Tag {
 			pos++
 		}
 		if c == n {
@@ -1077,6 +1195,26 @@ func parseSimple(s string) (compound, bool) {
 			if a, b, ok := parseAnB(arg); ok {
 				c.NthChildSet, c.NthChildA, c.NthChildB = true, a, b
 			}
+		case "only-child":
+			c.OnlyChild = true
+		case "first-of-type":
+			c.FirstOfType = true
+		case "last-of-type":
+			c.LastOfType = true
+		case "only-of-type":
+			c.OnlyOfType = true
+		case "nth-of-type":
+			if a, b, ok := parseAnB(arg); ok {
+				c.NthOfTypeSet, c.NthOfTypeA, c.NthOfTypeB = true, a, b
+			}
+		case "nth-last-child":
+			if a, b, ok := parseAnB(arg); ok {
+				c.NthLastChildSet, c.NthLastChildA, c.NthLastChildB = true, a, b
+			}
+		case "nth-last-of-type":
+			if a, b, ok := parseAnB(arg); ok {
+				c.NthLastOfTypeSet, c.NthLastOfTypeA, c.NthLastOfTypeB = true, a, b
+			}
 		case "not":
 			// An unmodelled ":not()" argument imposes NO constraint rather than
 			// dropping the rule — the same "reduce, don't drop" philosophy applied
@@ -1166,7 +1304,8 @@ func parseSimple(s string) (compound, bool) {
 	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
 	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet {
+		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet &&
+		!c.OnlyChild && !c.FirstOfType && !c.LastOfType && !c.OnlyOfType && !c.NthOfTypeSet && !c.NthLastChildSet && !c.NthLastOfTypeSet {
 		return compound{}, false
 	}
 	return c, true
