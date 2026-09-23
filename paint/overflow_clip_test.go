@@ -142,6 +142,25 @@ func TestOverflowAutoHeightNotClipped(t *testing.T) {
 	}
 }
 
+// TestOverflowNowrapAutoHeightClips is a real regression, found live on
+// caniuse.com: its own `.news` ticker (overflow:hidden;white-space:nowrap;
+// text-overflow:ellipsis) is sized only by a CSS Grid column, with no
+// explicit height at all. Unlike TestOverflowAutoHeightNotClipped's collapsed
+// float container, a nowrap box's auto height is a trustworthy one-line
+// computation — it must still clip the overflowing text at its own right
+// edge instead of overlapping the adjacent sibling.
+func TestOverflowNowrapAutoHeightClips(t *testing.T) {
+	img := renderFixture(t, "overflow_nowrap_autoheight_clips.html", 300, 60)
+	// The narrow (150px) nowrap box sits at x=0..150, followed by a 40px gap
+	// (the sibling's own margin-left) before "NEXT" starts at x=190. Its long
+	// single line, if not clipped, overflows straight through that gap.
+	// Assert the gap itself — clear of both the narrow box's own width and
+	// the sibling's real text — stays blank.
+	if hasInk(img, 155, 0, 185, 40) {
+		t.Error("nowrap auto-height overflow:hidden box was not clipped, spilled into the gap before its sibling")
+	}
+}
+
 // TestClipHelperUnits covers the clip-arithmetic branches directly and
 // deterministically (per-axis clamps, empty fills, rounded-rect masking).
 func TestClipHelperUnits(t *testing.T) {
@@ -153,6 +172,11 @@ func TestClipHelperUnits(t *testing.T) {
 	// clipsContent gate: overflow set but auto/percent height => no clip.
 	if clipsContent(&layout.Box{Style: &css.Style{OverflowX: hidden, Height: autoH}}) {
 		t.Error("auto-height overflow box must not clip")
+	}
+	// ...unless the box also forbids wrapping: a nowrap auto height is a
+	// trustworthy single-line computation, not a collapsed float/flex row.
+	if !clipsContent(&layout.Box{Style: &css.Style{OverflowX: hidden, Height: autoH, WhiteSpace: css.WSNoWrap}}) {
+		t.Error("nowrap auto-height overflow box must clip")
 	}
 	if clipsContent(&layout.Box{Style: &css.Style{OverflowX: hidden, Height: css.Length{IsPercent: true, Percent: 0.5}}}) {
 		t.Error("percent-height overflow box must not clip")

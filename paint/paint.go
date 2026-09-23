@@ -189,7 +189,10 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 }
 
 // clipsContent reports whether a box should clip its descendants' painting.
-// It requires BOTH a non-visible overflow AND an author-set definite height.
+// It requires a non-visible overflow AND a height this engine actually
+// trusts: either an author-set definite height, or an auto height on a
+// `white-space:nowrap` box (see below for why that specific auto-height case
+// is safe).
 //
 // The height gate is a deliberate conservatism: the engine's block layout still
 // under-sizes some auto-height containers (a collapsed float/flex row can come
@@ -201,6 +204,23 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 // sets an explicit `height:1px`, so it is covered; an engine-collapsed
 // auto-height container is not. Percentage heights are excluded because the
 // engine resolves them as auto (no definite basis), so they are not trustworthy.
+//
+// A `white-space:nowrap` box's auto height is a SEPARATE, genuinely trustworthy
+// case, not the collapsed-float/flex-row failure mode this gate otherwise
+// guards against: forbidding wrapping means its content is exactly one line,
+// so the auto height is a simple, direct line-height computation — never the
+// result of the same float/flex collapse logic that can under-size a container.
+// Confirmed load-bearing live (round 87): caniuse.com's own `.news` ticker
+// (`overflow:hidden;white-space:nowrap;text-overflow:ellipsis`, sized only by
+// its CSS Grid column, no explicit height at all) previously never clipped,
+// so its own long single-line text overflowed straight through the adjacent
+// nav items ("Compare browsers", "About") instead of being cut off at its own
+// right edge. `text-overflow:ellipsis`'s own "…" glyph is a separate,
+// narrower, still-open gap — this only restores the CLIP, matching a plain
+// `overflow:hidden` (no ellipsis) result, which is what real Chrome falls
+// back to for any browser without ellipsis support, so it's never a worse
+// outcome than before, only a category of "worse" traded for "correctly clipped
+// but missing a cosmetic '…'".
 func clipsContent(box *layout.Box) bool {
 	st := box.Style
 	if st == nil {
@@ -209,7 +229,10 @@ func clipsContent(box *layout.Box) bool {
 	if !st.OverflowX.Clips() && !st.OverflowY.Clips() {
 		return false
 	}
-	return !st.Height.Auto && !st.Height.IsPercent
+	if !st.Height.Auto && !st.Height.IsPercent {
+		return true
+	}
+	return st.WhiteSpace == css.WSNoWrap
 }
 
 // descendantClip narrows clip to box's padding box on each axis whose overflow
