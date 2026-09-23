@@ -1090,6 +1090,14 @@ func (l *layouter) formControlSize(node *dom.Node, st *css.Style, cw float64) (w
 // typical UA default button padding closely enough to look intentional).
 const formControlPadX, formControlPadY = 12.0, 6.0
 
+// buttonIconGap is the horizontal gap between a button's text label and its
+// trailing icon (see buttonIcon), approximating github.com's own real
+// margin-left:4px between a nav dropdown's label and its caret. Shared by
+// name only (paint has its own identical constant, paintFormControl's
+// buttonIconGap) — the two packages don't share layout constants directly,
+// so both must be kept in sync by hand if this value ever changes.
+const buttonIconGap = 4.0
+
 // formControlDefaultSize is called only for a tag isFormControlTag already
 // accepted (input/button/select/textarea), so its outer switch's every real
 // case is covered by construction; w/h are named returns assigned by
@@ -1116,11 +1124,28 @@ func (l *layouter) formControlDefaultSize(node *dom.Node, st *css.Style) (w, h f
 		// no text) sizes to its icon's own intrinsic size plus padding, the
 		// same box a real browser gives it, rather than the padding-only
 		// floor a fabricated empty label would leave (see buttonIcon).
-		if _, iw, ih := l.buttonIcon(node); iw > 0 && ih > 0 {
+		label := l.buttonLabel(node)
+		icon, iw, ih := l.buttonIcon(node)
+		switch {
+		case icon != nil && label == "":
 			w, h = iw+2*formControlPadX, ih+2*formControlPadY
-			break
+		case icon != nil:
+			// Text label PLUS a trailing icon (github.com's own nav dropdown
+			// triggers — see buttonIcon's own doc comment): width is the
+			// label's own measured width, the fixed icon gap (buttonIconGap,
+			// shared with paint's own drawing of the same layout), and the
+			// icon's width, all plus the usual padding; height is whichever
+			// of the text's own line height or the icon's height is taller.
+			tw := l.m.Measure(label, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+			w = tw + buttonIconGap + iw + 2*formControlPadX
+			lh := st.FontSize
+			if ih > lh {
+				lh = ih
+			}
+			h = lh + 2*formControlPadY
+		default:
+			w, h = l.buttonSize(label, st)
 		}
-		w, h = l.buttonSize(l.buttonLabel(node), st)
 	case "select":
 		// A real <select> sizes itself to its WIDEST option's label, not a
 		// flat default — matching the common cross-engine pattern (e.g.
@@ -1206,22 +1231,22 @@ func (l *layouter) appendVisibleText(n *dom.Node, b *strings.Builder) {
 }
 
 // buttonIcon returns a "button"-tag node's single img/svg DIRECT child and
-// its used size, when the button has no visible text (buttonLabel == "") —
-// the shape a real icon-only button takes on the live web (MDN's nav
-// <mdn-search-button>, pkg.go.dev's search-submit button): the icon IS the
-// button's whole visible content, not a label. It returns a nil node and
-// zero size for anything else, so a caller need only check the size: a
-// button WITH visible text (the icon/text-mixing case has no confirmed real
-// caller, so is intentionally not attempted), a button with no img/svg child
-// at all, MORE than one such child (ambiguous — no confirmed real case
-// mixes multiple icons under one bare button, so this doesn't guess which
-// one is "the" icon), or a lone child whose size never resolved (e.g. its
-// fetch failed or budget was exceeded) all fall back to the ordinary
-// padding-only sizing formControlDefaultSize already had.
+// its used size. Fires REGARDLESS of whether the button also has visible
+// text: an icon-only button (MDN's nav <mdn-search-button>, pkg.go.dev's
+// search-submit button) is the shape this was originally written for, but a
+// button with BOTH a text label AND a trailing icon is equally real and
+// common — confirmed live on github.com's own site-wide nav dropdown
+// triggers (round 85: "Platform▾"/"Solutions▾"/etc., `<button>Platform<svg
+// class="octicon-triangle-right ...">`), previously documented here as
+// having "no confirmed real caller" and deliberately not attempted; that
+// confirmed need is what changed this function's own scope. Callers
+// distinguish the two shapes via the LABEL they already have (empty vs
+// non-empty), not via anything returned here. Returns a nil node and zero
+// size when there's no img/svg child at all, MORE than one such child
+// (ambiguous — no confirmed real case mixes multiple icons under one bare
+// button, so this doesn't guess which one is "the" icon), or a lone child
+// whose size never resolved (e.g. its fetch failed or budget was exceeded).
 func (l *layouter) buttonIcon(node *dom.Node) (icon *dom.Node, w, h float64) {
-	if l.buttonLabel(node) != "" {
-		return nil, 0, 0
-	}
 	for _, c := range node.Children {
 		if c.Type == dom.Element && isReplacedTag(c.Tag) {
 			if icon != nil {

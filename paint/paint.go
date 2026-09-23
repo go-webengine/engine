@@ -903,6 +903,13 @@ var (
 	formControlPadX = 6
 )
 
+// buttonIconGap is the horizontal gap between a button's text label and its
+// trailing icon — must match layout's own buttonIconGap (layout/layout.go),
+// which already reserved this same gap when sizing the control's box; the
+// two packages don't share layout constants directly, so both must be kept
+// in sync by hand if this value ever changes.
+const buttonIconGap = 4
+
 // paintFormControl draws a form control's box (background + 1px border) and,
 // for anything but a checkbox/radio, its label or current value/placeholder
 // text — the visible, clickable rendering isReplacedTag-style items never
@@ -953,11 +960,13 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 		strokeRect1px(pp, r, formBorder, clip)
 	}
 
+	text, muted := formControlDisplayText(n, it.Label)
+
 	// An icon-only <button> (Label == "", see layout.InlineItem.Icon's doc
 	// comment) draws its img/svg child's own bitmap centred in the control's
 	// box instead of any text — real browsers give it no fabricated label
 	// either, and this is the actual visible content that box exists for.
-	if it.Icon != nil {
+	if it.Icon != nil && text == "" {
 		if src, ok := imgs[it.Icon]; ok {
 			b := src.Bounds()
 			ix := r.X + (r.W-b.Dx())/2
@@ -967,7 +976,6 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 		return
 	}
 
-	text, muted := formControlDisplayText(n, it.Label)
 	if text == "" || it.Style == nil {
 		return
 	}
@@ -978,9 +986,29 @@ func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.Inli
 	}
 	baseline := r.Y + (r.H+int(st.FontSize))/2 - 2 // roughly centers the cap-height in the box
 	x := r.X + formControlPadX
+	tw := f.Measure(text, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+
+	// A text label WITH a trailing icon (github.com's own nav dropdown
+	// triggers — "Platform▾" and friends, round 85; see layout's own
+	// buttonIcon doc comment) centres the label+gap+icon group as a whole,
+	// then draws the icon immediately after the label — layout already
+	// reserved exactly this width (buttonIconGap) when sizing the control's
+	// box, so no further layout decision is made here, only painting it.
+	if it.Icon != nil {
+		if src, ok := imgs[it.Icon]; ok {
+			b := src.Bounds()
+			total := tw + buttonIconGap + float64(b.Dx())
+			x = r.X + int((float64(r.W)-total)/2)
+			drawText(dst, pp, f, st, text, x, baseline, col, clip)
+			ix := x + int(tw) + buttonIconGap
+			iy := r.Y + (r.H-b.Dy())/2
+			blitImage(dst, src, ix, iy, clip)
+			return
+		}
+	}
+
 	if kind == controlButtonLike {
 		// A button's label centers horizontally in its own (content-sized) box.
-		tw := f.Measure(text, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 		x = r.X + int((float64(r.W)-tw)/2)
 	}
 	drawText(dst, pp, f, st, text, x, baseline, col, clip)

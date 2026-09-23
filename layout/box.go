@@ -110,16 +110,17 @@ type InlineItem struct {
 	// paint.formControlDisplayText) and always leaves this empty.
 	Label string
 
-	// Icon is set when FormControl is a "button" with no visible text (Label
-	// == "") whose content is a single img/svg child instead — e.g. MDN's
-	// nav <mdn-search-button> or pkg.go.dev's search-submit button — so paint
-	// draws that replaced element's bitmap (looked up the same way a plain
-	// Image item is) centred in the control's box instead of leaving it
-	// empty. See layouter.buttonIcon: nil whenever the button has visible
-	// text, has no img/svg child, has more than one (ambiguous — no
-	// confirmed real case mixes them), or that child's size never resolved
-	// (e.g. its fetch failed), in which case the button falls back to the
-	// old padding-only sizing with nothing drawn inside.
+	// Icon is set when FormControl is a "button" whose content includes a
+	// single img/svg child — either as the button's WHOLE content (Label ==
+	// "", e.g. MDN's nav <mdn-search-button> or pkg.go.dev's search-submit
+	// button, drawn centred in the control's box) or alongside a text label
+	// (Label != "", e.g. github.com's own nav dropdown triggers —
+	// "Platform▾" and friends — drawn after the label with a small gap; see
+	// paintFormControl). See layouter.buttonIcon: nil when the button has no
+	// img/svg child, has more than one (ambiguous — no confirmed real case
+	// mixes them), or that child's size never resolved (e.g. its fetch
+	// failed), in which case the button falls back to the old padding-only
+	// sizing with nothing drawn inside.
 	Icon *dom.Node
 
 	LineBreak bool // a <br>: forces the current line to end
