@@ -128,3 +128,52 @@ func TestForceOneSkipsLeadingBreak(t *testing.T) {
 		t.Errorf("forceOne line = %v", texts(line.Items))
 	}
 }
+
+// TestAspectRatioComputesHeightFromResolvedWidth covers the confirmed
+// real-world shape (round 86): Next.js's own auto-generated image-placeholder
+// wrapper divs (tailwindcss.com's blog/changelog cover images) size
+// themselves via a resolved width plus `aspect-ratio`, with no explicit
+// height at all — previously entirely ignored, collapsing such a box to
+// zero height.
+func TestAspectRatioComputesHeightFromResolvedWidth(t *testing.T) {
+	src := `<html><body style="margin:0;padding:0">` +
+		`<div id="wide" style="width:400px;aspect-ratio:16/9"></div>` +
+		`<div id="square" style="width:200px;aspect-ratio:1"></div>` +
+		`</body></html>`
+	root := layoutHTML(t, src, 500)
+	wide := findBoxByID(root, "wide")
+	square := findBoxByID(root, "square")
+	assertF(t, "wide.H (400 * 9/16)", wide.H, 225)
+	assertF(t, "square.H (200 * 1/1)", square.H, 200)
+}
+
+// TestAspectRatioIgnoredWhenHeightExplicit confirms an explicit height still
+// wins over aspect-ratio, matching the CSS spec's own precedence (aspect-ratio
+// only fills in a MISSING dimension, never overrides one already given).
+func TestAspectRatioIgnoredWhenHeightExplicit(t *testing.T) {
+	src := `<html><body style="margin:0;padding:0">` +
+		`<div id="d" style="width:400px;height:50px;aspect-ratio:16/9"></div>` +
+		`</body></html>`
+	root := layoutHTML(t, src, 500)
+	d := findBoxByID(root, "d")
+	assertF(t, "explicit height wins over aspect-ratio", d.H, 50)
+}
+
+// TestAspectRatioAutoKeywordAndUnparseableValuesAreNoOp confirms "auto" and a
+// malformed value both leave AspectRatio unset (0), the same "no ratio
+// constraint" outcome — a box with no explicit height and no valid ratio
+// still collapses to its ordinary empty-content height, not a resurrected
+// stale ratio from an earlier declaration in the same cascade.
+func TestAspectRatioAutoKeywordAndUnparseableValuesAreNoOp(t *testing.T) {
+	cases := []string{"auto", "not-a-ratio", "16/0", "0/9", "-1"}
+	for _, v := range cases {
+		t.Run(v, func(t *testing.T) {
+			src := `<html><body style="margin:0;padding:0">` +
+				`<div id="d" style="width:400px;aspect-ratio:` + v + `"></div>` +
+				`</body></html>`
+			root := layoutHTML(t, src, 500)
+			d := findBoxByID(root, "d")
+			assertF(t, "aspect-ratio:"+v+" should not affect height", d.H, 0)
+		})
+	}
+}

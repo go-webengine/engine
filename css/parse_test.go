@@ -722,3 +722,37 @@ func TestApplyProperties(t *testing.T) {
 	apply("color", "notacolor", 16) // invalid ignored
 	apply("unknown-prop", "x", 16)  // unknown ignored
 }
+
+// TestApplyAspectRatio covers `aspect-ratio`'s own parseAspectRatio grammar:
+// a bare number, a "<W>/<H>" ratio, "auto" and any unparseable value all
+// resetting AspectRatio to 0 (see css.Style.AspectRatio's own doc comment for
+// the confirmed real need — round 86).
+func TestApplyAspectRatio(t *testing.T) {
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "aspect-ratio", Value: v}, 16, nil) }
+
+	apply("16/9")
+	if s.AspectRatio != float64(16)/9 {
+		t.Errorf("aspect-ratio 16/9 = %v, want %v", s.AspectRatio, float64(16)/9)
+	}
+	apply("1.5")
+	if s.AspectRatio != 1.5 {
+		t.Errorf("aspect-ratio bare number = %v, want 1.5", s.AspectRatio)
+	}
+	apply("auto")
+	if s.AspectRatio != 0 {
+		t.Errorf("aspect-ratio auto = %v, want 0 (no ratio)", s.AspectRatio)
+	}
+	// Re-set a real ratio, then confirm each unparseable form resets to 0
+	// rather than leaving the PREVIOUS ratio in effect.
+	for _, bad := range []string{"not-a-ratio", "16/0", "0/9", "-1", "16/"} {
+		apply("2/1")
+		if s.AspectRatio == 0 {
+			t.Fatalf("setup: aspect-ratio 2/1 should have set a non-zero ratio")
+		}
+		apply(bad)
+		if s.AspectRatio != 0 {
+			t.Errorf("aspect-ratio %q = %v, want 0 (unparseable, must not keep the prior ratio)", bad, s.AspectRatio)
+		}
+	}
+}

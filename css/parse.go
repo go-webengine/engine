@@ -770,6 +770,12 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if lv == "none" {
 			s.MaxHeight = Length{Auto: true}
 		}
+	case "aspect-ratio":
+		if r, ok := parseAspectRatio(lv); ok {
+			s.AspectRatio = r
+		} else {
+			s.AspectRatio = 0 // "auto" or unparseable: no ratio constraint
+		}
 	case "box-sizing":
 		switch lv {
 		case "border-box":
