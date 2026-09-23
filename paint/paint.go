@@ -866,6 +866,18 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 			if it.Style != nil && len(it.Style.Filters) > 0 {
 				src = applyFilters(toRGBA(src), it.Style.Filters, it.Style.Color)
 			}
+			// layout resolves an explicit width/max-width (see
+			// resolvedReplacedSize) against the item's REAL containing width,
+			// which can be narrower than the loaded bitmap's own pixel size —
+			// the loader only ever sizes against the page's viewport, not any
+			// nested container's narrower one. Scale here (reusing the same
+			// resample path background-image tiles already go through) rather
+			// than in the loader, so the loaded bitmap's own resolution stays
+			// an upper bound and this stays a pure display-size concern.
+			if tw, th := int(math.Round(it.Width)), int(math.Round(it.LineHeight)); tw > 0 && th > 0 &&
+				(tw != src.Bounds().Dx() || th != src.Bounds().Dy()) {
+				src = scaleTile(src, tw, th, bgMode(it.Style))
+			}
 			blitImage(dst, src, int(it.X), int(it.Y), clip)
 		}
 		return

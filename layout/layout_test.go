@@ -176,6 +176,90 @@ func TestInlineImageFromAttrs(t *testing.T) {
 	assertF(t, "img.ImgH", img.ImgH, 40)
 }
 
+// imgSizeHTML parses src and cascades it, returning the root, style map, and
+// an imgSize override for the FIRST <img> found — used instead of the
+// width/height HTML ATTRIBUTES (which css/presentational.go maps to real CSS
+// width/height declarations, giving the element a DEFINITE, non-auto height
+// that would short-circuit usedHeight's own explicit-height-always-wins rule
+// before an aspect-ratio-driven resize is ever reached) so a test can exercise
+// a purely-auto-sized image, matching the real regression's own shape exactly
+// (github.com/golang/go's README image carries no width/height attributes at
+// all, only `style="max-width:100%"`).
+func imgSizeHTML(t *testing.T, src string, iw, ih float64) (*dom.Node, css.StyleMap, map[*dom.Node][2]float64) {
+	t.Helper()
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	img := dom.Find(root, "img")
+	return root, sm, map[*dom.Node][2]float64{img: {iw, ih}}
+}
+
+// TestInlineImageMaxWidthPercentResolvesAgainstContainer is the confirmed
+// real-world regression (round 88): github.com/golang/go's own README image
+// (`<img style="max-width:100%">`) sits in a ~646px-wide article column on a
+// wider page — the pre-layout image loader can only size a percentage width
+// against the page's own viewport (unaware of any narrower container), so it
+// left the image at its full intrinsic width, overflowing the article and
+// misaligning everything below it. Layout must apply max-width AGAINST THE
+// REAL CONTAINER WIDTH, shrinking the display size (not the loaded ImgW/ImgH,
+// which paint uses as the resample source) rather than the loader's own
+// viewport-relative guess.
+func TestInlineImageMaxWidthPercentResolvesAgainstContainer(t *testing.T) {
+	root, sm, sizes := imgSizeHTML(t, `<html><body><div style="width:200px"><img style="max-width:100%"></div></body></html>`, 1000, 500)
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "div"))
+	if len(items) != 1 || items[0].Image == nil {
+		t.Fatalf("expected one image item, got %v", items)
+	}
+	img := items[0]
+	assertF(t, "img.ImgW (unchanged loaded size)", img.ImgW, 1000)
+	assertF(t, "img.ImgH (unchanged loaded size)", img.ImgH, 500)
+	assertF(t, "img.Width (display size, clamped to container)", img.Width, 200)
+	assertF(t, "img.LineHeight (scaled by aspect ratio)", img.LineHeight, 100)
+}
+
+// TestInlineImageWidthPercentResolvesAgainstContainer covers the sibling
+// `width:N%` case (not just max-width), against the same real container.
+func TestInlineImageWidthPercentResolvesAgainstContainer(t *testing.T) {
+	root, sm, sizes := imgSizeHTML(t, `<html><body><div style="width:200px"><img style="width:50%"></div></body></html>`, 1000, 500)
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "div"))
+	img := items[0]
+	assertF(t, "img.Width", img.Width, 100)
+	assertF(t, "img.LineHeight", img.LineHeight, 50)
+}
+
+// TestInlineImageNoCSSSizeStaysAtIntrinsicWidth confirms the overwhelmingly
+// common no-CSS-size case is unaffected: without an explicit width/max-width,
+// the image still displays at its own loaded size, even when that overflows
+// its container — matching a real browser (which does not auto-fit an
+// unstyled image to its container either).
+func TestInlineImageNoCSSSizeStaysAtIntrinsicWidth(t *testing.T) {
+	root, sm, sizes := imgSizeHTML(t, `<html><body><div style="width:200px"><img></div></body></html>`, 1000, 500)
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "div"))
+	img := items[0]
+	assertF(t, "img.Width", img.Width, 1000)
+	assertF(t, "img.LineHeight", img.LineHeight, 500)
+}
+
+// TestBlockImageMaxWidthPercentResolvesAgainstContainer covers the sibling
+// block-level replaced-element path (contents()'s isReplacedTag branch,
+// reached when e.g. a stylesheet's preflight reset makes img display:block) —
+// the same container-width regression as the inline case above.
+func TestBlockImageMaxWidthPercentResolvesAgainstContainer(t *testing.T) {
+	root, sm, sizes := imgSizeHTML(t, `<html><body><div style="width:200px"><img style="display:block;max-width:100%"></div></body></html>`, 1000, 500)
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	img := findBox(box, "img")
+	if img == nil {
+		t.Fatal("no img box found")
+	}
+	assertF(t, "img.W (clamped to container)", img.W, 200)
+	assertF(t, "img.H (scaled by aspect ratio)", img.H, 100)
+}
+
 func TestImageSizeMapOverride(t *testing.T) {
 	root, _ := dom.Parse(`<html><body><p><img></p></body></html>`)
 	sm := css.Cascade(root)
