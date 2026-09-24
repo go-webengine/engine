@@ -859,13 +859,21 @@ type Style struct {
 	// `<h1 class="... text-balance ...">` heading. Only `balance` itself is
 	// modelled — `pretty`/`stable`/`avoid-short-last-line` have no confirmed
 	// real use in this engine's own corpus and fall back to ordinary
-	// wrapping, same as the property's own initial `auto`. `text-wrap`'s
-	// sibling `text-wrap-mode` value `nowrap` (`.text-nowrap{text-wrap:
-	// nowrap}`, ALSO confirmed live on the same page's code-toolbar filename
-	// labels) is a SEPARATE, independently-real gap this field does not
-	// track — deliberately left for a future round rather than folded in
-	// here, matching this session's own one-narrow-fix-per-round precedent.
+	// wrapping, same as the property's own initial `auto`.
 	TextWrapBalance bool
+
+	// TextWrapNowrap (CSS Text 4 `text-wrap`/`text-wrap-mode`) is INHERITED,
+	// initial false ("wrap") — `true` requests `nowrap`: per spec, "lines
+	// only break at forced line breaks; content that does not fit overflows"
+	// — exactly this engine's EXISTING white-space:nowrap wrapping behaviour
+	// (see layout.layoutInline's own `nowrap` parameter), but WITHOUT
+	// white-space's OTHER effect of collapsing runs of whitespace: the spec
+	// is explicit that text-wrap-mode affects line-breaking opportunities
+	// only, never whitespace collapsing/preservation. Confirmed live (round
+	// 93, flagged then as a follow-up rather than folded into that round's
+	// own `balance` fix): tailwindcss.com's own `.text-nowrap{text-wrap:
+	// nowrap}` on its code-toolbar filename labels.
+	TextWrapNowrap bool
 }
 
 // BoxShadow is one box-shadow layer.
@@ -1020,6 +1028,7 @@ func inheritFrom(parent Style) Style {
 		Widows:          parent.Widows,
 		TabSize:         parent.TabSize,
 		TextWrapBalance: parent.TextWrapBalance,
+		TextWrapNowrap:  parent.TextWrapNowrap,
 	}
 }
 
