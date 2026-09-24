@@ -176,6 +176,43 @@ func TestTextWrapBalanceSkipsWhenFloatsPresent(t *testing.T) {
 	}
 }
 
+// TestTextWrapNowrapPreventsWrapping guards `text-wrap:nowrap` (round 95,
+// flagged as a follow-up in round 93's own text-wrap:balance work): per CSS
+// Text 4, "lines only break at forced line breaks; content that does not fit
+// ... overflows" — the SAME never-wraps placement white-space:nowrap already
+// gives, reached through the separate text-wrap-mode axis instead.
+func TestTextWrapNowrapPreventsWrapping(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:20px;text-wrap:nowrap">aaaa bbbb cccc</div></body></html>`
+	box := findBox(layoutHTML(t, src, 1024), "div")
+	if len(box.Lines) != 1 {
+		t.Fatalf("expected 1 overflowing line, got %d", len(box.Lines))
+	}
+	if lineText(box.Lines[0]) != "aaaa bbbb cccc" {
+		t.Errorf("line = %q, want all three words on one line", lineText(box.Lines[0]))
+	}
+}
+
+// TestTextWrapNowrapStillCollapsesWhitespace confirms the spec's own explicit
+// carve-out: text-wrap-mode affects line-breaking opportunities only, never
+// whitespace collapsing — unlike white-space:pre/pre-wrap (which text-wrap
+// has no connection to at all), a run of source spaces under text-wrap:
+// nowrap must still collapse to one, not render as a single preserved
+// multi-space run.
+func TestTextWrapNowrapStillCollapsesWhitespace(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:20px;text-wrap:nowrap">a    b</div></body></html>`
+	box := findBox(layoutHTML(t, src, 1024), "div")
+	if len(box.Lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(box.Lines))
+	}
+	items := box.Lines[0].Items
+	if len(items) != 2 || items[0].Text != "a" || items[1].Text != "b" {
+		t.Fatalf("expected two collapsed-whitespace words [a b], got %v", items)
+	}
+	if items[1].SpaceBefore <= 0 {
+		t.Errorf("SpaceBefore = %v, want a normal collapsed single space, not zero (glued)", items[1].SpaceBefore)
+	}
+}
+
 func TestPrePreservesWhitespaceAndNewlines(t *testing.T) {
 	src := "<html><body style=\"margin:0\"><pre style=\"margin:0;padding:0\">x  y\nzz</pre></body></html>"
 	pre := findBox(layoutHTML(t, src, 1024), "pre")

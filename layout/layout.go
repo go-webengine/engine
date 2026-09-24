@@ -369,8 +369,11 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 func (l *layouter) blockOrInlineContents(box *Box, node *dom.Node, st *css.Style, cx, cw, top float64, b *bfc) float64 {
 	pre := st.WhiteSpace == css.WSPre
 	// white-space: nowrap collects like normal (whitespace collapsed) but
-	// places like pre (never wraps); pre implies both.
-	nowrap := pre || st.WhiteSpace == css.WSNoWrap
+	// places like pre (never wraps); pre implies both. text-wrap:nowrap
+	// (round 95) contributes the SAME never-wraps placement behaviour but,
+	// per spec, must never affect whitespace collapsing/preservation — it
+	// only ever widens `nowrap` here, never `pre` above.
+	nowrap := pre || st.WhiteSpace == css.WSNoWrap || st.TextWrapNowrap
 	if !l.hasBlockLevelChild(node) {
 		b.commit()
 		items := l.collectInline(node, st, pre, cw)

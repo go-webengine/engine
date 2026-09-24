@@ -885,4 +885,72 @@ func TestApplyTextWrapBalance(t *testing.T) {
 	if !s2.TextWrapBalance {
 		t.Error("text-wrap:unset did not inherit true from parent")
 	}
+	s3 := initialStyle()
+	s3.TextWrapBalance = false
+	s3.apply(Declaration{Property: "text-wrap-style", Value: "unset"}, 16, &parent)
+	if !s3.TextWrapBalance {
+		t.Error("text-wrap-style:unset (longhand) did not inherit true from parent")
+	}
+}
+
+func TestApplyTextWrapNowrap(t *testing.T) {
+	if initialStyle().TextWrapNowrap {
+		t.Error("initialStyle().TextWrapNowrap = true, want false (initial value is wrap)")
+	}
+
+	s := initialStyle()
+	apply := func(prop, v string) { s.apply(Declaration{Property: prop, Value: v}, 16, nil) }
+
+	apply("text-wrap", "nowrap")
+	if !s.TextWrapNowrap {
+		t.Error("text-wrap:nowrap left TextWrapNowrap false")
+	}
+	apply("text-wrap", "wrap")
+	if s.TextWrapNowrap {
+		t.Error("text-wrap:wrap left TextWrapNowrap true")
+	}
+	apply("text-wrap-mode", "nowrap")
+	if !s.TextWrapNowrap {
+		t.Error("text-wrap-mode:nowrap (longhand) left TextWrapNowrap false")
+	}
+
+	// The shorthand resets EACH axis to its own initial value when the other
+	// keyword is present — "balance" alone must reset text-wrap-mode back to
+	// wrap even if nowrap was previously set, and vice versa.
+	apply("text-wrap", "nowrap")
+	apply("text-wrap", "balance")
+	if s.TextWrapNowrap {
+		t.Error(`text-wrap:"balance" left TextWrapNowrap true (shorthand must reset the omitted axis)`)
+	}
+	if !s.TextWrapBalance {
+		t.Error(`text-wrap:"balance" left TextWrapBalance false`)
+	}
+	// Both axes together, either order.
+	apply("text-wrap", "wrap")
+	apply("text-wrap", "nowrap balance")
+	if !s.TextWrapNowrap || !s.TextWrapBalance {
+		t.Errorf(`text-wrap:"nowrap balance" = nowrap=%v balance=%v, want both true`, s.TextWrapNowrap, s.TextWrapBalance)
+	}
+	apply("text-wrap", "wrap")
+	apply("text-wrap", "balance nowrap")
+	if !s.TextWrapNowrap || !s.TextWrapBalance {
+		t.Errorf(`text-wrap:"balance nowrap" = nowrap=%v balance=%v, want both true`, s.TextWrapNowrap, s.TextWrapBalance)
+	}
+
+	// An unrecognised token is invalid CSS and must leave the value UNCHANGED.
+	apply("text-wrap", "nowrap")
+	apply("text-wrap", "not-a-real-value")
+	if !s.TextWrapNowrap {
+		t.Error("text-wrap:not-a-real-value (invalid) reset TextWrapNowrap, want unchanged")
+	}
+
+	// unset on an inherited property re-inherits the parent's value.
+	parent := initialStyle()
+	parent.TextWrapNowrap = true
+	s2 := initialStyle()
+	s2.TextWrapNowrap = false
+	s2.apply(Declaration{Property: "text-wrap-mode", Value: "unset"}, 16, &parent)
+	if !s2.TextWrapNowrap {
+		t.Error("text-wrap-mode:unset did not inherit true from parent")
+	}
 }

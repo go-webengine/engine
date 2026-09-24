@@ -875,10 +875,23 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if n, ok := parseTabSize(lv); ok {
 			s.TabSize = n
 		}
-	case "text-wrap", "text-wrap-style":
+	case "text-wrap-style":
 		if lv == "unset" { // unset is inherit for an inherited property
 			s.inheritProperty(d.Property, parent)
-		} else if b, ok := parseTextWrapBalance(lv); ok {
+		} else if b, ok := parseTextWrapStyle(lv); ok {
+			s.TextWrapBalance = b
+		}
+	case "text-wrap-mode":
+		if lv == "unset" { // unset is inherit for an inherited property
+			s.inheritProperty(d.Property, parent)
+		} else if n, ok := parseTextWrapMode(lv); ok {
+			s.TextWrapNowrap = n
+		}
+	case "text-wrap":
+		if lv == "unset" { // unset is inherit for an inherited property
+			s.inheritProperty(d.Property, parent)
+		} else if n, b, ok := parseTextWrap(lv); ok {
+			s.TextWrapNowrap = n
 			s.TextWrapBalance = b
 		}
 	case "position":
@@ -1214,8 +1227,13 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.Widows = parent.Widows
 	case "tab-size":
 		s.TabSize = parent.TabSize
-	case "text-wrap", "text-wrap-style":
+	case "text-wrap-style":
 		s.TextWrapBalance = parent.TextWrapBalance
+	case "text-wrap-mode":
+		s.TextWrapNowrap = parent.TextWrapNowrap
+	case "text-wrap":
+		s.TextWrapBalance = parent.TextWrapBalance
+		s.TextWrapNowrap = parent.TextWrapNowrap
 	// The break properties are not inherited by default, but an explicit
 	// `inherit` still copies the parent's computed value, per CSS Cascade.
 	case "break-before", "page-break-before":
@@ -1252,29 +1270,62 @@ func parseTabSize(lv string) (int, bool) {
 	return n, err == nil && n >= 0
 }
 
-// parseTextWrapBalance parses a `text-wrap` or `text-wrap-style` value,
-// reporting whether it's a recognised keyword at all (an unrecognised token
-// leaves the inherited value in place, matching every other property here
-// that distinguishes "invalid, ignore" from "valid, but not `balance`") and,
-// if so, whether it selects `balance`. `text-wrap`'s own grammar is
-// `<text-wrap-mode> || <text-wrap-style>` (either order, either omitted), so
-// a multi-token value like "wrap balance" is checked token-by-token rather
-// than as a whole. Only `balance` has a distinguishing implementation (see
-// TextWrapBalance's own doc comment) — every other real keyword (wrap,
-// nowrap, auto, stable, pretty, avoid-short-last-line) is recognised, just
-// resolves to false, identical to the property's own initial value.
-func parseTextWrapBalance(lv string) (balance, ok bool) {
-	for _, tok := range strings.Fields(lv) {
-		switch tok {
-		case "balance":
-			balance, ok = true, true
-		case "wrap", "nowrap", "auto", "stable", "pretty", "avoid-short-last-line", "initial":
-			ok = true
-		default:
-			return false, false
-		}
+// parseTextWrapStyle parses a `text-wrap-style` value (or one token of the
+// `text-wrap` shorthand): only `balance` has a distinguishing implementation
+// (see TextWrapBalance's own doc comment) — the other real keywords (auto,
+// stable, pretty, avoid-short-last-line) are recognised, just resolve to
+// false, identical to the property's own initial value. An unrecognised
+// keyword reports false,false so the caller leaves the inherited value in
+// place, matching every other property here that distinguishes "invalid,
+// ignore" from "valid, but not `balance`".
+func parseTextWrapStyle(tok string) (balance, ok bool) {
+	switch tok {
+	case "balance":
+		return true, true
+	case "auto", "stable", "pretty", "avoid-short-last-line", "initial":
+		return false, true
+	default:
+		return false, false
 	}
-	return balance, ok
+}
+
+// parseTextWrapMode parses a `text-wrap-mode` value (or one token of the
+// `text-wrap` shorthand): `nowrap` has a distinguishing implementation (see
+// TextWrapNowrap's own doc comment); `wrap` is the property's own initial
+// value. An unrecognised keyword reports false,false.
+func parseTextWrapMode(tok string) (nowrap, ok bool) {
+	switch tok {
+	case "nowrap":
+		return true, true
+	case "wrap", "initial":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// parseTextWrap parses the `text-wrap` shorthand's `<text-wrap-mode> ||
+// <text-wrap-style>` grammar (either order, either omitted) by checking each
+// whitespace-separated token against both longhands in turn. Per ordinary
+// CSS shorthand semantics, an axis absent from the value resets to ITS OWN
+// initial value (false for both fields here) rather than staying unchanged —
+// exactly what the zero-value nowrap/balance returned for a token that never
+// arrives already gives, so no extra reset step is needed. A token matching
+// neither longhand's keywords makes the whole shorthand invalid.
+func parseTextWrap(lv string) (nowrap, balance, ok bool) {
+	ok = true
+	for _, tok := range strings.Fields(lv) {
+		if n, k := parseTextWrapMode(tok); k {
+			nowrap = n
+			continue
+		}
+		if b, k := parseTextWrapStyle(tok); k {
+			balance = b
+			continue
+		}
+		return false, false, false
+	}
+	return nowrap, balance, ok
 }
 
 func applyEdge(dst *float64, v string, emRef float64) {
