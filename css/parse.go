@@ -937,6 +937,17 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		case "super":
 			s.VerticalAlign = VAlignSuper
 		}
+	case "text-overflow":
+		switch lv {
+		case "ellipsis":
+			s.TextOverflowEllipsis = true
+		case "clip", "initial", "unset":
+			// Not inherited, so "unset" resolves to the initial value here
+			// too (clip — i.e. false), matching vertical-align's own
+			// initial/unset handling above. Any other value (a custom
+			// replacement string) is not modelled; left unchanged.
+			s.TextOverflowEllipsis = false
+		}
 	case "position":
 		switch lv {
 		case "static":

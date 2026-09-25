@@ -935,6 +935,21 @@ type Style struct {
 	// this engine's established practice of shipping the confirmed-reachable
 	// value first. Not inherited, per spec.
 	VerticalAlign VerticalAlign
+
+	// TextOverflowEllipsis is `text-overflow:ellipsis` (vs. the default
+	// `clip`, false). It only has a visible effect combined with
+	// `white-space:nowrap` and a clipping `overflow-x` — the real, confirmed
+	// idiom (Tailwind's own `.truncate` utility: `overflow:hidden;
+	// text-overflow:ellipsis;white-space:nowrap`, found live on
+	// tailwindcss.com's own team-member role labels). `overflow:hidden`
+	// alone already clips the raw overflowing text with no code here at
+	// all; this field's only job is swapping that raw clip for a "…"-
+	// terminated one. Scoped to a line made ENTIRELY of plain text items (no
+	// nested inline element, image or forced break) — the confirmed real
+	// shape — a line mixing in any of those is left as plain overflow, a
+	// documented narrower scope than the full property (which also allows a
+	// custom replacement string, not modelled). Not inherited, per spec.
+	TextOverflowEllipsis bool
 }
 
 // VerticalAlign is the `vertical-align` property's keyword value.

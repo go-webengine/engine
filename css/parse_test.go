@@ -1043,3 +1043,44 @@ func TestApplyVerticalAlign(t *testing.T) {
 		t.Errorf("vertical-align:unset on a non-inherited property = %v, want VAlignBaseline (never inherit)", s2.VerticalAlign)
 	}
 }
+
+func TestApplyTextOverflow(t *testing.T) {
+	if initialStyle().TextOverflowEllipsis {
+		t.Error("initialStyle().TextOverflowEllipsis = true, want false (clip)")
+	}
+
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "text-overflow", Value: v}, 16, nil) }
+
+	apply("ellipsis")
+	if !s.TextOverflowEllipsis {
+		t.Error("text-overflow:ellipsis left TextOverflowEllipsis false")
+	}
+	apply("clip")
+	if s.TextOverflowEllipsis {
+		t.Error("text-overflow:clip left TextOverflowEllipsis true")
+	}
+	apply("ellipsis")
+	apply("initial")
+	if s.TextOverflowEllipsis {
+		t.Error("text-overflow:initial left TextOverflowEllipsis true, want false (clip)")
+	}
+
+	// An unrecognised value (e.g. a custom replacement string, not modelled)
+	// leaves the property unchanged.
+	apply("ellipsis")
+	apply(`"---"`)
+	if !s.TextOverflowEllipsis {
+		t.Error(`text-overflow:"---" changed the property, want unchanged true`)
+	}
+
+	// Not inherited: a child must NOT pick up a parent's value via "unset".
+	parent := initialStyle()
+	parent.TextOverflowEllipsis = true
+	s2 := initialStyle()
+	s2.TextOverflowEllipsis = true
+	s2.apply(Declaration{Property: "text-overflow", Value: "unset"}, 16, &parent)
+	if s2.TextOverflowEllipsis {
+		t.Error("text-overflow:unset on a non-inherited property = true, want false (never inherit)")
+	}
+}
