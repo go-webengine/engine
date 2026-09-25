@@ -831,6 +831,16 @@ type Style struct {
 	// element's rendered output (its box plus subtree) as a group. Nil == no
 	// filter. Not inherited (`filter` is a non-inherited property).
 	Filters []Filter
+	// BackdropFilters is `backdrop-filter`'s function chain (same grammar and
+	// Filter type as Filters — see parseFilterList) applied to whatever has
+	// already been painted BEHIND this box's own border-box, before the box's
+	// own background/border/content paint on top — the standard "frosted
+	// glass" idiom (a translucent bar over blurred page content). Confirmed
+	// live on react.dev's own sticky nav bar and code-sandbox title bars
+	// (`backdrop-filter:blur(16px) saturate(2)` via Tailwind's `backdrop-blur-
+	// lg backdrop-saturate-200`, composed through CSS custom properties). Not
+	// inherited, matching Filters.
+	BackdropFilters []Filter
 
 	// ContainerType and ContainerName are `container-type`/`container-name`
 	// (or the `container` shorthand): whether this element establishes a

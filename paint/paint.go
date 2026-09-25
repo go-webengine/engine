@@ -56,6 +56,13 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 		}
 		hasFilter = len(box.Style.Filters) > 0
 		hasMask = box.Style.MaskImage != "" && bgImgs[box.Style.MaskImage] != nil
+		if len(box.Style.BackdropFilters) > 0 {
+			// Must run BEFORE any of this box's own content reaches dst (whether
+			// painted directly below, or into the offscreen group buffer the
+			// hasFilter/op<1/hasMask branch composites in afterwards) — backdrop-
+			// filter's defining behaviour is filtering what is ALREADY there.
+			applyBackdropFilter(dst, box, clip)
+		}
 	}
 	// A group pass (render to an offscreen buffer, then composite) is needed when
 	// the box has a `filter` chain, a fractional opacity, and/or a `mask-image`.
@@ -1467,6 +1474,46 @@ func filterMargin(filters []css.Filter) float64 {
 		}
 	}
 	return m
+}
+
+// applyBackdropFilter blurs (or otherwise filters — see css.Filter) whatever
+// has already been painted behind box's own border box, replacing those
+// pixels in dst in place, before box's own background/border/content paint on
+// top of them: backdrop-filter's defining "frosted glass" behaviour. clip is
+// the same ancestor overflow-clip rectangle paintBox already carries.
+//
+// The band sampled for the blur spans the FULL canvas width (via copyRows,
+// the same helper the foreground `filter` group path uses), not box's own X
+// range hard-cropped first: a blur legitimately draws on content just outside
+// box's own edges (what is actually behind a translucent bar's rounded
+// corner, say), and cropping first would manufacture a wrong dark/transparent
+// fringe at the boundary instead of a smooth falloff. Only the pixels inside
+// box's own (clipped) rect are written back — the wider band exists solely to
+// give the blur real neighbouring pixels to sample from. applyFilters never
+// changes its buffer's size (every Filter kind, including drop-shadow, paints
+// into a same-Rect output — see filter.go), so the write-back loop below can
+// safely assume filtered shares band's re-anchored coordinate space.
+func applyBackdropFilter(dst *image.RGBA, box *layout.Box, clip image.Rectangle) {
+	r := rectOf(box).Intersect(clip).Intersect(dst.Rect)
+	if r.Empty() {
+		return
+	}
+	m := int(filterMargin(box.Style.BackdropFilters))
+	y0, y1 := r.Min.Y-m, r.Max.Y+m
+	band := copyRows(dst, y0, y1) // zero-origin, full canvas width
+	bandY0 := y0
+	if bandY0 < dst.Rect.Min.Y {
+		bandY0 = dst.Rect.Min.Y
+	}
+	filtered := applyFilters(band, box.Style.BackdropFilters, box.Style.Color)
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		by := y - bandY0
+		for x := r.Min.X; x < r.Max.X; x++ {
+			si := filtered.PixOffset(x, by)
+			di := dst.PixOffset(x, y)
+			copy(dst.Pix[di:di+4], filtered.Pix[si:si+4])
+		}
+	}
 }
 
 // copyRows returns a fresh, zero-origin image.RGBA holding a COPY of img's row
