@@ -233,6 +233,25 @@ type compound struct {
 	// shape (a list of simple/compound selectors, here to be MATCHED rather
 	// than negated).
 	HostSelector []compound
+	// Part is the argument of "::part(<name>)" — this compound's OWN
+	// tag/class/id/attrs must match the enclosing shadow tree's HOST element
+	// (exactly like a Host compound), while separately requiring the
+	// candidate element n itself to carry a "part" attribute equal to Part.
+	// The mirror image of Host: Host is the shadow's own scoped stylesheet
+	// reaching OUT to style the host from the inside; Part is an OUTER
+	// stylesheet reaching IN to style one specific, author-opted-in element
+	// inside the host's shadow tree from the outside — the CSS Shadow Parts
+	// spec's one sanctioned crossing in that direction. Found live on
+	// developer.mozilla.org: `mdn-language-switcher::part(button){height:
+	// 100%}` (targeting a real `<button part="button">` inside the custom
+	// element's declarative shadow root) previously fell into the generic
+	// "unmodelled pseudo-ELEMENT matches nothing" bucket alongside ::before/
+	// ::after — correct for THOSE (they target a generated box this engine
+	// never synthesises), but wrong for ::part(), which targets a REAL
+	// element that genuinely exists in the tree and opted in via its own
+	// "part" attribute. See matchesHost, Selector.MatchesHost, and
+	// filterPartSelectors (shadowdom.go).
+	Part string
 }
 
 // attrOp is the comparison an attribute selector performs.
@@ -419,12 +438,26 @@ func (c compound) matches(n *dom.Node) bool {
 // the enclosing shadow tree's host element (nil outside any shadow tree). A
 // Host compound (":host"/":host(...)") matches only when n IS host itself
 // (never an ordinary descendant of it) and, for ":host(<selector-list>)",
-// only when host additionally matches one of HostSelector's alternatives.
+// only when host additionally matches one of HostSelector's alternatives. A
+// Part compound ("::part(name)") is the mirror image: n itself must carry a
+// "part" attribute equal to Part, while the compound's own tag/class/id/attrs
+// — everything matches() would otherwise check against n — are checked
+// against host instead (host==nil, i.e. outside any shadow tree, always
+// fails: ::part() is meaningless without a shadow host to select inside).
 // Every other compound delegates to the ordinary matches(n), unaffected by
 // host — Selector.Matches(n) is exactly MatchesHost(n, nil), so a host of nil
-// makes a Host compound fail (via matches' own guard) and every other
+// makes a Host or Part compound fail (via their own guards) and every other
 // compound behave exactly as before this existed.
 func (c compound) matchesHost(n, host *dom.Node) bool {
+	if c.Part != "" {
+		if host == nil {
+			return false
+		}
+		if v, ok := n.Attribute("part"); !ok || v != c.Part {
+			return false
+		}
+		return c.matches(host)
+	}
 	if !c.Host {
 		return c.matches(n)
 	}
@@ -492,6 +525,9 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 	classCount += len(c.Attrs) // each attribute selector is class-level weight
 	if c.Tag != "" {
 		tagCount = 1
+	}
+	if c.Part != "" {
+		tagCount++ // "::part()" carries pseudo-element (type-selector) weight, on top of any tag it's attached to
 	}
 	// ":not(...)" contributes the specificity of its most specific argument.
 	var na, nb, nc int
@@ -561,6 +597,14 @@ func (s Selector) MatchesHost(n, host *dom.Node) bool {
 	key := s.parts[len(s.parts)-1]
 	if !key.matchesHost(n, host) {
 		return false
+	}
+	if key.Part != "" {
+		// Everything to the left of "::part(name)" describes the HOST's own
+		// context (it already matched host, above), so the combinator chain
+		// continues climbing from host's real ancestry, not n's — n lives
+		// inside the shadow tree and is not reachable from host's own
+		// ancestors at all.
+		return s.matchLeft(len(s.parts)-2, host, host)
 	}
 	return s.matchLeft(len(s.parts)-2, n, host)
 }
@@ -1289,6 +1333,13 @@ func parseSimple(s string) (compound, bool) {
 				c.HostHasArg = true
 				c.HostSelector = parseSimpleSelectorList(arg)
 			}
+		case "part":
+			// "::part(<name>)" — see compound.Part's own doc comment. An empty
+			// argument (malformed CSS, essentially never seen) leaves Part=""
+			// which parseSimple's own zero-value check treats as "no part",
+			// the same "unparseable argument falls through to unmodelled"
+			// outcome as, e.g., ":nth-child" above.
+			c.Part = arg
 		default:
 			switch {
 			case isDynamicPseudo(name):
@@ -1343,7 +1394,7 @@ func parseSimple(s string) (compound, bool) {
 	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
 	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.Disabled && !c.Enabled && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet &&
+		!c.Root && !c.Dynamic && !c.Checked && !c.Disabled && !c.Enabled && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && c.Part == "" && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet &&
 		!c.OnlyChild && !c.FirstOfType && !c.LastOfType && !c.OnlyOfType && !c.NthOfTypeSet && !c.NthLastChildSet && !c.NthLastOfTypeSet {
 		return compound{}, false
 	}
@@ -1631,12 +1682,16 @@ func isDynamicPseudo(p string) bool {
 // scrollbar pseudo-elements are included because themes frequently size them,
 // and applying that sizing to the real control would be wrong. Functional
 // pseudo-elements (::part(), ::slotted(), ::highlight()) arrive name-only (the
-// argument having been split off), so their bare names suffice.
+// argument having been split off), so their bare names suffice. "part" is NOT
+// here — unlike a true generated-box pseudo-element, ::part() selects a real
+// element inside a shadow tree (see compound.Part), so it is modelled
+// explicitly in parseSimple's switch rather than falling into this generic
+// "matches nothing" bucket.
 func isPseudoElement(p string) bool {
 	switch p {
 	case "before", "after", "first-line", "first-letter", "marker", "placeholder",
 		"selection", "backdrop", "file-selector-button", "cue", "grammar-error",
-		"spelling-error", "target-text", "highlight", "part", "slotted",
+		"spelling-error", "target-text", "highlight", "slotted",
 		"-moz-selection", "-moz-placeholder", "-webkit-input-placeholder",
 		"-ms-input-placeholder", "-webkit-scrollbar", "-webkit-scrollbar-thumb",
 		"-webkit-scrollbar-track", "-webkit-scrollbar-button",
