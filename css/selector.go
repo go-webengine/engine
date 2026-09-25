@@ -40,6 +40,20 @@ type compound struct {
 	// "checked" attribute (a checkbox/radio) — see isChecked. This is the pivot of
 	// the CSS "checkbox hack" MediaWiki uses to keep collapsed dropdowns hidden.
 	Checked bool
+	// Disabled/Enabled are set by the ":disabled"/":enabled" pseudo-classes. At
+	// static render time these are exactly "does the element carry the boolean
+	// 'disabled' attribute" — see isDisabled — the same "structural fact, not
+	// user interaction" reasoning as Checked above. Before this, both were
+	// unmodelled, so ":disabled" degraded to matching its base UNCONDITIONALLY
+	// — found live on pkg.go.dev's cookie-consent banner: `.go-Button:disabled
+	// {background-color:var(--color-button-disabled)}` (higher specificity than
+	// the base `.go-Button{background-color:var(--color-button)}` rule) won for
+	// every button, not just actually-disabled ones, turning the "Okay" button
+	// pale grey instead of its real brand teal. Disabled state inherited from
+	// an ancestor `<fieldset disabled>` is not modelled — no confirmed
+	// real-world need — only the element's own attribute is.
+	Disabled bool
+	Enabled  bool
 	// FirstChild is set by the ":first-child" structural pseudo-class — the
 	// element has no preceding element sibling. Unlike ":nth-child(...)" this
 	// is cheap and common enough (and, critically, common as a ":not()"
@@ -333,6 +347,12 @@ func (c compound) matches(n *dom.Node) bool {
 	if c.Checked && !isChecked(n) {
 		return false
 	}
+	if c.Disabled && !isDisabled(n) {
+		return false
+	}
+	if c.Enabled && isDisabled(n) {
+		return false
+	}
 	if c.FirstChild && prevElementSibling(n) != nil {
 		return false
 	}
@@ -437,6 +457,15 @@ func isChecked(n *dom.Node) bool {
 	return false
 }
 
+// isDisabled reports whether element n is in the disabled state at static
+// render time: it carries the boolean "disabled" attribute. Value-less HTML
+// boolean attributes are parsed by x/net/html to an empty-string value, so
+// presence — not value — is what counts.
+func isDisabled(n *dom.Node) bool {
+	_, ok := n.Attribute("disabled")
+	return ok
+}
+
 func (c compound) specificity() (idCount, classCount, tagCount int) {
 	if c.ID != "" {
 		idCount = 1
@@ -450,6 +479,12 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 	}
 	if c.Checked {
 		classCount++ // ":checked" is a pseudo-class (class-level weight)
+	}
+	if c.Disabled {
+		classCount++ // ":disabled" is a pseudo-class (class-level weight)
+	}
+	if c.Enabled {
+		classCount++ // ":enabled" is a pseudo-class (class-level weight)
 	}
 	if c.Host {
 		classCount++ // ":host" is itself a pseudo-class (class-level weight)
@@ -1165,7 +1200,7 @@ func parseSimple(s string) (compound, bool) {
 	// Separate the compound's tag/class/id/attribute base from its pseudo tokens
 	// at the first top-level (not inside [] or ()) ':'. ":root" is honoured (it
 	// selects the document root, where custom properties are typically declared);
-	// ":checked" and ":not(...)" are modelled (below); the dynamic interaction
+	// ":checked", ":disabled"/":enabled" and ":not(...)" are modelled (below); the dynamic interaction
 	// pseudo-classes mark the compound so it never matches in a static render;
 	// every other pseudo (":nth-child", "::before", …) is dropped as unmodelled —
 	// the compound falls back to matching its base rather than dropping the rule.
@@ -1180,6 +1215,10 @@ func parseSimple(s string) (compound, bool) {
 			c.Root = true
 		case "checked":
 			c.Checked = true
+		case "disabled":
+			c.Disabled = true
+		case "enabled":
+			c.Enabled = true
 		case "first-child":
 			c.FirstChild = true
 		case "last-child":
@@ -1304,7 +1343,7 @@ func parseSimple(s string) (compound, bool) {
 	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
 	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet &&
+		!c.Root && !c.Dynamic && !c.Checked && !c.Disabled && !c.Enabled && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet &&
 		!c.OnlyChild && !c.FirstOfType && !c.LastOfType && !c.OnlyOfType && !c.NthOfTypeSet && !c.NthLastChildSet && !c.NthLastOfTypeSet {
 		return compound{}, false
 	}
