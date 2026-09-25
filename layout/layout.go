@@ -385,6 +385,15 @@ func (l *layouter) blockOrInlineContents(box *Box, node *dom.Node, st *css.Style
 		// rarer mixed case pays for building box.Children instead.
 		if !hasBlockBreak(items) {
 			lines, bottom := l.layoutInline(items, st, cx, cw, b.y, nowrap)
+			// -webkit-line-clamp/line-clamp: drop every line past the Nth,
+			// shrinking the box to end where the Nth line does (see
+			// css.Style.LineClamp's own doc comment for the confirmed real
+			// need and the documented scope limit — no ellipsis glyph yet).
+			if st.LineClamp > 0 && len(lines) > st.LineClamp {
+				lines = lines[:st.LineClamp]
+				last := lines[len(lines)-1]
+				bottom = last.Y + last.H
+			}
 			box.Lines = lines
 			b.y = bottom
 			return bottom

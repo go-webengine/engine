@@ -905,6 +905,17 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.TextWrapNowrap = n
 			s.TextWrapBalance = b
 		}
+	case "-webkit-line-clamp", "line-clamp":
+		// Not inherited, so "unset"/"initial"/"none" all just reset to 0 (no
+		// clamp) — no inheritProperty special case needed, unlike the
+		// text-wrap-* properties above. A bare positive integer is the only
+		// real-world form (see Style.LineClamp's own doc comment); anything
+		// else (a negative/zero/non-numeric value) is left as unset.
+		if lv == "none" || lv == "unset" || lv == "initial" {
+			s.LineClamp = 0
+		} else if n, err := strconv.Atoi(lv); err == nil && n > 0 {
+			s.LineClamp = n
+		}
 	case "position":
 		switch lv {
 		case "static":

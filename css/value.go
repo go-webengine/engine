@@ -903,6 +903,25 @@ type Style struct {
 	// own `balance` fix): tailwindcss.com's own `.text-nowrap{text-wrap:
 	// nowrap}` on its code-toolbar filename labels.
 	TextWrapNowrap bool
+
+	// LineClamp is `-webkit-line-clamp`/`line-clamp`'s value: the maximum
+	// number of lines an element's inline content renders before being cut
+	// off, 0 meaning "not set" (unclamped — the CSS `none` keyword resolves
+	// to this too). Not inherited, matching `overflow` and `display`, the two
+	// properties `-webkit-line-clamp` is always paired with in real CSS (the
+	// "-webkit-box" multi-line-truncation idiom: `display:-webkit-box;
+	// -webkit-box-orient:vertical;-webkit-line-clamp:N;overflow:hidden`) —
+	// this engine models the actual clamping this idiom exists for without
+	// requiring the paired display/overflow declarations to also be present,
+	// since the confirmed real-world callers (see layout's own consumer)
+	// always clamp regardless of exactly which vendor ceremony wraps it.
+	// Truncating to N lines by DROPPING the rest is modelled; the trailing
+	// ellipsis glyph real browsers additionally insert on the last kept line
+	// is not — a documented, narrower scope than the full feature, matching
+	// the confirmed need (tailwindcss.com's own `line-clamp-2` on a `<p>`,
+	// which primarily needs the container to stop growing past two lines,
+	// not the exact glyph at the cut point).
+	LineClamp int
 }
 
 // BoxShadow is one box-shadow layer.
