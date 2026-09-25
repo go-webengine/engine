@@ -88,6 +88,15 @@ type InlineItem struct {
 	Ascent      float64
 	LineHeight  float64
 
+	// BaselineShift moves this item DOWN (positive) from where plain
+	// baseline alignment (Y = line top + line baseline - Ascent) would place
+	// it — the effect of a `vertical-align` value other than the default.
+	// Zero for every item except one created with VAlignTextBottom (see
+	// css.Style.VerticalAlign's own doc comment for the current scope).
+	// lineMetrics folds it into the line's own ascent/descent accounting so a
+	// shifted item still fits inside the line box it was measured for.
+	BaselineShift float64
+
 	// Image is non-nil when this item is an <img>. ImgW/ImgH are the loaded
 	// bitmap's own pixel size; Width/LineHeight (see resolvedReplacedSize) are
 	// the DISPLAY size after the element's own width/max-width is resolved

@@ -174,7 +174,7 @@ func placeLine(line *LineBox, x, top, baseline float64) {
 		}
 	}
 	for i, it := range line.Items {
-		it.Y = top + baseline - it.Ascent
+		it.Y = top + baseline - it.Ascent + it.BaselineShift
 		if i > 0 {
 			// Within a line the items are consecutive in document order, so the
 			// previous item's decor chain IS the open stack and this item's
