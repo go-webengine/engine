@@ -954,3 +954,44 @@ func TestApplyTextWrapNowrap(t *testing.T) {
 		t.Error("text-wrap-mode:unset did not inherit true from parent")
 	}
 }
+
+func TestApplyLineClamp(t *testing.T) {
+	if initialStyle().LineClamp != 0 {
+		t.Error("initialStyle().LineClamp != 0, want 0 (unclamped)")
+	}
+
+	s := initialStyle()
+	apply := func(prop, v string) { s.apply(Declaration{Property: prop, Value: v}, 16, nil) }
+
+	apply("-webkit-line-clamp", "2")
+	if s.LineClamp != 2 {
+		t.Errorf("-webkit-line-clamp:2 = %d, want 2", s.LineClamp)
+	}
+	apply("line-clamp", "3")
+	if s.LineClamp != 3 {
+		t.Errorf("line-clamp:3 (standard spelling) = %d, want 3", s.LineClamp)
+	}
+	apply("-webkit-line-clamp", "none")
+	if s.LineClamp != 0 {
+		t.Errorf("-webkit-line-clamp:none = %d, want 0", s.LineClamp)
+	}
+
+	// Zero, negative and non-numeric values are invalid and must leave the
+	// property UNCHANGED, matching text-wrap's own invalid-value handling.
+	apply("-webkit-line-clamp", "2")
+	for _, bad := range []string{"0", "-1", "auto", "2.5"} {
+		apply("-webkit-line-clamp", bad)
+		if s.LineClamp != 2 {
+			t.Errorf("-webkit-line-clamp:%q (invalid) = %d, want unchanged 2", bad, s.LineClamp)
+		}
+	}
+
+	// Not inherited: a child must NOT pick up a parent's clamp via "unset".
+	parent := initialStyle()
+	parent.LineClamp = 4
+	s2 := initialStyle()
+	s2.apply(Declaration{Property: "line-clamp", Value: "unset"}, 16, &parent)
+	if s2.LineClamp != 0 {
+		t.Errorf("line-clamp:unset on a non-inherited property = %d, want 0 (never inherit)", s2.LineClamp)
+	}
+}
