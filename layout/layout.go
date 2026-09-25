@@ -791,7 +791,8 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			*items = append(*items, &InlineItem{
 				Style: cs, Image: el, Node: el, ImgW: w, ImgH: h,
 				Width: dw, Ascent: dh, LineHeight: dh,
-				SpaceBefore: sb, decor: l.decor,
+				BaselineShift: l.baselineShiftFor(cs),
+				SpaceBefore:   sb, decor: l.decor,
 			})
 			l.wsEmitted, l.wsPending = true, false
 			l.pendingMargin += cs.Margin.Right
@@ -1097,6 +1098,22 @@ func (l *layouter) lineMetricsFor(st *css.Style) (ascent, lineHeight float64) {
 	// Distribute the extra (or negative) leading equally above and below the
 	// font's natural box (CSS half-leading), so the baseline stays centred.
 	return asc + (lh-fh)/2, lh
+}
+
+// baselineShiftFor returns how far DOWN a replaced item's default
+// baseline-aligned position (its bottom margin edge on the line's baseline)
+// must move to honour st's `vertical-align`. Only VAlignTextBottom currently
+// has an effect (see css.Style.VerticalAlign's own doc comment for scope):
+// "text-bottom" aligns the item's bottom edge with the BOTTOM OF THE FONT's
+// own em-box, i.e. one descent below the baseline — the raw font metrics
+// (not lineMetricsFor's half-leading-adjusted ones, which describe the
+// USED line box, not the font itself) give exactly that descent as fh-asc.
+func (l *layouter) baselineShiftFor(st *css.Style) float64 {
+	if st.VerticalAlign != css.VAlignTextBottom {
+		return 0
+	}
+	asc, fh := l.m.Metrics(st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+	return fh - asc
 }
 
 // isReplacedTag reports whether an element is a replaced box laid out at an
@@ -1598,10 +1615,17 @@ func lineMetrics(line *LineBox, fbH, fbAsc float64) (lineH, baseline, used float
 	}
 	var maxBelow float64
 	for i, it := range line.Items {
-		if it.Ascent > baseline {
-			baseline = it.Ascent
+		// A shifted item (BaselineShift, see the field's own doc comment)
+		// needs less room ABOVE the shared baseline and more room BELOW it
+		// than its own Ascent/LineHeight alone would suggest, exactly the
+		// amount it moved by — folding the shift in here keeps the line box
+		// tall enough that placeLine's shifted position never spills into
+		// the next line, the same guarantee this function already gives an
+		// ordinary (unshifted) tall inline.
+		if asc := it.Ascent - it.BaselineShift; asc > baseline {
+			baseline = asc
 		}
-		if below := it.LineHeight - it.Ascent; below > maxBelow {
+		if below := it.LineHeight - it.Ascent + it.BaselineShift; below > maxBelow {
 			maxBelow = below
 		}
 		if i > 0 {

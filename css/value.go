@@ -922,7 +922,34 @@ type Style struct {
 	// which primarily needs the container to stop growing past two lines,
 	// not the exact glyph at the cut point).
 	LineClamp int
+
+	// VerticalAlign is `vertical-align`'s keyword value; VAlignBaseline (the
+	// zero value) is the default. Only VAlignTextBottom currently shifts an
+	// inline-level replaced element's position in its line — the sole
+	// confirmed real need (github.com's own octicon SVG icons, styled
+	// `vertical-align:text-bottom` throughout its Primer design system to
+	// align an icon's bottom edge with the surrounding text's font, not its
+	// baseline). The other keyword values are recognised here (so they don't
+	// silently fall through to some unrelated case) but not yet given
+	// positional effect — a narrower scope than the full property, matching
+	// this engine's established practice of shipping the confirmed-reachable
+	// value first. Not inherited, per spec.
+	VerticalAlign VerticalAlign
 }
+
+// VerticalAlign is the `vertical-align` property's keyword value.
+type VerticalAlign uint8
+
+const (
+	VAlignBaseline VerticalAlign = iota
+	VAlignTop
+	VAlignBottom
+	VAlignTextTop
+	VAlignTextBottom
+	VAlignMiddle
+	VAlignSub
+	VAlignSuper
+)
 
 // BoxShadow is one box-shadow layer.
 type BoxShadow struct {

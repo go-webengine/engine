@@ -916,6 +916,27 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if n, err := strconv.Atoi(lv); err == nil && n > 0 {
 			s.LineClamp = n
 		}
+	case "vertical-align":
+		switch lv {
+		case "baseline", "initial", "unset":
+			// Not inherited, so "unset" resolves to the initial value here too
+			// (baseline), matching display's own initial/unset handling above.
+			s.VerticalAlign = VAlignBaseline
+		case "top":
+			s.VerticalAlign = VAlignTop
+		case "bottom":
+			s.VerticalAlign = VAlignBottom
+		case "text-top":
+			s.VerticalAlign = VAlignTextTop
+		case "text-bottom":
+			s.VerticalAlign = VAlignTextBottom
+		case "middle":
+			s.VerticalAlign = VAlignMiddle
+		case "sub":
+			s.VerticalAlign = VAlignSub
+		case "super":
+			s.VerticalAlign = VAlignSuper
+		}
 	case "position":
 		switch lv {
 		case "static":

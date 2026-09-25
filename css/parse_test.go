@@ -995,3 +995,51 @@ func TestApplyLineClamp(t *testing.T) {
 		t.Errorf("line-clamp:unset on a non-inherited property = %d, want 0 (never inherit)", s2.LineClamp)
 	}
 }
+
+func TestApplyVerticalAlign(t *testing.T) {
+	if initialStyle().VerticalAlign != VAlignBaseline {
+		t.Error("initialStyle().VerticalAlign != VAlignBaseline")
+	}
+
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "vertical-align", Value: v}, 16, nil) }
+
+	cases := []struct {
+		value string
+		want  VerticalAlign
+	}{
+		{"baseline", VAlignBaseline},
+		{"top", VAlignTop},
+		{"bottom", VAlignBottom},
+		{"text-top", VAlignTextTop},
+		{"text-bottom", VAlignTextBottom},
+		{"middle", VAlignMiddle},
+		{"sub", VAlignSub},
+		{"super", VAlignSuper},
+		{"initial", VAlignBaseline},
+		{"unset", VAlignBaseline},
+	}
+	for _, c := range cases {
+		apply(c.value)
+		if s.VerticalAlign != c.want {
+			t.Errorf("vertical-align:%s = %v, want %v", c.value, s.VerticalAlign, c.want)
+		}
+	}
+
+	// An unrecognised value leaves the property unchanged.
+	apply("text-bottom")
+	apply("not-a-real-value")
+	if s.VerticalAlign != VAlignTextBottom {
+		t.Errorf("vertical-align:not-a-real-value changed the property to %v, want unchanged VAlignTextBottom", s.VerticalAlign)
+	}
+
+	// Not inherited: a child must NOT pick up a parent's alignment via "unset".
+	parent := initialStyle()
+	parent.VerticalAlign = VAlignMiddle
+	s2 := initialStyle()
+	s2.VerticalAlign = VAlignTextBottom
+	s2.apply(Declaration{Property: "vertical-align", Value: "unset"}, 16, &parent)
+	if s2.VerticalAlign != VAlignBaseline {
+		t.Errorf("vertical-align:unset on a non-inherited property = %v, want VAlignBaseline (never inherit)", s2.VerticalAlign)
+	}
+}
