@@ -34,6 +34,33 @@ func TestParseFilterListNoneAndDispatch(t *testing.T) {
 	}
 }
 
+// TestParseBackdropFilterDispatch covers backdrop-filter's own Style field
+// (BackdropFilters, kept separate from Filters — see its own doc comment) and
+// the -webkit-backdrop-filter alias real generated CSS (Tailwind) emits
+// alongside the standard spelling.
+func TestParseBackdropFilterDispatch(t *testing.T) {
+	s := &Style{}
+	s.apply(Declaration{Property: "backdrop-filter", Value: "blur(16px) saturate(2)"}, 16, nil)
+	if len(s.BackdropFilters) != 2 || s.Filters != nil {
+		t.Fatalf("backdrop-filter chain = %+v, Filters = %+v", s.BackdropFilters, s.Filters)
+	}
+	if s.BackdropFilters[0].Kind != FilterBlur || s.BackdropFilters[0].Amount != 16 {
+		t.Errorf("first = %+v", s.BackdropFilters[0])
+	}
+	if s.BackdropFilters[1].Kind != FilterSaturate || s.BackdropFilters[1].Amount != 2 {
+		t.Errorf("second = %+v", s.BackdropFilters[1])
+	}
+	// The -webkit- alias sets the SAME field, matching the real generated CSS
+	// shape (-webkit- declared first, standard spelling immediately after —
+	// ordinary cascade order then makes the standard one win, unchanged here
+	// since it is the only declaration in this test).
+	s2 := &Style{}
+	s2.apply(Declaration{Property: "-webkit-backdrop-filter", Value: "blur(4px)"}, 16, nil)
+	if len(s2.BackdropFilters) != 1 || s2.BackdropFilters[0].Kind != FilterBlur || s2.BackdropFilters[0].Amount != 4 {
+		t.Errorf("-webkit-backdrop-filter = %+v", s2.BackdropFilters)
+	}
+}
+
 func TestParseFilterListInvalid(t *testing.T) {
 	for _, v := range []string{"", "bogus(1)", "blur", "blur(1px) unknown(2)", "brightness(x)"} {
 		if fs, ok := parseFilterList(v, 16); ok {

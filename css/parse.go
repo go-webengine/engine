@@ -660,6 +660,17 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		if fs, ok := parseFilterList(v, emRef); ok {
 			s.Filters = fs
 		}
+	case "backdrop-filter", "-webkit-backdrop-filter":
+		// Same function grammar as `filter` (see parseFilterList) — the only
+		// difference is WHAT gets filtered: the content already painted behind
+		// this box, not the box's own rendered subtree. See Style.BackdropFilters.
+		// Tailwind (and other generated CSS) emits the -webkit- form immediately
+		// before the standard one; aliasing both to the same field means the
+		// standard spelling naturally wins via ordinary cascade order, matching
+		// a real browser.
+		if fs, ok := parseFilterList(v, emRef); ok {
+			s.BackdropFilters = fs
+		}
 	case "font-size":
 		if l, ok := parseLength(v, emRef); ok && !l.Auto {
 			if l.IsPercent {
