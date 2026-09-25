@@ -169,6 +169,73 @@ func TestNestedShadowTreeStyleDoesNotLeakToOuterShadowTree(t *testing.T) {
 	}
 }
 
+func TestPartSelectorReachesIntoShadowTree(t *testing.T) {
+	// The real shape found live on developer.mozilla.org:
+	// `.wrap my-elem::part(button){...}` styling a real, opted-in
+	// `part="button"` element inside a custom element's declarative shadow
+	// root, from an OUTER document stylesheet.
+	root, sm := parseAndCascade(t, `<body><style>.wrap my-elem::part(button){color:rgb(255,0,0)}</style>`+
+		`<div class="wrap"><my-elem>`+
+		`<template shadowrootmode="open"><button part="button" class="btn">x</button></template>`+
+		`</my-elem></div>`+
+		`</body>`)
+	host := dom.Find(root, "my-elem")
+	btn := host.Shadow.Children[0]
+	if btn.Tag != "button" {
+		t.Fatalf("shadow content = %v", host.Shadow.Children)
+	}
+	if st := sm[btn]; st == nil || st.Color != (Color{255, 0, 0, 255}) {
+		t.Errorf("::part(button) did not reach the shadow-internal button: %+v", sm[btn])
+	}
+}
+
+func TestPartSelectorRequiresMatchingPartAttribute(t *testing.T) {
+	// A sibling shadow-internal element WITHOUT part="button" must be
+	// unaffected — ::part() opts in per-element, it is not "style everything
+	// inside this host's shadow tree".
+	root, sm := parseAndCascade(t, `<body><style>my-elem::part(button){color:rgb(255,0,0)}</style>`+
+		`<my-elem><template shadowrootmode="open">`+
+		`<button part="button" class="a">a</button><button class="b">b</button>`+
+		`</template></my-elem>`+
+		`</body>`)
+	host := dom.Find(root, "my-elem")
+	withPart, withoutPart := host.Shadow.Children[0], host.Shadow.Children[1]
+	if st := sm[withPart]; st == nil || st.Color != (Color{255, 0, 0, 255}) {
+		t.Errorf("part=\"button\" element not styled: %+v", sm[withPart])
+	}
+	if st := sm[withoutPart]; st == nil || st.Color == (Color{255, 0, 0, 255}) {
+		t.Errorf("plain button (no part attribute) wrongly styled by ::part(button): %+v", sm[withoutPart])
+	}
+}
+
+func TestPartSelectorRequiresMatchingHostTag(t *testing.T) {
+	// The compound's own tag ("other-elem") must match the HOST, not just any
+	// host — a ::part(button) written for a different custom element must not
+	// reach into an unrelated one's shadow tree.
+	root, sm := parseAndCascade(t, `<body><style>other-elem::part(button){color:rgb(255,0,0)}</style>`+
+		`<my-elem><template shadowrootmode="open"><button part="button">x</button></template></my-elem>`+
+		`</body>`)
+	host := dom.Find(root, "my-elem")
+	btn := host.Shadow.Children[0]
+	if st := sm[btn]; st == nil || st.Color == (Color{255, 0, 0, 255}) {
+		t.Errorf("::part(button) wrongly reached across to an unrelated host tag: %+v", sm[btn])
+	}
+}
+
+func TestPartAttributeIgnoredOutsideAnyShadowTree(t *testing.T) {
+	// A bare "part" HTML attribute on an ordinary light-DOM element is
+	// meaningless without a shadow tree to expose it from — a document-level
+	// "::part(button)" rule (nonsensical CSS, but must not crash or wrongly
+	// match) has no host at all in that scope, so it must match nothing.
+	root, sm := parseAndCascade(t, `<body><style>x::part(button){color:rgb(255,0,0)}</style>`+
+		`<button part="button" class="x">x</button>`+
+		`</body>`)
+	btn := dom.Find(root, "button")
+	if st := sm[btn]; st == nil || st.Color == (Color{255, 0, 0, 255}) {
+		t.Errorf("::part() wrongly matched a light-DOM element outside any shadow tree: %+v", sm[btn])
+	}
+}
+
 func TestPlainPageUnaffectedByShadowScoping(t *testing.T) {
 	// A page with no Shadow DOM at all must cascade exactly as before: host
 	// stays nil throughout, so every MatchesHost call is Matches.

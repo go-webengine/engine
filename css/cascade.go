@@ -144,10 +144,15 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		for _, c := range n.Children {
 			walk(c, st, childStack, rules, host)
 		}
-		// n's shadow tree, if it has one: a NEW scope (shadowRules, host=n).
+		// n's shadow tree, if it has one: a NEW scope (shadowRules, host=n),
+		// plus any "::part(name)" selectors from n's OWN ambient scope
+		// (rules) — the outer document's (or outer shadow's) sanctioned way
+		// to reach a specific, opted-in element inside n's shadow tree from
+		// outside it. See filterPartSelectors and compound.Part.
 		if n.Shadow != nil {
+			shadowScope := append(append([]Rule{}, shadowRules...), filterPartSelectors(rules)...)
 			for _, c := range n.Shadow.Children {
-				walk(c, st, childStack, shadowRules, n)
+				walk(c, st, childStack, shadowScope, n)
 			}
 		}
 	}
