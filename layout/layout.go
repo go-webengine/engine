@@ -1474,6 +1474,11 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 	fbAsc, fbH := l.lineMetricsFor(st)
 	if nowrap {
 		lines := WrapItems(items, math.MaxFloat32)
+		if st.TextOverflowEllipsis && st.OverflowX.Clips() {
+			for _, line := range lines {
+				l.truncateLineWithEllipsis(line, st, cw)
+			}
+		}
 		return lines, placeSimpleLines(lines, cx, cw, y, st, fbH, fbAsc)
 	}
 
@@ -1582,6 +1587,64 @@ func forceOne(items []*InlineItem) (*LineBox, int) {
 		i++
 	}
 	return line, i
+}
+
+// truncateLineWithEllipsis replaces line's items with a single text item
+// ending in "…", trimmed to fit cw, when the line's total width overflows it
+// — the real-world effect of `text-overflow:ellipsis` combined with
+// `white-space:nowrap` and a clipping `overflow-x` (see
+// css.Style.TextOverflowEllipsis's own doc comment for why `overflow:hidden`
+// alone already clips the raw text with no code here at all: this only
+// swaps that clip for a "…"-terminated one). Scoped to a line made entirely
+// of plain text items — one holding an image, forced break or nested box
+// (Text == "") is left untouched, plain overflow, the documented narrower
+// scope. resolveInlineEdges re-derives the new single item's decor bookkeeping
+// exactly as it would for any other one-item line, rather than hand-deriving
+// it here.
+func (l *layouter) truncateLineWithEllipsis(line *LineBox, st *css.Style, cw float64) {
+	items := line.Items
+	if len(items) == 0 {
+		return
+	}
+	total := 0.0
+	for i, it := range items {
+		if it.Text == "" {
+			return
+		}
+		if i > 0 {
+			total += it.SpaceBefore
+		}
+		total += it.Width
+	}
+	if total <= cw {
+		return
+	}
+	var b strings.Builder
+	for i, it := range items {
+		if i > 0 && it.SpaceBefore > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteString(it.Text)
+	}
+	runes := []rune(b.String())
+	measure := func(s string) float64 {
+		return l.m.Measure(s, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+	}
+	for len(runes) > 0 && measure(string(runes)+"…") > cw {
+		runes = runes[:len(runes)-1]
+	}
+	truncated := string(runes) + "…"
+	first := items[0]
+	line.Items = []*InlineItem{{
+		Text:       truncated,
+		Style:      first.Style,
+		Node:       first.Node,
+		Width:      measure(truncated),
+		Ascent:     first.Ascent,
+		LineHeight: first.LineHeight,
+		decor:      first.decor,
+	}}
+	resolveInlineEdges(line.Items)
 }
 
 // placeSimpleLines positions a pre-wrapped sequence of lines that all share
