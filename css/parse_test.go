@@ -1084,3 +1084,50 @@ func TestApplyTextOverflow(t *testing.T) {
 		t.Error("text-overflow:unset on a non-inherited property = true, want false (never inherit)")
 	}
 }
+
+func TestApplyLetterSpacing(t *testing.T) {
+	if initialStyle().LetterSpacing != 0 {
+		t.Error("initialStyle().LetterSpacing != 0, want 0 (normal)")
+	}
+
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "letter-spacing", Value: v}, 16, nil) }
+
+	apply("2px")
+	if s.LetterSpacing != 2 {
+		t.Errorf("letter-spacing:2px = %v, want 2", s.LetterSpacing)
+	}
+	apply("-0.025em")
+	if want := -0.025 * 16; s.LetterSpacing != want {
+		t.Errorf("letter-spacing:-0.025em = %v, want %v (resolved against a 16px font)", s.LetterSpacing, want)
+	}
+	apply("normal")
+	if s.LetterSpacing != 0 {
+		t.Errorf("letter-spacing:normal = %v, want 0", s.LetterSpacing)
+	}
+
+	// An invalid value (a bare unitless number, not valid CSS for this
+	// property) leaves it unchanged.
+	apply("3px")
+	apply("5")
+	if s.LetterSpacing != 3 {
+		t.Errorf("letter-spacing:5 (invalid, no unit) changed the property to %v, want unchanged 3", s.LetterSpacing)
+	}
+
+	// Inherited (unlike vertical-align/text-overflow/line-clamp above): a
+	// child with no OWN declaration picks up its parent's value through the
+	// cascade's default inheritance, not just the explicit "inherit" keyword.
+	parent := initialStyle()
+	parent.LetterSpacing = 4
+	child := inheritFrom(parent)
+	if child.LetterSpacing != 4 {
+		t.Errorf("inheritFrom(parent).LetterSpacing = %v, want inherited 4", child.LetterSpacing)
+	}
+
+	// The explicit "inherit" keyword also works (inheritProperty).
+	s3 := initialStyle()
+	s3.apply(Declaration{Property: "letter-spacing", Value: "inherit"}, 16, &parent)
+	if s3.LetterSpacing != 4 {
+		t.Errorf("letter-spacing:inherit = %v, want parent's 4", s3.LetterSpacing)
+	}
+}

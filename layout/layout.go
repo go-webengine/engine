@@ -983,7 +983,7 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 				Text:        seg,
 				Style:       st,
 				Node:        origin,
-				Width:       l.m.Measure(seg, st.FontFamily, st.FontSize, st.FontWeight, st.Italic),
+				Width:       l.m.Measure(seg, st.FontFamily, st.FontSize, st.FontWeight, st.Italic) + letterSpacingWidth(seg, st),
 				SpaceBefore: l.takeMargin(),
 				Ascent:      asc,
 				LineHeight:  lh,
@@ -1027,7 +1027,7 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 			Text:        w,
 			Style:       st,
 			Node:        origin,
-			Width:       l.m.Measure(w, st.FontFamily, st.FontSize, st.FontWeight, st.Italic),
+			Width:       l.m.Measure(w, st.FontFamily, st.FontSize, st.FontWeight, st.Italic) + letterSpacingWidth(w, st),
 			SpaceBefore: sb,
 			Ascent:      asc,
 			LineHeight:  lh,
@@ -1114,6 +1114,19 @@ func (l *layouter) baselineShiftFor(st *css.Style) float64 {
 	}
 	asc, fh := l.m.Metrics(st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 	return fh - asc
+}
+
+// letterSpacingWidth returns how much wider text is than the Measurer's own
+// (letter-spacing-unaware) advance reports, for st.LetterSpacing added after
+// EVERY character of text — including the last, matching real browsers (see
+// css.Style.LetterSpacing's own doc comment for the confirmed real need and
+// its documented scope: only this, the line-wrapping width, and paint.
+// drawText's own per-glyph loop apply it).
+func letterSpacingWidth(text string, st *css.Style) float64 {
+	if st.LetterSpacing == 0 {
+		return 0
+	}
+	return float64(utf8.RuneCountInString(text)) * st.LetterSpacing
 }
 
 // isReplacedTag reports whether an element is a replaced box laid out at an
