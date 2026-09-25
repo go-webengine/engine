@@ -933,7 +933,7 @@ func drawText(dst *image.RGBA, pp *painter.PixelPainter, f *Fonts, st *css.Style
 			if ok && mask != nil {
 				blitMask(dst, bounds, mask, maskp, col, clip)
 			}
-			penX += advance
+			penX += advance + int(st.LetterSpacing)
 		}
 	}
 	if st.Underline && penX > x {

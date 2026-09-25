@@ -635,6 +635,20 @@ type Style struct {
 	WhiteSpace WhiteSpace
 	LineHeight LineHeight
 
+	// LetterSpacing is `letter-spacing`'s resolved value in px (0 = `normal`,
+	// the initial value), added after EVERY character of a text run
+	// (including its last, matching real browsers — this is why a run's
+	// measured width grows even for a single-character string). Inherited,
+	// per spec. Only the line-wrapping width (layout.appendWords, the
+	// confirmed real path — tailwindcss.com's own large `tracking-tighter`
+	// hero heading and `tracking-widest` sidebar labels) and painting
+	// (paint.drawText) apply it; the shrink-to-fit/min-content intrinsic-
+	// sizing paths (preferredWidth, minContentWidth, flex/table sizing) do
+	// not add it to their own measurements — a documented, narrower scope
+	// than every possible consumer of Measure, matching this engine's
+	// established practice of shipping the confirmed-reachable path first.
+	LetterSpacing float64
+
 	// CenterAsBlock is TextAlign == AlignCenterBlocks for every element,
 	// EXCEPT it stays true for a <table> whose PARENT has TextAlign ==
 	// AlignCenterBlocks even in quirks mode, where the table's OWN TextAlign
@@ -1084,6 +1098,7 @@ func inheritFrom(parent Style) Style {
 		TextAlign:      parent.TextAlign,      // inherited
 		WhiteSpace:     parent.WhiteSpace,     // inherited
 		LineHeight:     parent.LineHeight,     // inherited
+		LetterSpacing:  parent.LetterSpacing,  // inherited
 		ImageRendering: parent.ImageRendering, // inherited
 		// list-style-type / list-style-position inherit; list-item does not.
 		ListStyleType:     parent.ListStyleType,

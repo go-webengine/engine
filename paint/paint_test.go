@@ -191,6 +191,34 @@ func TestDrawTextUnderline(t *testing.T) {
 	}
 }
 
+// TestDrawTextLetterSpacing covers the paint side of letter-spacing (see
+// layout's own letterspacing_test.go for the layout/width side): drawText's
+// per-glyph loop must add Style.LetterSpacing to the pen position after
+// EVERY character, so the same text at a positive value advances further
+// than at the default, and at a negative value advances LESS — confirmed
+// live on tailwindcss.com's own `tracking-widest`/`tracking-tighter` labels.
+func TestDrawTextLetterSpacing(t *testing.T) {
+	f := NewFonts()
+	dst := image.NewRGBA(image.Rect(0, 0, 200, 40))
+	pp := newTestPainter(dst)
+	col := css.Color{A: 255}
+
+	plain := &css.Style{FontFamily: css.Sans, FontSize: 20, FontWeight: 400, Color: col}
+	wide := &css.Style{FontFamily: css.Sans, FontSize: 20, FontWeight: 400, Color: col, LetterSpacing: 5}
+	tight := &css.Style{FontFamily: css.Sans, FontSize: 20, FontWeight: 400, Color: col, LetterSpacing: -2}
+
+	endPlain := drawText(dst, pp, f, plain, "abc", 2, 22, col, dst.Bounds())
+	endWide := drawText(dst, pp, f, wide, "abc", 2, 22, col, dst.Bounds())
+	endTight := drawText(dst, pp, f, tight, "abc", 2, 22, col, dst.Bounds())
+
+	if want := endPlain + 3*5; endWide != want {
+		t.Errorf("letter-spacing:5px pen end = %d, want %d (plain %d + 3 chars * 5px)", endWide, want, endPlain)
+	}
+	if want := endPlain + 3*-2; endTight != want {
+		t.Errorf("letter-spacing:-2px pen end = %d, want %d (plain %d - 3 chars * 2px)", endTight, want, endPlain)
+	}
+}
+
 func TestPaintBorders(t *testing.T) {
 	f := NewFonts()
 	dst := white(20, 20)

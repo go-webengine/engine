@@ -834,6 +834,12 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		if lh, ok := parseLineHeight(v, emRef); ok {
 			s.LineHeight = lh
 		}
+	case "letter-spacing":
+		if lv == "normal" {
+			s.LetterSpacing = 0
+		} else if ln, ok := parseLength(v, emRef); ok && !ln.Auto {
+			s.LetterSpacing = ln.Resolve(0)
+		}
 	case "float":
 		switch lv {
 		case "left":
@@ -1271,6 +1277,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.WhiteSpace = parent.WhiteSpace
 	case "line-height":
 		s.LineHeight = parent.LineHeight
+	case "letter-spacing":
+		s.LetterSpacing = parent.LetterSpacing
 	case "list-style-type":
 		s.ListStyleType = parent.ListStyleType
 	case "list-style-position":
