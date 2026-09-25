@@ -222,6 +222,41 @@ func TestCascadeVisitedNeverMatches(t *testing.T) {
 	}
 }
 
+// TestCascadeDisabledNeverMatchesPlainElement covers ":disabled": before
+// this, it was simply unmodelled, and the generic "reduce, don't drop"
+// default degraded it to matching its base selector unconditionally. That is
+// actively wrong for the same reason as ":visited" above — ":disabled" and
+// the plain base style opposite states of the SAME element, so a higher-
+// specificity ":disabled" rule (which exists only to override the base for
+// the narrower "actually disabled" case) won the cascade for EVERY element,
+// not just disabled ones. Found live on pkg.go.dev's cookie-consent banner:
+// `.go-Button:disabled{background-color:var(--color-button-disabled)}` beat
+// the page's own `.go-Button{background-color:var(--color-button)}` for the
+// "Okay" button, which carries no "disabled" attribute at all — turning it
+// pale grey instead of its real brand teal.
+func TestCascadeDisabledNeverMatchesPlainElement(t *testing.T) {
+	src := `<html><head><style>
+		.go-Button{background-color:#007d9c}
+		.go-Button:disabled{background-color:#f0f1f2}
+	</style></head><body>
+		<button class="go-Button">Okay</button>
+	</body></html>`
+	if st := styleOf(t, src, "button"); st.Background != (Color{0, 0x7d, 0x9c, 255}) {
+		t.Errorf(":disabled wrongly matched a plain button: background = %v, want teal", st.Background)
+	}
+
+	// A genuinely disabled element still gets the :disabled styling.
+	src2 := `<html><head><style>
+		.go-Button{background-color:#007d9c}
+		.go-Button:disabled{background-color:#f0f1f2}
+	</style></head><body>
+		<button class="go-Button" disabled>Okay</button>
+	</body></html>`
+	if st := styleOf(t, src2, "button"); st.Background != (Color{0xf0, 0xf1, 0xf2, 255}) {
+		t.Errorf(":disabled should still match a real disabled button: background = %v, want gray", st.Background)
+	}
+}
+
 // TestCascadeMediaOverrideDisplayInitial covers the real shape pkg.go.dev
 // uses to show its "Rendered for" build-context label only above a width
 // breakpoint: an unconditional `display:none`, overridden by

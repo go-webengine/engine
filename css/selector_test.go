@@ -219,6 +219,47 @@ func TestCheckedPseudo(t *testing.T) {
 	}
 }
 
+func TestDisabledEnabledPseudo(t *testing.T) {
+	disabled := &dom.Node{Type: dom.Element, Tag: "button", Attr: map[string]string{"disabled": ""}}
+	plain := &dom.Node{Type: dom.Element, Tag: "button", Attr: map[string]string{}}
+
+	sel, ok := parseComplex("button:disabled")
+	if !ok {
+		t.Fatal("button:disabled should parse")
+	}
+	if !sel.Matches(disabled) {
+		t.Error(":disabled should match a button with the disabled attribute")
+	}
+	if sel.Matches(plain) {
+		t.Error(":disabled should NOT match a plain button (this was the bug: an unmodelled :disabled degraded to matching its base unconditionally)")
+	}
+
+	esel, ok := parseComplex("button:enabled")
+	if !ok {
+		t.Fatal("button:enabled should parse")
+	}
+	if esel.Matches(disabled) {
+		t.Error(":enabled should NOT match a disabled button")
+	}
+	if !esel.Matches(plain) {
+		t.Error(":enabled should match a plain button")
+	}
+
+	// A bare ":disabled" is a valid, real constraint on its own.
+	bare, ok := parseComplex(":disabled")
+	if !ok || bare.parts[0].Disabled != true {
+		t.Fatalf("bare :disabled = %+v ok=%v", bare, ok)
+	}
+	if !bare.Matches(disabled) || bare.Matches(plain) {
+		t.Error("bare :disabled match wrong")
+	}
+
+	// ":disabled" contributes class-level specificity, same as ":checked".
+	if got := bare.Specificity(); got != 100 {
+		t.Errorf(":disabled specificity = %d, want 100", got)
+	}
+}
+
 func TestNotPseudo(t *testing.T) {
 	box := el("div", "", "box")
 	other := el("div", "", "other")
