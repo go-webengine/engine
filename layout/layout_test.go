@@ -488,14 +488,42 @@ func TestNegativeContentWidthClamped(t *testing.T) {
 	assertF(t, "clamped ContentW", div.ContentW, 0)
 }
 
-func TestTrailingBrEmptyLine(t *testing.T) {
-	// A trailing <br> yields a final empty line with fallback height.
+// TestTrailingBrGivesNoExtraLine guards round 97's own fix: a `<br>` with
+// nothing after it must NOT open a further, visibly-empty line — real Chrome
+// gives "a<br>" the exact same height as plain "a" (confirmed live on
+// go.dev/blog, whose own `<span class="author">…<br></span>` markup ends
+// every post title with a trailing break this way). This replaces an OLDER
+// version of this same test (TestTrailingBrEmptyLine) that had encoded the
+// bug itself as the expected behavior.
+func TestTrailingBrGivesNoExtraLine(t *testing.T) {
 	src := `<html><body style="margin:0"><div style="margin:0;padding:0">a<br></div></body></html>`
 	div := findBox(layoutHTML(t, src, 1024), "div")
-	if len(div.Lines) != 2 || len(div.Lines[1].Items) != 0 {
-		t.Fatalf("expected trailing empty line, got %d lines", len(div.Lines))
+	if len(div.Lines) != 1 {
+		t.Fatalf("expected no extra trailing line, got %d lines", len(div.Lines))
 	}
-	assertF(t, "empty line height", div.Lines[1].H, 20) // fallback metrics
+	plain := findBox(layoutHTML(t, `<html><body style="margin:0"><div style="margin:0;padding:0">a</div></body></html>`, 1024), "div")
+	assertF(t, "trailing-br div height matches no-br div height", div.H, plain.H)
+}
+
+// TestTrailingDoubleBrKeepsOneRealBlankLine guards the OTHER half of round
+// 97's fix: only the break that is genuinely the LAST thing in a run, with
+// nothing left to end up on a following line, is suppressed — an EARLIER
+// break in the same trailing run still opens its own real, visible blank
+// line, exactly like "a<br><br>b" already does mid-content (see
+// TestPreDoubleNewline). "a<br><br>" (nothing after the second break) must
+// therefore end up ONE line taller than "a<br>" (nothing after the first),
+// not zero taller (both breaks suppressed) and not two taller (neither
+// suppressed).
+func TestTrailingDoubleBrKeepsOneRealBlankLine(t *testing.T) {
+	one := findBox(layoutHTML(t, `<html><body style="margin:0"><div style="margin:0;padding:0">a<br></div></body></html>`, 1024), "div")
+	two := findBox(layoutHTML(t, `<html><body style="margin:0"><div style="margin:0;padding:0">a<br><br></div></body></html>`, 1024), "div")
+	if len(two.Lines) != 2 {
+		t.Fatalf("expected 2 lines (a, one real blank line), got %d", len(two.Lines))
+	}
+	if len(one.Lines) != 1 {
+		t.Fatalf("expected 1 line for the single-trailing-br case, got %d", len(one.Lines))
+	}
+	assertF(t, "double-trailing-br div height", two.H, one.H+two.Lines[1].H)
 }
 
 func TestPreDoubleNewline(t *testing.T) {

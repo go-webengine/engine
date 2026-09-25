@@ -1463,14 +1463,13 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 	for len(rest) > 0 {
 		left, right := l.floats.available(cursor, cursor+guardH, cx, cx+cw)
 		avail := right - left // available() guarantees right >= left
-		line, consumed, brokeAtEnd := wrapOneLine(rest, avail)
+		line, consumed := wrapOneLine(rest, avail)
 		if consumed == 0 {
 			if ny := l.floats.nextEdge(cursor, cx, cx+cw); ny > cursor {
 				cursor = ny
 				continue
 			}
 			line, consumed = forceOne(rest)
-			brokeAtEnd = false
 		}
 		rest = rest[consumed:]
 		lineH, baseline, used := lineMetrics(line, fbH, fbAsc)
@@ -1478,12 +1477,16 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 		line.X, line.Y, line.W, line.H = left, cursor, right-left, lineH
 		lines = append(lines, line)
 		cursor += lineH
-		if brokeAtEnd && len(rest) == 0 {
-			// A trailing forced break opens a final empty line.
-			left2, right2 := l.floats.available(cursor, cursor+guardH, cx, cx+cw)
-			lines = append(lines, &LineBox{X: left2, Y: cursor, W: right2 - left2, H: fbH})
-			cursor += fbH
-		}
+		// A `<br>` with nothing after it (brokeAtEnd, rest now empty) does NOT
+		// open a further, visibly-empty line of its own — confirmed live
+		// (round 97): go.dev/blog's own `<span class="author">…<br></span>`
+		// markup ends every post title with a trailing break, and real Chrome
+		// gives it no extra height at all. Each EARLIER break in a run still
+		// gets its own real empty line exactly as before (wrapOneLine already
+		// returned an empty `line` for it, appended above on ITS OWN loop
+		// iteration) — only the break that is genuinely the LAST thing in the
+		// whole run, with no further content to end up on a following line,
+		// is suppressed here.
 	}
 	// A truly empty inline box (no items) yields no lines and stays zero-height;
 	// any items always produce at least one line above.
@@ -1497,7 +1500,7 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 // caller can try to drop past a float first; if that doesn't help either, the
 // caller's forceOne places just the run's first item, splitting the run only
 // as an overflow-of-last-resort, never as an ordinary wrap point.
-func wrapOneLine(items []*InlineItem, maxW float64) (line *LineBox, consumed int, brokeAtEnd bool) {
+func wrapOneLine(items []*InlineItem, maxW float64) (line *LineBox, consumed int) {
 	line = &LineBox{}
 	w := 0.0
 	i := 0
@@ -1505,7 +1508,7 @@ func wrapOneLine(items []*InlineItem, maxW float64) (line *LineBox, consumed int
 		it := items[i]
 		if it.LineBreak {
 			i++
-			return line, i, true
+			return line, i
 		}
 		// An inline element's own leading/trailing border+padding is part of
 		// what the item occupies on the line (see InlineItem.padLead), so it
@@ -1517,16 +1520,16 @@ func wrapOneLine(items []*InlineItem, maxW float64) (line *LineBox, consumed int
 			add += it.SpaceBefore
 		}
 		if len(line.Items) > 0 && w+add > maxW {
-			return line, i, false
+			return line, i
 		}
 		if len(line.Items) == 0 && runW > maxW {
-			return line, i, false
+			return line, i
 		}
 		line.Items = append(line.Items, items[i:j]...)
 		w += add
 		i = j
 	}
-	return line, i, false
+	return line, i
 }
 
 // forceOne places exactly the first non-break item (overflowing) on a line.

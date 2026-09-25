@@ -174,3 +174,27 @@ func TestBalanceWidthKeepsLineCountButRedistributes(t *testing.T) {
 		t.Errorf("balanced split = %q / %q, want %q / %q", lineText(balanced[0]), lineText(balanced[1]), "a b c", "d e")
 	}
 }
+
+// TestWrapItemsTrailingLineBreakGivesNoExtraLine guards WrapItems' own half
+// of round 97's fix (the nowrap/text-wrap:balance fast path — see
+// layoutInline's identical fix, and its own doc comment, for the confirmed
+// live case and the general in-flow path's equivalent): a LineBreak with
+// nothing after it must not open a further, empty line of its own, but an
+// EARLIER break in the same trailing run still does (matching the real,
+// visible blank line "a<br><br>b" already gets mid-content).
+func TestWrapItemsTrailingLineBreakGivesNoExtraLine(t *testing.T) {
+	one := WrapItems([]*InlineItem{word("a", 10), {LineBreak: true}}, 1000)
+	if len(one) != 1 || lineText(one[0]) != "a" {
+		t.Fatalf("a<br>: expected 1 line %q, got %d lines: %v", "a", len(one), one)
+	}
+	two := WrapItems([]*InlineItem{word("a", 10), {LineBreak: true}, {LineBreak: true}}, 1000)
+	if len(two) != 2 || lineText(two[0]) != "a" || len(two[1].Items) != 0 {
+		t.Fatalf("a<br><br>: expected [%q, <empty>], got %d lines: %v", "a", len(two), two)
+	}
+	// A LONE trailing break (no preceding content at all) still renders as
+	// one real empty line — round 97's fix must not suppress this case too.
+	lone := WrapItems([]*InlineItem{{LineBreak: true}}, 1000)
+	if len(lone) != 1 || len(lone[0].Items) != 0 {
+		t.Fatalf("<br> alone: expected 1 empty line, got %d lines: %v", len(lone), lone)
+	}
+}
