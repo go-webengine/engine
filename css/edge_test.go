@@ -24,16 +24,24 @@ func TestBorderStyleNoneHidden(t *testing.T) {
 }
 
 func TestMarginSideEdges(t *testing.T) {
-	// A percentage margin-left is ignored (not resolved) and clears auto.
+	// A percentage margin-left is recorded (resolved later, against the
+	// containing block's width, in layout's resolveWidths) and clears auto.
 	s := newStyle()
 	applyOn(s, "margin-left", "10%", 16)
-	if s.MarginLeftAuto || s.Margin.Left != 0 {
-		t.Errorf("percent margin-left = %v %v", s.MarginLeftAuto, s.Margin.Left)
+	if s.MarginLeftAuto || !s.MarginLeftIsPercent || s.MarginLeftPercent != 0.1 {
+		t.Errorf("percent margin-left = auto=%v isPercent=%v percent=%v", s.MarginLeftAuto, s.MarginLeftIsPercent, s.MarginLeftPercent)
 	}
-	// The bare keyword auto via the length parser path.
-	applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, "auto", 16)
-	if !s.MarginLeftAuto {
+	// The bare keyword auto via the length parser path; also clears the
+	// percent flag set just above.
+	applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, &s.MarginLeftIsPercent, &s.MarginLeftPercent, "auto", 16)
+	if !s.MarginLeftAuto || s.MarginLeftIsPercent {
 		t.Error("auto via applyMarginSide")
+	}
+	// An unparseable value changes nothing (same "leave the field alone"
+	// behaviour as every other malformed-value case in this file).
+	applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, &s.MarginLeftIsPercent, &s.MarginLeftPercent, "not-a-length", 16)
+	if !s.MarginLeftAuto {
+		t.Error("unparseable margin-left value should leave the previous auto flag untouched")
 	}
 }
 

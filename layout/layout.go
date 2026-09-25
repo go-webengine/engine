@@ -576,11 +576,23 @@ func (l *layouter) placeInlineSegments(box *Box, items []*InlineItem, st *css.St
 
 // resolveWidths computes the used content width and left/right margins of a
 // block box in its containing block of content width cw, honouring width,
-// min/max-width, box-sizing and auto-margin centring (CSS 10.3.3).
+// min/max-width, box-sizing, auto-margin centring (CSS 10.3.3) and a
+// percentage margin-left/margin-right (resolved against cw here — the one
+// place this value is known — since Style keeps it unresolved in
+// MarginLeftPercent/MarginRightPercent; see their own doc comment). Found
+// live on en.wikipedia.org: `.ambox{margin:0 10%}` (gated by
+// `@media(min-width:720px)`) never narrowed the box at all, since a
+// percentage margin was silently treated as 0 everywhere before this.
 func resolveWidths(st *css.Style, cw float64) (contentW, ml, mr float64) {
 	bw := st.Border.Widths()
 	extra := bw.Left + bw.Right + st.Padding.Left + st.Padding.Right
 	mlFixed, mrFixed := st.Margin.Left, st.Margin.Right
+	if st.MarginLeftIsPercent {
+		mlFixed = st.MarginLeftPercent * cw
+	}
+	if st.MarginRightIsPercent {
+		mrFixed = st.MarginRightPercent * cw
+	}
 	if st.MarginLeftAuto {
 		mlFixed = 0
 	}

@@ -27,6 +27,39 @@ func TestMarginLeftAutoPushesRight(t *testing.T) {
 	assertF(t, "pushed.X", div.X, 300) // 500-200
 }
 
+func TestMarginPercentShorthandNarrowsBoxSymmetrically(t *testing.T) {
+	// The real shape found live on en.wikipedia.org: a width:auto box (no
+	// explicit width, exactly like Wikipedia's own `.ambox` cleanup-notice
+	// table) narrowed by a percentage margin shorthand, in a 1024 viewport
+	// with body margin 0 so cw is exactly 1024.
+	src := `<html><body style="margin:0"><div style="margin:0 10%">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	assertF(t, "percent-margin.X", div.X, 102.4)      // 1024 * 0.10
+	assertF(t, "percent-margin.ContentW", div.ContentW, 819.2) // 1024 - 2*102.4
+}
+
+func TestMarginPercentLonghandsIndependently(t *testing.T) {
+	// margin-left/margin-right as separate percentage longhands, asymmetric,
+	// confirming the longhand path (applyMarginSide) resolves the same way as
+	// the shorthand (applyMarginShorthand).
+	src := `<html><body style="margin:0"><div style="margin-left:25%;margin-right:5%">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1000), "div")
+	assertF(t, "percent-longhand.X", div.X, 250)          // 1000 * 0.25
+	assertF(t, "percent-longhand.ContentW", div.ContentW, 700) // 1000 - 250 - 50
+}
+
+func TestMarginPercentLeftAutoRightMixed(t *testing.T) {
+	// One side a percentage, the other side auto — confirms resolveWidths
+	// resolves the fixed percentage side first, then gives ALL the leftover
+	// space to the auto side (not just the space beyond a zero-margin
+	// assumption), and that the percent path didn't disturb auto's own
+	// pre-existing precedence.
+	src := `<html><body style="margin:0"><div style="width:200px;margin-left:10%;margin-right:auto">x</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1000), "div")
+	assertF(t, "mixed.X", div.X, 100)          // 1000 * 0.10
+	assertF(t, "mixed.ContentW", div.ContentW, 200) // explicit width, unaffected
+}
+
 func TestMaxWidthClampAndCentre(t *testing.T) {
 	// width auto but max-width 600 with margin auto → clamps then centres.
 	src := `<html><body style="margin:0"><div style="max-width:600px;margin:0 auto">x</div></body></html>`

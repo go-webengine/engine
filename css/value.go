@@ -678,6 +678,25 @@ type Style struct {
 	// box; distinct from a 0 margin.
 	MarginLeftAuto  bool
 	MarginRightAuto bool
+	// MarginLeft/RightIsPercent + MarginLeft/RightPercent (0..1) record a
+	// percentage margin-left/margin-right — resolved against the containing
+	// block's WIDTH at layout time in resolveWidths, the one place that
+	// already has cw available for exactly this purpose (mirroring how Width/
+	// Height keep percentages unresolved in a Length rather than eagerly
+	// computing a wrong value against an unknown containing block). Margin is
+	// a plain Edges (float64), not Length, everywhere else, so this is a
+	// narrower, side-channel addition rather than a wholesale type change.
+	// Scoped to margin-LEFT/RIGHT only — the confirmed real need (Wikipedia's
+	// own `.ambox{margin:0 10%}`, `@media(min-width:720px)`-gated, centring
+	// article cleanup-notice boxes within their column) only ever needs
+	// horizontal percentages; margin-top/margin-bottom percentages (also
+	// resolved against the containing block's WIDTH per spec, a common CSS
+	// quirk) have no confirmed real caller and are not modelled — a
+	// documented scope limit, not a silent gap for the case that matters.
+	MarginLeftIsPercent   bool
+	MarginLeftPercent     float64
+	MarginRightIsPercent  bool
+	MarginRightPercent    float64
 
 	// Overflow per axis (not inherited; initial value visible). Any non-visible
 	// value clips descendant painting to this box's padding box.
