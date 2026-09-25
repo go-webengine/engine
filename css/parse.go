@@ -1125,11 +1125,11 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 	case "margin-top":
 		applyEdge(&s.Margin.Top, v, emRef)
 	case "margin-right":
-		applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, v, emRef)
+		applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, &s.MarginRightIsPercent, &s.MarginRightPercent, v, emRef)
 	case "margin-bottom":
 		applyEdge(&s.Margin.Bottom, v, emRef)
 	case "margin-left":
-		applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, v, emRef)
+		applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, &s.MarginLeftIsPercent, &s.MarginLeftPercent, v, emRef)
 	case "padding":
 		if e, ok := parseEdges(v, emRef); ok {
 			s.Padding = e
@@ -1147,9 +1147,9 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 	case "margin-block-end":
 		applyEdge(&s.Margin.Bottom, v, emRef)
 	case "margin-inline-start":
-		applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, v, emRef)
+		applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, &s.MarginLeftIsPercent, &s.MarginLeftPercent, v, emRef)
 	case "margin-inline-end":
-		applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, v, emRef)
+		applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, &s.MarginRightIsPercent, &s.MarginRightPercent, v, emRef)
 	case "margin-block":
 		applyMarginBlockShorthand(s, v, emRef)
 	case "margin-inline":
@@ -1355,8 +1355,8 @@ func applyMarginInlineShorthand(s *Style, v string, emRef float64) {
 	if len(fields) == 0 || len(fields) > 2 {
 		return
 	}
-	applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, fields[0], emRef)
-	applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, fields[len(fields)-1], emRef)
+	applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, &s.MarginLeftIsPercent, &s.MarginLeftPercent, fields[0], emRef)
+	applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, &s.MarginRightIsPercent, &s.MarginRightPercent, fields[len(fields)-1], emRef)
 }
 
 // applyPaddingBlockShorthand parses the 1-or-2-value padding-block shorthand

@@ -408,12 +408,16 @@ func applyBorderEdgeWidth(side *BorderSide, v string, emRef float64) {
 }
 
 // applyMarginShorthand parses the 1-to-4 margin shorthand, honouring `auto` on
-// the left and right sides (used for horizontal centring).
+// the left and right sides (used for horizontal centring) and a percentage on
+// the left and right sides (see Style.MarginLeftIsPercent's own doc comment
+// for why only left/right, not top/bottom).
 func applyMarginShorthand(s *Style, v string, emRef float64) {
 	fields := strings.Fields(strings.ToLower(v))
 	type mv struct {
-		px   float64
-		auto bool
+		px        float64
+		auto      bool
+		isPercent bool
+		percent   float64
 	}
 	vals := make([]mv, 0, len(fields))
 	for _, f := range fields {
@@ -426,7 +430,7 @@ func applyMarginShorthand(s *Style, v string, emRef float64) {
 			return
 		}
 		if l.IsPercent {
-			vals = append(vals, mv{px: 0})
+			vals = append(vals, mv{isPercent: true, percent: l.Percent})
 		} else {
 			vals = append(vals, mv{px: l.Px})
 		}
@@ -435,24 +439,36 @@ func applyMarginShorthand(s *Style, v string, emRef float64) {
 	if !ok {
 		return
 	}
-	// top/bottom auto collapses to 0 in block flow.
+	// top/bottom auto and top/bottom percentages both collapse to 0 in block
+	// flow — see Style.MarginLeftIsPercent's doc comment for the latter.
 	s.Margin.Top, s.Margin.Bottom = t.px, bo.px
 	s.Margin.Left, s.MarginLeftAuto = l.px, l.auto
+	s.MarginLeftIsPercent, s.MarginLeftPercent = l.isPercent, l.percent
 	s.Margin.Right, s.MarginRightAuto = r.px, r.auto
+	s.MarginRightIsPercent, s.MarginRightPercent = r.isPercent, r.percent
 }
 
-// applyMarginSide sets one horizontal margin, recording an `auto` value.
-func applyMarginSide(dst *float64, autoFlag *bool, v string, emRef float64) {
+// applyMarginSide sets one horizontal margin, recording an `auto` or
+// percentage value (percentFlag/percentDst — see Style.MarginLeftIsPercent's
+// own doc comment).
+func applyMarginSide(dst *float64, autoFlag *bool, percentFlag *bool, percentDst *float64, v string, emRef float64) {
 	lv := strings.ToLower(strings.TrimSpace(v))
 	if lv == "auto" {
 		*autoFlag = true
+		*percentFlag = false
 		*dst = 0
 		return
 	}
-	// parseLength never returns Auto here ("auto" is handled above); a plain
-	// pixel/em value clears any previous auto flag.
-	if l, ok := parseLength(v, emRef); ok && !l.IsPercent && !l.Auto {
-		*autoFlag = false
+	l, ok := parseLength(v, emRef)
+	if !ok || l.Auto {
+		return
+	}
+	*autoFlag = false
+	if l.IsPercent {
+		*percentFlag = true
+		*percentDst = l.Percent
+	} else {
+		*percentFlag = false
 		*dst = l.Px
 	}
 }
