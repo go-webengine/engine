@@ -67,7 +67,19 @@ func WrapItems(items []*InlineItem, maxW float64) []*LineBox {
 		curW += add
 		i = j
 	}
-	lines = append(lines, cur)
+	// The final `cur` is appended unconditionally UNLESS it is both empty and
+	// there is already at least one earlier line: that shape only arises when
+	// the very last item was a LineBreak with nothing after it, which must
+	// NOT open a further, visibly-empty line of its own (round 97 — see
+	// layoutInline's own identical fix and its doc comment for the confirmed
+	// live case). An EARLIER break in the same trailing run already got its
+	// own real empty line on ITS OWN loop iteration above; only the break
+	// that is genuinely the last thing in the whole run is suppressed here.
+	// A lone leading break (lines still empty) is unaffected: cur is still
+	// appended, giving the one real empty line a bare "<br>" alone renders.
+	if len(cur.Items) > 0 || len(lines) == 0 {
+		lines = append(lines, cur)
+	}
 	return lines
 }
 
