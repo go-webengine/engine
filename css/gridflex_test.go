@@ -424,13 +424,19 @@ func TestApplyGridTemplates(t *testing.T) {
 	if s.GridAutoFlow != GridFlowColumn {
 		t.Errorf("auto-flow = %v", s.GridAutoFlow)
 	}
+	if !s.GridAutoFlowDense {
+		t.Error("auto-flow dense keyword not recognised")
+	}
 	if len(s.GridTemplateAreas) != 1 {
 		t.Errorf("areas = %v", s.GridTemplateAreas)
 	}
-	// grid-auto-flow row keyword.
+	// grid-auto-flow row keyword (no "dense") clears the dense flag again.
 	applyOn(s, "grid-auto-flow", "row", 16)
 	if s.GridAutoFlow != GridFlowRow {
 		t.Errorf("auto-flow row = %v", s.GridAutoFlow)
+	}
+	if s.GridAutoFlowDense {
+		t.Error("auto-flow dense should have cleared without the keyword")
 	}
 	// Invalid template list leaves the previous value.
 	applyOn(s, "grid-template-columns", "repeat(auto-fill, 1fr)", 16)

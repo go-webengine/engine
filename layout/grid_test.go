@@ -44,6 +44,33 @@ func TestGridRepeatAutoFlowWraps(t *testing.T) {
 	assertF(t, "rep.container.H", g.H, 40)
 }
 
+func TestGridAutoFlowDenseBackfillsAGap(t *testing.T) {
+	// Three 100px columns. A and B each span 2 columns (100px tall each, one
+	// per row since neither fits beside the other): A occupies row 1's
+	// columns 0-1, leaving column 2 free; B doesn't fit there (needs 2
+	// columns) so it wraps to row 2's columns 0-1, leaving row 2's column 2
+	// free too. C is a plain 1-column item placed after both in DOM order.
+	//
+	// Sparse (the default): C sees the auto-placement cursor sitting where B
+	// left it (row 2, column 2) and is placed there directly — never looking
+	// back at row 1's own leftover column 2.
+	//
+	// Dense: the cursor restarts from the very first cell for every item, so
+	// C instead backfills row 1's column 2 — the gap A's own span left open
+	// — landing ABOVE where sparse placed it, out of DOM order.
+	src := `<html><body style="margin:0"><div style="display:grid;grid-template-columns:repeat(3,100px);grid-auto-flow:row">` +
+		`<div style="grid-column:span 2">A</div><div style="grid-column:span 2">B</div><div>C</div></div></body></html>`
+	sparse := findBox(layoutHTML(t, src, 400), "div")
+	assertF(t, "dense.sparse.C.X", sparse.Children[2].X, 200)
+	assertF(t, "dense.sparse.C.Y", sparse.Children[2].Y, 20) // row 2, alongside B
+
+	denseSrc := `<html><body style="margin:0"><div style="display:grid;grid-template-columns:repeat(3,100px);grid-auto-flow:row dense">` +
+		`<div style="grid-column:span 2">A</div><div style="grid-column:span 2">B</div><div>C</div></div></body></html>`
+	dense := findBox(layoutHTML(t, denseSrc, 400), "div")
+	assertF(t, "dense.dense.C.X", dense.Children[2].X, 200)
+	assertF(t, "dense.dense.C.Y", dense.Children[2].Y, 0) // row 1, backfilling A's own leftover column
+}
+
 func TestGridMinmaxWithFr(t *testing.T) {
 	// minmax(100px,1fr) 1fr over 300px: col0 base 100 (+100 fr share) = 200,
 	// col1 = 100.
