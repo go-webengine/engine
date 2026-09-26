@@ -16,6 +16,40 @@ func TestNewElementAndText(t *testing.T) {
 	}
 }
 
+func TestNewElementTemplateHasContent(t *testing.T) {
+	tpl := NewElement("template")
+	if tpl.Content == nil {
+		t.Fatal("NewElement(\"template\") has no Content fragment")
+	}
+	if len(tpl.Content.Children) != 0 {
+		t.Fatalf("fresh template's Content already has children: %v", tpl.Content.Children)
+	}
+	// A non-template element gets no Content at all.
+	if div := NewElement("div"); div.Content != nil {
+		t.Error("NewElement(\"div\") should not get a Content fragment")
+	}
+}
+
+func TestSetInnerHTMLOnTemplateWritesContent(t *testing.T) {
+	tpl := NewElement("template")
+	AppendChild(tpl.Content, NewText("stale")) // pre-existing content, must be replaced
+	if err := SetInnerHTML(tpl, `<b>hi</b>`); err != nil {
+		t.Fatal(err)
+	}
+	if len(tpl.Children) != 0 {
+		t.Fatalf("template's own Children = %v, want none", tpl.Children)
+	}
+	if len(tpl.Content.Children) != 1 || tpl.Content.Children[0].Tag != "b" {
+		t.Fatalf("template content = %v", tpl.Content.Children)
+	}
+	if got := InnerHTML(tpl); got != "<b>hi</b>" {
+		t.Fatalf("InnerHTML(tpl) = %q", got)
+	}
+	if got := OuterHTML(tpl); got != "<template><b>hi</b></template>" {
+		t.Fatalf("OuterHTML(tpl) = %q", got)
+	}
+}
+
 func TestAppendChildDetaches(t *testing.T) {
 	p1 := NewElement("div")
 	p2 := NewElement("section")
