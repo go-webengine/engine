@@ -84,6 +84,75 @@ func TestInsertBefore(t *testing.T) {
 	InsertBefore(p, p, nil)
 }
 
+// TestAppendChildUnwrapsFragment covers the real shape found live on
+// caniuse.com's own "Browser scores" widget: appending a DocumentFragment
+// (document.createDocumentFragment(), represented here as a plain Element
+// with the synthetic tag "#fragment") must move its OWN children into the
+// target directly, per spec, never insert the fragment node itself — a
+// site's JS populating a fragment with real content and then appending the
+// fragment to a real container ended up with that content nested inside a
+// literal, unstyled `<#fragment>` element instead of becoming the
+// container's own direct children, breaking any CSS relying on that
+// (`>`-combinator rules, a flex container's "only direct children are flex
+// items" rule).
+func TestAppendChildUnwrapsFragment(t *testing.T) {
+	p := NewElement("div")
+	frag := NewElement("#fragment")
+	a, b := NewElement("a"), NewElement("b")
+	AppendChild(frag, a)
+	AppendChild(frag, b)
+
+	AppendChild(p, frag)
+
+	if got := tags(p); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Fatalf("p's children = %v, want [a b] (fragment unwrapped, not inserted itself)", got)
+	}
+	if a.Parent != p || b.Parent != p {
+		t.Error("fragment's own children were not reparented to p")
+	}
+	if len(frag.Children) != 0 {
+		t.Errorf("fragment still holds %d children after being appended, want 0 (emptied per spec)", len(frag.Children))
+	}
+	if frag.Parent != nil {
+		t.Error("the fragment itself must never gain a parent — it is never part of the tree")
+	}
+
+	// An existing sibling stays in place, with the fragment's children
+	// inserted after it in document order (a plain AppendChild appends).
+	p2 := NewElement("div")
+	c := NewElement("c")
+	AppendChild(p2, c)
+	frag2 := NewElement("#fragment")
+	AppendChild(frag2, NewElement("d"))
+	AppendChild(frag2, NewElement("e"))
+	AppendChild(p2, frag2)
+	if got := tags(p2); len(got) != 3 || got[0] != "c" || got[1] != "d" || got[2] != "e" {
+		t.Fatalf("p2's children = %v, want [c d e]", got)
+	}
+}
+
+// TestInsertBeforeUnwrapsFragment is InsertBefore's own counterpart of
+// TestAppendChildUnwrapsFragment: a fragment's children are inserted in
+// order immediately before ref, preserving their relative order.
+func TestInsertBeforeUnwrapsFragment(t *testing.T) {
+	p := NewElement("div")
+	a, z := NewElement("a"), NewElement("z")
+	AppendChild(p, a)
+	AppendChild(p, z)
+
+	frag := NewElement("#fragment")
+	AppendChild(frag, NewElement("b"))
+	AppendChild(frag, NewElement("c"))
+	InsertBefore(p, frag, z)
+
+	if got := tags(p); len(got) != 4 || got[0] != "a" || got[1] != "b" || got[2] != "c" || got[3] != "z" {
+		t.Fatalf("p's children = %v, want [a b c z]", got)
+	}
+	if len(frag.Children) != 0 || frag.Parent != nil {
+		t.Error("the fragment must end up empty and detached, never itself inserted")
+	}
+}
+
 func TestTextContentAndSet(t *testing.T) {
 	root, _ := Parse(`<div>a<span>b<em>c</em></span>d</div>`)
 	div := Find(root, "div")

@@ -22,10 +22,35 @@ func NewText(text string) *Node {
 	return &Node{Type: Text, Text: text}
 }
 
+// isFragment reports whether n is a DocumentFragment — represented as a
+// plain Element node with the synthetic tag "#fragment" (see
+// document.createDocumentFragment's own JS binding). Per spec a
+// DocumentFragment is never itself inserted into a tree: appending or
+// inserting one moves its OWN children into the target position instead,
+// leaving the (now empty) fragment behind, still detached and reusable.
+func isFragment(n *Node) bool {
+	return n.Type == Element && n.Tag == "#fragment"
+}
+
 // AppendChild appends child to parent's child list, first detaching child from
 // any current parent. Nil operands and self-appends are no-ops.
+//
+// A DocumentFragment child is unwrapped per spec (see isFragment's own doc
+// comment) rather than inserted as itself — confirmed live on caniuse.com's
+// own "Browser scores" widget: its real, populated content ended up nested
+// inside a literal, unstyled `<#fragment>` element instead of becoming a
+// direct child of its real container, breaking the CSS relationship
+// (`> `-combinator rules, `display:flex`'s own "only direct children are
+// flex items" rule) the widget's own styling depended on to lay out its
+// "Current version"/"Dev version" toggle correctly.
 func AppendChild(parent, child *Node) {
 	if parent == nil || child == nil || parent == child {
+		return
+	}
+	if isFragment(child) {
+		for _, gc := range append([]*Node{}, child.Children...) {
+			AppendChild(parent, gc)
+		}
 		return
 	}
 	detach(child)
@@ -51,8 +76,18 @@ func RemoveChild(parent, child *Node) {
 // InsertBefore inserts newChild immediately before ref among parent's children,
 // detaching newChild from any current parent first. If ref is nil or not a child
 // of parent, newChild is appended.
+//
+// A DocumentFragment newChild is unwrapped per spec, same as AppendChild's own
+// identical case (see isFragment's own doc comment): each of its children is
+// inserted in turn immediately before ref, preserving their relative order.
 func InsertBefore(parent, newChild, ref *Node) {
 	if parent == nil || newChild == nil || parent == newChild {
+		return
+	}
+	if isFragment(newChild) {
+		for _, gc := range append([]*Node{}, newChild.Children...) {
+			InsertBefore(parent, gc, ref)
+		}
 		return
 	}
 	detach(newChild)
