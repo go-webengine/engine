@@ -1131,3 +1131,51 @@ func TestApplyLetterSpacing(t *testing.T) {
 		t.Errorf("letter-spacing:inherit = %v, want parent's 4", s3.LetterSpacing)
 	}
 }
+
+func TestApplyBorderSpacing(t *testing.T) {
+	if h, v := initialStyle().BorderSpacingH, initialStyle().BorderSpacingV; h != 0 || v != 0 {
+		t.Errorf("initialStyle().BorderSpacing = (%v, %v), want (0, 0)", h, v)
+	}
+
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "border-spacing", Value: v}, 16, nil) }
+
+	// One value sets BOTH axes.
+	apply("3px")
+	if s.BorderSpacingH != 3 || s.BorderSpacingV != 3 {
+		t.Errorf("border-spacing:3px = (%v, %v), want (3, 3)", s.BorderSpacingH, s.BorderSpacingV)
+	}
+	// Two values: horizontal then vertical.
+	apply("2px 5px")
+	if s.BorderSpacingH != 2 || s.BorderSpacingV != 5 {
+		t.Errorf("border-spacing:2px 5px = (%v, %v), want (2, 5)", s.BorderSpacingH, s.BorderSpacingV)
+	}
+	// em resolves against the font size passed to apply.
+	apply("1em")
+	if s.BorderSpacingH != 16 || s.BorderSpacingV != 16 {
+		t.Errorf("border-spacing:1em (16px font) = (%v, %v), want (16, 16)", s.BorderSpacingH, s.BorderSpacingV)
+	}
+
+	// An invalid value (three lengths, not valid CSS for this property)
+	// leaves it unchanged.
+	apply("3px")
+	apply("1px 2px 3px")
+	if s.BorderSpacingH != 3 || s.BorderSpacingV != 3 {
+		t.Errorf("border-spacing:1px 2px 3px (invalid) changed the property to (%v, %v), want unchanged (3, 3)", s.BorderSpacingH, s.BorderSpacingV)
+	}
+
+	// Inherited, per spec: a plain default-inheritance cascade picks it up.
+	parent := initialStyle()
+	parent.BorderSpacingH, parent.BorderSpacingV = 4, 7
+	child := inheritFrom(parent)
+	if child.BorderSpacingH != 4 || child.BorderSpacingV != 7 {
+		t.Errorf("inheritFrom(parent).BorderSpacing = (%v, %v), want inherited (4, 7)", child.BorderSpacingH, child.BorderSpacingV)
+	}
+
+	// The explicit "inherit" keyword also works.
+	s2 := initialStyle()
+	s2.apply(Declaration{Property: "border-spacing", Value: "inherit"}, 16, &parent)
+	if s2.BorderSpacingH != 4 || s2.BorderSpacingV != 7 {
+		t.Errorf("border-spacing:inherit = (%v, %v), want parent's (4, 7)", s2.BorderSpacingH, s2.BorderSpacingV)
+	}
+}

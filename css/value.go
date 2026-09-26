@@ -649,6 +649,25 @@ type Style struct {
 	// established practice of shipping the confirmed-reachable path first.
 	LetterSpacing float64
 
+	// BorderSpacingH/V are `border-spacing`'s horizontal/vertical values in
+	// px (both 0 = the initial value, no gap). Inherited, per spec (one of a
+	// handful of table-specific properties CSS inherits despite table
+	// layout itself not otherwise being inherited). Confirmed real on
+	// en.wikipedia.org's own infobox (`.infobox{border-spacing:3px}`, cells
+	// styled with only a `border-bottom` — the gap this property adds
+	// between rows IS the infobox's visible row-to-row breathing room, not
+	// merely a cosmetic nicety). layout.table applies it unconditionally,
+	// without checking `border-collapse` (not modelled at all yet, so every
+	// table is implicitly always "separate", the default) — spec says
+	// border-spacing has no effect under `border-collapse:collapse`, but
+	// both of this engine's own confirmed real cases are unaffected by that
+	// simplification: Wikipedia's infobox never sets border-collapse at all
+	// (stays at the default 'separate' this engine already assumes), and
+	// pkg.go.dev's own `table{border-collapse:collapse;border-spacing:0}`
+	// reset sets spacing to zero anyway, so applying it unconditionally
+	// there is a no-op regardless.
+	BorderSpacingH, BorderSpacingV float64
+
 	// CenterAsBlock is TextAlign == AlignCenterBlocks for every element,
 	// EXCEPT it stays true for a <table> whose PARENT has TextAlign ==
 	// AlignCenterBlocks even in quirks mode, where the table's OWN TextAlign
@@ -1099,6 +1118,8 @@ func inheritFrom(parent Style) Style {
 		WhiteSpace:     parent.WhiteSpace,     // inherited
 		LineHeight:     parent.LineHeight,     // inherited
 		LetterSpacing:  parent.LetterSpacing,  // inherited
+		BorderSpacingH: parent.BorderSpacingH, // inherited
+		BorderSpacingV: parent.BorderSpacingV, // inherited
 		ImageRendering: parent.ImageRendering, // inherited
 		// list-style-type / list-style-position inherit; list-item does not.
 		ListStyleType:     parent.ListStyleType,

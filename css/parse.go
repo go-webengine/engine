@@ -840,6 +840,19 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if ln, ok := parseLength(v, emRef); ok && !ln.Auto {
 			s.LetterSpacing = ln.Resolve(0)
 		}
+	case "border-spacing":
+		fields := strings.Fields(v)
+		if len(fields) == 1 {
+			if ln, ok := parseLength(fields[0], emRef); ok && !ln.Auto {
+				s.BorderSpacingH, s.BorderSpacingV = ln.Resolve(0), ln.Resolve(0)
+			}
+		} else if len(fields) == 2 {
+			h, hok := parseLength(fields[0], emRef)
+			vv, vok := parseLength(fields[1], emRef)
+			if hok && vok && !h.Auto && !vv.Auto {
+				s.BorderSpacingH, s.BorderSpacingV = h.Resolve(0), vv.Resolve(0)
+			}
+		}
 	case "float":
 		switch lv {
 		case "left":
@@ -1279,6 +1292,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.LineHeight = parent.LineHeight
 	case "letter-spacing":
 		s.LetterSpacing = parent.LetterSpacing
+	case "border-spacing":
+		s.BorderSpacingH, s.BorderSpacingV = parent.BorderSpacingH, parent.BorderSpacingV
 	case "list-style-type":
 		s.ListStyleType = parent.ListStyleType
 	case "list-style-position":

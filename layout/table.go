@@ -147,15 +147,27 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 			}
 		}
 	}
-	colW := distributeColumns(cols, cw)
+	// border-spacing (see css.Style.BorderSpacingH/V's own doc comment for
+	// scope): a gap of BorderSpacingH BEFORE the first column, BETWEEN every
+	// pair of columns, and AFTER the last — ncols+1 gaps total, taken out of
+	// the width columns are distributed over, matching the separate-borders
+	// model's own box accounting. BorderSpacingV works identically down the
+	// rows. Zero for a table that never sets border-spacing, so this is a
+	// no-op reproducing the exact previous flush-column/row layout.
+	hs, vs := st.BorderSpacingH, st.BorderSpacingV
+	avail := cw - hs*float64(ncols+1)
+	if avail < 0 {
+		avail = 0
+	}
+	colW := distributeColumns(cols, avail)
 	colX := make([]float64, ncols)
-	acc := cx
+	acc := cx + hs
 	for j := range colW {
 		colX[j] = acc
-		acc += colW[j]
+		acc += colW[j] + hs
 	}
 
-	y := top
+	y := top + vs
 	for _, r := range rows {
 		rowBox := &Box{Node: r.node, Style: r.style, X: cx, Y: y, W: cw, ContentX: cx, ContentY: y, ContentW: cw}
 		var cellBoxes []*Box
@@ -167,6 +179,11 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 			var spanW float64
 			for k := 0; k < r.colSpan[j]; k++ {
 				spanW += colW[r.colStart[j]+k]
+			}
+			if r.colSpan[j] > 1 {
+				// The span's own internal gaps belong to it, same as a
+				// plain cell's single column already has none to add.
+				spanW += hs * float64(r.colSpan[j]-1)
 			}
 			contentW := spanW - hEdges - cs.Margin.Left - cs.Margin.Right
 			cbox := l.layoutIsolated(cell, cs, contentW)
@@ -185,7 +202,7 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 		rowBox.H = rowH
 		rowBox.ContentH = rowH
 		box.Children = append(box.Children, rowBox)
-		y += rowH
+		y += rowH + vs
 	}
 	return y
 }
