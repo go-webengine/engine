@@ -6,6 +6,7 @@ package engine
 import (
 	"context"
 	"image"
+	"strings"
 	"testing"
 )
 
@@ -153,4 +154,45 @@ func TestShadowDOMInlineSVGIsDiscoveredForRasterization(t *testing.T) {
 		`</template></my-icon></body></html>`
 	img := renderHTMLTest(t, src, 40, 40)
 	assertPixel(t, img, 10, 10, 0xff, 0x00, 0x00, "shadow-hosted inline <svg> should rasterize its red rect, not paint as empty background")
+}
+
+// TestShadowHostGetComputedStyleAndRect guards layout.BuildIndex's own
+// inline-item-to-element attribution walk (layout/index.go's elementParent),
+// a SEPARATE mechanism from every fixture above: a plain display:inline
+// custom element (the spec default for one with no author styling) hosting a
+// declarative shadow root contributes no Box of its own — its content is an
+// InlineItem whose Node sits at the TOP of the shadow tree, whose Parent is
+// nil (see attachDeclarativeShadowRoots — it is the root of a separate tree).
+// Before elementParent bridged Parent==nil+ShadowHost!=nil back to the host,
+// this walk stopped dead at the shadow node and the host never received ANY
+// rect entry in the whole document — getComputedStyle/getBoundingClientRect
+// then reported it as display:none/an all-zero rect regardless of its real,
+// painted shadow content. Confirmed root cause, live, of the SAME shape on
+// developer.mozilla.org's own `<mdn-sidebar-filter>` search widget (though
+// that specific element also sits behind an unrelated, correctly-evaluated
+// responsive breakpoint at this session's own 1024px bench viewport, so this
+// fix has no visible bench effect on that page — see FIDELITY.md).
+func TestShadowHostGetComputedStyleAndRect(t *testing.T) {
+	src := `<html><body>` +
+		`<my-widget><template shadowrootmode="open"><span>shadow content</span></template></my-widget>` +
+		`<script>
+			var el = document.querySelector('my-widget');
+			console.log('RESULT:display=' + getComputedStyle(el).display);
+			var r = el.getBoundingClientRect();
+			console.log('RESULT:rect=' + r.width + 'x' + r.height);
+		</script>` +
+		`</body></html>`
+	e := New()
+	var logs []string
+	e.JSLog = func(s string) { logs = append(logs, s) }
+	if _, _, err := e.RenderHTML(context.Background(), src, "https://demo.test/", image.Rect(0, 0, 400, 100)); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(logs, "\n")
+	if !strings.Contains(joined, "RESULT:display=inline") {
+		t.Fatalf("shadow host's own computed display should be inline (the spec default), got logs:\n%s", joined)
+	}
+	if strings.Contains(joined, "RESULT:rect=0x0") {
+		t.Fatalf("shadow host's own bounding rect should reflect its real shadow content, not be all-zero:\n%s", joined)
+	}
 }
