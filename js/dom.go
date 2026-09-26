@@ -219,40 +219,50 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	o.Set("appendChild", func(call goja.FunctionCall) goja.Value {
 		child := b.node(call.Argument(0))
 		dom.AppendChild(n, child)
+		b.recordChildListMutation(n, []*dom.Node{child}, nil)
 		return b.wrap(child)
 	})
 	o.Set("append", func(call goja.FunctionCall) goja.Value {
 		for _, a := range call.Arguments {
-			dom.AppendChild(n, b.coerceNode(a))
+			child := b.coerceNode(a)
+			dom.AppendChild(n, child)
+			b.recordChildListMutation(n, []*dom.Node{child}, nil)
 		}
 		return goja.Undefined()
 	})
 	o.Set("prepend", func(call goja.FunctionCall) goja.Value {
 		ref := firstChild(n)
 		for _, a := range call.Arguments {
-			dom.InsertBefore(n, b.coerceNode(a), ref)
+			child := b.coerceNode(a)
+			dom.InsertBefore(n, child, ref)
+			b.recordChildListMutation(n, []*dom.Node{child}, nil)
 		}
 		return goja.Undefined()
 	})
 	o.Set("removeChild", func(call goja.FunctionCall) goja.Value {
 		child := b.node(call.Argument(0))
 		dom.RemoveChild(n, child)
+		b.recordChildListMutation(n, nil, []*dom.Node{child})
 		return b.wrap(child)
 	})
 	o.Set("replaceChild", func(call goja.FunctionCall) goja.Value {
 		neu, old := b.node(call.Argument(0)), b.node(call.Argument(1))
 		dom.InsertBefore(n, neu, old)
 		dom.RemoveChild(n, old)
+		b.recordChildListMutation(n, []*dom.Node{neu}, []*dom.Node{old})
 		return b.wrap(old)
 	})
 	o.Set("insertBefore", func(call goja.FunctionCall) goja.Value {
 		neu, ref := b.node(call.Argument(0)), b.node(call.Argument(1))
 		dom.InsertBefore(n, neu, ref)
+		b.recordChildListMutation(n, []*dom.Node{neu}, nil)
 		return b.wrap(neu)
 	})
 	o.Set("remove", func(goja.FunctionCall) goja.Value {
 		if n.Parent != nil {
-			dom.RemoveChild(n.Parent, n)
+			parent := n.Parent
+			dom.RemoveChild(parent, n)
+			b.recordChildListMutation(parent, nil, []*dom.Node{n})
 		}
 		return goja.Undefined()
 	})
@@ -451,17 +461,27 @@ func (b *binder) selectOptionAt(sel *dom.Node, i int) {
 	}
 }
 
-// setAttr/removeAttr mutate the attribute map (creating it as needed).
+// setAttr/removeAttr mutate the attribute map (creating it as needed) and
+// notify any observer registered for attribute changes on n — every
+// attribute-reflecting JS binding (setAttribute, className, id, hidden,
+// type, …) already funnels through these two, so hooking them here covers
+// all of it for free.
 func (b *binder) setAttr(n *dom.Node, name, val string) {
+	oldVal, had := n.Attribute(name)
 	if n.Attr == nil {
 		n.Attr = map[string]string{}
 	}
 	n.Attr[name] = val
+	b.recordAttributeMutation(n, name, oldVal, had)
 }
 
 func (b *binder) removeAttr(n *dom.Node, name string) {
+	oldVal, had := n.Attribute(name)
 	if n.Attr != nil {
 		delete(n.Attr, name)
+	}
+	if had {
+		b.recordAttributeMutation(n, name, oldVal, had)
 	}
 }
 

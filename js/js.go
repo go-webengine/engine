@@ -99,6 +99,9 @@ type binder struct {
 
 	jobs     []timerJob
 	nextID   int64
+	// mutationObservers holds every live `new MutationObserver(cb)` with an
+	// active observe() call — see mutationobserver.go.
+	mutationObservers []*mutationObserverReg
 	deadman  time.Time
 	cookie   string
 	storage  map[string]*storageArea

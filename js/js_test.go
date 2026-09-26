@@ -1241,3 +1241,107 @@ func TestEventTypeNil(t *testing.T) {
 		t.Fatal("eventType(nil) should be empty")
 	}
 }
+
+// TestMutationObserverChildList confirms a basic appendChild is delivered as
+// a childList record with the added node — the previously-inert stub (see
+// installConstructors' shared no-op "observer" closure, now MutationObserver's
+// own real constructor) never called back at all, so this callback simply
+// never ran before the fix.
+func TestMutationObserverChildList(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var mo = new MutationObserver(function(records){
+			console.log('count='+records.length);
+			console.log('type='+records[0].type);
+			console.log('added='+records[0].addedNodes.length);
+			console.log('target='+records[0].target.id);
+		});
+		mo.observe(document.getElementById('d'), {childList: true});
+		var span = document.createElement('span');
+		document.getElementById('d').appendChild(span);
+	`))
+	mustHave(t, logs, "count=1", "type=childList", "added=1", "target=d")
+}
+
+// TestMutationObserverAttributes confirms setAttribute/removeAttribute are
+// delivered as attribute records, and that attributeOldValue is honoured.
+func TestMutationObserverAttributes(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var mo = new MutationObserver(function(records){
+			records.forEach(function(r){
+				console.log('type='+r.type+' name='+r.attributeName+' old='+r.oldValue);
+			});
+		});
+		mo.observe(document.getElementById('d'), {attributes: true, attributeOldValue: true});
+		document.getElementById('d').setAttribute('data-existing', 'new-value');
+		document.getElementById('d').removeAttribute('class');
+	`))
+	mustHave(t, logs,
+		"type=attributes name=data-existing old=v",
+		"type=attributes name=class old=foo")
+}
+
+// TestMutationObserverSubtree confirms a mutation on a DESCENDANT of the
+// observed target is only delivered when subtree is set.
+func TestMutationObserverSubtree(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var child = document.createElement('span');
+		child.id = 'child';
+		document.getElementById('d').appendChild(child);
+
+		var withoutSubtree = 0, withSubtree = 0;
+		new MutationObserver(function(r){ withoutSubtree += r.length; })
+			.observe(document.getElementById('d'), {attributes: true});
+		new MutationObserver(function(r){ withSubtree += r.length; })
+			.observe(document.getElementById('d'), {attributes: true, subtree: true});
+
+		document.getElementById('child').setAttribute('data-x', '1');
+		setTimeout(function(){
+			console.log('without='+withoutSubtree+' with='+withSubtree);
+		}, 0);
+	`))
+	mustHave(t, logs, "without=0 with=1")
+}
+
+// TestMutationObserverBatching confirms several synchronous mutations before
+// the callback actually runs are delivered as ONE invocation with multiple
+// records, not one invocation per mutation.
+func TestMutationObserverBatching(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var calls = 0, total = 0;
+		var mo = new MutationObserver(function(records){
+			calls++; total += records.length;
+		});
+		mo.observe(document.getElementById('d'), {attributes: true});
+		document.getElementById('d').setAttribute('data-a', '1');
+		document.getElementById('d').setAttribute('data-b', '2');
+		setTimeout(function(){ console.log('calls='+calls+' total='+total); }, 0);
+	`))
+	mustHave(t, logs, "calls=1 total=2")
+}
+
+// TestMutationObserverDisconnect confirms disconnect() before the pending
+// callback runs suppresses it entirely.
+func TestMutationObserverDisconnect(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var fired = false;
+		var mo = new MutationObserver(function(){ fired = true; });
+		mo.observe(document.getElementById('d'), {attributes: true});
+		document.getElementById('d').setAttribute('data-a', '1');
+		mo.disconnect();
+		setTimeout(function(){ console.log('fired='+fired); }, 0);
+	`))
+	mustHave(t, logs, "fired=false")
+}
+
+// TestMutationObserverTakeRecords confirms takeRecords() returns and clears
+// the pending queue synchronously, ahead of the scheduled callback.
+func TestMutationObserverTakeRecords(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var mo = new MutationObserver(function(){});
+		mo.observe(document.getElementById('d'), {attributes: true});
+		document.getElementById('d').setAttribute('data-a', '1');
+		var taken = mo.takeRecords();
+		console.log('taken='+taken.length+' again='+mo.takeRecords().length);
+	`))
+	mustHave(t, logs, "taken=1 again=0")
+}

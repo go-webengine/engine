@@ -205,10 +205,13 @@ func (b *binder) installConstructors(g *goja.Object) {
 		o.Set("takeRecords", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
 		return o
 	}
-	g.Set("MutationObserver", observer)
+	// MutationObserver is real (see installMutationObserver); the other three
+	// still need layout geometry or paint timing this engine doesn't feed back
+	// into JS yet, so they stay inert stubs.
 	g.Set("IntersectionObserver", observer)
 	g.Set("ResizeObserver", observer)
 	g.Set("PerformanceObserver", observer)
+	b.installMutationObserver(g)
 
 	g.Set("URL", func(call goja.ConstructorCall) *goja.Object {
 		return b.buildURL(call.Argument(0).String(), call.Argument(1))
