@@ -22,8 +22,16 @@ type flexItem struct {
 	vMargin float64 // margin top+bottom
 	base    float64 // hypothetical main content size
 	main    float64 // resolved main content size
-	box     *Box
-	cross   float64 // outer cross size after layout
+	// minContent is the item's own min-content width (content-box, matching
+	// base/main's own convention) — CSS's "automatic minimum size" for a
+	// flex item whose min-width is auto (the default): the shrink phase must
+	// never squeeze such an item below the widest unbreakable unit its own
+	// content needs, exactly the floor min-width:auto silently disables when
+	// an author sets it explicitly. See resolveMainRow's own doc comment for
+	// the confirmed real need this closes.
+	minContent float64
+	box        *Box
+	cross      float64 // outer cross size after layout
 }
 
 // flexLine is one flex line (a row of items in a row container) with its
@@ -106,13 +114,31 @@ func (l *layouter) flexItems(node *dom.Node) []*flexItem {
 			continue
 		}
 		bw := cs.Border.Widths()
+		hEdges := bw.Left + bw.Right + cs.Padding.Left + cs.Padding.Right
+		// minContentWidth's own "a definite width is the contribution
+		// outright" branch is right for ITS existing caller (a table
+		// column's width floor, where an author's declared cell width
+		// SHOULD act as a hard minimum) but wrong for a flex item's
+		// automatic minimum size, which must reflect the item's own CONTENT
+		// regardless of any width/flex-basis the author declared — shrinking
+		// a definite-width item below its declared width is the entire
+		// point of flex-shrink. Measuring with Width forced back to auto
+		// (the identical pattern table.go's own column-minimum computation
+		// already uses, for the identical reason) makes minContentWidth
+		// fall through to the real content-based branches instead.
+		content := *cs
+		content.Width = css.Length{Auto: true}
 		out = append(out, &flexItem{
 			node:    c,
 			st:      cs,
-			hEdges:  bw.Left + bw.Right + cs.Padding.Left + cs.Padding.Right,
+			hEdges:  hEdges,
 			vEdges:  bw.Top + bw.Bottom + cs.Padding.Top + cs.Padding.Bottom,
 			hMargin: cs.Margin.Left + cs.Margin.Right,
 			vMargin: cs.Margin.Top + cs.Margin.Bottom,
+			// minContentWidth already folds hEdges into its own result (see
+			// its own doc comment), so subtract it back out here to keep
+			// minContent in the same content-box convention as base/main.
+			minContent: l.minContentWidth(c, &content) - hEdges,
 		})
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].st.Order < out[j].st.Order })
@@ -362,7 +388,26 @@ func resolveMainRow(line []*flexItem, cw, mainGap float64) {
 				continue // never participates; keeps its current main size
 			}
 			wanted := it.main + free*factor/sumFactor
-			clamped := it.clampMainRow(math.Max(wanted, 0), cw)
+			floor := math.Max(wanted, 0)
+			// CSS's "automatic minimum size": an item whose min-width is
+			// auto (the default — an author who wants the OLD, floor-at-0
+			// behaviour sets min-width:0 explicitly) must never shrink below
+			// its own min-content width, provided its overflow is visible in
+			// this axis (spec's own carve-out: overflow:hidden/scroll/auto
+			// opts back into floor-at-0, since clipped content has nothing
+			// left to protect). Confirmed live on github.com/golang/go's own
+			// marketing header (the SAME nav this function's own doc comment
+			// above already documents once): six top-level nav items whose
+			// combined content is wider than the 1024px viewport shrink
+			// correctly down to each one's own longest-word floor — WITHOUT
+			// this, the shrink deficit lands unevenly across rounds and can
+			// squeeze the shortest, last-resolved item ("Pricing", a single
+			// unbreakable word) straight through zero, vanishing entirely
+			// rather than stopping at its own real minimum.
+			if it.st.MinWidth.Auto && it.st.OverflowX == css.OverflowVisible && it.minContent > floor {
+				floor = it.minContent
+			}
+			clamped := it.clampMainRow(floor, cw)
 			it.main = clamped
 			if clamped != wanted {
 				frozen[i] = true
