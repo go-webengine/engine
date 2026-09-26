@@ -489,6 +489,29 @@ func splitTopLevelSep(s string, sep byte) []string {
 	return out
 }
 
+// backgroundPositionSizeTokens extracts the "<position> / <size>" portion of
+// a `background` shorthand value, if present: the single sub-value most real
+// stylesheets use on each side of the '/' (a single keyword or length, e.g.
+// "center/2rem") — not a multi-token position or size (e.g. "left 10px top /
+// cover contain"), which no confirmed real usage needs. Splitting on '/'
+// respects parentheses (via splitTopLevelSep) so a url()'s own path
+// separators — a real, common shape: `background:no-repeat center/2rem
+// url(/static/shared/icon/menu_gm_grey_24dp.svg)`, pkg.go.dev's own header
+// hamburger-menu icon — are never mistaken for the shorthand's own
+// position/size divider.
+func backgroundPositionSizeTokens(v string) (pos, size string, ok bool) {
+	parts := splitTopLevelSep(v, '/')
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	before := strings.Fields(parts[0])
+	after := strings.Fields(parts[1])
+	if len(before) == 0 || len(after) == 0 {
+		return "", "", false
+	}
+	return before[len(before)-1], after[0], true
+}
+
 // ---- background-size / position / repeat parsing ----
 
 // parseBackgroundSizeList parses a (comma-separated) background-size value.
