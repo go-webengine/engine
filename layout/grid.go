@@ -212,6 +212,15 @@ func (l *layouter) placeItems(items []*gridItem, st *css.Style, nCols, nRowsExpl
 			continue
 		}
 		r, c := cursorR, cursorC
+		if st.GridAutoFlowDense {
+			// "dense" packing restarts the search from the very first cell for
+			// EVERY item, backfilling any gap an earlier, bigger item left open
+			// — as opposed to "sparse" (the default, above), which only ever
+			// advances forward from wherever the previous item landed. This can
+			// place a later item visually ahead of an earlier one in DOM order,
+			// which is the whole point of the keyword.
+			r, c = 0, 0
+		}
 		for {
 			if c+cSpan > nCols {
 				r++

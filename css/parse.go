@@ -1141,6 +1141,7 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		} else if strings.Contains(lv, "row") {
 			s.GridAutoFlow = GridFlowRow
 		}
+		s.GridAutoFlowDense = strings.Contains(lv, "dense")
 	case "grid-template-areas":
 		if a, ok := parseGridTemplateAreas(v); ok {
 			s.GridTemplateAreas = a

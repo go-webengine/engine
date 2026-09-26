@@ -726,10 +726,10 @@ type Style struct {
 	// resolved against the containing block's WIDTH per spec, a common CSS
 	// quirk) have no confirmed real caller and are not modelled — a
 	// documented scope limit, not a silent gap for the case that matters.
-	MarginLeftIsPercent   bool
-	MarginLeftPercent     float64
-	MarginRightIsPercent  bool
-	MarginRightPercent    float64
+	MarginLeftIsPercent  bool
+	MarginLeftPercent    float64
+	MarginRightIsPercent bool
+	MarginRightPercent   float64
 
 	// Overflow per axis (not inherited; initial value visible). Any non-visible
 	// value clips descendant painting to this box's padding box.
@@ -810,8 +810,15 @@ type Style struct {
 	GridAutoRows        TrackSize
 	GridAutoColumns     TrackSize
 	GridAutoFlow        GridFlow
-	GridTemplateAreas   [][]string // row-major grid of area names ("" == empty)
-	JustifyItems        AlignItems // inline-axis alignment of items in their cell
+	// GridAutoFlowDense is the "dense" keyword on grid-auto-flow: the
+	// auto-placement cursor restarts from the very first grid cell before
+	// placing EACH item (potentially reordering items visually, out of DOM
+	// order, to backfill an earlier gap a bigger item left open) instead of
+	// only ever advancing forward from wherever the previous item landed
+	// (the default, "sparse", packing). See layout.placeItems.
+	GridAutoFlowDense bool
+	GridTemplateAreas [][]string // row-major grid of area names ("" == empty)
+	JustifyItems      AlignItems // inline-axis alignment of items in their cell
 
 	// Grid item placement (meaningful for a child of a grid container).
 	GridColumnStart GridLine
