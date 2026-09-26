@@ -13,8 +13,17 @@ import (
 
 // NewElement creates a detached element node with the given (lowercased) tag and
 // an empty attribute map. It is used by the JS binding's document.createElement.
+//
+// A "template" tag gets its own Content fragment set up immediately (see
+// Node.Content's doc comment) — the other place a <template> can originate,
+// convertChildren, does the same for one parsed from real HTML source.
 func NewElement(tag string) *Node {
-	return &Node{Type: Element, Tag: strings.ToLower(tag), Attr: map[string]string{}}
+	tag = strings.ToLower(tag)
+	n := &Node{Type: Element, Tag: tag, Attr: map[string]string{}}
+	if tag == "template" {
+		n.Content = &Node{Type: Element, Tag: "#fragment", Attr: map[string]string{}}
+	}
+	return n
 }
 
 // NewText creates a detached text node with the given character data.
@@ -145,26 +154,41 @@ func clearChildren(n *Node) {
 	n.Children = nil
 }
 
+// htmlContainer returns the node whose Children innerHTML/outerHTML
+// serialization and the innerHTML setter actually operate on: n.Content for
+// a <template> (see Node.Content's doc comment — its real children live
+// there, never in n.Children directly), n itself otherwise.
+func htmlContainer(n *Node) *Node {
+	if n.Tag == "template" && n.Content != nil {
+		return n.Content
+	}
+	return n
+}
+
 // SetInnerHTML parses htmlSrc as an HTML fragment and replaces n's children with
-// the result (the DOM innerHTML setter). On a parse error the children are left
+// the result (the DOM innerHTML setter) — n's Content fragment for a <template>,
+// n itself otherwise (see htmlContainer). On a parse error the children are left
 // unchanged and the error is returned.
 func SetInnerHTML(n *Node, htmlSrc string) error {
 	nodes, err := ParseFragment(htmlSrc)
 	if err != nil {
 		return err
 	}
-	clearChildren(n)
+	target := htmlContainer(n)
+	clearChildren(target)
 	for _, c := range nodes {
-		AppendChild(n, c)
+		AppendChild(target, c)
 	}
 	return nil
 }
 
-// InnerHTML serializes n's children back to HTML (the DOM innerHTML getter).
-// Attribute order is normalised (sorted) so the output is deterministic.
+// InnerHTML serializes n's children back to HTML (the DOM innerHTML getter) —
+// n's Content fragment's children for a <template>, n's own otherwise (see
+// htmlContainer). Attribute order is normalised (sorted) so the output is
+// deterministic.
 func InnerHTML(n *Node) string {
 	var sb strings.Builder
-	for _, c := range n.Children {
+	for _, c := range htmlContainer(n).Children {
 		serialize(&sb, c)
 	}
 	return sb.String()
@@ -208,7 +232,7 @@ func serialize(sb *strings.Builder, n *Node) {
 		if voidElements[n.Tag] {
 			return
 		}
-		for _, c := range n.Children {
+		for _, c := range htmlContainer(n).Children {
 			serialize(sb, c)
 		}
 		sb.WriteString("</")

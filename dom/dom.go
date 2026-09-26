@@ -68,6 +68,22 @@ type Node struct {
 	// host whose light-DOM children it may project.
 	ShadowHost *Node
 
+	// Content is set on a <template> element (and only a <template> element)
+	// to an inert "#fragment" node holding what would otherwise be its light-
+	// DOM children — the HTMLTemplateElement.content DocumentFragment a real
+	// browser exposes, per spec never rendered and never a template's own
+	// Children. NewElement and convertChildren both set this up so every
+	// <template>, however created, has one; SetInnerHTML/InnerHTML/serialize
+	// all read and write through it instead of Children for this tag.
+	// Real, confirmed live usage: lit-html's own template-cloning path reads
+	// `templateEl.content` (see js.newTreeWalker's own doc comment, which
+	// already documents `this.el.content` as the exact real expression
+	// caniuse.com's lit-html-based web components read) — with no Content
+	// field at all, `.content` was undefined, confirmed via a minimal
+	// isolated repro to throw "Cannot read property 'cloneNode' of
+	// undefined" the moment real cloning code touches it.
+	Content *Node
+
 	// classCache/classCacheRaw memoize Classes()'s split of Attr["class"],
 	// keyed by the exact string it was split from — a scripted className/
 	// classList write goes through Attr["class"] directly with no dedicated
@@ -137,14 +153,18 @@ func hasDoctype(root *html.Node) bool {
 }
 
 // convertChildren walks h's children, converting element and text nodes and
-// dropping everything else (comments, doctype, processing instructions).
+// dropping everything else (comments, doctype, processing instructions). A
+// <template>'s own children are parsed into its Content fragment instead of
+// its Children, per spec (see Node.Content's doc comment) — this is the ONE
+// place besides NewElement a template can originate from, so both must agree.
 func convertChildren(h *html.Node, parent *Node) {
 	for c := h.FirstChild; c != nil; c = c.NextSibling {
 		switch c.Type {
 		case html.ElementNode:
+			tag := strings.ToLower(c.Data)
 			el := &Node{
 				Type:   Element,
-				Tag:    strings.ToLower(c.Data),
+				Tag:    tag,
 				Attr:   map[string]string{},
 				Parent: parent,
 			}
@@ -152,7 +172,12 @@ func convertChildren(h *html.Node, parent *Node) {
 				el.Attr[strings.ToLower(a.Key)] = a.Val
 			}
 			parent.Children = append(parent.Children, el)
-			convertChildren(c, el)
+			if tag == "template" {
+				el.Content = &Node{Type: Element, Tag: "#fragment", Attr: map[string]string{}}
+				convertChildren(c, el.Content)
+			} else {
+				convertChildren(c, el)
+			}
 		case html.TextNode:
 			// Preserve the raw text; whitespace handling is a layout concern.
 			parent.Children = append(parent.Children, &Node{

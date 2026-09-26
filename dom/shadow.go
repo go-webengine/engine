@@ -56,8 +56,17 @@ func attachDeclarativeShadowRoots(n *Node) {
 		if tmpl := firstElementChild(n); tmpl != nil && tmpl.Tag == "template" {
 			if mode, ok := tmpl.Attribute("shadowrootmode"); ok && (mode == "open" || mode == "closed") {
 				RemoveChild(n, tmpl)
-				sr := &ShadowRoot{Host: n, Children: tmpl.Children}
-				tmpl.Children = nil
+				// The template's real content lives in its Content fragment
+				// (see Node.Content's doc comment), never in tmpl.Children
+				// directly — hoist FROM there, matching what this type's own
+				// doc comment above already says ("the host's declarative
+				// <template>'s .content, hoisted out of the light DOM").
+				var content []*Node
+				if tmpl.Content != nil {
+					content = tmpl.Content.Children
+					tmpl.Content.Children = nil
+				}
+				sr := &ShadowRoot{Host: n, Children: content}
 				n.Shadow = sr
 				for _, c := range sr.Children {
 					c.Parent = nil

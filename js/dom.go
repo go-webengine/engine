@@ -125,6 +125,12 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		})
 	b.accessor(o, "outerHTML", func() goja.Value { return b.vm.ToValue(dom.OuterHTML(n)) }, nil)
 
+	// content is real only on a <template> (see dom.Node.Content's doc
+	// comment) — every other element has no such property, matching spec.
+	if n.Tag == "template" {
+		b.accessor(o, "content", func() goja.Value { return b.wrap(n.Content) }, nil)
+	}
+
 	b.accessor(o, "children", func() goja.Value { return b.wrapList(elementChildren(n)) }, nil)
 	b.accessor(o, "childNodes", func() goja.Value { return b.wrapList(n.Children) }, nil)
 	b.accessor(o, "childElementCount", func() goja.Value { return b.vm.ToValue(len(elementChildren(n))) }, nil)

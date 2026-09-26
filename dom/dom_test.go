@@ -39,6 +39,36 @@ func TestParseAndAttributes(t *testing.T) {
 	}
 }
 
+func TestTemplateContentFromParse(t *testing.T) {
+	// A <template>'s children parsed from real HTML source must land in its
+	// Content fragment, never in its own Children — see Node.Content's doc
+	// comment. Both convertChildren (this test) and NewElement (see
+	// mutate_test.go) must agree on this, since a <template> can originate
+	// from either path.
+	root, err := Parse(`<html><body><template><p>x</p><span>y</span></template></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := Find(root, "template")
+	if tmpl == nil {
+		t.Fatal("no <template>")
+	}
+	if len(tmpl.Children) != 0 {
+		t.Fatalf("template's own Children = %v, want none", tmpl.Children)
+	}
+	if tmpl.Content == nil {
+		t.Fatal("template has no Content fragment")
+	}
+	if len(tmpl.Content.Children) != 2 || tmpl.Content.Children[0].Tag != "p" || tmpl.Content.Children[1].Tag != "span" {
+		t.Fatalf("template content = %v", tmpl.Content.Children)
+	}
+	// The content fragment's children are NOT part of the light-DOM parent
+	// chain (their Parent is the fragment itself, not the template).
+	if tmpl.Content.Children[0].Parent != tmpl.Content {
+		t.Error("content child's parent is not the Content fragment")
+	}
+}
+
 func TestClassesAndIDEmpty(t *testing.T) {
 	n := &Node{Type: Element, Tag: "div", Attr: map[string]string{}}
 	if n.Classes() != nil {

@@ -90,8 +90,17 @@ func TestTemplateWithoutShadowRootModeStaysPlainTemplate(t *testing.T) {
 	if tmpl == nil {
 		t.Fatal("plain <template> should remain a light-DOM child")
 	}
-	if len(tmpl.Children) != 1 || tmpl.Children[0].Tag != "p" {
-		t.Fatalf("template content = %v", tmpl.Children)
+	// A <template>'s real content lives in its Content fragment, never in its
+	// own Children (see Node.Content's doc comment) — this originally
+	// asserted the content sat directly in tmpl.Children, which quietly
+	// encoded the old, spec-incomplete model rather than testing the real
+	// <template shadowrootmode> vs plain <template> distinction it's named
+	// for; corrected to check both halves of the real shape.
+	if len(tmpl.Children) != 0 {
+		t.Fatalf("template's own Children = %v, want none (content lives in .Content)", tmpl.Children)
+	}
+	if tmpl.Content == nil || len(tmpl.Content.Children) != 1 || tmpl.Content.Children[0].Tag != "p" {
+		t.Fatalf("template content = %v", tmpl.Content)
 	}
 }
 

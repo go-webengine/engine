@@ -527,6 +527,32 @@ func TestTreeWalkerNextNode(t *testing.T) {
 	mustHave(t, logs, "seen=a,b,c", "current=c", "afterEnd=null", "reset=a")
 }
 
+func TestTemplateContent(t *testing.T) {
+	// <template>.content was entirely unimplemented (undefined) — every
+	// real browser exposes an inert DocumentFragment holding what would
+	// otherwise be a template's light-DOM children, and lit-html's own
+	// template-cloning path reads exactly `el.content.cloneNode(true)`
+	// (see js.newTreeWalker's own doc comment, which already documents
+	// `this.el.content` as the real expression caniuse.com's lit-html-based
+	// web components read). With no .content at all, real cloning code
+	// throws "Cannot read property 'cloneNode' of undefined" the moment it
+	// touches it. Confirmed live via a minimal isolated repro before this
+	// fix; the two assertions below mirror it plus the innerHTML round trip.
+	_, logs, _ := runJS(t, page(`
+		var tpl = document.createElement('template');
+		console.log('contentIn='+('content' in tpl));
+		tpl.innerHTML = '<b class="x">hi</b>';
+		console.log('ownChildren='+tpl.children.length);
+		console.log('contentChildren='+tpl.content.children.length);
+		var clone = tpl.content.cloneNode(true);
+		document.getElementById('d').appendChild(clone);
+		console.log('target='+document.getElementById('d').innerHTML);
+		console.log('tplInnerHTML='+tpl.innerHTML);
+	`))
+	mustHave(t, logs, "contentIn=true", "ownChildren=0", "contentChildren=1",
+		`target=<b class="x">hi</b>`, `tplInnerHTML=<b class="x">hi</b>`)
+}
+
 func TestNavigator(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		console.log('nav='+navigator.userAgent+'|'+navigator.language+'|'+navigator.languages.length+'|'+navigator.onLine+'|'+navigator.javaEnabled()+'|'+navigator.sendBeacon('u')+'|'+navigator.hardwareConcurrency+'|'+navigator.cookieEnabled+'|'+navigator.appName);
