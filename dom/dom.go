@@ -25,15 +25,24 @@ const (
 	Element
 	// Text is a run of character data (Text populated).
 	Text
+	// Comment is an HTML comment (`<!--…-->`), its data held in Text like a
+	// Text node's. Previously dropped entirely during parsing (see
+	// convertChildren's own doc comment) — a real gap, since React's
+	// streaming-SSR hydration protocol marks Suspense boundaries with literal
+	// `<!--$-->`/`<!--/$-->` comment nodes it expects to find in the DOM;
+	// their absence made hydration see a structurally different tree than the
+	// server sent, confirmed live as react.dev's own "Minified React error
+	// #418" (hydration mismatch) cascading into a full client-side crash.
+	Comment
 )
 
 // Node is a single DOM node. Elements carry a lowercased Tag and an attribute
-// map; text nodes carry Text. Children are in document order.
+// map; text and comment nodes carry Text. Children are in document order.
 type Node struct {
 	Type     NodeType
 	Tag      string            // lowercased tag name (Element only)
 	Attr     map[string]string // lowercased attribute names (Element only)
-	Text     string            // character data (Text only)
+	Text     string            // character data (Text and Comment)
 	Parent   *Node
 	Children []*Node
 
@@ -152,14 +161,21 @@ func hasDoctype(root *html.Node) bool {
 	return false
 }
 
-// convertChildren walks h's children, converting element and text nodes and
-// dropping everything else (comments, doctype, processing instructions). A
+// convertChildren walks h's children, converting element, text and comment
+// nodes and dropping everything else (doctype, processing instructions — no
+// real page's rendering depends on either surviving into the DOM). A
 // <template>'s own children are parsed into its Content fragment instead of
 // its Children, per spec (see Node.Content's doc comment) — this is the ONE
 // place besides NewElement a template can originate from, so both must agree.
 func convertChildren(h *html.Node, parent *Node) {
 	for c := h.FirstChild; c != nil; c = c.NextSibling {
 		switch c.Type {
+		case html.CommentNode:
+			parent.Children = append(parent.Children, &Node{
+				Type:   Comment,
+				Text:   c.Data,
+				Parent: parent,
+			})
 		case html.ElementNode:
 			tag := strings.ToLower(c.Data)
 			el := &Node{

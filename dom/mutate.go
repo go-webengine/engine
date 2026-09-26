@@ -31,6 +31,11 @@ func NewText(text string) *Node {
 	return &Node{Type: Text, Text: text}
 }
 
+// NewComment creates a detached comment node with the given data.
+func NewComment(data string) *Node {
+	return &Node{Type: Comment, Text: data}
+}
+
 // isFragment reports whether n is a DocumentFragment — represented as a
 // plain Element node with the synthetic tag "#fragment" (see
 // document.createDocumentFragment's own JS binding). Per spec a
@@ -213,6 +218,10 @@ func serialize(sb *strings.Builder, n *Node) {
 	switch n.Type {
 	case Text:
 		sb.WriteString(html.EscapeString(n.Text))
+	case Comment:
+		sb.WriteString("<!--")
+		sb.WriteString(n.Text)
+		sb.WriteString("-->")
 	case Element:
 		sb.WriteByte('<')
 		sb.WriteString(n.Tag)

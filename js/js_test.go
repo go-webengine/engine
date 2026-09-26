@@ -360,7 +360,7 @@ func TestDocumentMisc(t *testing.T) {
 		document.cookie=';;';
 		console.log('cookie='+document.cookie);
 	`))
-	mustHave(t, logs, "ns=RECT", "cmt=3", "frag=#FRAGMENT", "active=BODY scroll=HTML cur=true",
+	mustHave(t, logs, "ns=RECT", "cmt=8", "frag=#FRAGMENT", "active=BODY scroll=HTML cur=true",
 		"meta=UTF-8 CSS1Compat false visible complete 9", "cookie=a=1; b=2")
 }
 
@@ -1331,6 +1331,42 @@ func TestMutationObserverDisconnect(t *testing.T) {
 		setTimeout(function(){ console.log('fired='+fired); }, 0);
 	`))
 	mustHave(t, logs, "fired=false")
+}
+
+// TestCommentNode confirms document.createComment produces a real, JS-visible
+// Comment node (nodeType 8) — the previous binding (`dom.NewText("")`)
+// silently discarded the comment's own data and reported nodeType 3 (text)
+// instead of 8, matching this engine's own former "comments dropped
+// entirely" gap in the parser (see dom.NodeType's own doc comment).
+func TestCommentNode(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		document.getElementById('d').appendChild(document.createComment('hello'));
+		var c = document.getElementById('d').lastChild;
+		console.log('nodeType='+c.nodeType+' nodeName='+c.nodeName+' data='+c.data);
+		c.data = 'bye';
+		console.log('after='+c.textContent+' node='+c.nodeValue);
+	`))
+	mustHave(t, logs, "nodeType=8 nodeName=#comment data=hello", "after=bye node=bye")
+}
+
+// TestCommentNodePreservedFromHTML confirms a comment already present in the
+// parsed HTML source (not JS-created) is a real Comment node reachable via
+// firstChild, and that innerHTML round-trips it back out — this is the exact
+// mechanism React's streaming-SSR hydration depends on: its `<!--$-->`/
+// `<!--/$-->` Suspense-boundary markers must survive parsing as real comment
+// nodes for its hydration walk to find them, confirmed live as react.dev's
+// own "Minified React error #418" cascading into a full client-side crash
+// before this fix (dom/dom.go's convertChildren previously dropped every
+// comment during parsing).
+func TestCommentNodePreservedFromHTML(t *testing.T) {
+	_, logs, _ := runJS(t, `<html class="client-nojs"><body>`+
+		`<div id="d"><!--marker--><span>x</span></div>`+
+		`<script>
+			var first = document.getElementById('d').firstChild;
+			console.log('type='+first.nodeType+' data='+first.data);
+			console.log('html='+document.getElementById('d').innerHTML);
+		</script></body></html>`)
+	mustHave(t, logs, "type=8 data=marker", "html=<!--marker--><span>x</span>")
 }
 
 // TestMutationObserverTakeRecords confirms takeRecords() returns and clears

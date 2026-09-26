@@ -37,9 +37,12 @@ func (b *binder) wrap(n *dom.Node) goja.Value {
 	}
 	o := b.vm.NewObject()
 	b.cache[n] = o
-	if n.Type == dom.Text {
+	switch n.Type {
+	case dom.Text:
 		b.defineText(o, n)
-	} else {
+	case dom.Comment:
+		b.defineComment(o, n)
+	default:
 		b.defineElement(o, n)
 	}
 	// Stamp the wrapper with its interface prototype (HTMLElement/Text/…) so
@@ -79,6 +82,37 @@ func (b *binder) defineText(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "nextSibling", func() goja.Value { return b.wrap(nextSibling(n)) }, nil)
 	b.accessor(o, "previousSibling", func() goja.Value { return b.wrap(prevSibling(n)) }, nil)
 	b.accessor(o, "ownerDocument", func() goja.Value { return b.documentValue() }, nil)
+}
+
+// defineComment populates a Comment node wrapper — structurally like
+// defineText (character data, no attributes/children of its own), but
+// reporting nodeType 8/"#comment" rather than 3/"#text". `.data` is the
+// canonical CharacterData property; `.textContent`/`.nodeValue` are aliases
+// real code (React's own hydration walk among them) reads or writes
+// interchangeably with `.data` on a comment node.
+func (b *binder) defineComment(o *goja.Object, n *dom.Node) {
+	b.accessor(o, "nodeType", func() goja.Value { return b.vm.ToValue(8) }, nil)
+	b.accessor(o, "nodeName", func() goja.Value { return b.vm.ToValue("#comment") }, nil)
+	b.accessor(o, "data",
+		func() goja.Value { return b.vm.ToValue(n.Text) },
+		func(v goja.Value) { n.Text = v.String() })
+	b.accessor(o, "textContent",
+		func() goja.Value { return b.vm.ToValue(n.Text) },
+		func(v goja.Value) { n.Text = v.String() })
+	b.accessor(o, "nodeValue",
+		func() goja.Value { return b.vm.ToValue(n.Text) },
+		func(v goja.Value) { n.Text = v.String() })
+	b.accessor(o, "parentNode", func() goja.Value { return b.wrap(n.Parent) }, nil)
+	b.accessor(o, "parentElement", func() goja.Value { return b.wrap(elementParent(n)) }, nil)
+	b.accessor(o, "nextSibling", func() goja.Value { return b.wrap(nextSibling(n)) }, nil)
+	b.accessor(o, "previousSibling", func() goja.Value { return b.wrap(prevSibling(n)) }, nil)
+	b.accessor(o, "ownerDocument", func() goja.Value { return b.documentValue() }, nil)
+	o.Set("remove", func(goja.FunctionCall) goja.Value {
+		if n.Parent != nil {
+			dom.RemoveChild(n.Parent, n)
+		}
+		return goja.Undefined()
+	})
 }
 
 // documentValue returns the JS document object (the wrapper for the root node),
@@ -812,7 +846,7 @@ func (b *binder) installDocument() *goja.Object {
 		return b.wrap(dom.NewText(call.Argument(0).String()))
 	})
 	d.Set("createComment", func(call goja.FunctionCall) goja.Value {
-		return b.wrap(dom.NewText(""))
+		return b.wrap(dom.NewComment(call.Argument(0).String()))
 	})
 	d.Set("createDocumentFragment", func(goja.FunctionCall) goja.Value {
 		return b.wrap(dom.NewElement("#fragment"))

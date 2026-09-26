@@ -37,6 +37,14 @@ func TestParseAndAttributes(t *testing.T) {
 	if len(p.Children) == 0 || p.Children[0].Type != Text || p.Children[0].Text != "text" {
 		t.Errorf("p children = %v", p.Children)
 	}
+	// The fixture's own `<!--c-->` is preserved as a real Comment node (not
+	// silently dropped) between the text and the <br> — see convertChildren's
+	// own doc comment for why this now matters: React's streaming-SSR
+	// hydration marks Suspense boundaries with comment nodes it expects to
+	// find in the DOM.
+	if len(p.Children) != 3 || p.Children[1].Type != Comment || p.Children[1].Text != "c" {
+		t.Errorf("p children = %v, want [text, comment(c), br]", p.Children)
+	}
 }
 
 func TestTemplateContentFromParse(t *testing.T) {
