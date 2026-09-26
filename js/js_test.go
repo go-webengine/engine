@@ -553,6 +553,31 @@ func TestTemplateContent(t *testing.T) {
 		`target=<b class="x">hi</b>`, `tplInnerHTML=<b class="x">hi</b>`)
 }
 
+// TestTemplateElementCloneCarriesContent confirms cloning the <template>
+// ELEMENT itself (not the far more common `tpl.content.cloneNode(true)`
+// idiom TestTemplateContent above exercises, which never touches this code
+// path since .content is itself a plain fragment) gives the clone a real
+// content fragment rather than leaving it undefined — per the HTML
+// Standard's own "cloning steps for template elements" (§4.12.3): a clone
+// always gets a fresh content fragment, and that fragment's children are
+// only cloned from the original when the clone is deep (subtree). Found by
+// reading that spec text directly (this session's own "bibliography
+// before" discipline) against cloneNode's generic, template-unaware
+// implementation, not by measurement.
+func TestTemplateElementCloneCarriesContent(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var tpl = document.createElement('template');
+		tpl.innerHTML = '<b>hi</b>';
+		var deep = tpl.cloneNode(true);
+		var shallow = tpl.cloneNode(false);
+		console.log('deepUndefined='+(deep.content===undefined||deep.content===null));
+		console.log('deepChildren='+deep.content.children.length);
+		console.log('shallowUndefined='+(shallow.content===undefined||shallow.content===null));
+		console.log('shallowChildren='+shallow.content.children.length);
+	`))
+	mustHave(t, logs, "deepUndefined=false", "deepChildren=1", "shallowUndefined=false", "shallowChildren=0")
+}
+
 func TestNavigator(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		console.log('nav='+navigator.userAgent+'|'+navigator.language+'|'+navigator.languages.length+'|'+navigator.onLine+'|'+navigator.javaEnabled()+'|'+navigator.sendBeacon('u')+'|'+navigator.hardwareConcurrency+'|'+navigator.cookieEnabled+'|'+navigator.appName);
