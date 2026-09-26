@@ -4,6 +4,8 @@
 package js
 
 import (
+	"fmt"
+
 	"github.com/dop251/goja"
 
 	"github.com/go-webengine/engine/dom"
@@ -21,10 +23,14 @@ type mutationObserverReg struct {
 	attributes        bool
 	childList         bool
 	attributeOldValue bool
-	callback          goja.Callable
-	self              *goja.Object
-	pending           []goja.Value
-	scheduled         bool
+	// attributeFilter restricts attribute records to these names when
+	// non-nil (a nil slice means "not given" — every attribute matches, per
+	// spec's own "options[attributeFilter] does not exist" branch).
+	attributeFilter []string
+	callback        goja.Callable
+	self            *goja.Object
+	pending         []goja.Value
+	scheduled       bool
 }
 
 // installMutationObserver wires a real MutationObserver constructor onto g,
@@ -55,9 +61,21 @@ func (b *binder) installMutationObserver(g *goja.Object) {
 			opts, _ := fc.Argument(1).(*goja.Object)
 			reg.target = target
 			reg.subtree = optBool(opts, "subtree")
-			reg.attributes = optBool(opts, "attributes")
 			reg.childList = optBool(opts, "childList")
 			reg.attributeOldValue = optBool(opts, "attributeOldValue")
+			reg.attributeFilter = optStringList(opts, "attributeFilter")
+			// The DOM standard's own observe(target, options) steps (§4.3.1):
+			// "If either options[attributeOldValue] or options[attributeFilter]
+			// exists, and options[attributes] does not exist, then set
+			// options[attributes] to true" — the common real-world idiom
+			// `observe(el, {attributeFilter: ['class']})`, with no explicit
+			// `attributes: true`, must still turn attribute observation on.
+			// Found by reading the spec's actual algorithm text rather than
+			// reasoning from general MutationObserver knowledge (this session's
+			// own "bibliography before" discipline) — a measurement-only check
+			// would never have surfaced this, since it only breaks a caller
+			// that omits the (redundant-seeming) explicit flag.
+			reg.attributes = optBool(opts, "attributes") || optPresent(opts, "attributeOldValue") || optPresent(opts, "attributeFilter")
 			b.mutationObservers = append(b.mutationObservers, reg)
 			return goja.Undefined()
 		})
@@ -104,6 +122,54 @@ func optBool(opts *goja.Object, name string) bool {
 	return v != nil && v.ToBoolean()
 }
 
+// optPresent reports whether name is a key of opts at all, distinct from
+// optBool's true/false — the DOM standard's implicit-attributes:true rule
+// (see observe's own comment above) triggers on the OPTION BEING GIVEN, not
+// on its value, so "present but false" must be told apart from "absent".
+func optPresent(opts *goja.Object, name string) bool {
+	if opts == nil {
+		return false
+	}
+	v := opts.Get(name)
+	return v != nil && !goja.IsUndefined(v)
+}
+
+// optStringList reads a string-array option (attributeFilter), or nil when
+// opts is nil, the key is absent, or the value isn't array-shaped.
+func optStringList(opts *goja.Object, name string) []string {
+	if opts == nil {
+		return nil
+	}
+	v := opts.Get(name)
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return nil
+	}
+	arr, ok := v.Export().([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		out = append(out, fmt.Sprint(e))
+	}
+	return out
+}
+
+// attributeFilterAllows reports whether name passes reg's attributeFilter —
+// vacuously true when no filter was given (spec: "options[attributeFilter]
+// does not exist").
+func attributeFilterAllows(reg *mutationObserverReg, name string) bool {
+	if reg.attributeFilter == nil {
+		return true
+	}
+	for _, f := range reg.attributeFilter {
+		if f == name {
+			return true
+		}
+	}
+	return false
+}
+
 // recordChildListMutation notifies every observer whose scope covers parent
 // (itself, or an ancestor with subtree set) of a childList change. Called
 // once per structural mutation call (appendChild, removeChild, …) — a single
@@ -144,6 +210,9 @@ func (b *binder) recordAttributeMutation(target *dom.Node, name, oldVal string, 
 			continue
 		}
 		if target != reg.target && !(reg.subtree && contains(reg.target, target)) {
+			continue
+		}
+		if !attributeFilterAllows(reg, name) {
 			continue
 		}
 		var oldPtr *string
