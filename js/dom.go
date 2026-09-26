@@ -1188,6 +1188,19 @@ func isEqualNode(a, b *dom.Node) bool {
 // found live on caniuse.com, whose real ad-network bundle.js calls
 // importNode with exactly such a value, panicking with a nil-pointer
 // dereference on n.Type below and aborting that script entirely.
+//
+// A <template>'s own Content fragment is handled separately from the
+// generic Children walk below (see dom.Node.Content's own doc comment: a
+// template's real children live there, never in Children) — per the HTML
+// Standard's own "cloning steps for template elements" (§4.12.3): a cloned
+// template must ALWAYS get a fresh content fragment (never nil, matching
+// what NewElement already gives a freshly-created one), and that fragment's
+// children are cloned from the original's ONLY when subtree (deep) is true.
+// Confirmed live via a two-line repro (`tpl.cloneNode(true).content`) that
+// returned undefined before this fix — any code cloning a whole <template>
+// element (as opposed to the far more common `tpl.content.cloneNode(true)`
+// idiom, which never went through this path since .content is itself a
+// plain fragment) would crash on the very next `.content` access.
 func cloneNode(n *dom.Node, deep bool) *dom.Node {
 	if n == nil {
 		return nil
@@ -1197,6 +1210,14 @@ func cloneNode(n *dom.Node, deep bool) *dom.Node {
 		c.Attr = map[string]string{}
 		for k, v := range n.Attr {
 			c.Attr[k] = v
+		}
+	}
+	if n.Tag == "template" {
+		c.Content = &dom.Node{Type: dom.Element, Tag: "#fragment", Attr: map[string]string{}}
+		if deep && n.Content != nil {
+			for _, ch := range n.Content.Children {
+				dom.AppendChild(c.Content, cloneNode(ch, true))
+			}
 		}
 	}
 	if deep {
