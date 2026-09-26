@@ -9,14 +9,13 @@ replace github.com/go-webengine/engine => ..
 require (
 	github.com/chromedp/cdproto v0.0.0-20260922220944-a19bff23514f
 	github.com/chromedp/chromedp v0.16.0
-	github.com/go-images/images v0.0.0-20260912071231-12ebfec58453
+	github.com/go-images/images v0.0.0-20260923074905-cdcee44e3c7e
 	github.com/go-webengine/engine v0.0.0-00010101000000-000000000000
 	golang.org/x/image v0.46.0
 )
 
 require (
 	github.com/ajroetker/go-highway v0.0.4 // indirect
-	github.com/ajroetker/go-jpeg2000 v0.0.2 // indirect
 	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
@@ -24,7 +23,8 @@ require (
 	github.com/dop251/goja v0.0.0-20260917113740-793a2a65c13b // indirect
 	github.com/evanw/esbuild v0.28.2 // indirect
 	github.com/go-browserhttp/browserhttp v0.2.0 // indirect
-	github.com/go-gfx/gfx v0.24.0 // indirect
+	github.com/go-gfx/gfx v0.26.0 // indirect
+	github.com/go-images/jpeg2000 v0.1.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/go-opentype/fonts v0.9.1-0.20260907071658-dd9656234a3d // indirect
 	github.com/go-opentype/opentype v0.12.0 // indirect

@@ -3,12 +3,12 @@ module github.com/go-webengine/engine
 go 1.26.4
 
 require (
-	github.com/dop251/goja v0.0.0-20260917113740-793a2a65c13b
+	github.com/dop251/goja v0.0.0-20260925200140-d00dd0475abd
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
-	github.com/go-gfx/gfx v0.26.0
-	github.com/go-images/images v0.0.0-20260912071231-12ebfec58453
-	github.com/go-opentype/fonts v0.9.1-0.20260907071658-dd9656234a3d
+	github.com/go-gfx/gfx v0.34.0
+	github.com/go-images/images v0.0.0-20260923074905-cdcee44e3c7e
+	github.com/go-opentype/fonts v0.10.0
 	github.com/go-opentype/opentype v0.12.0
 	github.com/go-webengine/esbuildsandbox v0.1.0
 	github.com/go-widgets/painter v0.13.0
@@ -30,7 +30,7 @@ require (
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/sergeymakinen/go-bmp v1.0.0 // indirect
 	github.com/sergeymakinen/go-ico v1.0.0 // indirect
-	github.com/tannevaled/gobig2 v0.1.0 // indirect
+	github.com/tannevaled/gobig2 v0.2.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
