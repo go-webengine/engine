@@ -58,7 +58,7 @@ func (l *layouter) minContentWidth(node *dom.Node, st *css.Style) float64 {
 				continue
 			}
 			cs := l.sm[c]
-			if cs == nil || cs.Display == css.DisplayNone {
+			if cs == nil || cs.Display == css.DisplayNone || cs.Position.OutOfFlow() {
 				continue
 			}
 			w := l.minContentWidth(c, cs) + cs.Margin.Left + cs.Margin.Right
@@ -86,7 +86,7 @@ func (l *layouter) minContentWidth(node *dom.Node, st *css.Style) float64 {
 				continue
 			}
 			cs := l.sm[c]
-			if cs == nil || cs.Display == css.DisplayNone {
+			if cs == nil || cs.Display == css.DisplayNone || cs.Position.OutOfFlow() {
 				continue
 			}
 			w := l.minContentWidth(c, cs) + cs.Margin.Left + cs.Margin.Right

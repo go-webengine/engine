@@ -279,6 +279,28 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	// hasDirectText routes BOTH cases through the same fallback: the
 	// inline-measurement path below (the same one a plain, non-flex element
 	// already uses) measures text and elements together correctly.
+	//
+	// Both this loop and the block-children one just below it skip an
+	// OutOfFlow (absolute/fixed) child — it is positioned against its own
+	// containing block, not sized into this element's normal-flow content,
+	// so it must never inflate this element's own intrinsic width any more
+	// than a DisplayNone child does. Confirmed live on github.com/golang/go's
+	// own marketing nav: each top-level item is a `position:relative`
+	// wrapper around a short visible trigger label PLUS its own
+	// `position:absolute` dropdown MENU panel (far wider than the label
+	// alone, holding every submenu entry's full text) — without this check,
+	// "Platform"'s own reported preferred width was its trigger label's real
+	// ~90px PLUS a large share of the hidden panel's own content, reporting
+	// ~320px instead. Summed across five such items the flex row's total
+	// request badly overshot the 1024px viewport, and the shrink pass that
+	// then had to claw back the difference had so little slack left on the
+	// row's own shortest item ("Pricing", a single word with no dropdown of
+	// its own) that it squeezed it to near zero width — this fix alone cuts
+	// the inflated request roughly in half, not all the way down to each
+	// trigger's true visible size (a SEPARATE gap: the shrink phase's own
+	// missing "automatic minimum size" floor, flagged as a precise, distinct
+	// follow-up rather than bundled in here, matching this codebase's own
+	// established precedent for two independent bugs gating one symptom).
 	if node.Type == dom.Element && st.Display == css.DisplayFlex && st.FlexDirection == css.FlexRow && !l.hasDirectText(node) {
 		var sum float64
 		n := 0
@@ -287,7 +309,7 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 				continue
 			}
 			cs := l.sm[c]
-			if cs == nil || cs.Display == css.DisplayNone {
+			if cs == nil || cs.Display == css.DisplayNone || cs.Position.OutOfFlow() {
 				continue
 			}
 			sum += l.preferredWidth(c, cs) + cs.Margin.Left + cs.Margin.Right
@@ -318,7 +340,7 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 				continue
 			}
 			cs := l.sm[c]
-			if cs == nil || cs.Display == css.DisplayNone {
+			if cs == nil || cs.Display == css.DisplayNone || cs.Position.OutOfFlow() {
 				continue
 			}
 			w := l.preferredWidth(c, cs) + cs.Margin.Left + cs.Margin.Right
