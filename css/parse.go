@@ -614,6 +614,30 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		if imgs, ok := parseBackgroundImage(v, emRef); ok {
 			s.BackgroundImages = imgs
 		}
+		// A repeat keyword and a "<position>/<size>" pair, if present, were
+		// previously silently dropped by the shorthand entirely — left at
+		// whatever they were before this declaration (or the zero value,
+		// RepeatBoth/auto/0%,0%, on a fresh style) regardless of what the
+		// author actually wrote. Confirmed load-bearing live: pkg.go.dev's own
+		// mobile-nav hamburger button, `background:no-repeat center/2rem
+		// url(/static/shared/icon/menu_gm_grey_24dp.svg)` on a 2.5rem button —
+		// with the size/position dropped, the 24px icon stretched to fill the
+		// WHOLE button instead of sitting centred at its real 2rem size,
+		// visibly distorting its three bars.
+		for _, f := range strings.Fields(v) {
+			if r, ok := parseBackgroundRepeat(f); ok {
+				s.BackgroundRepeat = []BgRepeat{r}
+				break
+			}
+		}
+		if pos, size, ok := backgroundPositionSizeTokens(v); ok {
+			if p, ok := parseBackgroundPositionList(pos, emRef); ok {
+				s.BackgroundPosition = p
+			}
+			if sz, ok := parseBackgroundSizeList(size, emRef); ok {
+				s.BackgroundSize = sz
+			}
+		}
 	case "background-image":
 		if imgs, ok := parseBackgroundImage(v, emRef); ok {
 			s.BackgroundImages = imgs

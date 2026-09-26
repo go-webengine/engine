@@ -68,6 +68,47 @@ func TestApplyBackgroundShorthandGradient(t *testing.T) {
 	}
 }
 
+// TestApplyBackgroundShorthandPositionSizeRepeat covers a real regression:
+// the `background` shorthand parsed a colour and an image layer but silently
+// dropped any repeat keyword and any "<position>/<size>" pair — left at
+// their zero value (RepeatBoth/unset) regardless of what the author wrote.
+// Confirmed load-bearing live on pkg.go.dev's own mobile-nav hamburger
+// button: `background:no-repeat center/2rem url(/static/shared/icon/
+// menu_gm_grey_24dp.svg)` on a 2.5rem button — with size/position dropped,
+// the 24px icon stretched to fill the WHOLE button instead of sitting
+// centred at its real 2rem size, visibly distorting its three bars.
+func TestApplyBackgroundShorthandPositionSizeRepeat(t *testing.T) {
+	s := &Style{}
+	s.apply(Declaration{Property: "background", Value: "no-repeat center/2rem url(/static/shared/icon/menu_gm_grey_24dp.svg)"}, 16, nil)
+	if len(s.BackgroundRepeat) != 1 || s.BackgroundRepeat[0] != NoRepeat {
+		t.Errorf("shorthand repeat = %+v", s.BackgroundRepeat)
+	}
+	if len(s.BackgroundPosition) != 1 || s.BackgroundPosition[0].X.Percent != 0.5 {
+		t.Errorf("shorthand position = %+v", s.BackgroundPosition)
+	}
+	if len(s.BackgroundSize) != 1 || s.BackgroundSize[0].W.Px != 32 { // 2rem @ 16px
+		t.Errorf("shorthand size = %+v", s.BackgroundSize)
+	}
+	if len(s.BackgroundImages) != 1 || s.BackgroundImages[0].Kind != BgURL {
+		t.Errorf("shorthand image = %+v", s.BackgroundImages)
+	}
+	// A '/' inside the url()'s own path must never be mistaken for the
+	// shorthand's own position/size divider — this exact real value has FOUR
+	// of them before the divider is even reached.
+	s2 := &Style{}
+	s2.apply(Declaration{Property: "background", Value: "url(/static/shared/icon/x.svg)"}, 16, nil)
+	if s2.BackgroundPosition != nil || s2.BackgroundSize != nil {
+		t.Errorf("a bare url() with no '/' divider set position/size: pos=%+v size=%+v", s2.BackgroundPosition, s2.BackgroundSize)
+	}
+	// A '/' divider with nothing (or only whitespace) on one side is malformed
+	// and must not set position/size either.
+	s3 := &Style{}
+	s3.apply(Declaration{Property: "background", Value: "/2rem url(icon.svg)"}, 16, nil)
+	if s3.BackgroundPosition != nil || s3.BackgroundSize != nil {
+		t.Errorf("an empty position side set position/size: pos=%+v size=%+v", s3.BackgroundPosition, s3.BackgroundSize)
+	}
+}
+
 func TestApplyBackgroundSizePositionRepeat(t *testing.T) {
 	s := &Style{}
 	s.apply(Declaration{Property: "background-size", Value: "cover"}, 16, nil)
