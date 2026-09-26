@@ -255,6 +255,31 @@ func TestSerializeTextNode(t *testing.T) {
 	}
 }
 
+// TestNewCommentAndSerialize confirms a comment node round-trips through
+// OuterHTML/InnerHTML — needed for React's own streaming-SSR hydration
+// markers (`<!--$-->`/`<!--/$-->`) to survive a re-serialize (e.g. via
+// innerHTML) the same way they survive the initial parse.
+func TestNewCommentAndSerialize(t *testing.T) {
+	c := NewComment("$")
+	if c.Type != Comment || c.Text != "$" {
+		t.Fatalf("NewComment = %+v", c)
+	}
+	if got := OuterHTML(c); got != "<!--$-->" {
+		t.Fatalf("comment OuterHTML=%q", got)
+	}
+	el := NewElement("div")
+	AppendChild(el, NewComment("a"))
+	AppendChild(el, NewText("b"))
+	if got := InnerHTML(el); got != "<!--a-->b" {
+		t.Fatalf("InnerHTML with comment=%q", got)
+	}
+	// A comment's data contributes nothing to textContent (spec: only Text
+	// descendants count for an Element's text content).
+	if got := TextContent(el); got != "b" {
+		t.Fatalf("TextContent should skip comment data, got %q", got)
+	}
+}
+
 func tags(n *Node) []string {
 	var out []string
 	for _, c := range n.Children {
