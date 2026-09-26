@@ -1381,3 +1381,43 @@ func TestMutationObserverTakeRecords(t *testing.T) {
 	`))
 	mustHave(t, logs, "taken=1 again=0")
 }
+
+// TestMutationObserverAttributeFilter confirms attributeFilter restricts
+// delivered records to the named attributes — per the DOM standard's own
+// "queue a mutation record" algorithm (§4.3.2), read directly rather than
+// reasoned from general knowledge (this session's own "bibliography before"
+// discipline): "options[attributeFilter] exists, and options[attributeFilter]
+// does not contain name" excludes the record. Round 119 shipped
+// MutationObserver without reading this text and silently ignored the option
+// entirely.
+func TestMutationObserverAttributeFilter(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var seen = [];
+		var mo = new MutationObserver(function(records){
+			records.forEach(function(r){ seen.push(r.attributeName); });
+		});
+		mo.observe(document.getElementById('d'), {attributes: true, attributeFilter: ['data-existing']});
+		document.getElementById('d').setAttribute('data-existing', 'x');
+		document.getElementById('d').setAttribute('class', 'y');
+		setTimeout(function(){ console.log('count='+seen.length+' seen='+seen.join(',')); }, 0);
+	`))
+	mustHave(t, logs, "count=1 seen=data-existing")
+}
+
+// TestMutationObserverAttributeFilterImpliesAttributes confirms the DOM
+// standard's own observe() steps (§4.3.1): "If either
+// options[attributeOldValue] or options[attributeFilter] exists, and
+// options[attributes] does not exist, then set options[attributes] to true"
+// — the common real-world idiom of passing attributeFilter/attributeOldValue
+// alone, with no explicit `attributes: true`, must still turn attribute
+// observation on.
+func TestMutationObserverAttributeFilterImpliesAttributes(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var fired = false;
+		new MutationObserver(function(){ fired = true; })
+			.observe(document.getElementById('d'), {attributeFilter: ['class']});
+		document.getElementById('d').setAttribute('class', 'z');
+		setTimeout(function(){ console.log('fired='+fired); }, 0);
+	`))
+	mustHave(t, logs, "fired=true")
+}
