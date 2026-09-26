@@ -69,6 +69,62 @@ func TestElementParent(t *testing.T) {
 	}
 }
 
+func TestElementParentBridgesShadowHost(t *testing.T) {
+	// A node at the top of an attached shadow tree has Parent == nil (see
+	// attachDeclarativeShadowRoots) but ShadowHost set — elementParent must
+	// bridge to the host instead of stopping, so BuildIndex's own attribution
+	// walk (the only caller) can reach a shadow host that generates no Box of
+	// its own (a plain display:inline custom element).
+	host := &dom.Node{Type: dom.Element, Tag: "my-widget"}
+	shadowTop := &dom.Node{Type: dom.Element, Tag: "span", ShadowHost: host}
+	if got := elementParent(shadowTop); got != host {
+		t.Fatalf("elementParent(shadow top-level node) = %v, want host", got)
+	}
+	// A genuinely detached, non-shadow node (no Parent, no ShadowHost) still
+	// has no parent at all.
+	detached := &dom.Node{Type: dom.Element, Tag: "div"}
+	if got := elementParent(detached); got != nil {
+		t.Fatalf("elementParent(detached) = %v, want nil", got)
+	}
+}
+
+func TestBuildIndexShadowHostWithNoOwnBox(t *testing.T) {
+	// A plain display:inline custom element hosting a declarative shadow root
+	// (the spec default for one with no author styling) contributes no Box of
+	// its own — see layouter.appendElementInline's "plain inline element"
+	// default case. Its content becomes an InlineItem whose Node sits at the
+	// TOP of the shadow tree (Parent nil, ShadowHost set). Before
+	// elementParent bridged Parent==nil+ShadowHost!=nil back to the host, this
+	// attribution walk stopped dead at the shadow node and the host never
+	// received ANY rect entry at all — getComputedStyle/getBoundingClientRect
+	// then reported it as display:none regardless of its real, painted
+	// content (confirmed live on developer.mozilla.org's own
+	// `<mdn-sidebar-filter>` search widget).
+	body := &dom.Node{Type: dom.Element, Tag: "body"}
+	host := &dom.Node{Type: dom.Element, Tag: "my-widget", Parent: body}
+	shadowSpan := &dom.Node{Type: dom.Element, Tag: "span", ShadowHost: host}
+
+	box := &Box{
+		Node: body, X: 0, Y: 0, W: 300, H: 40,
+		Lines: []*LineBox{{
+			Items: []*InlineItem{
+				{Node: shadowSpan, X: 10, Y: 5, Width: 80, LineHeight: 20},
+			},
+		}},
+	}
+	idx := BuildIndex(box)
+	if r := idx[shadowSpan]; r != (Rect{X: 10, Y: 5, W: 80, H: 20}) {
+		t.Fatalf("shadow span rect = %+v", r)
+	}
+	if r := idx[host]; r != (Rect{X: 10, Y: 5, W: 80, H: 20}) {
+		t.Fatalf("host rect = %+v, want the union bridged in from its shadow content", r)
+	}
+	// body keeps its own authoritative block rect, untouched by the bridge.
+	if r := idx[body]; r != (Rect{X: 0, Y: 0, W: 300, H: 40}) {
+		t.Fatalf("body rect = %+v", r)
+	}
+}
+
 func TestBuildIndexNil(t *testing.T) {
 	if got := BuildIndex(nil); len(got) != 0 {
 		t.Fatalf("BuildIndex(nil) = %v", got)

@@ -96,7 +96,26 @@ func itemRect(it *InlineItem) Rect {
 
 // elementParent returns the nearest element ancestor of n (skipping text /
 // document nodes), or nil.
+//
+// A node at the top of an attached shadow tree has Parent == nil (see
+// attachDeclarativeShadowRoots: it is the root of a separate tree, not a
+// light-DOM descendant) — this bridges to its ShadowHost instead of stopping
+// there, so BuildIndex's own attribution walk (the only caller) can continue
+// up the HOST's real light-DOM parent chain. Without this, a shadow host that
+// itself generates no Box (a plain display:inline custom element — the spec
+// default for one with no author styling, e.g. an unrecognised
+// `<mdn-sidebar-filter>`) never received ANY rect entry at all: its own inline
+// fragments live only in the shadow tree, whose parent chain dead-ends at nil
+// before ever reaching back to the host. getComputedStyle/getBoundingClientRect
+// then reported the host as if it were display:none, even though its shadow
+// content renders and paints normally — confirmed via a minimal repro
+// (a bare custom element wrapping a declarative shadow root with no CSS at
+// all) before any block/inline-block styling ever entered the picture, and
+// live on developer.mozilla.org's own `<mdn-sidebar-filter>` search widget.
 func elementParent(n *dom.Node) *dom.Node {
+	if n.Parent == nil && n.ShadowHost != nil {
+		return n.ShadowHost
+	}
 	p := n.Parent
 	for p != nil && p.Type != dom.Element {
 		p = p.Parent
