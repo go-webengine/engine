@@ -536,6 +536,36 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 				b.removeAttr(n, "checked")
 			}
 		})
+	// HTMLDetailsElement.open — a plain boolean reflection (HTML Standard
+	// §4.11.1), the same presence-based shape as checked/hidden above — was
+	// entirely missing, so `details.open = true` from script silently
+	// created a dead JS property instead of ever touching the real "open"
+	// attribute the CSS engine's own UA stylesheet already keys off
+	// (`details:not([open]) > :not(summary) { display: none }`, css/ua.go)
+	// — the CSS side was already correct, only the JS accessor was missing,
+	// same failure shape as round 130's tabIndex. Real, visually significant
+	// corpus triggers, both on pkg.go.dev's own frontend.js/main.js: a
+	// version-switcher dropdown closes itself on Escape
+	// (`this.el.open=!1`), an example-code block expands itself
+	// programmatically (`this.exampleEl.open=!0`), and — most visible — a
+	// page load whose URL fragment points INSIDE a collapsed <details>
+	// section auto-expands it so the linked content is actually visible
+	// (`i.open=!0` / `e.open=!0` on hashchange). Without this accessor, that
+	// content would stay collapsed no matter what the fragment pointed to.
+	// The spec also fires a "toggle" event on every real open-state change
+	// (via an internal reaction, not the IDL setter itself) — NOT
+	// implemented here, a disclosed gap: no corpus usage of `ontoggle` or
+	// `addEventListener("toggle", ...)` was found anywhere in this
+	// session's fetched scripts.
+	b.accessor(o, "open",
+		func() goja.Value { _, ok := n.Attribute("open"); return b.vm.ToValue(ok) },
+		func(v goja.Value) {
+			if v.ToBoolean() {
+				b.setAttr(n, "open", "")
+			} else {
+				b.removeAttr(n, "open")
+			}
+		})
 	if n.Tag == "option" {
 		b.accessor(o, "selected",
 			func() goja.Value { _, ok := n.Attribute("selected"); return b.vm.ToValue(ok) },
