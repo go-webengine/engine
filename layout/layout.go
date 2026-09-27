@@ -964,6 +964,10 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 }
 
 func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem, pre bool, origin *dom.Node) {
+	// Every text node reaches an item through here, which is why the
+	// rendering-time case change belongs here: measurement below and paint
+	// downstream then see one and the same string.
+	text = applyTextTransform(text, st)
 	asc, lh := l.lineMetricsFor(st)
 	if pre {
 		for i, seg := range strings.Split(text, "\n") {

@@ -753,6 +753,17 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		case "normal":
 			s.WhiteSpace = WSNormal
 		}
+	case "text-transform":
+		switch lv {
+		case "uppercase":
+			s.TextTransform = TTUppercase
+		case "lowercase":
+			s.TextTransform = TTLowercase
+		case "capitalize":
+			s.TextTransform = TTCapitalize
+		case "none":
+			s.TextTransform = TTNone
+		}
 	case "image-rendering":
 		switch lv {
 		case "pixelated", "crisp-edges", "-webkit-optimize-contrast":
@@ -1313,6 +1324,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.TextAlign = parent.TextAlign
 	case "white-space":
 		s.WhiteSpace = parent.WhiteSpace
+	case "text-transform":
+		s.TextTransform = parent.TextTransform
 	case "line-height":
 		s.LineHeight = parent.LineHeight
 	case "letter-spacing":
