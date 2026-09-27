@@ -328,6 +328,41 @@ func TestGetRootNodeComposedBridgesShadowTrees(t *testing.T) {
 	}
 }
 
+// TestCompareDocumentPosition confirms Node.compareDocumentPosition —
+// entirely missing before this fix — against the DOM standard's own
+// documented bitmask values (§4.4): 0 for the same node; CONTAINS|PRECEDING
+// (10) / CONTAINED_BY|FOLLOWING (20) for an ancestor/descendant pair in
+// either direction; plain PRECEDING (2) / FOLLOWING (4) for unrelated nodes
+// compared by tree order; and the DISCONNECTED bit (1) set for a detached
+// node with no common root.
+func TestCompareDocumentPosition(t *testing.T) {
+	_, logs, _ := runJS(t, `<html class="client-nojs"><body>`+
+		`<div id="parent"><span id="a">A</span><span id="b">B</span></div>`+
+		`<div id="other">O</div>`+
+		`<script>
+			var parent = document.getElementById('parent');
+			var a = document.getElementById('a');
+			var b = document.getElementById('b');
+			var other = document.getElementById('other');
+			var detached = document.createElement('div');
+			console.log('same='+a.compareDocumentPosition(a));
+			console.log('parentToA='+parent.compareDocumentPosition(a));
+			console.log('aToParent='+a.compareDocumentPosition(parent));
+			console.log('aToB='+a.compareDocumentPosition(b));
+			console.log('bToA='+b.compareDocumentPosition(a));
+			console.log('aToOther='+a.compareDocumentPosition(other));
+			console.log('disconnectedBit='+(a.compareDocumentPosition(detached) & 1));
+		</script></body></html>`)
+	mustHave(t, logs,
+		"same=0",
+		"parentToA=20", // CONTAINED_BY|FOLLOWING
+		"aToParent=10", // CONTAINS|PRECEDING
+		"aToB=4",       // FOLLOWING
+		"bToA=2",       // PRECEDING
+		"aToOther=4",   // FOLLOWING (other comes after a's whole subtree)
+		"disconnectedBit=1")
+}
+
 func TestInsertAdjacentHTML(t *testing.T) {
 	root, _, _ := runJS(t, page(`
 		var d=document.getElementById('d');

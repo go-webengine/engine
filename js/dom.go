@@ -4,6 +4,7 @@
 package js
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -89,6 +90,9 @@ func (b *binder) defineText(o *goja.Object, n *dom.Node) {
 		}
 		return b.wrap(getRootNode(n, composed))
 	})
+	o.Set("compareDocumentPosition", func(call goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(compareDocumentPosition(n, b.node(call.Argument(0))))
+	})
 }
 
 // defineComment populates a Comment node wrapper — structurally like
@@ -120,6 +124,9 @@ func (b *binder) defineComment(o *goja.Object, n *dom.Node) {
 			composed = optBool(opts, "composed")
 		}
 		return b.wrap(getRootNode(n, composed))
+	})
+	o.Set("compareDocumentPosition", func(call goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(compareDocumentPosition(n, b.node(call.Argument(0))))
 	})
 	o.Set("remove", func(goja.FunctionCall) goja.Value {
 		if n.Parent != nil {
@@ -199,6 +206,9 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 			composed = optBool(opts, "composed")
 		}
 		return b.wrap(getRootNode(n, composed))
+	})
+	o.Set("compareDocumentPosition", func(call goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(compareDocumentPosition(n, b.node(call.Argument(0))))
 	})
 
 	b.accessor(o, "hidden",
@@ -1293,6 +1303,76 @@ func contains(root, target *dom.Node) bool {
 }
 
 func rooted(n, root *dom.Node) bool { return contains(root, n) }
+
+// Node.compareDocumentPosition's own bitmask constants (DOM Standard §4.4).
+const (
+	docPositionDisconnected           = 1
+	docPositionPreceding              = 2
+	docPositionFollowing              = 4
+	docPositionContains               = 8
+	docPositionContainedBy            = 16
+	docPositionImplementationSpecific = 32
+)
+
+// compareDocumentPosition implements Node.compareDocumentPosition(other)
+// (§4.4). This engine has no distinct Attr node (attributes are a plain
+// map, see dom.Node.Attr's own doc comment), so the spec's own attr1/attr2
+// branches — which only ever trigger when one of the two nodes IS an
+// attribute — can never apply and are omitted entirely; everything else is
+// the spec's algorithm directly.
+func compareDocumentPosition(n, other *dom.Node) int {
+	if n == other {
+		return 0
+	}
+	if other == nil || getRootNode(n, false) != getRootNode(other, false) {
+		// Disconnected: the spec requires SOME consistent PRECEDING/FOLLOWING
+		// pick, not a particular one — pointer-address ordering (the spec's
+		// own suggested implementation strategy) gives one for free.
+		pick := docPositionFollowing
+		if other != nil && fmt.Sprintf("%p", other) < fmt.Sprintf("%p", n) {
+			pick = docPositionPreceding
+		}
+		return docPositionDisconnected | docPositionImplementationSpecific | pick
+	}
+	if contains(other, n) {
+		return docPositionContains | docPositionPreceding
+	}
+	if contains(n, other) {
+		return docPositionContainedBy | docPositionFollowing
+	}
+	if precedesInTreeOrder(getRootNode(n, false), other, n) {
+		return docPositionPreceding
+	}
+	return docPositionFollowing
+}
+
+// precedesInTreeOrder reports whether a is encountered before b in a
+// preorder, depth-first walk of root's Children — the tie-breaker
+// compareDocumentPosition falls back to once neither node is an ancestor of
+// the other (two nodes under different, unrelated subtrees).
+func precedesInTreeOrder(root, a, b *dom.Node) bool {
+	aFirst := false
+	found := false
+	var walk func(*dom.Node) bool
+	walk = func(cur *dom.Node) bool {
+		if cur == a {
+			aFirst, found = true, true
+			return true
+		}
+		if cur == b {
+			aFirst, found = false, true
+			return true
+		}
+		for _, c := range cur.Children {
+			if walk(c) {
+				return true
+			}
+		}
+		return false
+	}
+	walk(root)
+	return found && aFirst
+}
 
 // isEqualNode reports whether a and b are the same TYPE of node with the same
 // tag/attributes (elements) or data (text), and equal children in the same
