@@ -82,6 +82,13 @@ func (b *binder) defineText(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "nextSibling", func() goja.Value { return b.wrap(nextSibling(n)) }, nil)
 	b.accessor(o, "previousSibling", func() goja.Value { return b.wrap(prevSibling(n)) }, nil)
 	b.accessor(o, "ownerDocument", func() goja.Value { return b.documentValue() }, nil)
+	o.Set("getRootNode", func(call goja.FunctionCall) goja.Value {
+		composed := false
+		if opts, ok := call.Argument(0).(*goja.Object); ok {
+			composed = optBool(opts, "composed")
+		}
+		return b.wrap(getRootNode(n, composed))
+	})
 }
 
 // defineComment populates a Comment node wrapper — structurally like
@@ -107,6 +114,13 @@ func (b *binder) defineComment(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "nextSibling", func() goja.Value { return b.wrap(nextSibling(n)) }, nil)
 	b.accessor(o, "previousSibling", func() goja.Value { return b.wrap(prevSibling(n)) }, nil)
 	b.accessor(o, "ownerDocument", func() goja.Value { return b.documentValue() }, nil)
+	o.Set("getRootNode", func(call goja.FunctionCall) goja.Value {
+		composed := false
+		if opts, ok := call.Argument(0).(*goja.Object); ok {
+			composed = optBool(opts, "composed")
+		}
+		return b.wrap(getRootNode(n, composed))
+	})
 	o.Set("remove", func(goja.FunctionCall) goja.Value {
 		if n.Parent != nil {
 			dom.RemoveChild(n.Parent, n)
@@ -179,6 +193,13 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "nextSibling", func() goja.Value { return b.wrap(nextSibling(n)) }, nil)
 	b.accessor(o, "previousSibling", func() goja.Value { return b.wrap(prevSibling(n)) }, nil)
 	b.accessor(o, "ownerDocument", func() goja.Value { return b.documentValue() }, nil)
+	o.Set("getRootNode", func(call goja.FunctionCall) goja.Value {
+		composed := false
+		if opts, ok := call.Argument(0).(*goja.Object); ok {
+			composed = optBool(opts, "composed")
+		}
+		return b.wrap(getRootNode(n, composed))
+	})
 
 	b.accessor(o, "hidden",
 		func() goja.Value { _, ok := n.Attribute("hidden"); return b.vm.ToValue(ok) },
@@ -1145,6 +1166,31 @@ func elementParent(n *dom.Node) *dom.Node {
 		p = p.Parent
 	}
 	return p
+}
+
+// getRootNode implements Node.getRootNode(options) (DOM Standard §4.4):
+// "return this's shadow-including root if options[composed] is true;
+// otherwise this's root." A node's plain "root" is its topmost ancestor by
+// walking Parent — the common, non-shadow-DOM case this resolves to
+// document for. composed additionally bridges out through ShadowHost (the
+// same bridge layout.elementParent already uses, round 114) whenever the
+// walk stops at a shadow tree's own top-level content (Parent==nil by
+// design — see dom.Node.Shadow's own doc comment), so a node inside nested
+// shadow trees still reaches the true top-level document.
+func getRootNode(n *dom.Node, composed bool) *dom.Node {
+	cur := n
+	for cur.Parent != nil {
+		cur = cur.Parent
+	}
+	if composed {
+		for cur.ShadowHost != nil {
+			cur = cur.ShadowHost
+			for cur.Parent != nil {
+				cur = cur.Parent
+			}
+		}
+	}
+	return cur
 }
 
 func firstChild(n *dom.Node) *dom.Node {
