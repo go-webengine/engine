@@ -520,6 +520,26 @@ func (l *layouter) flexColumn(box *Box, items []*flexItem, st *css.Style, cx, cw
 // (discarded) float context, returning a box positioned at a local origin with
 // zero outer margins. Used by flex/grid/table to size and then translate
 // children.
+//
+// Forcing Width to the full contentW is correct for an ordinary block (an
+// auto width block DOES fill its container), but wrong for a replaced element
+// (img/svg): CSS 2.1 §10.3.2's own rules give width:auto on a replaced
+// element a completely different meaning (the intrinsic size, or a size
+// derived from an explicit height via the intrinsic ratio) that has nothing
+// to do with the available container width. Forcing it here overwrote that
+// meaning before resolvedReplacedSize (contents()'s own isReplacedTag
+// branch) ever got a chance to see the real "auto" — so a bare replaced
+// element used as a flex/grid/table-cell item (no wrapping block) always
+// stretched to fill its item box, distorting its aspect ratio, regardless of
+// this round's own resolvedReplacedSize fix. Found via issue #226 (a real A0
+// poster export where a height-only-styled image, used directly as a grid
+// item, overflowed its 200px track at the source's full 320px width instead
+// of the 80px CSS 2.1 §10.3.2 calls for). Resolving the used size HERE with
+// the ORIGINAL (unmodified) style, then feeding it back in as an explicit
+// px width, keeps every other case (plain blocks, and a replaced element
+// with its own explicit width) byte-identical: resolvedReplacedSize runs
+// twice for the second case (once here, once again inside contents()) but
+// idempotently, since it's a pure function of style + intrinsic size + cw.
 func (l *layouter) layoutIsolated(node *dom.Node, st *css.Style, contentW float64) *Box {
 	if contentW < 0 {
 		contentW = 0
@@ -528,6 +548,23 @@ func (l *layouter) layoutIsolated(node *dom.Node, st *css.Style, contentW float6
 	l.floats = &floatCtx{}
 	clone := *st
 	clone.Width = css.Length{Px: contentW}
+	// Only when the ORIGINAL style's width is genuinely auto: some callers
+	// (grid's own itemNaturalWidth, for a non-stretched item) already resolve
+	// an explicit width/percentage against the real containing width THEMSELVES
+	// before calling here, passing the ALREADY-RESOLVED target width as
+	// contentW — for those, contentW is not a containing width to resolve
+	// against a second time, and the original force-to-contentW behaviour
+	// below is exactly right. Only a still-auto width reaches here needing
+	// resolvedReplacedSize's own derivation, and contentW in that case is
+	// genuinely the raw available space (e.g. grid's own spanW passed straight
+	// through for a stretched item, never pre-resolved for one).
+	if node.Type == dom.Element && isReplacedTag(node.Tag) && st.Width.Auto {
+		if iw, ih := l.imageSize(node); iw > 0 && ih > 0 {
+			if dw, _ := resolvedReplacedSize(st, iw, ih, contentW); dw > 0 {
+				clone.Width = css.Length{Px: dw}
+			}
+		}
+	}
 	clone.MinWidth = css.Length{Auto: true}
 	clone.MaxWidth = css.Length{Auto: true}
 	clone.BoxSizing = css.ContentBox

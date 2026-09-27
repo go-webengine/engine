@@ -348,6 +348,50 @@ func TestInlineImageExplicitHeightWinsOverAspectRatio(t *testing.T) {
 	assertF(t, "img.LineHeight (explicit height, not aspect-derived 100)", img.LineHeight, 80)
 }
 
+// TestInlineImageAutoWidthExplicitHeightDerivesWidthFromRatio covers CSS
+// 2.1 §10.3.2's own rule 2 — width:auto, height not auto, element has an
+// intrinsic ratio: "used width = used height * intrinsic ratio" — which
+// resolvedReplacedSize got wrong before this fix, always returning the
+// UNSCALED intrinsic width paired with the explicit height instead (found
+// via issue #226, a real A0-poster export through go-pdfkit/html2pdf where a
+// height-only-styled image lost its aspect ratio and overflowed its grid
+// track). This is the mirror image of
+// TestInlineImageExplicitHeightWinsOverAspectRatio above: THAT test has BOTH
+// width and height explicit (both must win, no ratio); this one has ONLY
+// height explicit (width must be DERIVED from the ratio, not left at the raw
+// intrinsic size).
+func TestInlineImageAutoWidthExplicitHeightDerivesWidthFromRatio(t *testing.T) {
+	root, sm, sizes := imgSizeHTML(t, `<html><body><div style="width:200px"><img style="height:80px"></div></body></html>`, 1000, 500)
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	items := firstLineItems(findBox(box, "div"))
+	img := items[0]
+	assertF(t, "img.Width (derived from ratio: 80*1000/500)", img.Width, 160)
+	assertF(t, "img.LineHeight (explicit)", img.LineHeight, 80)
+}
+
+// TestBlockImageAutoWidthExplicitHeightDerivesWidthFromRatio is the
+// block-level sibling of the inline test above, covering the same §10.3.2
+// rule 2 in contents()'s isReplacedTag branch — the actual path a grid item
+// that is itself a bare `<img>` reaches (grid blockifies its items), which is
+// exactly how issue #226 was triggered in a real document. Checks
+// Lines[0].Items[0] rather than img.W/H, for the same reason
+// TestBlockImageExplicitHeightWinsOverAspectRatio's own comment already
+// documents: place()'s pre-existing usedHeight override reports the outer
+// box's own height/width from ordinary block sizing regardless of this fix,
+// so asserting on img.W/H here would be a false-positive test that isn't
+// exercising the actual regression at all.
+func TestBlockImageAutoWidthExplicitHeightDerivesWidthFromRatio(t *testing.T) {
+	root, sm, sizes := imgSizeHTML(t, `<html><body><div style="width:200px"><img style="display:block;height:80px"></div></body></html>`, 1000, 500)
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, sizes)
+	img := findBox(box, "img")
+	if img == nil || len(img.Lines) != 1 || len(img.Lines[0].Items) != 1 {
+		t.Fatalf("expected one img box with one line item, got %v", img)
+	}
+	item := img.Lines[0].Items[0]
+	assertF(t, "item.Width (derived from ratio: 80*1000/500)", item.Width, 160)
+	assertF(t, "item.LineHeight (explicit)", item.LineHeight, 80)
+}
+
 // TestBlockImageMaxWidthPercentResolvesAgainstContainer covers the sibling
 // block-level replaced-element path (contents()'s isReplacedTag branch,
 // reached when e.g. a stylesheet's preflight reset makes img display:block) —
