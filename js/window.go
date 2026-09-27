@@ -93,7 +93,8 @@ func (b *binder) installTimers(g *goja.Object) {
 // installEventTargets wires window-level event methods onto g.
 func (b *binder) installEventTargets(g *goja.Object) {
 	g.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
-		b.addListener(b.windowNode, call.Argument(0).String(), call.Argument(1))
+		opts, _ := call.Argument(2).(*goja.Object)
+		b.addListener(b.windowNode, call.Argument(0).String(), call.Argument(1), optBool(opts, "once"))
 		return goja.Undefined()
 	})
 	g.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {

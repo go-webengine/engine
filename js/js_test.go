@@ -573,6 +573,43 @@ func TestElementLangDirTabIndex(t *testing.T) {
 		"setTab=3")
 }
 
+// TestAddEventListenerOnce confirms addEventListener's `{once: true}` option
+// — entirely ignored before this fix (the third argument was never read at
+// all) — per the DOM standard's own "inner invoke" algorithm (§2.9): a once
+// listener fires exactly once across repeated dispatches, a regular listener
+// keeps firing every time, and — the subtle case a naive "remove after
+// invoke" implementation gets wrong — a once listener that re-dispatches its
+// own event type from inside itself does NOT re-trigger itself, because the
+// spec removes it BEFORE running its callback, not after. Real, live usage:
+// caniuse.com's own ad-network bundle.js calls exactly
+// addEventListener("featureRendered", cb, {once:true}).
+func TestAddEventListenerOnce(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var count = 0;
+		var d = document.getElementById('d');
+		d.addEventListener('click', function(){ count++; }, {once:true});
+		d.dispatchEvent(new Event('click'));
+		d.dispatchEvent(new Event('click'));
+		d.dispatchEvent(new Event('click'));
+		console.log('count='+count);
+
+		var normal = 0;
+		d.addEventListener('foo', function(){ normal++; });
+		d.dispatchEvent(new Event('foo'));
+		d.dispatchEvent(new Event('foo'));
+		console.log('normal='+normal);
+
+		var reentrant = 0;
+		d.addEventListener('bar', function(){
+			reentrant++;
+			if (reentrant < 5) d.dispatchEvent(new Event('bar'));
+		}, {once:true});
+		d.dispatchEvent(new Event('bar'));
+		console.log('reentrant='+reentrant);
+	`))
+	mustHave(t, logs, "count=1", "normal=2", "reentrant=1")
+}
+
 // TestDocumentCurrentScriptIdentifiesTheRightScriptAndClearsAfterwards covers
 // document.currentScript beyond "is it non-null": it must identify THIS
 // specific <script> among several (not just any script on the page), and
