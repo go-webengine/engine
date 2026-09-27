@@ -300,6 +300,68 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		}
 		return goja.Undefined()
 	})
+	// before/after/replaceWith/replaceChildren implement the DOM standard's
+	// ChildNode/ParentNode mixin convenience methods — entirely missing
+	// before this fix, the same class of gap as insertAdjacentElement/
+	// insertAdjacentText (round 125): only appendChild/append/prepend/
+	// removeChild/replaceChild/insertBefore/remove existed. Deliberately
+	// scoped to the spec's own common-case result: none of the passed nodes
+	// is assumed to already be a sibling of n (the "viablePreviousSibling"/
+	// "viableNextSibling ... not in nodes" nuance the real algorithm exists
+	// for, computed to give a stable anchor when a caller reuses an existing
+	// sibling reference as one of the arguments) — real-world usage
+	// overwhelmingly passes newly-created nodes or strings, never that.
+	o.Set("before", func(call goja.FunctionCall) goja.Value {
+		if n.Parent == nil {
+			return goja.Undefined()
+		}
+		parent := n.Parent
+		for _, a := range call.Arguments {
+			child := b.coerceNode(a)
+			dom.InsertBefore(parent, child, n)
+			b.recordChildListMutation(parent, []*dom.Node{child}, nil)
+		}
+		return goja.Undefined()
+	})
+	o.Set("after", func(call goja.FunctionCall) goja.Value {
+		if n.Parent == nil {
+			return goja.Undefined()
+		}
+		parent := n.Parent
+		ref := nextSibling(n)
+		for _, a := range call.Arguments {
+			child := b.coerceNode(a)
+			dom.InsertBefore(parent, child, ref)
+			b.recordChildListMutation(parent, []*dom.Node{child}, nil)
+		}
+		return goja.Undefined()
+	})
+	o.Set("replaceWith", func(call goja.FunctionCall) goja.Value {
+		if n.Parent == nil {
+			return goja.Undefined()
+		}
+		parent := n.Parent
+		for _, a := range call.Arguments {
+			child := b.coerceNode(a)
+			dom.InsertBefore(parent, child, n)
+			b.recordChildListMutation(parent, []*dom.Node{child}, nil)
+		}
+		dom.RemoveChild(parent, n)
+		b.recordChildListMutation(parent, nil, []*dom.Node{n})
+		return goja.Undefined()
+	})
+	o.Set("replaceChildren", func(call goja.FunctionCall) goja.Value {
+		old := append([]*dom.Node(nil), n.Children...)
+		dom.SetTextContent(n, "")
+		var added []*dom.Node
+		for _, a := range call.Arguments {
+			child := b.coerceNode(a)
+			dom.AppendChild(n, child)
+			added = append(added, child)
+		}
+		b.recordChildListMutation(n, added, old)
+		return goja.Undefined()
+	})
 	o.Set("cloneNode", func(call goja.FunctionCall) goja.Value {
 		deep := call.Argument(0).ToBoolean()
 		return b.wrap(cloneNode(n, deep))

@@ -349,6 +349,44 @@ func TestInsertAdjacentElementAndText(t *testing.T) {
 	}
 }
 
+// TestChildNodeConvenienceMethods confirms before/after/replaceWith/
+// replaceChildren — the ChildNode/ParentNode mixin convenience methods,
+// entirely missing before this fix (the same class of gap as
+// insertAdjacentElement/insertAdjacentText, round 125) — insert/replace in
+// the DOM standard's own documented order for the common case (no argument
+// is already a sibling of the target, the nuance its own
+// "viablePreviousSibling"/"viableNextSibling ... not in nodes" step exists
+// for and this engine deliberately does not model).
+func TestChildNodeConvenienceMethods(t *testing.T) {
+	_, logs, _ := runJS(t, `<html class="client-nojs"><body>`+
+		`<div id="wrap"><span id="x">X</span></div>`+
+		`<script>
+			var x = document.getElementById('x');
+			x.before('B1', 'B2');
+			x.after('A1');
+			console.log('ba='+document.getElementById('wrap').innerHTML);
+
+			var repl = document.getElementById('x');
+			var newEl = document.createElement('b'); newEl.textContent = 'NEW';
+			repl.replaceWith(newEl, 'tail');
+			console.log('rw='+document.getElementById('wrap').innerHTML);
+
+			var wrap2 = document.createElement('div');
+			wrap2.innerHTML = '<p>old1</p><p>old2</p>';
+			wrap2.replaceChildren(document.createElement('i'), 'newtext');
+			console.log('rc='+wrap2.innerHTML);
+
+			var noParent = document.createElement('span');
+			noParent.before('ignored'); noParent.after('ignored'); noParent.replaceWith('ignored');
+			console.log('noParentOk=true');
+		</script></body></html>`)
+	mustHave(t, logs,
+		`ba=B1B2<span id="x">X</span>A1`,
+		`rw=B1B2<b>NEW</b>tailA1`,
+		`rc=<i></i>newtext`,
+		"noParentOk=true")
+}
+
 func TestQueries(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		console.log('qs='+document.querySelector('.foo').tagName);
