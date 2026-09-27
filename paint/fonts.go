@@ -8,6 +8,8 @@
 package paint
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/go-opentype/fonts/dejavusans"
@@ -44,6 +46,22 @@ type Fonts struct {
 	// stays with the family and draws as nothing, as before.
 	fallback      map[faceStyle]*opentype.Font
 	fallbackFaces map[fallbackKey]*opentype.Face
+
+	// named holds the faces a document's own @font-face rules brought, keyed
+	// by family name (lowercased) and slot. font() consults it before the
+	// bundled families, which is what lets a page be MEASURED in the typeface
+	// it asked for rather than in whichever bundled family the generic
+	// heuristic picked for it. namedWeight remembers the weight each stored
+	// face carries, so a second rule for the same slot only displaces the
+	// first when it sits closer to that slot's canonical weight.
+	named       map[namedKey]*opentype.Font
+	namedWeight map[namedKey]int
+}
+
+// namedKey identifies one slot of one named family.
+type namedKey struct {
+	family string
+	faceStyle
 }
 
 // faceStyle is a weight/slant pair, the part of a styleKey a fallback
@@ -67,7 +85,8 @@ type faceKey struct {
 // the fonts module, not a runtime condition.
 func NewFonts() *Fonts {
 	f := &Fonts{fonts: map[styleKey]*opentype.Font{}, faces: map[faceKey]*opentype.Face{},
-		fallback: map[faceStyle]*opentype.Font{}, fallbackFaces: map[fallbackKey]*opentype.Face{}}
+		fallback: map[faceStyle]*opentype.Font{}, fallbackFaces: map[fallbackKey]*opentype.Face{},
+		named: map[namedKey]*opentype.Font{}, namedWeight: map[namedKey]int{}}
 	f.fallback[faceStyle{false, false}] = mustParseFont(dejavusans.TTF)
 	f.fallback[faceStyle{true, false}] = mustParseFont(dejavusans.BoldTTF)
 	f.fallback[faceStyle{false, true}] = mustParseFont(dejavusans.ItalicTTF)
@@ -100,13 +119,94 @@ func mustParseFont(b []byte) *opentype.Font {
 // back to the family's regular style and finally to the sans regular so a lookup
 // always yields a usable face.
 func (f *Fonts) font(k styleKey) *opentype.Font {
+	// The families the declaration NAMED come first, in the order it named
+	// them: that is CSS's own rule, and the only way a document's own
+	// typeface can win over a bundled one. Within a named family, a slot it
+	// does not ship falls back to its regular rather than to another
+	// typeface — the upright of the right face is closer than the italic of
+	// the wrong one, which is already how the bundled Go Mono behaves.
+	for _, name := range k.fam.NamedFamilies() {
+		if ft := f.named[namedKey{name, faceStyle{k.bold, k.italic}}]; ft != nil {
+			return ft
+		}
+		if ft := f.named[namedKey{name, faceStyle{false, false}}]; ft != nil {
+			return ft
+		}
+	}
 	if ft := f.fonts[k]; ft != nil {
 		return ft
 	}
 	if ft := f.fonts[styleKey{k.fam, false, false}]; ft != nil {
 		return ft
 	}
+	// The generic bucket, which every FontFamily carries: a key built with a
+	// named family that nothing registered still resolves to Inter/Lora/Go
+	// Mono as it did before named families existed.
+	if ft := f.fonts[styleKey{FontFamilyOf(k.fam.Generic), false, false}]; ft != nil {
+		return ft
+	}
 	return f.fonts[styleKey{css.Sans, false, false}]
+}
+
+// FontFamilyOf is the bare generic bucket as a FontFamily — the key the
+// bundled families are registered under.
+func FontFamilyOf(g css.Generic) css.FontFamily { return css.FontFamily{Generic: g} }
+
+// Register adds a face a document's own @font-face rule brought, parsed from
+// SFNT bytes, under family (matched case-insensitively against the names a
+// `font-family` declaration gives) at the weight and slant the rule declared.
+//
+// The slot it occupies is the one the layout will ask for: bold is weight
+// >= 600, the same threshold styleFace applies to a CSS weight, so a 600 and a
+// 700 face compete for one slot and the one nearer 700 keeps it. Registering
+// invalidates the face cache, since a cached Face was built from whichever
+// font answered before.
+func (f *Fonts) Register(family string, weight int, italic bool, sfnt []byte) error {
+	family = strings.ToLower(strings.TrimSpace(family))
+	if family == "" {
+		return errors.New("paint: Register: no family name")
+	}
+	ft, err := opentype.Parse(sfnt)
+	if err != nil {
+		return fmt.Errorf("paint: Register %q: %w", family, err)
+	}
+	if weight <= 0 {
+		weight = 400
+	}
+	bold := weight >= 600
+	k := namedKey{family, faceStyle{bold, italic}}
+	if _, taken := f.named[k]; taken {
+		canonical := 400
+		if bold {
+			canonical = 700
+		}
+		if weightDistance(weight, canonical) >= weightDistance(f.namedWeight[k], canonical) {
+			return nil // the face already in this slot is at least as apt
+		}
+	}
+	f.named[k], f.namedWeight[k] = ft, weight
+	f.faces = map[faceKey]*opentype.Face{}
+	return nil
+}
+
+// Registered reports whether any face has been registered for a family.
+func (f *Fonts) Registered(family string) bool {
+	family = strings.ToLower(strings.TrimSpace(family))
+	for _, st := range []faceStyle{{false, false}, {true, false}, {false, true}, {true, true}} {
+		if _, ok := f.named[namedKey{family, st}]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// weightDistance is how far a face's weight sits from a slot's canonical one,
+// which decides which of two competing faces keeps the slot.
+func weightDistance(weight, canonical int) int {
+	if d := weight - canonical; d < 0 {
+		return -d
+	}
+	return weight - canonical
 }
 
 // face returns a cached Face for a family + style at an integer pixel size (>=1).

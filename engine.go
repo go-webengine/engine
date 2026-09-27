@@ -370,6 +370,11 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// queries and external theme/layout rules resolve).
 	rp := &renderPass{}
 	rp.sheets = e.fetchExternalSheets(ctx, doc, float64(vpW))
+	// The document's own typefaces, before anything is measured: a face
+	// registered after layout would be drawn at metrics the line was not
+	// built for. A rule whose file cannot be fetched or decoded simply
+	// leaves the bundled family in place (see LoadFontFaces).
+	RegisterFontFaces(fonts, e.LoadFontFaces(ctx, doc, rp.sheets, css.Media{Width: float64(vpW)}))
 	rp.sm = css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
 
 	// TEXT-FIRST progressive frame (progressive path ONLY): lay out and emit the
