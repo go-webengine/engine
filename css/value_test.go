@@ -106,9 +106,39 @@ func TestParseFontFamily(t *testing.T) {
 		"cursive":                      Sans, // unknown generic → Sans fallback
 	}
 	for in, want := range cases {
-		if got := parseFontFamily(in); got != want {
-			t.Errorf("parseFontFamily(%q) = %v want %v", in, got, want)
+		// The BUCKET is what this case table is about, and it is unchanged by
+		// named families: a page resolves to the same generic it always did.
+		if got := parseFontFamily(in); got.Generic != want.Generic {
+			t.Errorf("parseFontFamily(%q) bucket = %v want %v", in, got.Generic, want.Generic)
 		}
+	}
+}
+
+// The names a declaration asks for are kept, in order and lowercased, with the
+// generic keywords left out — that list is what an @font-face rule is matched
+// against. An alias the bucket heuristic recognises ("helvetica") stays in it:
+// it names a face this engine has not got, and a page could @font-face it.
+func TestParseFontFamilyKeepsTheNames(t *testing.T) {
+	cases := map[string]string{
+		`'IBM Plex Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif`: "ibm plex sans,helvetica neue,helvetica,arial",
+		`Spectral, 'Iowan Old Style', Palatino, Georgia, serif`:          "spectral,iowan old style,palatino,georgia",
+		`"IBM Plex Mono", Menlo, monospace`:                              "ibm plex mono,menlo",
+		"sans-serif":                                                     "",
+		"serif, sans-serif":                                              "",
+		`  Spectral  `:                                                   "spectral",
+	}
+	for in, want := range cases {
+		if got := parseFontFamily(in); got.Names != want {
+			t.Errorf("parseFontFamily(%q).Names = %q want %q", in, got.Names, want)
+		}
+	}
+	// NamedFamilies splits that list back out, and gives nothing for a
+	// generic-only declaration rather than one empty name.
+	if got := parseFontFamily(`Spectral, Georgia, serif`).NamedFamilies(); len(got) != 2 || got[0] != "spectral" || got[1] != "georgia" {
+		t.Errorf("NamedFamilies = %q", got)
+	}
+	if got := parseFontFamily("serif").NamedFamilies(); got != nil {
+		t.Errorf("NamedFamilies on a generic-only declaration = %q, want nil", got)
 	}
 }
 
