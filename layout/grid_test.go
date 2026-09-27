@@ -3,7 +3,12 @@
 
 package layout
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/go-webengine/engine/css"
+	"github.com/go-webengine/engine/dom"
+)
 
 // ---- track sizing ----------------------------------------------------------
 
@@ -297,4 +302,77 @@ func TestGridJustifyContentCenter(t *testing.T) {
 	g := findBox(layoutHTML(t, src, 400), "div")
 	assertF(t, "jc.A.X", g.Children[0].X, 70)
 	assertF(t, "jc.B.X", g.Children[1].X, 150)
+}
+
+// gridImgHTML parses src and returns a size map keyed by every <img> in
+// document order, all sharing the one iw,ih intrinsic size — the multi-image
+// sibling of layout_test.go's own single-image imgSizeHTML.
+func gridImgHTML(t *testing.T, src string, iw, ih float64) (*dom.Node, css.StyleMap, map[*dom.Node][2]float64) {
+	t.Helper()
+	root, err := dom.Parse(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sm := css.Cascade(root)
+	sizes := map[*dom.Node][2]float64{}
+	var walk func(n *dom.Node)
+	walk = func(n *dom.Node) {
+		if n.Type == dom.Element && n.Tag == "img" {
+			sizes[n] = [2]float64{iw, ih}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	return root, sm, sizes
+}
+
+// TestGridBareReplacedItemHeightOnlyPreservesAspectRatio is the confirmed
+// real-world regression from issue #226 (a real A0 poster export through
+// go-pdfkit/html2pdf): a bare `<img>` used DIRECTLY as a grid item (no
+// wrapping block) with only `height` set stretched to fill its whole column
+// at the source's raw intrinsic width, instead of deriving width from the
+// intrinsic ratio per CSS 2.1 §10.3.2 rule 2 — because grid's own
+// `stretchW` branch (placeGridItem) never calls layoutIsolated a second
+// time for an auto-width, stretch-aligned item, and the FIRST (track-sizing)
+// call to layoutIsolated unconditionally forced Width to the raw available
+// column width regardless of the element's own (auto) width, discarding the
+// "auto" signal resolvedReplacedSize needs to see. A 320×160 source in a
+// 200px column with `height:40px` must come out 80×40, matching a real
+// browser, not 200×40 (stretched) or 320×40 (raw intrinsic).
+func TestGridBareReplacedItemHeightOnlyPreservesAspectRatio(t *testing.T) {
+	root, sm, sizes := gridImgHTML(t, `<html><body style="margin:0">`+
+		`<div style="display:grid;grid-template-columns:200px"><img style="height:40px"></div>`+
+		`</body></html>`, 320, 160)
+	box, _ := LayoutDocument(root, sm, 300, fakeMeasurer{}, sizes)
+	img := findBox(box, "img")
+	if img == nil || len(img.Lines) != 1 || len(img.Lines[0].Items) != 1 {
+		t.Fatalf("expected one img box with one line item, got %v", img)
+	}
+	item := img.Lines[0].Items[0]
+	assertF(t, "grid bare img height:40px item.Width (80*320/... derived)", item.Width, 80)
+	assertF(t, "grid bare img height:40px item.LineHeight (explicit)", item.LineHeight, 40)
+}
+
+// TestGridBareReplacedItemPercentWidthNotDoubleResolved guards a regression
+// introduced and caught WITHIN the same fix as the test above: a grid item
+// with an explicit, non-auto percentage width (e.g. `width:50%`) is resolved
+// against the column width ONCE already, by grid's own itemNaturalWidth,
+// before layoutIsolated is called again to finalise it — layoutIsolated must
+// NOT re-resolve that percentage a second time against the already-resolved
+// target width it receives (50% of 200 = 100, then wrongly 50% of 100 = 50).
+// A 320×160 source in a 200px column with `width:50%` must come out 100×50.
+func TestGridBareReplacedItemPercentWidthNotDoubleResolved(t *testing.T) {
+	root, sm, sizes := gridImgHTML(t, `<html><body style="margin:0">`+
+		`<div style="display:grid;grid-template-columns:200px"><img style="width:50%"></div>`+
+		`</body></html>`, 320, 160)
+	box, _ := LayoutDocument(root, sm, 300, fakeMeasurer{}, sizes)
+	img := findBox(box, "img")
+	if img == nil || len(img.Lines) != 1 || len(img.Lines[0].Items) != 1 {
+		t.Fatalf("expected one img box with one line item, got %v", img)
+	}
+	item := img.Lines[0].Items[0]
+	assertF(t, "grid bare img width:50% item.Width (not double-resolved)", item.Width, 100)
+	assertF(t, "grid bare img width:50% item.LineHeight (ratio-derived)", item.LineHeight, 50)
 }
