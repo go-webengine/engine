@@ -112,7 +112,7 @@ func (e *Engine) LoadImages(ctx context.Context, doc *Document, sm css.StyleMap,
 type LoadedImage struct {
 	Size   [2]float64  // layout size, CSS px — LoadImages' first map
 	Bitmap image.Image // decoded, CSS-sized, viewport-clamped — LoadImages' second map
-	Data   []byte      // the bytes fetched for an <img> (SVG text included); nil for an inline <svg>
+	Data   []byte      // the bytes an <img> was fetched from, or an inline <svg>'s own serialisation
 	Format string      // sniffed from Data — "jpeg", "png", "gif", "webp", "bmp", "svg" — or "" when unknown
 	Lossy  bool        // Format is a lossy encoding: jpeg, or a webp whose bitstream is VP8 rather than VP8L
 	// SourceW, SourceH is the decoded source's pixel size before any CSS or
@@ -274,7 +274,13 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 		if !ok {
 			return nil
 		}
-		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Format: "svg", SourceW: w, SourceH: h}
+		// Data carries the serialisation the rasteriser was just handed, so a
+		// consumer needing another density than this CSS-pixel bitmap can
+		// render it again — or emit it as vector. A PDF exporter is the case
+		// that asked: a CSS-pixel raster is a hard 96 dpi ceiling on paper,
+		// and every label inside an inline <svg> reaches the file as pixels
+		// rather than as text (#229).
+		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Data: data, Format: "svg", SourceW: w, SourceH: h}
 	}
 	src, _ := n.Attribute("src") // presence was checked in the gate
 	data, ok := e.fetchImageBytes(ctx, doc.URL, src)

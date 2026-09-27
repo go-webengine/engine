@@ -60,8 +60,14 @@ func TestLoadImageSetKeepsSourceBytesAndFormat(t *testing.T) {
 	}{"/a.jpg": {"jpeg", true}, "/b.webp": {"webp", true}, "/c.png": {"png", false}}
 	for n, li := range set {
 		if n.Tag == "svg" {
-			if li.Format != "svg" || li.Data != nil || li.Bitmap == nil {
-				t.Errorf("inline svg: format %q data %d bytes bitmap %v", li.Format, len(li.Data), li.Bitmap != nil)
+			// An inline <svg> keeps its own serialisation in Data (#229) so a
+			// consumer needing another density than the CSS-pixel raster can
+			// render it again rather than upscaling pixels.
+			if li.Format != "svg" || li.Bitmap == nil {
+				t.Errorf("inline svg: format %q bitmap %v", li.Format, li.Bitmap != nil)
+			}
+			if !bytes.Contains(li.Data, []byte("<svg")) {
+				t.Errorf("inline svg: Data is %d bytes and carries no <svg> root", len(li.Data))
 			}
 			continue
 		}

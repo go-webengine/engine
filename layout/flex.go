@@ -483,7 +483,16 @@ func (l *layouter) flexColumn(box *Box, items []*flexItem, st *css.Style, cx, cw
 		if i > 0 {
 			y += rowGap
 		}
-		crossW := cw - it.hMargin
+		// layoutIsolated takes a CONTENT width, so the item's own padding and
+		// border come off the line it is handed: what stretch makes fill the
+		// line is the item's MARGIN box, not its content box. Leaving them on
+		// made every padded item overflow its container by exactly its own
+		// edges — a 600 px column gave a 20 px-padded, 5 px-bordered item a
+		// 650 px border box, where an ordinary block parent gives the same
+		// element 600 (#228). The non-stretch branch just below was already
+		// careful about it, which is why only stretched items were wrong.
+		avail := cw - it.hMargin - it.hEdges
+		crossW := avail
 		ai := it.st.AlignSelf.Resolve(st.AlignItems)
 		stretch := ai == css.AlignStretch && it.st.Width.Auto
 		if !stretch {
@@ -495,7 +504,7 @@ func (l *layouter) flexColumn(box *Box, items []*flexItem, st *css.Style, cx, cw
 				}
 			}
 			natural = it.clampMainRow(natural, cw)
-			crossW = math.Min(math.Max(natural, 0), cw-it.hMargin)
+			crossW = math.Min(math.Max(natural, 0), avail)
 		}
 		it.box = l.layoutIsolated(it.node, it.st, crossW)
 		outerCrossW := it.box.W + it.hMargin
