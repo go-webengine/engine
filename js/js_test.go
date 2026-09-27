@@ -509,8 +509,35 @@ func TestDocumentMisc(t *testing.T) {
 		document.cookie=';;';
 		console.log('cookie='+document.cookie);
 	`))
+	// page()'s own fixture (js_test.go's own helper) ships no <!DOCTYPE>, so
+	// it is genuinely in quirks mode (see dom.Node.Quirks) — compatMode
+	// correctly reports "BackCompat" here, not "CSS1Compat" (a value this
+	// test previously pinned as correct when compatMode was hardcoded and
+	// never actually read the page's own quirks-mode status).
 	mustHave(t, logs, "ns=RECT", "cmt=8", "frag=#FRAGMENT", "active=BODY scroll=HTML cur=true",
-		"meta=UTF-8 CSS1Compat false visible complete 9", "cookie=a=1; b=2")
+		"meta=UTF-8 BackCompat false visible complete 9", "cookie=a=1; b=2")
+}
+
+// TestDocumentCompatModeStandards confirms compatMode reports "CSS1Compat"
+// for a page that DOES declare <!DOCTYPE html> (standards mode) — the
+// opposite branch from TestDocumentMisc's own quirks-mode fixture.
+func TestDocumentCompatModeStandards(t *testing.T) {
+	_, logs, _ := runJS(t, `<!DOCTYPE html><html><body><script>`+
+		`console.log('compatMode='+document.compatMode);`+
+		`</script></body></html>`)
+	mustHave(t, logs, "compatMode=CSS1Compat")
+}
+
+// TestDocumentURL confirms document.URL/documentURI — both entirely missing
+// before this fix — return the page's own URL (DOM Standard §3.5: "this's
+// URL, serialized"), the same value window.location.href already exposes.
+func TestDocumentURL(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		console.log('url='+document.URL);
+		console.log('same='+(document.URL === document.documentURI));
+		console.log('matchesLocation='+(document.URL === location.href));
+	`))
+	mustHave(t, logs, "url="+testURL, "same=true", "matchesLocation=true")
 }
 
 // TestDocumentCurrentScriptIdentifiesTheRightScriptAndClearsAfterwards covers

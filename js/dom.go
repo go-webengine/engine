@@ -944,7 +944,26 @@ func (b *binder) installDocument() *goja.Object {
 	b.accessor(d, "head", func() goja.Value { return b.wrap(dom.Find(b.root, "head")) }, nil)
 	b.accessor(d, "readyState", func() goja.Value { return b.vm.ToValue("complete") }, nil)
 	b.accessor(d, "characterSet", func() goja.Value { return b.vm.ToValue("UTF-8") }, nil)
-	b.accessor(d, "compatMode", func() goja.Value { return b.vm.ToValue("CSS1Compat") }, nil)
+	// compatMode was hardcoded to "CSS1Compat" regardless of the page's own
+	// quirks-mode status — dom.Node.Quirks (set on the root by Parse, per its
+	// own doc comment) already drives the CSS cascade's quirks-mode UA
+	// stylesheet, but this accessor never read it, so `document.compatMode
+	// === 'BackCompat'` — a real feature-detection idiom for "did this page
+	// opt into standards mode" — always answered no, even on a genuinely
+	// quirks-mode page. news.ycombinator.com (this session's own corpus) IS
+	// exactly such a page: no doctype at all, real quirks mode.
+	b.accessor(d, "compatMode", func() goja.Value {
+		if b.root.Quirks {
+			return b.vm.ToValue("BackCompat")
+		}
+		return b.vm.ToValue("CSS1Compat")
+	}, nil)
+	// URL and documentURI are both, per spec, simply "this's URL, serialized"
+	// — the same live value backing window.location.href, read fresh each
+	// call so a script that navigates via location.assign()/replace() (which
+	// updates b.opt.PageURL) sees a consistent document.URL afterwards too.
+	b.accessor(d, "URL", func() goja.Value { return b.vm.ToValue(b.opt.PageURL) }, nil)
+	b.accessor(d, "documentURI", func() goja.Value { return b.vm.ToValue(b.opt.PageURL) }, nil)
 	b.accessor(d, "hidden", func() goja.Value { return b.vm.ToValue(false) }, nil)
 	b.accessor(d, "visibilityState", func() goja.Value { return b.vm.ToValue("visible") }, nil)
 	b.accessor(d, "title",
