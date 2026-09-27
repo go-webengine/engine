@@ -610,6 +610,39 @@ func TestAddEventListenerOnce(t *testing.T) {
 	mustHave(t, logs, "count=1", "normal=2", "reentrant=1")
 }
 
+// TestOnclickOnsubmitHandlers covers the "el.onX = fn" IDL-attribute idiom
+// for the two GlobalEventHandlers members this session found actually used
+// live (out of the full ~60-member mixin, deliberately not wired
+// speculatively): pkg.go.dev's own main.js sets `el.onclick = fn` on its
+// tree-nav "expand/collapse all" control, and caniuse.com's own bundle.js
+// sets `form.onsubmit = fn` to intercept its search form. Also checks that a
+// later assignment REPLACES rather than stacks (a real browser's "el.onclick
+// = a; el.onclick = b" behaves like one property, not two listeners), unlike
+// addEventListener's own additive semantics.
+func TestOnclickOnsubmitHandlers(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var d = document.getElementById('d');
+		var clicks = 0;
+		d.onclick = function(){ clicks++; };
+		d.dispatchEvent(new Event('click'));
+		d.dispatchEvent(new Event('click'));
+		console.log('clicks='+clicks);
+
+		var which = '';
+		d.onclick = function(){ which += 'a'; };
+		d.onclick = function(){ which += 'b'; };
+		d.dispatchEvent(new Event('click'));
+		console.log('which='+which);
+
+		var submitted = false;
+		d.onsubmit = function(e){ submitted = true; e.preventDefault(); };
+		var ev = new Event('submit', {cancelable:true});
+		d.dispatchEvent(ev);
+		console.log('submitted='+submitted+' defaultPrevented='+ev.defaultPrevented);
+	`))
+	mustHave(t, logs, "clicks=2", "which=b", "submitted=true defaultPrevented=true")
+}
+
 // TestDocumentCurrentScriptIdentifiesTheRightScriptAndClearsAfterwards covers
 // document.currentScript beyond "is it non-null": it must identify THIS
 // specific <script> among several (not just any script on the page), and
