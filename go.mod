@@ -9,7 +9,7 @@ require (
 	github.com/go-gfx/gfx v0.26.0
 	github.com/go-images/images v0.0.0-20260912071231-12ebfec58453
 	github.com/go-opentype/fonts v0.9.1-0.20260907071658-dd9656234a3d
-	github.com/go-opentype/opentype v0.12.0
+	github.com/go-opentype/opentype v0.13.1-0.20260927180318-ae6327b14eac
 	github.com/go-webengine/esbuildsandbox v0.1.0
 	github.com/go-widgets/painter v0.13.0
 	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
@@ -20,7 +20,7 @@ require (
 
 require (
 	github.com/ajroetker/go-highway v0.0.4 // indirect
-	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/andybalholm/brotli v1.2.5 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/go-images/jpeg2000 v0.1.0 // indirect
