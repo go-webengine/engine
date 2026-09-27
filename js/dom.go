@@ -6,6 +6,7 @@ package js
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/dop251/goja"
@@ -560,7 +561,61 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "title",
 		func() goja.Value { v, _ := n.Attribute("title"); return b.vm.ToValue(v) },
 		func(v goja.Value) { b.setAttr(n, "title", v.String()) })
+	// lang/dir — plain reflected HTMLElement attributes (HTML Standard §3.2.6),
+	// the same shape as title above, but genuinely common in real scripts
+	// (locale/direction feature-detection and RTL-aware widgets) and, unlike
+	// title, entirely missing before this fix.
+	b.accessor(o, "lang",
+		func() goja.Value { v, _ := n.Attribute("lang"); return b.vm.ToValue(v) },
+		func(v goja.Value) { b.setAttr(n, "lang", v.String()) })
+	b.accessor(o, "dir",
+		func() goja.Value { v, _ := n.Attribute("dir"); return b.vm.ToValue(v) },
+		func(v goja.Value) { b.setAttr(n, "dir", v.String()) })
+	// tabIndex was entirely missing despite focus()/blur() already existing.
+	// Its getter is NOT a plain reflection: per the HTML Standard's own "The
+	// tabIndex getter steps" (§6.6.3) — read directly, not reasoned from
+	// general knowledge — a present, integer-parseable tabindex attribute
+	// wins; otherwise the default is 0 for a fixed list of natively
+	// interactive elements (a/area/button/iframe/input/object/select/
+	// textarea, or a <summary> that is its parent <details>'s summary — "a
+	// historical artifact", the spec's own words) and -1 for everything
+	// else. The setter IS a plain reflection (IDL's own [ReflectSetter]).
+	b.accessor(o, "tabIndex",
+		func() goja.Value { return b.vm.ToValue(tabIndexValue(n)) },
+		func(v goja.Value) { b.setAttr(n, "tabindex", strconv.Itoa(int(v.ToInteger()))) })
 	b.accessor(o, "isConnected", func() goja.Value { return b.vm.ToValue(rooted(n, b.root)) }, nil)
+}
+
+// tabIndexDefaultFocusable lists the HTML tags the tabIndex getter's own
+// default-value algorithm treats as focusable by default (0 rather than -1)
+// when the tabindex attribute is absent or unparseable.
+var tabIndexDefaultFocusable = map[string]bool{
+	"a": true, "area": true, "button": true, "iframe": true,
+	"input": true, "object": true, "select": true, "textarea": true,
+}
+
+// tabIndexValue implements the tabIndex getter steps: the tabindex
+// attribute, integer-parsed, when present and valid; otherwise the
+// element's default. Deliberately simpler than the spec's own forgiving
+// "rules for parsing integers" (which accepts a leading run of digits with
+// trailing garbage, e.g. "5abc" → 5): strconv.Atoi on the trimmed string
+// requires the whole value to be a valid integer, a disclosed simplification
+// — malformed tabindex values with trailing garbage are a rare real-world
+// case, unlike the whitespace-trimming this DOES handle correctly
+// (`tabindex=" 5 "`, a real-world formatting habit).
+func tabIndexValue(n *dom.Node) int {
+	if attr, ok := n.Attribute("tabindex"); ok {
+		if v, err := strconv.Atoi(strings.TrimSpace(attr)); err == nil {
+			return v
+		}
+	}
+	if tabIndexDefaultFocusable[n.Tag] {
+		return 0
+	}
+	if n.Tag == "summary" && n.Parent != nil && n.Parent.Tag == "details" {
+		return 0
+	}
+	return -1
 }
 
 // ancestorSelect walks up from an <option> (possibly through an <optgroup>)
