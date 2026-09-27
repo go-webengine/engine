@@ -629,6 +629,28 @@ func TestDetailsOpenReflection(t *testing.T) {
 		"afterUnset=false attr=null")
 }
 
+// TestElementDisabledReflection confirms `disabled` — entirely missing
+// despite already being a real, wired CSS selector (css/selector.go's own
+// isDisabled/c.Disabled, backing `button:disabled` author rules) — is a
+// plain presence-based boolean reflection, the same shape as
+// checked/open/hidden. Real corpus usage confirmed on caniuse.com's own
+// bundle.js, which toggles a <link>/<style> element's own `disabled`
+// (alongside `media`) to switch an alternate stylesheet on and off.
+func TestElementDisabledReflection(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var d = document.getElementById('d');
+		console.log('defaultDisabled='+d.disabled);
+		d.disabled = true;
+		console.log('afterSet='+d.disabled+' attr='+d.getAttribute('disabled'));
+		d.disabled = false;
+		console.log('afterUnset='+d.disabled+' attr='+d.getAttribute('disabled'));
+	`))
+	mustHave(t, logs,
+		"defaultDisabled=false",
+		"afterSet=true attr=",
+		"afterUnset=false attr=null")
+}
+
 // TestAddEventListenerOnce confirms addEventListener's `{once: true}` option
 // — entirely ignored before this fix (the third argument was never read at
 // all) — per the DOM standard's own "inner invoke" algorithm (§2.9): a once
