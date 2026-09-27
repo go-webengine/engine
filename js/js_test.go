@@ -313,6 +313,42 @@ func TestInsertAdjacentHTML(t *testing.T) {
 	}
 }
 
+// TestInsertAdjacentElementAndText confirms insertAdjacentElement/
+// insertAdjacentText — entirely missing before this fix, so calling either
+// threw "TypeError: ... is not a function" on any real page using them —
+// place an existing element/a new text node at all four DOM standard
+// positions (§4.9's own "insert adjacent" algorithm), and that
+// insertAdjacentElement returns the inserted element per spec.
+func TestInsertAdjacentElementAndText(t *testing.T) {
+	root, logs, _ := runJS(t, page(`
+		var d=document.getElementById('d');
+		var span=document.createElement('span'); span.id='moved';
+		var ret=d.insertAdjacentElement('beforeend', span);
+		console.log('ret='+(ret===span));
+		d.insertAdjacentText('afterbegin','AB');
+		d.insertAdjacentText('beforebegin','BB');
+		d.insertAdjacentText('afterend','AE');
+	`))
+	mustHave(t, logs, "ret=true")
+	if dom.Find(root, "span") == nil {
+		t.Fatal("insertAdjacentElement did not insert the element")
+	}
+	d := dom.Find(root, "div")
+	if d == nil || len(d.Children) == 0 || d.Children[0].Type != dom.Text || d.Children[0].Text != "AB" {
+		t.Fatalf("insertAdjacentText afterbegin: %v", d)
+	}
+	body := dom.Find(root, "body")
+	var texts []string
+	for _, c := range body.Children {
+		if c.Type == dom.Text && (c.Text == "BB" || c.Text == "AE") {
+			texts = append(texts, c.Text)
+		}
+	}
+	if len(texts) != 2 || texts[0] != "BB" {
+		t.Fatalf("insertAdjacentText beforebegin/afterend under body: %v", texts)
+	}
+}
+
 func TestQueries(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		console.log('qs='+document.querySelector('.foo').tagName);

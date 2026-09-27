@@ -385,6 +385,24 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		b.insertAdjacentHTML(n, strings.ToLower(call.Argument(0).String()), call.Argument(1).String())
 		return goja.Undefined()
 	})
+	// insertAdjacentElement/insertAdjacentText were entirely missing —
+	// insertAdjacentHTML was the only one of the DOM standard's three
+	// "legacy" insert-adjacent methods (§4.9) implemented, so calling either
+	// on a real page threw "TypeError: ... is not a function" instead of
+	// inserting anything. Both funnel through the same "insert adjacent"
+	// algorithm (§4.9) insertAdjacentHTML's own per-position switch already
+	// hand-implements for its parsed-fragment case.
+	o.Set("insertAdjacentElement", func(call goja.FunctionCall) goja.Value {
+		el := b.node(call.Argument(1))
+		if el == nil {
+			return goja.Null()
+		}
+		return b.wrap(b.insertAdjacent(n, strings.ToLower(call.Argument(0).String()), el))
+	})
+	o.Set("insertAdjacentText", func(call goja.FunctionCall) goja.Value {
+		b.insertAdjacent(n, strings.ToLower(call.Argument(0).String()), dom.NewText(call.Argument(1).String()))
+		return goja.Undefined()
+	})
 	b.accessor(o, "offsetWidth", func() goja.Value { return b.vm.ToValue(b.borderW(n)) }, nil)
 	b.accessor(o, "offsetHeight", func() goja.Value { return b.vm.ToValue(b.borderH(n)) }, nil)
 	b.accessor(o, "clientWidth", func() goja.Value { return b.vm.ToValue(b.borderW(n)) }, nil)
@@ -758,6 +776,35 @@ func (b *binder) closest(n *dom.Node, selector string) *dom.Node {
 		}
 	}
 	return nil
+}
+
+// insertAdjacent implements the DOM standard's own "insert adjacent"
+// algorithm (§4.9), inserting the single node relative to n per position and
+// returning it — nil for "beforebegin"/"afterend" when n has no parent
+// (matching the spec's own "return null" branches), and nil for any
+// unrecognised position (this engine's own established style: no bindings
+// here throw a DOMException for malformed input; insertAdjacentHTML's own
+// switch below already treats an unmatched position as a silent no-op).
+func (b *binder) insertAdjacent(n *dom.Node, position string, node *dom.Node) *dom.Node {
+	switch position {
+	case "beforebegin":
+		if n.Parent == nil {
+			return nil
+		}
+		dom.InsertBefore(n.Parent, node, n)
+	case "afterbegin":
+		dom.InsertBefore(n, node, firstChild(n))
+	case "beforeend":
+		dom.AppendChild(n, node)
+	case "afterend":
+		if n.Parent == nil {
+			return nil
+		}
+		dom.InsertBefore(n.Parent, node, nextSibling(n))
+	default:
+		return nil
+	}
+	return node
 }
 
 // insertAdjacentHTML parses html and inserts it at the given position.
