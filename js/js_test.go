@@ -540,6 +540,39 @@ func TestDocumentURL(t *testing.T) {
 	mustHave(t, logs, "url="+testURL, "same=true", "matchesLocation=true")
 }
 
+// TestElementLangDirTabIndex confirms lang/dir/tabIndex — all entirely
+// missing before this fix — as a fresh audit pass over the HTMLElement
+// interface (HTML Standard §3.2.6 for lang/dir, §6.6.3 for tabIndex).
+// lang/dir are plain reflected attributes; tabIndex's getter is NOT: a
+// present, integer-parseable tabindex attribute wins, otherwise the default
+// is 0 for natively-interactive elements (an <a> here) and -1 for anything
+// else (a plain <div>), matching the spec's own documented algorithm
+// exactly rather than a plain reflection.
+func TestElementLangDirTabIndex(t *testing.T) {
+	_, logs, _ := runJS(t, `<html class="client-nojs"><body>`+
+		`<div id="d1" lang="fr" dir="rtl">D1</div>`+
+		`<a id="anchor" href="#">A</a>`+
+		`<div id="d2" tabindex="5">D2</div>`+
+		`<div id="d3" tabindex="abc">D3</div>`+
+		`<script>
+			var d1 = document.getElementById('d1');
+			console.log('lang='+d1.lang+' dir='+d1.dir);
+			console.log('anchorTab='+document.getElementById('anchor').tabIndex);
+			console.log('divTab='+d1.tabIndex);
+			console.log('explicitTab='+document.getElementById('d2').tabIndex);
+			console.log('badTab='+document.getElementById('d3').tabIndex);
+			d1.tabIndex = 3;
+			console.log('setTab='+d1.getAttribute('tabindex'));
+		</script></body></html>`)
+	mustHave(t, logs,
+		"lang=fr dir=rtl",
+		"anchorTab=0",  // natively interactive: default 0
+		"divTab=-1",    // not interactive, no attribute: default -1
+		"explicitTab=5",
+		"badTab=-1", // unparseable tabindex falls back to the element's default
+		"setTab=3")
+}
+
 // TestDocumentCurrentScriptIdentifiesTheRightScriptAndClearsAfterwards covers
 // document.currentScript beyond "is it non-null": it must identify THIS
 // specific <script> among several (not just any script on the page), and
