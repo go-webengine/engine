@@ -519,8 +519,30 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "scrollHeight", func() goja.Value { return b.vm.ToValue(b.borderH(n)) }, nil)
 	b.accessor(o, "offsetTop", func() goja.Value { return b.vm.ToValue(b.offsetTop(n)) }, nil)
 	b.accessor(o, "offsetLeft", func() goja.Value { return b.vm.ToValue(b.offsetLeft(n)) }, nil)
-	for _, z := range []string{"scrollTop", "scrollLeft"} {
-		b.accessor(o, z, func() goja.Value { return b.vm.ToValue(0) }, nil)
+	// scrollTop/scrollLeft: this engine has no real scroll/clip model (a
+	// single static layout pass, no overflow viewport to actually scroll
+	// within), so these were hardcoded to always read 0 with no setter at
+	// all — a script-set value silently did nothing (goja's own no-op
+	// behaviour for an accessor with a nil setter). Real corpus usage
+	// confirmed on pkg.go.dev's own frontend.js, which both sets AND reads
+	// scrollTop back to decide whether to scroll a dropdown/search-results
+	// container so its active item stays visible
+	// (`f<e.scrollTop?e.scrollTop=f:p>e.scrollTop+e.clientHeight&&(e.scrollTop=p-e.c…)`).
+	// Storing a script-set value and reading it back (rather than leaving it
+	// hardcoded to a permanent 0) doesn't make that scroll-into-view logic
+	// visually functional — this engine still never clips or offsets
+	// anything by it — but it stops the comparison itself from being
+	// permanently wrong against a value that could never change, which a
+	// naive silent-no-op setter risks turning into an infinite decision
+	// loop or a stuck branch in real widget code like this.
+	for axis := 0; axis < 2; axis++ {
+		b.accessor(o, [2]string{"scrollTop", "scrollLeft"}[axis],
+			func() goja.Value { return b.vm.ToValue(b.scrollPos[n][axis]) },
+			func(v goja.Value) {
+				pos := b.scrollPos[n]
+				pos[axis] = v.ToFloat()
+				b.scrollPos[n] = pos
+			})
 	}
 	b.accessor(o, "offsetParent", func() goja.Value { return b.wrap(elementParent(n)) }, nil)
 	b.accessor(o, "dataset", func() goja.Value { return b.newDataset(n) }, nil)

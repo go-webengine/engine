@@ -74,6 +74,7 @@ func Begin(root *dom.Node, opt Options) *Session {
 		onHandlers: map[*dom.Node]map[string]goja.Value{},
 		storage:    map[string]*storageArea{},
 		executed:   map[*dom.Node]bool{},
+		scrollPos:  map[*dom.Node][2]float64{},
 		deadman:    time.Now().Add(opt.Timeout),
 	}
 	s := &Session{b: b}
