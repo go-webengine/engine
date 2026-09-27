@@ -573,6 +573,37 @@ func TestElementLangDirTabIndex(t *testing.T) {
 		"setTab=3")
 }
 
+// TestElementAccessKeyAndSpellcheck covers three GlobalEventHandlers-adjacent
+// HTMLElement members found entirely missing while auditing the same section
+// as lang/dir/tabIndex above: accessKey (a plain reflection, real corpus
+// trigger: en.wikipedia.org's own sidebar sets accesskey="j"/"r"/etc.),
+// accessKeyLabel (always "", a disclosed simplification within real
+// browsers' own already-inconsistent behaviour), and spellcheck — NOT a
+// plain boolean like `disabled`, but an enumerated content attribute with
+// "true"/""/"false" keywords (real corpus trigger: pkg.go.dev's own main.js
+// sets `codeBlock.spellcheck = false` on a dynamically-created example
+// block).
+func TestElementAccessKeyAndSpellcheck(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var d = document.getElementById('d');
+		d.accessKey = 'k';
+		console.log('accessKey='+d.accessKey+' attr='+d.getAttribute('accesskey'));
+		console.log('accessKeyLabel='+JSON.stringify(d.accessKeyLabel));
+
+		console.log('spellcheckDefault='+d.spellcheck);
+		d.spellcheck = false;
+		console.log('spellcheckOff='+d.spellcheck+' attr='+d.getAttribute('spellcheck'));
+		d.spellcheck = true;
+		console.log('spellcheckOn='+d.spellcheck+' attr='+d.getAttribute('spellcheck'));
+	`))
+	mustHave(t, logs,
+		"accessKey=k attr=k",
+		`accessKeyLabel=""`,
+		"spellcheckDefault=true",
+		"spellcheckOff=false attr=false",
+		"spellcheckOn=true attr=true")
+}
+
 // TestAddEventListenerOnce confirms addEventListener's `{once: true}` option
 // — entirely ignored before this fix (the third argument was never read at
 // all) — per the DOM standard's own "inner invoke" algorithm (§2.9): a once
