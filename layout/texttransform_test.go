@@ -6,6 +6,8 @@ package layout
 import (
 	"strings"
 	"testing"
+
+	"github.com/go-webengine/engine/css"
 )
 
 // allText joins a line's text items, the way the line will read.
@@ -86,5 +88,20 @@ func TestTextTransformIsMeasuredNotJustDrawn(t *testing.T) {
 	}
 	if u.Width <= 0 {
 		t.Errorf("the transformed item has width %g — it was not measured", u.Width)
+	}
+}
+
+// The early return: nothing to do without a style, and nothing to do to an
+// empty string.
+func TestApplyTextTransformNeedsAStyleAndSomeText(t *testing.T) {
+	if got := applyTextTransform("Partenaires", nil); got != "Partenaires" {
+		t.Errorf("no style gave %q", got)
+	}
+	up := &css.Style{TextTransform: css.TTUppercase}
+	if got := applyTextTransform("", up); got != "" {
+		t.Errorf("empty text gave %q", got)
+	}
+	if got := applyTextTransform("ok", up); got != "OK" {
+		t.Errorf("a style and some text gave %q, want OK", got)
 	}
 }
