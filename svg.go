@@ -400,3 +400,48 @@ func xmlEscapeText(sb *strings.Builder, s string) {
 		}
 	}
 }
+
+// RasterizeSVG renders SVG source into a bitmap of exactly w×h pixels,
+// whatever the document's own width/height say. The size is the caller's to
+// pick, because an SVG has no pixels of its own — which is the whole point of
+// this entry: the bitmap LoadImageSet hands back is sized for the RASTER
+// CANVAS, where one CSS px is one device px, and on paper that is a hard 96
+// dpi ceiling. A PDF exporter is the case this exists for. Together with the
+// serialisation LoadedImage.Data carries for an inline <svg>, it can render
+// the same drawing again at the density the paper deserves.
+//
+// currentColor is what `currentColor` resolves to, as a CSS colour string;
+// empty leaves the document's own. ok is false for a non-positive size or
+// source oksvg cannot parse — the same failure the internal path reports, and
+// the same recover() around it, since oksvg panics on some malformed input.
+// w and h are clamped to maxSVGDim.
+func RasterizeSVG(data []byte, w, h int, currentColor string) (img image.Image, ok bool) {
+	defer func() {
+		if recover() != nil {
+			img, ok = nil, false
+		}
+	}()
+	if w <= 0 || h <= 0 {
+		return nil, false
+	}
+	if w > maxSVGDim {
+		w = maxSVGDim
+	}
+	if h > maxSVGDim {
+		h = maxSVGDim
+	}
+	data, _, _ = sanitizeSVGRoot(data)
+	var (
+		icon *oksvg.SvgIcon
+		err  error
+	)
+	if currentColor != "" && bytes.Contains(data, []byte("currentColor")) {
+		icon, err = oksvg.ReadReplacingCurrentColor(bytes.NewReader(data), currentColor, oksvg.IgnoreErrorMode)
+	} else {
+		icon, err = oksvg.ReadIconStream(bytes.NewReader(data), oksvg.IgnoreErrorMode)
+	}
+	if err != nil || icon == nil || icon.ViewBox.W <= 0 || icon.ViewBox.H <= 0 {
+		return nil, false
+	}
+	return svgRasterizer(icon, w, h, iround(icon.ViewBox.W), iround(icon.ViewBox.H)), true
+}
