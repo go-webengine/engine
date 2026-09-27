@@ -651,6 +651,26 @@ func TestElementDisabledReflection(t *testing.T) {
 		"afterUnset=false attr=null")
 }
 
+// TestScrollTopLeftReadWhatYouWrote confirms scrollTop/scrollLeft — hardcoded
+// to always read 0 with no setter at all, so a script-set value silently did
+// nothing — now at least round-trip a script-set value, even though this
+// engine has no real scroll/clip model to make the value affect layout or
+// paint. Real corpus usage confirmed on pkg.go.dev's own frontend.js, which
+// both sets and reads scrollTop back to decide whether to scroll a
+// dropdown/search-results container so its active item stays visible.
+func TestScrollTopLeftReadWhatYouWrote(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var d = document.getElementById('d');
+		console.log('defaultTop='+d.scrollTop+' defaultLeft='+d.scrollLeft);
+		d.scrollTop = 42;
+		d.scrollLeft = 7;
+		console.log('afterSet top='+d.scrollTop+' left='+d.scrollLeft);
+	`))
+	mustHave(t, logs,
+		"defaultTop=0 defaultLeft=0",
+		"afterSet top=42 left=7")
+}
+
 // TestAddEventListenerOnce confirms addEventListener's `{once: true}` option
 // — entirely ignored before this fix (the third argument was never read at
 // all) — per the DOM standard's own "inner invoke" algorithm (§2.9): a once

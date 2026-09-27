@@ -121,6 +121,16 @@ type binder struct {
 	// for a synchronously-running classic script). Set/cleared by runScripts
 	// around each execute call.
 	currentScript *dom.Node
+
+	// scrollPos holds each element's own script-set scrollTop/scrollLeft, so
+	// a script that sets one reads the same value back — this engine has no
+	// real scroll/clip model (a single static layout pass, no overflow
+	// viewport), so the value has no effect on layout or paint; it exists
+	// purely so scroll-position-driven script LOGIC (e.g. a "scroll the
+	// active item into view" branch that compares against the current
+	// scrollTop) does not silently misbehave against a value hardcoded to 0
+	// forever. See scrollTop/scrollLeft's own accessor doc comment in dom.go.
+	scrollPos map[*dom.Node][2]float64
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled
