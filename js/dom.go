@@ -431,7 +431,8 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	})
 
 	o.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
-		b.addListener(n, call.Argument(0).String(), call.Argument(1))
+		opts, _ := call.Argument(2).(*goja.Object)
+		b.addListener(n, call.Argument(0).String(), call.Argument(1), optBool(opts, "once"))
 		return goja.Undefined()
 	})
 	o.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
@@ -1066,7 +1067,8 @@ func (b *binder) installDocument() *goja.Object {
 		return b.wrap(dom.NewElement("#fragment"))
 	})
 	d.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
-		b.addListener(b.docNode, call.Argument(0).String(), call.Argument(1))
+		opts, _ := call.Argument(2).(*goja.Object)
+		b.addListener(b.docNode, call.Argument(0).String(), call.Argument(1), optBool(opts, "once"))
 		return goja.Undefined()
 	})
 	d.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {

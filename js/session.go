@@ -70,7 +70,7 @@ func Begin(root *dom.Node, opt Options) *Session {
 		cache:      map[*dom.Node]*goja.Object{},
 		windowNode: &dom.Node{Type: dom.Element, Tag: "#window"},
 		docNode:    root,
-		listeners:  map[*dom.Node]map[string][]goja.Value{},
+		listeners:  map[*dom.Node]map[string][]*eventListenerEntry{},
 		onHandlers: map[*dom.Node]map[string]goja.Value{},
 		storage:    map[string]*storageArea{},
 		executed:   map[*dom.Node]bool{},

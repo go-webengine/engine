@@ -11,21 +11,36 @@ import (
 	"github.com/go-webengine/engine/dom"
 )
 
+// eventListenerEntry is one registered listener: the callback plus its own
+// `once` flag. DOM Standard §2.7's own "add an event listener" algorithm
+// stores capture/passive/once/signal per registration, not just the bare
+// callback — this engine only reads `once` out of the options object so far
+// (see the addEventListener bindings in dom.go/window.go); capture only
+// affects dispatch ORDER (this engine has no capture phase at all, so it
+// cannot matter yet), passive is a no-op in a synchronous non-scrolling
+// engine, and signal would need AbortController support this engine lacks.
+type eventListenerEntry struct {
+	handler goja.Value
+	once    bool
+}
+
 // addListener registers handler for typ on node n (deduplicating identical
-// registrations, matching the DOM).
-func (b *binder) addListener(n *dom.Node, typ string, handler goja.Value) {
+// registrations, matching the DOM). once marks a listener that removes
+// itself after its first invocation (the addEventListener options' own
+// `once` flag).
+func (b *binder) addListener(n *dom.Node, typ string, handler goja.Value, once bool) {
 	if handler == nil || goja.IsUndefined(handler) || goja.IsNull(handler) {
 		return
 	}
 	if b.listeners[n] == nil {
-		b.listeners[n] = map[string][]goja.Value{}
+		b.listeners[n] = map[string][]*eventListenerEntry{}
 	}
-	for _, h := range b.listeners[n][typ] {
-		if h == handler {
+	for _, e := range b.listeners[n][typ] {
+		if e.handler == handler {
 			return
 		}
 	}
-	b.listeners[n][typ] = append(b.listeners[n][typ], handler)
+	b.listeners[n][typ] = append(b.listeners[n][typ], &eventListenerEntry{handler: handler, once: once})
 }
 
 // setOnHandler implements an "onX" IDL event-handler-attribute assignment
@@ -48,7 +63,7 @@ func (b *binder) setOnHandler(n *dom.Node, typ string, v goja.Value) {
 	if _, ok := goja.AssertFunction(v); !ok {
 		return
 	}
-	b.addListener(n, typ, v)
+	b.addListener(n, typ, v, false)
 	if b.onHandlers[n] == nil {
 		b.onHandlers[n] = map[string]goja.Value{}
 	}
@@ -70,8 +85,8 @@ func (b *binder) removeListener(n *dom.Node, typ string, handler goja.Value) {
 		return
 	}
 	hs := m[typ]
-	for i, h := range hs {
-		if h == handler {
+	for i, e := range hs {
+		if e.handler == handler {
 			m[typ] = append(hs[:i], hs[i+1:]...)
 			return
 		}
@@ -120,9 +135,18 @@ func (b *binder) dispatch(n *dom.Node, typ string, event goja.Value) {
 				obj.Set("currentTarget", self)
 			}
 			// Copy so a handler that mutates the list mid-dispatch is safe.
-			hs := append([]goja.Value(nil), m[typ]...)
-			for _, h := range hs {
-				fn := b.handlerFunc(h)
+			hs := append([]*eventListenerEntry(nil), m[typ]...)
+			for _, e := range hs {
+				// Per the DOM standard's own "inner invoke" (§2.9): a once
+				// listener is removed BEFORE its callback runs, not after.
+				// {once: true} is real, live usage — caniuse.com's own
+				// ad-network bundle.js (already load-bearing elsewhere in
+				// this session, see cloneNode's own importNode doc comment)
+				// calls addEventListener("featureRendered", cb, {once:true}).
+				if e.once {
+					b.removeListener(cur, typ, e.handler)
+				}
+				fn := b.handlerFunc(e.handler)
 				b.callSafely(fn, self, event)
 				if stoppedImmediate {
 					break

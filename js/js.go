@@ -88,7 +88,7 @@ type binder struct {
 
 	windowNode *dom.Node // sentinel node keying window-level listeners
 	docNode    *dom.Node // sentinel node keying document-level listeners
-	listeners  map[*dom.Node]map[string][]goja.Value
+	listeners  map[*dom.Node]map[string][]*eventListenerEntry
 	// onHandlers tracks the current "onX" IDL event-handler-attribute value per
 	// (node, type) — e.g. `el.onload = fn` — as ONE slot that a later
 	// assignment replaces, unlike addEventListener's list. Implemented as a
