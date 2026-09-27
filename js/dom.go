@@ -566,6 +566,34 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 				b.removeAttr(n, "open")
 			}
 		})
+	// disabled: another plain presence-based boolean reflection, the same
+	// shape as checked/open above, and one this session's own comments had
+	// been citing as an EXAMPLE of the shape (round 133's spellcheck
+	// comment) while it did not actually exist itself — found by finally
+	// grepping for it directly rather than continuing to assume it did.
+	// `:disabled` is already a real, wired CSS selector (css/selector.go's
+	// own isDisabled/c.Disabled, used for `button:disabled` etc. author
+	// rules), so this fixes any script-driven disable/enable toggle's CSS
+	// reactivity broadly. Real corpus usage confirmed on caniuse.com's own
+	// bundle.js, toggling a <link>/<style> element's own `disabled` (and
+	// `media`) together to switch an alternate stylesheet on and off
+	// (`r.disabled=!1` / `r.disabled=!t`) — disclosed honestly: THIS
+	// specific usage is not yet visually functional even with this fix,
+	// since the cascade's own stylesheet collection (css/external.go's
+	// StylesheetLinks, cascade.go's styleElementText) does not yet skip a
+	// disabled <link>/<style>, and no `.media` IDL accessor exists yet
+	// either — left as a follow-up; this round only wires the JS↔attribute
+	// half, which is real and independently valuable for the pseudo-class
+	// case regardless.
+	b.accessor(o, "disabled",
+		func() goja.Value { _, ok := n.Attribute("disabled"); return b.vm.ToValue(ok) },
+		func(v goja.Value) {
+			if v.ToBoolean() {
+				b.setAttr(n, "disabled", "")
+			} else {
+				b.removeAttr(n, "disabled")
+			}
+		})
 	if n.Tag == "option" {
 		b.accessor(o, "selected",
 			func() goja.Value { _, ok := n.Attribute("selected"); return b.vm.ToValue(ok) },
