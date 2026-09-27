@@ -604,6 +604,31 @@ func TestElementAccessKeyAndSpellcheck(t *testing.T) {
 		"spellcheckOn=true attr=true")
 }
 
+// TestDetailsOpenReflection confirms HTMLDetailsElement.open — entirely
+// missing before this fix — is a plain boolean reflection of the "open"
+// content attribute, the same shape as checked/hidden. This is the property
+// the CSS engine's own UA stylesheet already keys off
+// (`details:not([open]) > :not(summary) { display: none }`, css/ua.go), so a
+// script that sets `details.open = true` previously created a dead JS
+// property with no effect on the actual rendered content at all — confirmed
+// live on pkg.go.dev's own frontend.js/main.js (a version-switcher dropdown
+// closing on Escape, an example block expanding itself, and a URL-fragment
+// auto-expand on hashchange).
+func TestDetailsOpenReflection(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var d = document.getElementById('d');
+		console.log('defaultOpen='+d.open);
+		d.open = true;
+		console.log('afterSet='+d.open+' attr='+d.getAttribute('open'));
+		d.open = false;
+		console.log('afterUnset='+d.open+' attr='+d.getAttribute('open'));
+	`))
+	mustHave(t, logs,
+		"defaultOpen=false",
+		"afterSet=true attr=",
+		"afterUnset=false attr=null")
+}
+
 // TestAddEventListenerOnce confirms addEventListener's `{once: true}` option
 // — entirely ignored before this fix (the third argument was never read at
 // all) — per the DOM standard's own "inner invoke" algorithm (§2.9): a once
