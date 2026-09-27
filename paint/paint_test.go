@@ -105,7 +105,7 @@ func TestFontsMeasureAndMetrics(t *testing.T) {
 		t.Errorf("tiny line height = %v", lhTiny)
 	}
 	// Unknown family falls back to Sans (and size<1 clamps to 1).
-	if f.Measure("x", css.FontFamily(99), 0.2, 400, false) <= 0 {
+	if f.Measure("x", css.FontFamily{Generic: 99}, 0.2, 400, false) <= 0 {
 		t.Error("unknown family/size should still measure")
 	}
 }

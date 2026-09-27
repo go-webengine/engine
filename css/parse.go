@@ -1673,25 +1673,63 @@ func isCSSSpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
+// parseFontFamily resolves a `font-family` declaration into the families it
+// named and the generic bucket to fall back on.
+//
+// The bucket is decided exactly as it was before named families existed — the
+// first entry the heuristic below recognises wins, so no page changes the
+// typeface it was already getting. What is new is that the names are kept, so
+// an @font-face rule can be matched against them.
 func parseFontFamily(lv string) FontFamily {
-	lv = strings.ToLower(lv)
-	// Inspect each comma-separated family; the first recognised generic wins.
-	for _, fam := range strings.Split(lv, ",") {
+	var names []string
+	generic, found := GenericSans, false
+	for _, fam := range splitTopLevelCommas(strings.ToLower(lv)) {
 		fam = strings.TrimSpace(strings.Trim(strings.TrimSpace(fam), `"'`))
-		switch {
-		case fam == "monospace" || strings.Contains(fam, "mono") ||
-			strings.Contains(fam, "courier") || strings.Contains(fam, "consolas"):
-			return Mono
-		case fam == "serif" || strings.Contains(fam, "times") ||
-			strings.Contains(fam, "georgia") || strings.Contains(fam, "lora"):
-			return Serif
-		case fam == "sans-serif" || strings.Contains(fam, "sans") ||
-			strings.Contains(fam, "arial") || strings.Contains(fam, "helvetica") ||
-			strings.Contains(fam, "inter") || strings.Contains(fam, "roboto"):
-			return Sans
+		if fam == "" {
+			continue
+		}
+		if g, ok := genericBucketFor(fam); ok && !found {
+			generic, found = g, true
+		}
+		// A generic keyword names no face. An alias like "helvetica" does
+		// both — it names a face this engine has not got, and says which
+		// bucket that face belongs to — so it stays in the list, where an
+		// @font-face rule for it would be found.
+		if !isGenericKeyword(fam) {
+			names = append(names, fam)
 		}
 	}
-	return Sans
+	return FontFamily{Names: strings.Join(names, ","), Generic: generic}
+}
+
+// isGenericKeyword reports whether a family entry is one of CSS's generic
+// keywords rather than the name of a typeface.
+func isGenericKeyword(fam string) bool {
+	switch fam {
+	case "serif", "sans-serif", "monospace", "cursive", "fantasy",
+		"system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded":
+		return true
+	}
+	return false
+}
+
+// genericBucketFor maps one family entry to a generic bucket, by keyword or by
+// the name of a face whose shape is known. This is the pre-existing heuristic,
+// moved here unchanged so the bucket a page resolves to does not shift.
+func genericBucketFor(fam string) (Generic, bool) {
+	switch {
+	case fam == "monospace" || strings.Contains(fam, "mono") ||
+		strings.Contains(fam, "courier") || strings.Contains(fam, "consolas"):
+		return GenericMono, true
+	case fam == "serif" || strings.Contains(fam, "times") ||
+		strings.Contains(fam, "georgia") || strings.Contains(fam, "lora"):
+		return GenericSerif, true
+	case fam == "sans-serif" || strings.Contains(fam, "sans") ||
+		strings.Contains(fam, "arial") || strings.Contains(fam, "helvetica") ||
+		strings.Contains(fam, "inter") || strings.Contains(fam, "roboto"):
+		return GenericSans, true
+	}
+	return GenericSans, false
 }
 
 // backgroundColorToken extracts a leading colour token from a `background`

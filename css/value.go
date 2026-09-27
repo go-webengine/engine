@@ -443,17 +443,62 @@ func (a AlignSelf) Resolve(container AlignItems) AlignItems {
 	}
 }
 
-// FontFamily is the generic font family a run is rendered with.
-type FontFamily uint8
+// Generic is one of CSS's generic font families — the bucket a run falls into
+// when none of the families it named is available.
+type Generic uint8
 
 const (
-	// Sans is the default sans-serif family.
-	Sans FontFamily = iota
-	// Serif is the serif family.
-	Serif
-	// Mono is the monospace family.
-	Mono
+	// GenericSans is the default sans-serif bucket.
+	GenericSans Generic = iota
+	// GenericSerif is the serif bucket.
+	GenericSerif
+	// GenericMono is the monospace bucket.
+	GenericMono
 )
+
+// FontFamily is a resolved `font-family`: the families the declaration named,
+// in order, and the generic bucket to fall back on when none of them can be
+// loaded.
+//
+// It used to be the bucket alone, which meant a document could never ask for
+// a typeface by name: a poster written for IBM Plex Sans and Spectral was
+// typeset in the bundled Inter and Lora, silently and at different metrics.
+// Names is what an @font-face rule (see FontFace) is matched against.
+//
+// It stays comparable — a struct of a string and a byte — because it is a map
+// key in the font layer, which caches a parsed face per (family, weight,
+// slant).
+type FontFamily struct {
+	// Names are the non-generic families named, lowercased and joined with
+	// commas in declaration order. Empty when the declaration named only
+	// generic keywords.
+	Names string
+	// Generic is the bucket to use when no named family is available — the
+	// generic keyword the declaration ended with, or the one implied by a
+	// name the engine recognises ("helvetica" means sans).
+	Generic Generic
+}
+
+// The three generic families, for the places that mean the bucket itself: the
+// UA default, and the bundled faces the font layer registers. Values rather
+// than constants because Go has no struct constant; do not assign to them.
+var (
+	// Sans is the sans-serif bucket with no named family.
+	Sans = FontFamily{Generic: GenericSans}
+	// Serif is the serif bucket with no named family.
+	Serif = FontFamily{Generic: GenericSerif}
+	// Mono is the monospace bucket with no named family.
+	Mono = FontFamily{Generic: GenericMono}
+)
+
+// NamedFamilies returns the families this declaration named, in the order it
+// named them — what a consumer walks to find the first face it holds.
+func (f FontFamily) NamedFamilies() []string {
+	if f.Names == "" {
+		return nil
+	}
+	return strings.Split(f.Names, ",")
+}
 
 // TextTransform is `text-transform`: the capitalisation a run of text is
 // RENDERED with, leaving the document's own characters untouched. It is
