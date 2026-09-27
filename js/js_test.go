@@ -288,6 +288,46 @@ func TestTextAndHTML(t *testing.T) {
 	}
 }
 
+// TestGetRootNode confirms Node.getRootNode() — entirely missing before
+// this fix — returns the topmost ancestor (document, for a connected node;
+// itself, for a detached one), the DOM standard's own "root" (§4.4).
+func TestGetRootNode(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		console.log('plain='+(document.getElementById('d').getRootNode() === document));
+		var detached = document.createElement('div');
+		console.log('detached='+(detached.getRootNode() === detached));
+	`))
+	mustHave(t, logs, "plain=true", "detached=true")
+}
+
+// TestGetRootNodeComposedBridgesShadowTrees confirms getRootNode's own
+// composed:true branch (DOM Standard §4.4's "shadow-including root") walks
+// OUT of a shadow tree via ShadowHost all the way to the true top-level
+// document, even through NESTED shadow trees (a shadow host that is itself
+// inside another shadow tree) — while plain getRootNode() (composed
+// omitted/false) stops at the node's own shadow tree's top, per spec.
+//
+// Exercised directly at the Go level rather than via a JS script: this
+// engine has no way yet for a script to obtain a node reference from INSIDE
+// a shadow tree in the first place (no element.shadowRoot, and
+// getElementById correctly never crosses a shadow boundary per spec), so
+// the composed:true bridging this fix adds is not yet JS-reachable — real
+// and spec-correct, not dead code, just ahead of the API surface that would
+// let a script exercise it.
+func TestGetRootNodeComposedBridgesShadowTrees(t *testing.T) {
+	document := &dom.Node{Type: dom.Element, Tag: "html"}
+	outerHost := &dom.Node{Type: dom.Element, Tag: "outer-widget", Parent: document}
+	innerHost := &dom.Node{Type: dom.Element, Tag: "inner-widget", ShadowHost: outerHost}
+	leaf := &dom.Node{Type: dom.Element, Tag: "span", ShadowHost: innerHost}
+
+	if got := getRootNode(leaf, false); got != leaf {
+		t.Fatalf("getRootNode(leaf, false) = %v, want leaf itself (its own shadow tree's top)", got)
+	}
+	if got := getRootNode(leaf, true); got != document {
+		t.Fatalf("getRootNode(leaf, true) = %v, want the true top-level document, bridging through both nested shadow hosts", got)
+	}
+}
+
 func TestInsertAdjacentHTML(t *testing.T) {
 	root, _, _ := runJS(t, page(`
 		var d=document.getElementById('d');
