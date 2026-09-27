@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/go-opentype/fonts/cabin"
@@ -67,9 +68,8 @@ func TestLoadFontFacesFetchesRegistersAndMeasures(t *testing.T) {
 	}
 }
 
-// A rule this build cannot decode leaves the page on its bundled family
-// rather than half-loading a face: WOFF and WOFF2 are what a font service
-// serves a browser, and reaching them needs a decoder in go-opentype.
+// A rule whose file cannot be had leaves the page on its bundled family
+// rather than half-loading a face.
 func TestLoadFontFacesSkipsWhatItCannotDecode(t *testing.T) {
 	srv, _ := fontServer(t)
 	doc := &Document{URL: srv.URL + "/page.html"}
@@ -83,15 +83,16 @@ func TestLoadFontFacesSkipsWhatItCannotDecode(t *testing.T) {
 			t.Errorf("%q gave %d faces, want none", sheet, len(faces))
 		}
 	}
-	// A WOFF wrapper is recognised and refused rather than fed to the parser.
-	if _, ok := decodeFontFile([]byte("wOFFxxxx")); ok {
-		t.Error("a WOFF wrapper must be refused")
-	}
-	if _, ok := decodeFontFile([]byte("wOF2xxxx")); ok {
-		t.Error("a WOFF2 wrapper must be refused")
-	}
+	// A file too short to carry a signature is refused; a WOFF or WOFF2
+	// wrapper is NOT, since go-opentype unwraps both itself now — the whole
+	// point, WOFF2 being what a font service serves a browser.
 	if _, ok := decodeFontFile([]byte("ab")); ok {
-		t.Error("a truncated file must be refused")
+		t.Error("a file too short for a signature must be refused")
+	}
+	for _, sig := range []string{"wOFFxxxx", "wOF2xxxx"} {
+		if _, ok := decodeFontFile([]byte(sig)); !ok {
+			t.Errorf("%q must reach the parser rather than be refused here", sig[:4])
+		}
 	}
 }
 
@@ -155,4 +156,40 @@ func TestItoaAndBoolKey(t *testing.T) {
 	if boolKey(true) != "i" || boolKey(false) != "n" {
 		t.Error("boolKey")
 	}
+}
+
+// The end-to-end case this whole thread was for: a real WOFF2 from a font
+// service, fetched, unwrapped, registered, and MEASURING. Served locally so
+// the test does not depend on the network, but the bytes are a font service's
+// own — subsetted and glyf/loca transformed, which is what a browser gets.
+func TestLoadFontFacesReadsAWOFF2(t *testing.T) {
+	woff2, err := os.ReadFile("testdata/IBMPlexSans-Regular-subset.woff2")
+	if err != nil {
+		t.Skip(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "font/woff2")
+		_, _ = w.Write(woff2)
+	}))
+	defer srv.Close()
+	sheet := `@font-face { font-family: 'IBM Plex Sans'; font-style: normal; font-weight: 400;
+	           src: url(` + srv.URL + `/f.woff2) format('woff2'); }`
+	faces := New().LoadFontFaces(context.Background(), &Document{URL: srv.URL + "/p.html"}, []string{sheet}, css.Media{Width: 1024})
+	if len(faces) != 1 {
+		t.Fatalf("got %d faces, want 1 — a woff2 src must now be reachable", len(faces))
+	}
+	if faces[0].Family != "ibm plex sans" {
+		t.Errorf("family = %q", faces[0].Family)
+	}
+	fonts := paint.NewFonts()
+	fam := css.FontFamily{Names: "ibm plex sans", Generic: css.GenericSans}
+	before := fonts.Measure("Partenaires", fam, 40, 400, false)
+	if n := RegisterFontFaces(fonts, faces); n != 1 {
+		t.Fatalf("registered %d", n)
+	}
+	after := fonts.Measure("Partenaires", fam, 40, 400, false)
+	if after == before {
+		t.Errorf("the woff2 face did not change the measurement (%v)", before)
+	}
+	t.Logf("Inter measured %.2f px, IBM Plex Sans from the woff2 %.2f px", before, after)
 }

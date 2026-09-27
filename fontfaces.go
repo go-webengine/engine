@@ -102,11 +102,16 @@ func (e *Engine) loadOneFontFace(ctx context.Context, doc *Document, face css.Fo
 }
 
 // fontFormatSupported reports whether a src entry's format() hint names
-// something decodeFontFile can read. An entry with no hint is tried anyway —
+// something the font parser can read. An entry with no hint is tried anyway —
 // the hint is optional, and the bytes themselves are the authority.
+//
+// woff2 is the one that matters: it is what a font service serves a browser,
+// and this engine sends a browser's User-Agent, so it is what a font service
+// serves us. go-opentype reads both containers now (go-opentype/opentype#43).
 func fontFormatSupported(s css.FontSrc) bool {
 	switch s.Format {
-	case "", "truetype", "opentype", "sfnt", "truetype-variations", "opentype-variations":
+	case "", "truetype", "opentype", "sfnt", "woff", "woff2",
+		"truetype-variations", "opentype-variations":
 		return true
 	}
 	return false
@@ -150,21 +155,15 @@ func (e *Engine) fetchFontBytes(ctx context.Context, base, src string) ([]byte, 
 	return data, true
 }
 
-// decodeFontFile unwraps a fetched font file to SFNT bytes. Today that means
-// recognising that it already IS one: a WOFF ('wOFF') or WOFF2 ('wOF2')
-// wrapper is rejected here rather than half-read, so the page falls back to a
-// bundled family instead of being typeset with a broken face. Teaching
-// go-opentype those two containers is what makes a font service reachable,
-// since WOFF2 is what one serves a browser — and this engine sends a
-// browser's User-Agent, so it is what a font service serves US.
+// decodeFontFile is the gate a fetched font file passes before anyone tries to
+// parse it. It used to refuse a WOFF or WOFF2 wrapper, which meant refusing
+// every font a font service serves; go-opentype unwraps both containers
+// itself now (go-opentype/opentype#43), so there is nothing left to do here
+// but reject a file too short to have a signature at all.
 //
-// It does not validate the SFNT; loadOneFontFace parses it.
+// It does not validate the file; loadOneFontFace parses it.
 func decodeFontFile(data []byte) ([]byte, bool) {
 	if len(data) < 4 {
-		return nil, false
-	}
-	switch string(data[:4]) {
-	case "wOFF", "wOF2":
 		return nil, false
 	}
 	return data, true

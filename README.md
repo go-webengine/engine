@@ -114,7 +114,10 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - **Text**: anti-aliased proportional text (go-opentype) with **real bold and
   italic faces** (no faux-bold), serif / sans / mono, complex scripts (Cyrillic,
   Vietnamese, …); `white-space: pre` and `nowrap`; `text-transform`
-  (`uppercase`/`lowercase`/`capitalize`, applied before measurement).
+  (`uppercase`/`lowercase`/`capitalize`, applied before measurement);
+  **`@font-face`** — the document's own typefaces are fetched and registered
+  before anything is measured, **WOFF2 included**, so a page is set in the
+  face it asked for and not in a substitute at other metrics.
 - **Tables**: automatic table layout (CSS 2.1 §17.5.2.2) — every column keeps
   at least its longest unbreakable word, percentage and fixed cell widths are
   honoured, surplus goes to the auto columns; `colspan`.
