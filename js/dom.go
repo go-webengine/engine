@@ -458,6 +458,19 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "onerror",
 		func() goja.Value { return orUndefined(b.onHandler(n, "error")) },
 		func(v goja.Value) { b.setOnHandler(n, "error", v) })
+	// onclick/onsubmit: the two GlobalEventHandlers IDL attributes actually
+	// found live in this session's own corpus, out of the full ~60-member
+	// mixin (HTML Standard §8.1.7.2) — deliberately not wiring the rest
+	// speculatively. Confirmed: pkg.go.dev's own main.js sets
+	// `this.toggleAll.onclick = this.expandAllItems` (the same accessible
+	// tree-nav sidebar round 130 already fixed tabIndex for); caniuse.com's
+	// own bundle.js sets `searchForm.onsubmit = function(e){e.preventDefault()}`.
+	b.accessor(o, "onclick",
+		func() goja.Value { return orUndefined(b.onHandler(n, "click")) },
+		func(v goja.Value) { b.setOnHandler(n, "click", v) })
+	b.accessor(o, "onsubmit",
+		func() goja.Value { return orUndefined(b.onHandler(n, "submit")) },
+		func(v goja.Value) { b.setOnHandler(n, "submit", v) })
 
 	// Layout/geometry: backed by the real laid-out box tree when a Metrics source
 	// is installed (the engine's settle loop), else zeros (the legacy no-layout
