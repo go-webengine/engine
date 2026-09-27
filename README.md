@@ -113,7 +113,8 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   **border** + **border-radius**, **box-shadow**, group **opacity**.
 - **Text**: anti-aliased proportional text (go-opentype) with **real bold and
   italic faces** (no faux-bold), serif / sans / mono, complex scripts (Cyrillic,
-  Vietnamese, …); `white-space: pre` and `nowrap`.
+  Vietnamese, …); `white-space: pre` and `nowrap`; `text-transform`
+  (`uppercase`/`lowercase`/`capitalize`, applied before measurement).
 - **Tables**: automatic table layout (CSS 2.1 §17.5.2.2) — every column keeps
   at least its longest unbreakable word, percentage and fixed cell widths are
   honoured, surplus goes to the auto columns; `colspan`.

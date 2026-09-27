@@ -455,6 +455,26 @@ const (
 	Mono
 )
 
+// TextTransform is `text-transform`: the capitalisation a run of text is
+// RENDERED with, leaving the document's own characters untouched. It is
+// applied where layout turns a text node into items, so measurement and
+// painting see the same string — a label written "Partners" and styled
+// uppercase must be measured as "PARTNERS", which is wider.
+//
+// full-width and full-size-kana are not implemented; they parse as TTNone.
+type TextTransform uint8
+
+const (
+	// TTNone renders the text as the document wrote it.
+	TTNone TextTransform = iota
+	// TTUppercase renders every character in upper case.
+	TTUppercase
+	// TTLowercase renders every character in lower case.
+	TTLowercase
+	// TTCapitalize upper-cases the first letter of each word.
+	TTCapitalize
+)
+
 // WhiteSpace controls collapsing of whitespace and wrapping.
 type WhiteSpace uint8
 
@@ -629,11 +649,12 @@ type Style struct {
 	// image bitmap) is scaled into its box when the two aspect ratios don't
 	// match — see ObjectFit's own doc comment. Fill (the zero value) is this
 	// engine's own pre-existing behaviour (stretch to exactly fill the box).
-	ObjectFit  ObjectFit
-	BoxSizing  BoxSizing
-	TextAlign  TextAlign
-	WhiteSpace WhiteSpace
-	LineHeight LineHeight
+	ObjectFit     ObjectFit
+	BoxSizing     BoxSizing
+	TextAlign     TextAlign
+	WhiteSpace    WhiteSpace
+	TextTransform TextTransform
+	LineHeight    LineHeight
 
 	// LetterSpacing is `letter-spacing`'s resolved value in px (0 = `normal`,
 	// the initial value), added after EVERY character of a text run
@@ -1123,6 +1144,7 @@ func inheritFrom(parent Style) Style {
 		FlexShrink:     1,
 		TextAlign:      parent.TextAlign,      // inherited
 		WhiteSpace:     parent.WhiteSpace,     // inherited
+		TextTransform:  parent.TextTransform,  // inherited
 		LineHeight:     parent.LineHeight,     // inherited
 		LetterSpacing:  parent.LetterSpacing,  // inherited
 		BorderSpacingH: parent.BorderSpacingH, // inherited
