@@ -544,6 +544,37 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 				b.scrollPos[n] = pos
 			})
 	}
+	// HTMLMediaElement.currentTime/play()/pause()/paused were entirely
+	// missing — this engine does no real media decoding/playback at all (a
+	// static renderer has no timeline to advance), so none of this has any
+	// effect on rendering; it exists purely so a script's OWN seek/play/
+	// pause logic stays internally consistent, the same "storage, not
+	// real playback" scope as scrollTop/scrollLeft above. Real corpus usage
+	// confirmed on archive.org's own details-av.js media-player component:
+	// clicking a transcript entry finds the real `<video>` element
+	// (`shadowRoot.querySelector("video")`), seeks it
+	// (`videoEl.currentTime = this.currentTime`) and resumes playback
+	// (`videoEl.play()`). `duration`/`volume`/`muted`/`readyState` were also
+	// found in the same bundle but NOT implemented here — deliberately: on
+	// closer inspection those specific hits were jQuery's own animation
+	// `$.fx.speeds` internals and Bootstrap's carousel `.paused` state, not
+	// this element at all, so there is no confirmed real trigger for them
+	// yet (checked directly rather than assumed from a bare grep hit).
+	b.accessor(o, "currentTime",
+		func() goja.Value { return b.vm.ToValue(b.mediaTime[n]) },
+		func(v goja.Value) { b.mediaTime[n] = v.ToFloat() })
+	b.accessor(o, "paused", func() goja.Value {
+		paused, ok := b.mediaPaused[n]
+		return b.vm.ToValue(!ok || paused) // spec default: a media element starts paused
+	}, nil)
+	o.Set("play", func(goja.FunctionCall) goja.Value {
+		b.mediaPaused[n] = false
+		return b.resolved(goja.Undefined())
+	})
+	o.Set("pause", func(goja.FunctionCall) goja.Value {
+		b.mediaPaused[n] = true
+		return goja.Undefined()
+	})
 	b.accessor(o, "offsetParent", func() goja.Value { return b.wrap(elementParent(n)) }, nil)
 	b.accessor(o, "dataset", func() goja.Value { return b.newDataset(n) }, nil)
 	b.accessor(o, "value",
