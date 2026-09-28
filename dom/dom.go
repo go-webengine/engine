@@ -74,6 +74,18 @@ type Node struct {
 	// `:indeterminate` CSS pseudo-class (css/selector.go).
 	Indeterminate bool
 
+	// CustomValidity holds a form control's own "custom error message" set by
+	// script via `.setCustomValidity(msg)` (HTML Standard's Constraint
+	// Validation API) — empty means no custom error. This engine models NO
+	// native constraints at all (no required/pattern/min/max/step checking
+	// against a value), so this is the ONLY thing that can ever make
+	// `.validity.valid`/`.checkValidity()` false — a deliberate, disclosed
+	// scope boundary: this backs the real, evidenced usage (see js/dom.go's
+	// own doc comment), not a full constraint-validation engine. Runtime-only
+	// field, the same shape as Indeterminate above — there is no
+	// "customvalidity" content attribute.
+	CustomValidity string
+
 	// Shadow is the shadow root attached to this element (a declarative
 	// <template shadowrootmode> hoisted out at parse time — see
 	// attachDeclarativeShadowRoots), or nil for a plain element. When set,
