@@ -18,6 +18,14 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-28 (round 142) — two of this engine's OWN "Known gaps" bullets were stale, one of them contradicted by a bullet 130 lines below it in the SAME section — no code change, documentation only (engine#242)
+
+Continuing round 141's method (check this engine's own "Known gaps" claims against the current code rather than trust them), swept the remainder of the section for the same pattern. Three dependency-drift leads came up empty first: `dop251/goja`'s ES2018 `for await...of` gap (upstream issue #498 confirmed still open; the one newer available goja commit only adds unrelated fixes) and the Go Mono comma-glyph bug (re-reproduced live, still happens exactly as documented at 10-14px; neither `go-opentype/fonts` nor `go-opentype/opentype` has landed anything touching glyph outlines or rasterisation since round 64 found it) are both still accurate. `github.com/srwiley/oksvg`'s pinned commit IS its own upstream's latest — genuinely unmaintained, nothing to bump to.
+
+- **`@supports` bullet was stale**: it said "`@supports` is entirely unimplemented," which stopped being true at round 78 (2026-09-21, engine#169, `css/supports.go`'s `supportsConditionHolds`) — three weeks before this section's own "updated 2026-08-30" header claimed currency. Corrected to say precisely what it actually recognises now (one feature test, `(color: light-dark(...))`, with or without a leading `not`) and what it still does not (everything else, unchanged).
+- **"Fonts" bullet directly contradicted round 141's own bullet 130 lines above it in the SAME section**: it said "no web font (`@font-face`) loading... always falls back to" the three bundled families — flatly contradicted by round 141's bullet, already sitting in this same Known-gaps section, saying `@font-face` fetching/WOFF2 decoding shipped in engine#233/#234/#236. The two were simply never reconciled. Corrected to describe the current, real capability (fetches and decodes what it can; falls back to the bundled three for what it can't).
+- **No code change this round** — both findings are real and precisely characterised, but the fix is exclusively to this file's own prose, matching round 25/64/72's own precedent for a documentation-only round. `go build`/`go vet`/`go test ./...` reconfirmed green (untouched); no bench run needed since nothing changed to compare.
+
 ## 2026-09-28 (round 141) — go.dev/blog's own nav dropdown carets rendered nothing at all, not the literal text this engine's own "Known gaps" entry said they would — a stale gap description, checked against the current code rather than trusted (engine#241)
 
 Following the user's own "switch approach entirely" instruction after round 140, moved off corpus-sweeping and checked this engine's own FIDELITY.md "Known gaps" section against the CURRENT code instead — the method rounds 71 and 82 already used successfully for stale-premise gaps. The `@font-face`/Material Icons entry (round 20, last touched 2026-09-03) claimed a fix would be "genuinely comparable in scope to Shadow DOM," needing both `@font-face` fetching (which did not exist yet when written) and a whole new OpenType-shaping package. Both premises turned out to be stale: `@font-face` fetching/WOFF2 decoding shipped separately three rounds ago (engine#233/#234/#236), and re-reading `go-opentype/opentype`'s current source (rather than trusting the gap entry's own description of it) found `Face` had gained `Shape`/`ShapePositioned`/`GlyphMaskIndex`/`AdvanceIndex` methods directly — no separate `go-opentype/shape` package needed at all.
@@ -5362,19 +5370,7 @@ Restated against what was actually verified that day:
   `background-color:inherit`, which is not even inherited by default per
   spec) is silently dropped rather than resolved. `initial`, `unset`, and
   `revert` are not implemented at all.
-- **`@supports` is entirely unimplemented — its body is always skipped**, the
-  same "unrecognised at-rule" treatment as `@font-face`/`@keyframes`. Unlike
-  `@layer`'s "include unconditionally" fallback, `@supports` genuinely
-  *gates* content, so this can drop real declarations no other mechanism
-  reaches — confirmed live on developer.mozilla.org, whose native
-  `light-dark()` colours (this engine does implement the function itself,
-  2026-09-01, engine#85) sit behind `@supports (color: light-dark(...))` and
-  so never get parsed at all; the page instead worked from its
-  unconditionally-shipped polyfill fallback path (a *different* real bug in
-  that path was the one actually fixed — see the log entry above). A page
-  relying on `@supports` to pick between two INCOMPATIBLE rulesets (not a
-  progressive-enhancement pair with a working fallback) would render however
-  the always-skipped choice happens to fall.
+- **`@supports` recognises exactly one feature test — `(color: light-dark(...))`, with or without a leading `not` — and drops every other condition's body wholesale (round 78, 2026-09-21, engine#169; `css/supports.go`'s `supportsConditionHolds`).** This entry used to say `@supports` was "entirely unimplemented," which stopped being true three weeks before this "Known gaps" section's own "updated 2026-08-30" header claimed currency — a self-referential staleness caught the same way round 141 caught the `@font-face` one: checking this section against the CURRENT code (`css/parse.go`'s `@supports` branch calls `supportsConditionHolds`) rather than trusting its own prose. The one condition it answers is exactly the postcss-preset-env `light-dark()` polyfill pattern real CSS ships (confirmed live on developer.mozilla.org, see round 78's own log entry above) — this engine has real native `light-dark()` (`css/lightdark.go`), so it can honestly say so. Still a narrow, honest answer for one capability, not a general feature-query evaluator: a property/value pair this engine does not specifically recognise, a `selector()` query, or any other condition still drops the whole block, unchanged from before round 78. A page relying on `@supports` for anything else — picking between two INCOMPATIBLE rulesets with no working fallback — still renders however the always-false answer happens to fall.
 - **`html[data-theme]`-style CSS toggles depend on `@media
   (prefers-color-scheme:*)` matching optimistically for BOTH `light` and
   `dark`** (`mediaMatches` has no dedicated case for this feature, so it
@@ -5389,9 +5385,15 @@ Restated against what was actually verified that day:
 - **Table `colspan`/`rowspan` and `border-collapse`** — not re-verified this
   audit; treat as unconfirmed rather than assume either way until measured.
 - **Fonts**: bundled Inter/Lora (+ Go Mono, regular-only) with real Bold/
-  Italic/BoldItalic instances (no faux-bold/upright-italic); no web font
-  (`@font-face`) loading, so a page's own custom typeface always falls back to
-  these.
+  Italic/BoldItalic instances (no faux-bold/upright-italic), PLUS whatever
+  `@font-face` fonts a page's own stylesheets name and this engine can fetch
+  and decode (SFNT/WOFF2) — see round 141's own entry above for the shaping
+  half of that story. This bullet used to say `@font-face` loading did not
+  exist at all; it shipped three rounds before this "Known gaps" section's
+  own "updated 2026-08-30" header, and this contradiction sat 130 lines below
+  a bullet in this SAME section that already said so correctly (round 141's)
+  — the two were never reconciled until now. A family this engine cannot
+  fetch or decode still falls back to the bundled three, unchanged.
 - **`sticky` ≈ `relative`, approximate z-index stacking** — the deliberate
   simplifications from Phase 1.8, unchanged.
 
