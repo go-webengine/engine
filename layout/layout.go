@@ -1538,6 +1538,13 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 				cursor = ny
 				continue
 			}
+			if head, tail, ok := l.splitOverlongWord(rest, avail); ok {
+				// rest[0] is guaranteed to be the non-fitting item here: a
+				// leading LineBreak would already have made wrapOneLine
+				// return consumed==1 above, never 0.
+				rest = append([]*InlineItem{head, tail}, rest[1:]...)
+				continue
+			}
 			line, consumed = forceOne(rest)
 		}
 		rest = rest[consumed:]
@@ -1613,6 +1620,74 @@ func forceOne(items []*InlineItem) (*LineBox, int) {
 		i++
 	}
 	return line, i
+}
+
+// splitOverlongWord attempts to split items[0] — always a non-break item that
+// does not fit maxW even alone, the same one forceOne would otherwise place
+// whole; layoutInline only ever calls this right before falling through to
+// forceOne, after wrapOneLine has already returned consumed==0, which only
+// happens once it has confirmed items[0] itself is not a LineBreak and does
+// not fit (see wrapOneLine's own "len(line.Items) == 0 && runW > maxW"
+// check) — into a prefix that fits within maxW and a suffix that continues
+// as its own item, when that item's own style requests it
+// (css.Style.BreaksOverlongWords — word-break:break-all, or overflow-wrap/
+// word-wrap:break-word/anywhere).
+//
+// It returns ok=false — leaving the caller to fall through to forceOne's
+// ordinary overflow — when items[0] is not a splittable text item at all (an
+// image, a form control, a nested box), when it is part of a glued run of
+// more than one item (see glueRun's own doc comment: splitting WITHIN a run
+// like `152,3<sup>†</sup>` has no confirmed real-world trigger, unlike a
+// single long "word" — the evidenced case this models), when its style does
+// not request this, or when it has fewer than two runes (nothing to split
+// off).
+//
+// The returned head keeps at least one rune even when maxW is smaller than
+// that rune's own width, guaranteeing forward progress: the caller's loop
+// would otherwise retry the same unsplit item forever. head keeps the
+// original item's own leading edge (SpaceBefore, and any padLead from an
+// enclosing decorated inline ancestor's own left border/padding — see
+// InlineItem.padLead); tail is a fresh continuation with no leading space of
+// its own (SpaceBefore 0, matching glueRun's convention that zero means "no
+// break opportunity before this item") and takes the original item's
+// TRAILING edge (padTrail) instead, since the synthetic split point itself is
+// not a real decorated-ancestor boundary and reserves no edge space at all.
+// Both share the original item's decor chain, style, node and vertical
+// metrics unchanged — only Text/Width/padLead/padTrail differ between them.
+func (l *layouter) splitOverlongWord(items []*InlineItem, maxW float64) (head, tail *InlineItem, ok bool) {
+	it := items[0]
+	if it.Text == "" || it.Style == nil || !it.Style.BreaksOverlongWords() {
+		return nil, nil, false
+	}
+	if j, _ := glueRun(items, 0); j != 1 {
+		return nil, nil, false
+	}
+	runes := []rune(it.Text)
+	if len(runes) < 2 {
+		return nil, nil, false
+	}
+	st := it.Style
+	measure := func(s string) float64 {
+		return l.m.Measure(s, st.FontFamily, st.FontSize, st.FontWeight, st.Italic) + letterSpacingWidth(s, st)
+	}
+	n := len(runes)
+	for n > 1 && measure(string(runes[:n])) > maxW {
+		n--
+	}
+	headText, tailText := string(runes[:n]), string(runes[n:])
+	head = &InlineItem{
+		Text: headText, Style: st, Node: it.Node,
+		Width: measure(headText), SpaceBefore: it.SpaceBefore,
+		Ascent: it.Ascent, LineHeight: it.LineHeight, BaselineShift: it.BaselineShift,
+		decor: it.decor, padLead: it.padLead,
+	}
+	tail = &InlineItem{
+		Text: tailText, Style: st, Node: it.Node,
+		Width: measure(tailText), SpaceBefore: 0,
+		Ascent: it.Ascent, LineHeight: it.LineHeight, BaselineShift: it.BaselineShift,
+		decor: it.decor, padTrail: it.padTrail,
+	}
+	return head, tail, true
 }
 
 // truncateLineWithEllipsis replaces line's items with a single text item

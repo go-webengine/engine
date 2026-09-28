@@ -238,6 +238,132 @@ func TestPreDoesNotWrap(t *testing.T) {
 	}
 }
 
+// TestWordBreakNormalDoesNotSplit guards the DEFAULT, unchanged behaviour
+// splitOverlongWord must leave alone: with no word-break/overflow-wrap set at
+// all, a single unbreakable "word" wider than its own container still
+// overflows as one whole line, exactly as it always has (see
+// TestWrapItemsOverflowWord's identical claim at WrapItems' own pure level).
+func TestWordBreakNormalDoesNotSplit(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:30px">aaaaaaaaaa</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	if len(div.Lines) != 1 {
+		t.Fatalf("expected 1 overflowing line, got %d", len(div.Lines))
+	}
+	if lineText(div.Lines[0]) != "aaaaaaaaaa" {
+		t.Errorf("line = %q, want the whole unsplit word", lineText(div.Lines[0]))
+	}
+}
+
+// TestWordBreakAllSplitsOverlongWord is the go.dev/blog... no — the
+// pkg.go.dev/news.ycombinator.com/developer.mozilla.org confirmed real
+// trigger (round 143): a container narrower than its own longest unbreakable
+// word now splits it at a rune boundary instead of overflowing. With
+// fakeMeasurer's 10px-per-rune and a 30px container, "aaaaaaaaaa" (10 runes)
+// must split into 3-rune chunks (30px each, exactly filling the line) with a
+// final 1-rune remainder — 4 lines, not 1 overflowing one.
+func TestWordBreakAllSplitsOverlongWord(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:30px;word-break:break-all">aaaaaaaaaa</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	if len(div.Lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %v", len(div.Lines), linesText(div.Lines))
+	}
+	want := []string{"aaa", "aaa", "aaa", "a"}
+	for i, w := range want {
+		if lineText(div.Lines[i]) != w {
+			t.Errorf("line%d = %q, want %q", i, lineText(div.Lines[i]), w)
+		}
+	}
+}
+
+// TestOverflowWrapBreakWordSplitsOverlongWord confirms overflow-wrap reaches
+// the exact same splitting code path as word-break:break-all (both OR into
+// css.Style.BreaksOverlongWords) — the confirmed real trigger on
+// developer.mozilla.org, which sets this on `html` itself.
+func TestOverflowWrapBreakWordSplitsOverlongWord(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:30px;overflow-wrap:break-word">aaaaaaaaaa</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	if len(div.Lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d: %v", len(div.Lines), linesText(div.Lines))
+	}
+	want := []string{"aaa", "aaa", "aaa", "a"}
+	for i, w := range want {
+		if lineText(div.Lines[i]) != w {
+			t.Errorf("line%d = %q, want %q", i, lineText(div.Lines[i]), w)
+		}
+	}
+}
+
+// TestWordBreakAllDoesNotAffectWordsThatAlreadyFit confirms this engine only
+// models the evidenced "avoid overflow" effect, not break-all's stronger
+// spec behaviour of breaking EAGERLY even when a word already fits on its
+// own line (see WordBreakAll's own doc comment) — ordinary short content is
+// completely unaffected.
+func TestWordBreakAllDoesNotAffectWordsThatAlreadyFit(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:35px;word-break:break-all">a b c d</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	if len(div.Lines) != 2 {
+		t.Fatalf("expected 2 lines (ordinary greedy wrap, unaffected by break-all), got %d: %v", len(div.Lines), linesText(div.Lines))
+	}
+	if lineText(div.Lines[0]) != "a b" || lineText(div.Lines[1]) != "c d" {
+		t.Errorf("lines = %q / %q, want %q / %q", lineText(div.Lines[0]), lineText(div.Lines[1]), "a b", "c d")
+	}
+}
+
+// TestWordBreakAllSingleRuneCannotSplit covers splitOverlongWord's own
+// "fewer than two runes" decline: a single-character item too wide for its
+// own container (here, a 5px container against fakeMeasurer's 10px-per-rune)
+// has nothing to split off, so it falls through to forceOne and overflows as
+// one whole (single-item) line, same as with no word-break set at all.
+func TestWordBreakAllSingleRuneCannotSplit(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:5px;word-break:break-all">a</div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	if len(div.Lines) != 1 || lineText(div.Lines[0]) != "a" {
+		t.Fatalf("expected 1 overflowing line %q, got %d: %v", "a", len(div.Lines), linesText(div.Lines))
+	}
+}
+
+// TestWordBreakAllInherits confirms WordBreakAll reaches a descendant text
+// node through ordinary CSS inheritance (it is not, itself, testing anything
+// about splitOverlongWord beyond that the style actually arrives there) —
+// set on a div, read from a nested span's own overlong word.
+func TestWordBreakAllInherits(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:30px;word-break:break-all"><span>aaaaaaaaaa</span></div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	if len(div.Lines) != 4 {
+		t.Fatalf("expected 4 lines (inherited word-break:break-all), got %d: %v", len(div.Lines), linesText(div.Lines))
+	}
+}
+
+// TestWordBreakAllDoesNotSplitAGluedRun exercises splitOverlongWord's own
+// disclosed scope limit — a glued run of more than one item (here, text
+// immediately followed by a same-element-boundary `<sup>`, engine#149's own
+// `152,3<sup>†</sup>` shape) is never split WITHIN the run; splitOverlongWord
+// declines (its glueRun check returns ok=false) and layoutInline falls
+// through to forceOne exactly as it would with no word-break set at all.
+//
+// That fallback's own result is a genuine, PRE-EXISTING inconsistency this
+// round found by accident and is NOT fixing: forceOne places only the run's
+// FIRST item (see forceOne's own doc comment — it has never called glueRun
+// at all), so the run ends up split at the glue seam onto two lines here,
+// even though glueRun's own doc comment calls that exact seam unsplittable.
+// Confirmed unrelated to this round's own change: the identical two-line
+// split reproduces with no word-break/overflow-wrap property set anywhere.
+// No confirmed real-world page trigger for THIS specific combination (an
+// unbreakable glued run wider than its own container) was found, so it is
+// disclosed here rather than chased — this test pins the actual current
+// behaviour so a future round fixing forceOne itself has a red test to turn
+// green, rather than silently asserting something false about today's code.
+func TestWordBreakAllDoesNotSplitAGluedRun(t *testing.T) {
+	src := `<html><body style="margin:0"><div style="width:30px;word-break:break-all">aaaaaaaaaa<sup>x</sup></div></body></html>`
+	div := findBox(layoutHTML(t, src, 1024), "div")
+	if len(div.Lines) != 2 {
+		t.Fatalf("expected 2 lines (splitOverlongWord declines a glued run; forceOne's own pre-existing, unrelated behaviour then splits it at the glue seam instead), got %d: %v", len(div.Lines), linesText(div.Lines))
+	}
+	if lineText(div.Lines[0]) != "aaaaaaaaaa" || lineText(div.Lines[1]) != "x" {
+		t.Errorf("lines = %v, want [aaaaaaaaaa] [x]", linesText(div.Lines))
+	}
+}
+
 func TestDisplayNoneSkipped(t *testing.T) {
 	src := `<html><body><div><span style="display:none">HIDDEN</span>y</div></body></html>`
 	items := firstLineItems(findBox(layoutHTML(t, src, 1024), "div"))
