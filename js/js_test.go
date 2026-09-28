@@ -726,6 +726,32 @@ func TestConstraintValidationAPI(t *testing.T) {
 		"afterClear valid=true customError=false")
 }
 
+// TestMediaElementCurrentTimeAndPlayPause confirms currentTime/play()/
+// pause()/paused — entirely missing before this fix — round-trip a
+// script-set value and stay internally consistent, even though this engine
+// does no real media decoding/playback (a static renderer has no timeline
+// to advance). Real corpus usage confirmed on archive.org's own
+// details-av.js: clicking a transcript entry finds the real <video>
+// element, seeks it (`videoEl.currentTime = ...`), and resumes playback
+// (`videoEl.play()`).
+func TestMediaElementCurrentTimeAndPlayPause(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var d = document.getElementById('d');
+		console.log('defaultTime='+d.currentTime+' defaultPaused='+d.paused);
+		d.currentTime = 12.5;
+		console.log('afterSeek='+d.currentTime);
+		var p = d.play();
+		console.log('afterPlay paused='+d.paused+' isPromise='+(p instanceof Promise));
+		d.pause();
+		console.log('afterPause paused='+d.paused);
+	`))
+	mustHave(t, logs,
+		"defaultTime=0 defaultPaused=true",
+		"afterSeek=12.5",
+		"afterPlay paused=false isPromise=true",
+		"afterPause paused=true")
+}
+
 // TestAddEventListenerOnce confirms addEventListener's `{once: true}` option
 // — entirely ignored before this fix (the third argument was never read at
 // all) — per the DOM standard's own "inner invoke" algorithm (§2.9): a once

@@ -64,18 +64,20 @@ func Begin(root *dom.Node, opt Options) *Session {
 	}
 
 	b := &binder{
-		vm:         goja.New(),
-		root:       root,
-		opt:        opt,
-		cache:      map[*dom.Node]*goja.Object{},
-		windowNode: &dom.Node{Type: dom.Element, Tag: "#window"},
-		docNode:    root,
-		listeners:  map[*dom.Node]map[string][]*eventListenerEntry{},
-		onHandlers: map[*dom.Node]map[string]goja.Value{},
-		storage:    map[string]*storageArea{},
-		executed:   map[*dom.Node]bool{},
-		scrollPos:  map[*dom.Node][2]float64{},
-		deadman:    time.Now().Add(opt.Timeout),
+		vm:          goja.New(),
+		root:        root,
+		opt:         opt,
+		cache:       map[*dom.Node]*goja.Object{},
+		windowNode:  &dom.Node{Type: dom.Element, Tag: "#window"},
+		docNode:     root,
+		listeners:   map[*dom.Node]map[string][]*eventListenerEntry{},
+		onHandlers:  map[*dom.Node]map[string]goja.Value{},
+		storage:     map[string]*storageArea{},
+		executed:    map[*dom.Node]bool{},
+		scrollPos:   map[*dom.Node][2]float64{},
+		mediaTime:   map[*dom.Node]float64{},
+		mediaPaused: map[*dom.Node]bool{},
+		deadman:     time.Now().Add(opt.Timeout),
 	}
 	s := &Session{b: b}
 

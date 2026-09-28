@@ -97,15 +97,15 @@ type binder struct {
 	// and remove the PREVIOUS handler before adding the new one.
 	onHandlers map[*dom.Node]map[string]goja.Value
 
-	jobs     []timerJob
-	nextID   int64
+	jobs   []timerJob
+	nextID int64
 	// mutationObservers holds every live `new MutationObserver(cb)` with an
 	// active observe() call — see mutationobserver.go.
 	mutationObservers []*mutationObserverReg
-	deadman  time.Time
-	cookie   string
-	storage  map[string]*storageArea
-	reqCount int // JS-initiated HTTP requests this render (bounded by maxRequests)
+	deadman           time.Time
+	cookie            string
+	storage           map[string]*storageArea
+	reqCount          int // JS-initiated HTTP requests this render (bounded by maxRequests)
 
 	// metrics is the real geometry/used-value source read back by
 	// getBoundingClientRect / offset* / getComputedStyle. Nil = report zeros /
@@ -131,6 +131,17 @@ type binder struct {
 	// scrollTop) does not silently misbehave against a value hardcoded to 0
 	// forever. See scrollTop/scrollLeft's own accessor doc comment in dom.go.
 	scrollPos map[*dom.Node][2]float64
+
+	// mediaTime/mediaPaused hold a <video>/<audio> element's own script-set
+	// currentTime and play()/pause() state — this engine does no real media
+	// decoding/playback (a static renderer has no timeline to advance), so
+	// neither has any effect on rendering; they exist purely so a script's
+	// OWN seek/play/pause logic (e.g. "click a transcript entry, seek the
+	// video there, and play it") stays internally consistent instead of
+	// reading back a value hardcoded to 0/paused forever. See
+	// currentTime/play/pause's own doc comment in dom.go.
+	mediaTime   map[*dom.Node]float64
+	mediaPaused map[*dom.Node]bool
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled
