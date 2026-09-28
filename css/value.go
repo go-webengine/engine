@@ -838,18 +838,68 @@ type Style struct {
 	ZIndex     int
 	ZIndexAuto bool // true == "auto" (the initial value)
 
-	// TranslateX/TranslateY are the ONE subset of the `transform` property
-	// this engine understands: a pure 2D translate (see parseTransformTranslate
-	// in parse.go). They are a paint-time offset applied like a relative
-	// position shift, not a layout input — the initial/reset value (Length's
-	// Go zero value, IsPercent false and Px 0) is exactly "no translation", so
-	// unlike most other reset-not-inherited fields there is nothing to list
-	// explicitly in inheritFrom. Any OTHER transform function (rotate, scale,
-	// skew, matrix, 3D, or a mix including translate) is unsupported and
-	// leaves both fields at zero, same as before this property was understood
-	// at all — see FIDELITY.md's Known gaps.
+	// TranslateX/TranslateY and RotateDeg are the TWO subsets of the
+	// `transform` property this engine understands, EACH ONLY on its own —
+	// a value naming any other function (scale, skew, matrix, 3D), or
+	// mixing more than one of these two together (`translate(...)
+	// rotate(...)` on the same element), is unsupported and leaves every
+	// transform field at zero, same as before either was understood at all
+	// — see FIDELITY.md's Known gaps. Translate (see parseTransformTranslate
+	// in parse.go) is a paint-time offset applied like a relative position
+	// shift, not a layout input; the initial/reset value (Length's Go zero
+	// value) is exactly "no translation", so unlike most other reset-not-
+	// inherited fields there is nothing to list explicitly in inheritFrom.
+	//
+	// RotateDeg (`rotate()`/`rotatez()`, see parseTransformRotate) is the
+	// angle in degrees to rotate the element's own border-box rectangle by,
+	// clockwise for a positive value — CSS's own convention. go-images'
+	// own Rotate is the OPPOSITE sign convention (its own doc comment:
+	// "rotated by angle degrees counter-clockwise", matching scikit-image),
+	// so paint.paintRotated negates the angle it passes in; get this backward
+	// and a page with any asymmetric rotated content (readable text/icons,
+	// not just tailwindcss.com's own near-symmetric card shapes) would spin
+	// the visibly wrong way, caught by checking the sign convention against
+	// the dependency's own doc comment before writing any code, not
+	// discovered after the fact. Unlike translate, this DOES need real
+	// coordinate-transform machinery: paint.paintRotated renders the box's
+	// own border-box rectangle to an offscreen buffer and rotates the
+	// PIXELS with go-images' Rotate (bilinear, growing the buffer to fit the
+	// rotated corners), rather than transforming any drawing coordinates —
+	// so it does not compose with `filter`/opacity/`mask-image` on the same
+	// element (paintBox only takes this path when none of those apply): no
+	// confirmed real trigger combines rotate with any of them, and doing so
+	// correctly needs the two offscreen-buffer mechanisms unified, a larger
+	// change than this one evidenced case justifies. transform-origin is
+	// not modelled either — always the default 50% 50% (the box's own
+	// centre), which is what every confirmed trigger already uses.
+	//
+	// This field backs BOTH `transform: rotate()`/`rotateZ()` (parsed by
+	// parseTransformRotate) and the newer, independent CSS Transforms Level
+	// 2 `rotate` property (parsed directly in `case "rotate"`, a bare
+	// angle with no function-call syntax at all — `rotate:90deg`,
+	// `rotate:none`) — two different spellings of the identical visual
+	// capability. Confirmed live (round 145): modern Tailwind (v4) compiles
+	// its `rotate-*` utilities to the STANDALONE property, not the
+	// `transform` function — `.rotate-(--angle){rotate:var(--angle)}` on
+	// tailwindcss.com's own "P3 colors" section, a grid of diagonal colour-
+	// name labels ("red", "orange", …) tilted -45°, confirmed directly from
+	// its compiled CSS bundle rather than assumed from the class name alone
+	// (an assumption that would have targeted the wrong property entirely
+	// and shipped a fix that silently did nothing on the one confirmed real
+	// page). `transform: rotate()` itself has no independently confirmed
+	// trigger of its own in this session's corpus — kept anyway since it is
+	// the same underlying, now-evidenced capability under CSS's older
+	// syntax, not a distinct speculative addition.
+	//
+	// Both spellings write the SAME field and so cannot compose with each
+	// other, or with `transform: translate()`/the (unimplemented) standalone
+	// `translate`/`scale` properties, correctly per spec — whichever this
+	// engine's cascade applies LAST simply overwrites the field. No
+	// confirmed trigger combines any of these, so this is disclosed rather
+	// than engineered around.
 	TranslateX Length
 	TranslateY Length
+	RotateDeg  float64
 
 	// Flex container properties (meaningful when Display == DisplayFlex).
 	FlexDirection  FlexDirection

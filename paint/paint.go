@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-gfx/gfx/raster"
 	"github.com/go-gfx/gfx/resample"
+	"github.com/go-images/images"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
@@ -47,6 +48,7 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	op := 1.0
 	hasFilter := false
 	hasMask := false
+	hasRotate := false
 	if box.Style != nil {
 		if box.Style.HasOpacity {
 			op = box.Style.Opacity
@@ -56,6 +58,7 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 		}
 		hasFilter = len(box.Style.Filters) > 0
 		hasMask = box.Style.MaskImage != "" && bgImgs[box.Style.MaskImage] != nil
+		hasRotate = box.Style.RotateDeg != 0
 		if len(box.Style.BackdropFilters) > 0 {
 			// Must run BEFORE any of this box's own content reaches dst (whether
 			// painted directly below, or into the offscreen group buffer the
@@ -63,6 +66,21 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 			// filter's defining behaviour is filtering what is ALREADY there.
 			applyBackdropFilter(dst, box, clip)
 		}
+	}
+	// `transform:rotate()` (see css.Style.RotateDeg's own doc comment) takes
+	// its own, separate offscreen-buffer path — paintRotated — rather than
+	// joining the filter/opacity/mask group pass below: it rotates PIXELS,
+	// not drawing coordinates, needs the box's own border-box rectangle
+	// specifically (not the group pass's own full-canvas-width, ink-bounds-
+	// expanded buffer), and grows its own buffer to fit the rotated
+	// corners. Scoped to rotate ALONE — no confirmed real trigger combines
+	// it with filter/opacity/mask-image on the same element, so this branch
+	// is only taken when none of those apply; an element needing both would
+	// silently keep its rotation unapplied rather than the two offscreen
+	// mechanisms being unified for zero confirmed real need.
+	if hasRotate && !hasFilter && !hasMask && op >= 1 {
+		paintRotated(dst, box, f, imgs, bgImgs, clip)
+		return
 	}
 	// A group pass (render to an offscreen buffer, then composite) is needed when
 	// the box has a `filter` chain, a fractional opacity, and/or a `mask-image`.
@@ -1590,6 +1608,39 @@ func blitImage(dst *image.RGBA, src image.Image, dx, dy int, clip image.Rectangl
 			blendPixel(dst, tx, ty, css.Color{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(bl >> 8), A: 255}, cov)
 		}
 	}
+}
+
+// paintRotated renders box's own border-box rectangle (rectOf) to an
+// offscreen buffer, rotates the PIXELS about the box's own centre — the
+// default, and only modelled, transform-origin — by RotateDeg degrees with
+// go-images' Rotate (bilinear, growing the output to fit the rotated
+// corners, matching a real browser's own visible-overflow-during-rotation
+// behaviour), and composites the grown result back centred on the box's
+// original centre point via blitImage. See css.Style.RotateDeg's own doc
+// comment for the negated sign (CSS is clockwise-positive; go-images'
+// Rotate is counter-clockwise-positive, matching scikit-image) and for why
+// this never runs alongside filter/opacity/mask-image (paintBox's own
+// dispatch only takes this path when none of those apply).
+//
+// Content outside the box's own border-box rectangle — an overflowing
+// child of an `overflow:visible` box — is not captured or rotated with it,
+// the same border-box-only scope applyMask's own doc comment already
+// discloses for `mask-image`; no confirmed real trigger needs more.
+func paintRotated(dst *image.RGBA, box *layout.Box, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, clip image.Rectangle) {
+	bx := rectOf(box).Intersect(dst.Rect)
+	if bx.Empty() {
+		return
+	}
+	tmp := image.NewRGBA(image.Rect(0, 0, dst.Rect.Dx(), bx.Max.Y))
+	tpp := painter.NewPixelPainter(tmp.Pix, tmp.Rect.Dx(), tmp.Rect.Dy())
+	paintBoxContent(tmp, tpp, box, f, imgs, bgImgs, clip)
+	src := image.NewRGBA(image.Rect(0, 0, bx.Dx(), bx.Dy()))
+	draw.Draw(src, src.Bounds(), tmp, bx.Min, draw.Src)
+	rotated := images.Rotate(src, -box.Style.RotateDeg, true)
+	cx, cy := box.X+box.W/2, box.Y+box.H/2
+	ox := int(math.Round(cx - float64(rotated.Rect.Dx())/2))
+	oy := int(math.Round(cy - float64(rotated.Rect.Dy())/2))
+	blitImage(dst, rotated, ox, oy, clip)
 }
 
 func toPainter(c css.Color) painter.RGBA {
