@@ -1175,6 +1175,35 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		if l, ok := parseLength(v, emRef); ok && !l.Auto {
 			s.ColumnGap = l
 		}
+	case "column-count":
+		// Not inherited (see ColumnCount's own doc comment), so unset/initial
+		// both reset to 0 ("not set"), same convention as text-overflow above.
+		switch lv {
+		case "auto", "initial", "unset":
+			s.ColumnCount = 0
+		default:
+			if n, err := strconv.Atoi(lv); err == nil && n > 0 {
+				s.ColumnCount = n
+			}
+		}
+	case "column-width":
+		switch lv {
+		case "auto", "initial", "unset":
+			s.ColumnWidth = Length{Auto: true}
+		default:
+			if l, ok := parseLength(lv, emRef); ok && !l.Auto {
+				s.ColumnWidth = l
+			}
+		}
+	case "columns":
+		switch lv {
+		case "auto", "initial", "unset":
+			s.ColumnCount, s.ColumnWidth = 0, Length{Auto: true}
+		default:
+			if count, width, ok := parseColumns(lv, emRef); ok {
+				s.ColumnCount, s.ColumnWidth = count, width
+			}
+		}
 	case "place-items":
 		applyPlaceItems(s, v)
 	case "place-content":
@@ -1388,7 +1417,55 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.BreakAfter = parent.BreakAfter
 	case "break-inside", "page-break-inside":
 		s.BreakInside = parent.BreakInside
+	// column-count/column-width are not inherited by default either, but the
+	// explicit `inherit` keyword still copies the parent's computed value.
+	case "column-count":
+		s.ColumnCount = parent.ColumnCount
+	case "column-width":
+		s.ColumnWidth = parent.ColumnWidth
+	case "columns":
+		s.ColumnCount, s.ColumnWidth = parent.ColumnCount, parent.ColumnWidth
 	}
+}
+
+// parseColumns parses the `columns` shorthand: `<'column-width'> || <'column-
+// count'>` — one or both of a length and a positive integer, in EITHER
+// order, space-separated (`columns:12.5rem 5` and `columns:5 12.5rem` are
+// identical, matching real CSS's `||` combinator). A bare integer is always
+// column-count and a length is always column-width, so the two tokens are
+// never ambiguous with each other; "auto" in either position just leaves
+// that sub-property at its own already-auto/zero default. Reports false —
+// leaving both sub-properties unchanged — for more than two tokens, a
+// second token of a kind already seen (two integers, or two lengths), or any
+// token that is neither "auto", a positive integer, nor a valid length.
+func parseColumns(v string, emRef float64) (count int, width Length, ok bool) {
+	fields := strings.Fields(v)
+	if len(fields) == 0 || len(fields) > 2 {
+		return 0, Length{}, false
+	}
+	width = Length{Auto: true}
+	var sawCount, sawWidth bool
+	for _, f := range fields {
+		if f == "auto" {
+			continue
+		}
+		if n, err := strconv.Atoi(f); err == nil && n > 0 {
+			if sawCount {
+				return 0, Length{}, false
+			}
+			count, sawCount = n, true
+			continue
+		}
+		if l, lok := parseLength(f, emRef); lok && !l.Auto {
+			if sawWidth {
+				return 0, Length{}, false
+			}
+			width, sawWidth = l, true
+			continue
+		}
+		return 0, Length{}, false
+	}
+	return count, width, true
 }
 
 // parseLineCount parses an orphans / widows value (CSS Fragmentation 3 §4):

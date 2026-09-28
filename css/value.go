@@ -967,6 +967,55 @@ type Style struct {
 	BreakInside             BreakInside
 	Orphans, Widows         int
 
+	// Multi-column layout (CSS Multi-column Layout Level 1): ColumnCount (0 =
+	// not set) and ColumnWidth (Auto = not set) are NOT inherited — a plain
+	// block box unless one or the other is set, exactly like `columns`'s own
+	// two longhands. The column gap itself is the SAME `column-gap`/`gap`
+	// property flex/grid already use (ColumnGap, declared with RowGap
+	// above) — real CSS defines it once, in the Box Alignment module, for
+	// all three layout modes, not a per-mode property. Its shared "unset"
+	// default is Length{Auto:true} (see initialStyle/inheritFrom), which
+	// flex/grid's own gapLen/gapPxCSS already treat identically to an
+	// explicit 0 — safe to give the field this default without touching
+	// their behaviour at all. Multi-column layout alone resolves Auto
+	// differently: to 1em (see layoutMultiCol), matching every browser's
+	// implementation of a value the spec itself only describes as "a
+	// reasonable value comparable to the width of a typical typeface's
+	// space character" — unlike flex/grid, where `normal` is defined to
+	// compute to a plain 0.
+	//
+	// Confirmed live (round 143/144): pkg.go.dev's own `.UnitFiles-fileList{
+	// columns:12.5rem 5;...}` — its package-documentation "Source Files"
+	// list, real Chrome laying ~29 short filenames out in up to 5 narrow
+	// columns instead of one long single column.
+	//
+	// What layout.layoutMultiCol actually models, deliberately narrower than
+	// the full spec, is exactly what that one confirmed trigger needs: N
+	// columns of even width, each in-flow ELEMENT child of the container
+	// (never a bare text node — no confirmed trigger mixes one into a
+	// columns container) placed as a single ATOMIC unit into whichever
+	// column a simple cumulative-height greedy pass assigns it to, never
+	// split across two columns even when a single child is themselves taller
+	// than a whole column (the same "atomic child, no fragmentation"
+	// simplification this engine already applies to a replaced element or a
+	// table row elsewhere). NOT modelled: column-span (spec keyword `all`,
+	// letting one child cross every column — no confirmed trigger),
+	// column-rule (the vertical divider line between columns — pure
+	// decoration, not modelled since the plain column gap alone is already
+	// the confirmed visual difference from a single column), TRUE column
+	// balancing (the real spec's iterative algorithm that minimises the
+	// tallest column's own height while respecting break-inside/break-before
+	// avoidance — this engine's single greedy pass, target = total÷count,
+	// approximates it closely for a roughly-uniform list like the confirmed
+	// trigger, but can leave a visibly taller last column for adversarial,
+	// very unevenly-sized content), and fragmenting a SINGLE child's own
+	// internal content (its own child elements, or its own wrapped text
+	// lines) across two columns — a browser's real balancing can split one
+	// long paragraph's lines between columns; this engine cannot, matching
+	// its own "atomic child" scope decision above.
+	ColumnCount int
+	ColumnWidth Length
+
 	// TabSize (CSS Text Module Level 3) is INHERITED, initial 8 — a preserved
 	// tab (white-space:pre/pre-wrap) advances to the next multiple of this
 	// many space-widths, counted as columns from the line's own start (see
@@ -1214,6 +1263,9 @@ func initialStyle() Style {
 		Orphans: 2, // CSS Fragmentation 3: initial value 2, inherited
 		Widows:  2,
 		TabSize: 8, // CSS Text 3: initial value 8, inherited
+
+		ColumnWidth: Length{Auto: true}, // initial: not set (ColumnCount's 0 is already its own zero value)
+		ColumnGap:   Length{Auto: true}, // initial: normal
 	}
 }
 
@@ -1291,6 +1343,11 @@ func inheritFrom(parent Style) Style {
 
 		WordBreakAll:         parent.WordBreakAll,         // inherited
 		OverflowWrapAnywhere: parent.OverflowWrapAnywhere, // inherited
+
+		// column-count/column-width/column-gap are not inherited: reset to
+		// their own initial values, same as width/height above.
+		ColumnWidth: Length{Auto: true},
+		ColumnGap:   Length{Auto: true},
 	}
 }
 

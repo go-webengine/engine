@@ -202,7 +202,7 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 	if st == nil {
 		s := css.Style{Display: css.DisplayBlock, Width: css.Length{Auto: true},
 			MinWidth: css.Length{Auto: true}, MaxWidth: css.Length{Auto: true},
-			Height: css.Length{Auto: true}}
+			Height: css.Length{Auto: true}, ColumnWidth: css.Length{Auto: true}}
 		st = &s
 	}
 	box := &Box{Node: node, Style: st}
@@ -334,6 +334,18 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		box.Lines = []*LineBox{{X: cx, Y: b.y, W: cw, H: h, Items: []*InlineItem{item}}}
 		b.y += h
 		return b.y
+	}
+
+	// column-count/column-width/columns is an independent property, not a
+	// display value — checked before the switch below, and only for a plain
+	// block container (the confirmed real trigger, pkg.go.dev's own
+	// `.UnitFiles-fileList{columns:...}`, is a plain `display:block` <ul>;
+	// see layoutMultiCol's own doc comment for the full, deliberately
+	// narrow scope this models).
+	if st.Display == css.DisplayBlock && (st.ColumnCount > 0 || !st.ColumnWidth.Auto) {
+		bottom := l.layoutMultiCol(box, node, st, cx, cw, top, b)
+		b.y = bottom
+		return bottom
 	}
 
 	switch st.Display {
