@@ -18,6 +18,17 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-28 (round 141) — go.dev/blog's own nav dropdown carets rendered nothing at all, not the literal text this engine's own "Known gaps" entry said they would — a stale gap description, checked against the current code rather than trusted (engine#241)
+
+Following the user's own "switch approach entirely" instruction after round 140, moved off corpus-sweeping and checked this engine's own FIDELITY.md "Known gaps" section against the CURRENT code instead — the method rounds 71 and 82 already used successfully for stale-premise gaps. The `@font-face`/Material Icons entry (round 20, last touched 2026-09-03) claimed a fix would be "genuinely comparable in scope to Shadow DOM," needing both `@font-face` fetching (which did not exist yet when written) and a whole new OpenType-shaping package. Both premises turned out to be stale: `@font-face` fetching/WOFF2 decoding shipped separately three rounds ago (engine#233/#234/#236), and re-reading `go-opentype/opentype`'s current source (rather than trusting the gap entry's own description of it) found `Face` had gained `Shape`/`ShapePositioned`/`GlyphMaskIndex`/`AdvanceIndex` methods directly — no separate `go-opentype/shape` package needed at all.
+
+- **Reproduced the ACTUAL current behaviour before trusting the old description**: rendering an isolated `<span class="material-icons">arrow_drop_down</span>` repro against the real Google Fonts Material Icons WOFF2 showed the icon area as completely BLANK — not the literal readable text the 2026-09-03 entry described. Root cause: `@font-face` now loads the real icon font (shipped separately), and its cmap maps every ASCII letter of "arrow_drop_down" to its own real, non-`.notdef` (so not skipped) but visually blank glyph — a deliberate authoring convention so a renderer that skips the required substitution shows nothing rather than mangled letter shapes, worse than the old (pre-`@font-face`) fallback-font behaviour the gap entry described.
+- **Found the actual OpenType feature empirically rather than assuming "liga"**: `Face.Shape("arrow_drop_down", "liga")` — the obvious first guess, and what a real browser applies by default for cosmetic ligatures — left all 15 glyphs unmerged. Tried the font's declared GSUB features one at a time (`dlig`, `hlig`, `calt`, `rlig`, `ccmp`, `aalt`, `rclt`); only `"rlig"` (Required Ligatures) collapsed the word to its one pictogram glyph. Confirmed this is the OpenType-spec-intended feature, not a special case: the registry's own text for `rlig` says "Control of this feature should not generally be exposed to the user" — it is meant to always apply, unlike `liga`, which a real browser turns off under non-zero `letter-spacing` (confirmed via MDN's own `letter-spacing` page). Verified the four bundled prose fonts (Inter, Lora, Go Mono, DejaVu Sans) declare no `rlig` lookups at all (a 46-character mixed sample shaped to the same 46 glyphs under `rlig` for all four), so applying it unconditionally is isolated to fonts that actually declare required ligatures — zero risk to this engine's existing bundled-font text.
+- **Fixed** (`paint/fonts.go`'s `Measure`, `paint/paint.go`'s `drawText`): both now call `Face.Shape(run.Text, "rlig")` per run (after `Runs` has already split text by cmap coverage, so a ligature never spans a fallback-font boundary) and iterate the shaped glyph indices — `AdvanceIndexUnits` for measurement, `GlyphMaskIndex` for painting — instead of the old per-rune `font.GlyphIndex`/`GlyphMask` loop, which could never produce a merged glyph at all. A `gid == 0` guard skips glyphs `Shape` maps an uncovered rune to (`.notdef`), preserving the existing "a character neither face covers measures and draws nothing" contract `paint`'s own `TestMeasureIsExactAndLinear` already asserted — caught by that pre-existing test failing on the first version of this change, not written in anticipation of it.
+- **Deliberately NOT implemented this round** (see the corrected "Known gaps" entry): `liga` (optional/cosmetic ligatures) and its `letter-spacing` interaction — `Measure`'s signature has no letter-spacing parameter, and threading one through its thirteen call sites for a feature this engine does not otherwise model was judged out of scope for this round; and GPOS-based positioning (pair kerning, mark-to-base attachment) — `ShapePositioned` already exists in the dependency but nothing calls it, with no confirmed real-world trigger found yet.
+- **Three new tests** in `paint/ligature_test.go`, using the real Material Icons WOFF2 (Google, Apache License 2.0 — `paint/testdata/materialicons-LICENSE.txt`) as a fixture, matching the existing `testdata/IBMPlexSans-Regular-subset.woff2` precedent for real-WOFF2 tests: `Measure("arrow_drop_down")` now equals exactly one glyph's advance instead of fifteen; `drawText` now paints visible ink for it (git-stash-confirmed against the pre-fix code: both failed as expected — `Measure` returned the unshaped 720, `drawText` painted nothing); and the `gid == 0` skip is covered directly by drawing an uncovered CJK rune and confirming both the pen advance and the painted ink stay at zero.
+- **Bench**: all ten pages within the same small run-to-run noise band already established for this live, network-fetched comparison across many prior rounds (largest move tailwindcss.com's own +0.013 SSIM; go.dev/blog itself barely moved, 0.6902→0.6889 SSIM, 16.73%→16.78% pixdiff) — expected, since the fix's real effect (a few dozen pixels of one icon glyph) is far too small a share of a ~1.5M-pixel page to register above this benchmark's already-documented noise floor. The fix is confirmed instead by direct visual inspection: both the isolated repro and a live re-render of go.dev/blog itself now show a real triangle glyph where the nav previously rendered nothing. All coverage floors held (`paint` back to its 100.0% floor, requiring the `gid == 0` test above).
+
 ## 2026-09-28 (round 140) — `HTMLMediaElement.currentTime`/`.play()`/`.pause()`/`.paused` were entirely missing — CONFIRMED real usage on a THIRD, freshly-fetched corpus page (archive.org's own media-player component) after both prior corpora were exhausted (engine#240)
 
 Following the same "sweep a fresh real bundle" method rounds 138/139 used on github.com, fetched a genuinely different KIND of page (archive.org's item-detail viewer, a real `<video>`/`<audio>` player) after the github.com corpus itself stopped turning up anything new. Its `details-av.js` bundle (1MB, real production code) is saturated with media-API-shaped identifiers — `.currentTime`, `.duration`, `.volume`, `.muted`, `.paused`, `.play(`, `.pause(` — and this engine had NOTHING for `<video>`/`<audio>` at all: no entry anywhere in `isReplacedTag` or any binder file.
@@ -5210,37 +5221,24 @@ columns.
   fixed, for the same reason as before: the correct fix is the same
   bigger, deliberately-deferred layout feature, not a narrow one-off patch
   for this specific icon.
-- **No `@font-face` (custom web fonts) at all — `css/parse.go` explicitly
-  skips it wholesale, like any other unrecognised at-rule.** Confirmed
-  load-bearing live on go.dev/blog (2026-09-03, round 20 investigation, no
-  code change): its nav dropdown carets are `<i class="material-icons">
-  arrow_drop_down</i>` — Google's Material Icons convention, where the
-  *text content itself* is a semantic ligature keyword
-  (`arrow_drop_down`, `menu`, `search`, …) that a custom `@font-face` TTF
-  (loaded via `fonts.googleapis.com`) substitutes for a single icon glyph
-  via its own OpenType GSUB ligature table, PURELY at the font level — the
-  HTML/CSS carries no icon-drawing instruction of its own. Without
-  `@font-face`, `font-family:'Material Icons'` falls back to this engine's
-  normal font stack, which has no such glyph and no ligature substitution
-  to perform, so the raw keyword text renders literally instead of an
-  arrow. **Checked whether the fix is smaller than it looks before writing
-  it off**: `go-opentype/opentype` (this engine's font-parsing dependency)
-  already has real GSUB support (`gsub.go`), and a separate
-  `go-opentype/shape` package exists specifically to drive it — but
-  `paint/fonts.go`'s `Measure`/`Metrics` call `opentype.Face` DIRECTLY
-  (simple per-rune cmap+advance lookups), never `go-opentype/shape` at all,
-  for ANY of this engine's existing bundled fonts. A real fix needs BOTH a
-  new capability this engine has never had (fetch and load an arbitrary
-  `@font-face` TTF from a URL, keyed by its declared `font-family` name,
-  the same way a browser does) AND wiring the text-measurement/painting
-  pipeline through real OpenType shaping instead of its current
-  no-shaping-pass model — genuinely comparable in scope to Shadow DOM or
-  the reskin-orphaned-node architecture already deferred this session, not
-  a narrow bug fix. A narrower, name-matching special case (hide text for
-  a hardcoded list of known icon-font family names) was considered and
-  rejected: it would only ever cover the specific icon fonts anticipated
-  in advance, the same "no speculative capability" trap this session has
-  avoided elsewhere.
+- **No optional-ligature ("liga") or GPOS shaping (kerning, mark
+  attachment) — only the mandatory "rlig" GSUB feature is applied (round
+  141, engine#241).** This entry used to say this engine had no
+  `@font-face` at all and that fixing Material Icons' invisible nav carets
+  would need architecture "genuinely comparable in scope to Shadow DOM" —
+  both premises are now stale: `@font-face` fetching/WOFF2 decoding shipped
+  separately (engine#233/#234/#236), and `go-opentype/opentype`'s `Face`
+  gained a `Shape`/`GlyphMaskIndex` API directly (no separate shaping
+  package, as this entry previously assumed) that round 141 wired in for
+  the one GSUB feature real usage confirmed a need for. What is genuinely
+  still missing, narrower than before: `font-variant-ligatures`/`liga`
+  (cosmetic ffi/fl-style ligatures, and their real-browser interaction with
+  non-zero `letter-spacing` — not plumbed through `Measure`'s signature,
+  see `requiredLigatureFeature`'s own doc comment) and GPOS-based
+  positioning (`ShapePositioned` exists in the dependency but nothing calls
+  it) — pair kerning and mark-to-base attachment (diacritics riding a base
+  glyph) still don't happen. No confirmed real-world trigger for either has
+  been found yet; revisit if one turns up.
 - **Form controls now paint (2026-09-03, engine#95 — a general
   `input`/`button`/`select`/`textarea` atomic box + paint mechanism, not
   previously present at all) and `<select>`'s sizing/label followed up to be
