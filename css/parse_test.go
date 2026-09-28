@@ -1308,3 +1308,142 @@ func TestBreaksOverlongWords(t *testing.T) {
 		t.Error("OverflowWrapAnywhere alone did not make BreaksOverlongWords true")
 	}
 }
+
+func TestApplyColumnCount(t *testing.T) {
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "column-count", Value: v}, 16, nil) }
+
+	if s.ColumnCount != 0 {
+		t.Error("initialStyle().ColumnCount != 0, want 0 (not set)")
+	}
+	apply("5")
+	if s.ColumnCount != 5 {
+		t.Errorf("column-count:5 = %d, want 5", s.ColumnCount)
+	}
+	apply("auto")
+	if s.ColumnCount != 0 {
+		t.Errorf("column-count:auto = %d, want 0", s.ColumnCount)
+	}
+	apply("5")
+	apply("0")
+	if s.ColumnCount != 5 {
+		t.Errorf("column-count:0 (invalid, not positive) changed ColumnCount to %d, want unchanged 5", s.ColumnCount)
+	}
+	apply("-1")
+	if s.ColumnCount != 5 {
+		t.Errorf("column-count:-1 (invalid) changed ColumnCount to %d, want unchanged 5", s.ColumnCount)
+	}
+	apply("not-a-number")
+	if s.ColumnCount != 5 {
+		t.Errorf("column-count:not-a-number (invalid) changed ColumnCount to %d, want unchanged 5", s.ColumnCount)
+	}
+
+	// Not inherited: a plain cascade resets to 0, but the explicit inherit
+	// keyword still copies the parent's computed value.
+	parent := initialStyle()
+	parent.ColumnCount = 3
+	child := inheritFrom(parent)
+	if child.ColumnCount != 0 {
+		t.Errorf("inheritFrom(parent).ColumnCount = %d, want 0 (not inherited)", child.ColumnCount)
+	}
+	s2 := initialStyle()
+	s2.apply(Declaration{Property: "column-count", Value: "inherit"}, 16, &parent)
+	if s2.ColumnCount != 3 {
+		t.Errorf("column-count:inherit = %d, want parent's 3", s2.ColumnCount)
+	}
+	s3 := initialStyle()
+	s3.ColumnCount = 7
+	s3.apply(Declaration{Property: "column-count", Value: "unset"}, 16, &parent)
+	if s3.ColumnCount != 0 {
+		t.Errorf("column-count:unset = %d, want 0 (initial, not inherited)", s3.ColumnCount)
+	}
+}
+
+func TestApplyColumnWidth(t *testing.T) {
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "column-width", Value: v}, 16, nil) }
+
+	if !s.ColumnWidth.Auto {
+		t.Error("initialStyle().ColumnWidth.Auto = false, want true (not set)")
+	}
+	apply("12.5rem")
+	if s.ColumnWidth.Auto || s.ColumnWidth.Px != 200 {
+		t.Errorf("column-width:12.5rem = %+v, want 200px", s.ColumnWidth)
+	}
+	apply("auto")
+	if !s.ColumnWidth.Auto {
+		t.Error("column-width:auto did not reset to Auto")
+	}
+
+	parent := initialStyle()
+	parent.ColumnWidth = Length{Px: 150}
+	child := inheritFrom(parent)
+	if !child.ColumnWidth.Auto {
+		t.Error("inheritFrom(parent).ColumnWidth not reset to Auto (not inherited)")
+	}
+	s2 := initialStyle()
+	s2.apply(Declaration{Property: "column-width", Value: "inherit"}, 16, &parent)
+	if s2.ColumnWidth.Auto || s2.ColumnWidth.Px != 150 {
+		t.Errorf("column-width:inherit = %+v, want parent's 150px", s2.ColumnWidth)
+	}
+}
+
+func TestApplyColumnsShorthand(t *testing.T) {
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "columns", Value: v}, 16, nil) }
+
+	apply("5")
+	if s.ColumnCount != 5 || !s.ColumnWidth.Auto {
+		t.Errorf("columns:5 = count %d width %+v, want count 5, width auto", s.ColumnCount, s.ColumnWidth)
+	}
+
+	s = initialStyle()
+	apply("12.5rem")
+	if s.ColumnCount != 0 || s.ColumnWidth.Px != 200 {
+		t.Errorf("columns:12.5rem = count %d width %+v, want count 0, width 200px", s.ColumnCount, s.ColumnWidth)
+	}
+
+	// pkg.go.dev's own real trigger, width-then-count order.
+	s = initialStyle()
+	apply("12.5rem 5")
+	if s.ColumnCount != 5 || s.ColumnWidth.Px != 200 {
+		t.Errorf("columns:12.5rem 5 = count %d width %+v, want count 5, width 200px", s.ColumnCount, s.ColumnWidth)
+	}
+
+	// The || combinator: same result with the two tokens swapped.
+	s = initialStyle()
+	apply("5 12.5rem")
+	if s.ColumnCount != 5 || s.ColumnWidth.Px != 200 {
+		t.Errorf("columns:5 12.5rem = count %d width %+v, want count 5, width 200px", s.ColumnCount, s.ColumnWidth)
+	}
+
+	s = initialStyle()
+	s.ColumnCount, s.ColumnWidth = 5, Length{Px: 200}
+	apply("auto")
+	if s.ColumnCount != 0 || !s.ColumnWidth.Auto {
+		t.Errorf("columns:auto = count %d width %+v, want both reset to auto/0", s.ColumnCount, s.ColumnWidth)
+	}
+
+	// Invalid shapes leave both sub-properties unchanged.
+	for _, bad := range []string{"5 5", "12.5rem 12.5rem", "5 12.5rem 5", "not-a-value"} {
+		s = initialStyle()
+		s.ColumnCount, s.ColumnWidth = 3, Length{Px: 100}
+		apply(bad)
+		if s.ColumnCount != 3 || s.ColumnWidth.Px != 100 {
+			t.Errorf("columns:%q (invalid) changed the value to count %d width %+v, want unchanged (3, 100px)", bad, s.ColumnCount, s.ColumnWidth)
+		}
+	}
+
+	// Not inherited; explicit inherit keyword still copies both from parent.
+	parent := initialStyle()
+	parent.ColumnCount, parent.ColumnWidth = 4, Length{Px: 80}
+	child := inheritFrom(parent)
+	if child.ColumnCount != 0 || !child.ColumnWidth.Auto {
+		t.Error("inheritFrom(parent) did not reset columns to initial (not inherited)")
+	}
+	s2 := initialStyle()
+	s2.apply(Declaration{Property: "columns", Value: "inherit"}, 16, &parent)
+	if s2.ColumnCount != 4 || s2.ColumnWidth.Px != 80 {
+		t.Errorf("columns:inherit = count %d width %+v, want parent's (4, 80px)", s2.ColumnCount, s2.ColumnWidth)
+	}
+}

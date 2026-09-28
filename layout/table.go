@@ -267,7 +267,7 @@ func (l *layouter) cellStyle(cell *dom.Node) *css.Style {
 	}
 	return &css.Style{Display: css.DisplayTableCell, Width: css.Length{Auto: true},
 		MinWidth: css.Length{Auto: true}, MaxWidth: css.Length{Auto: true},
-		Height: css.Length{Auto: true}}
+		Height: css.Length{Auto: true}, ColumnWidth: css.Length{Auto: true}}
 }
 
 // distributeColumns turns the columns' constraints into widths summing to W
