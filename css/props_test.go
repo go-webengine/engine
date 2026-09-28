@@ -790,6 +790,53 @@ func TestApplyStandaloneRotateProperty(t *testing.T) {
 	}
 }
 
+// TestApplyAppearanceProperty covers `appearance`/`-webkit-appearance`'s only
+// modelled value: `none` (see AppearanceNone's own doc comment for the
+// confirmed developer.mozilla.org <mdn-switch> trigger this exists for).
+func TestApplyAppearanceProperty(t *testing.T) {
+	s := &Style{}
+	applyOn(s, "appearance", "none", 16)
+	if !s.AppearanceNone {
+		t.Errorf("appearance:none => AppearanceNone=%v, want true", s.AppearanceNone)
+	}
+
+	// auto/initial/unset all reset to false (the initial value) — this
+	// property is not inherited.
+	for _, v := range []string{"auto", "initial", "unset"} {
+		s = &Style{AppearanceNone: true}
+		applyOn(s, "appearance", v, 16)
+		if s.AppearanceNone {
+			t.Errorf("appearance:%s => AppearanceNone=%v, want reset to false", v, s.AppearanceNone)
+		}
+	}
+
+	// The vendor-prefixed alias sets the same field.
+	s = &Style{}
+	applyOn(s, "-webkit-appearance", "none", 16)
+	if !s.AppearanceNone {
+		t.Errorf("-webkit-appearance:none => AppearanceNone=%v, want true", s.AppearanceNone)
+	}
+
+	// Any other CSS Basic UI keyword (textfield, menulist-button, ...) has no
+	// confirmed trigger and is left untouched, matching every other
+	// property's own "invalid/unsupported value dropped by the cascade"
+	// convention rather than being guessed at as either none or auto.
+	s = &Style{AppearanceNone: true}
+	applyOn(s, "appearance", "menulist-button", 16)
+	if !s.AppearanceNone {
+		t.Errorf("appearance:menulist-button (unsupported) => AppearanceNone=%v, want unchanged true", s.AppearanceNone)
+	}
+
+	// Not inherited by default, but the explicit inherit keyword still
+	// copies the parent's computed value.
+	parent := Style{AppearanceNone: true}
+	s = &Style{}
+	s.apply(Declaration{Property: "appearance", Value: "inherit"}, 16, &parent)
+	if !s.AppearanceNone {
+		t.Errorf("appearance:inherit => AppearanceNone=%v, want parent's true", s.AppearanceNone)
+	}
+}
+
 // TestDisplayContentsKeyword: `display: contents` parses to DisplayContents
 // (the element generates no box of its own — see the Display doc comment).
 func TestDisplayContentsKeyword(t *testing.T) {

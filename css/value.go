@@ -901,6 +901,24 @@ type Style struct {
 	TranslateY Length
 	RotateDeg  float64
 
+	// AppearanceNone is `appearance: none` (or `-webkit-appearance: none`),
+	// which suppresses a form control's native OS chrome so the author's own
+	// background/background-image/border/border-radius paint instead. Not
+	// inherited; the zero value (false) is the initial `auto`, matching every
+	// other form control this engine already renders with its own hardcoded
+	// UA-default look (see paintFormControl/paintCheckboxLike). Confirmed
+	// load-bearing live: developer.mozilla.org's own `<mdn-switch>` custom
+	// toggle-switch component styles a real `<input type=checkbox>` with
+	// exactly `appearance:none;background-color:...;background-image:radial-
+	// gradient(...);border-radius:9999px` UNCONDITIONALLY (not gated behind
+	// `:checked` — only the knob's position/colour REFINES on `:checked`), so
+	// a checkbox that sets this must stop taking this engine's own generic
+	// checkbox square and instead paint like any other styled box. Only the
+	// bare `none`/`auto` keywords are modelled; the CSS Basic UI vendor-
+	// specific appearance keywords (`textfield`, `menulist-button`, etc.) have
+	// no confirmed trigger and are left unsupported (equivalent to `auto`).
+	AppearanceNone bool
+
 	// Flex container properties (meaningful when Display == DisplayFlex).
 	FlexDirection  FlexDirection
 	FlexWrap       FlexWrap

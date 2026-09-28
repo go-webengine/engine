@@ -187,6 +187,114 @@ func TestPaintCheckboxCheckedVsUnchecked(t *testing.T) {
 	}
 }
 
+// TestPaintCheckboxIgnoresAuthorStyleWithoutAppearanceNone is a regression
+// guard for the dispatch condition itself: WITHOUT `appearance:none`, a
+// checkbox's own cascaded Background/Border must still be completely
+// ignored in favour of the generic square, exactly as before this round —
+// only AppearanceNone opts a checkbox out of that generic look. A custom
+// magenta background here would otherwise leak through if the dispatch
+// check were ever accidentally dropped or inverted.
+func TestPaintCheckboxIgnoresAuthorStyleWithoutAppearanceNone(t *testing.T) {
+	n := elem("input", map[string]string{"type": "checkbox"})
+	style := &css.Style{Background: css.Color{R: 255, B: 255, A: 255}} // magenta, AppearanceNone: false
+	dst := paintControlStyled(t, n, 13, 13, style)
+	c := dst.RGBAAt(9, 9)
+	if got, want := (css.Color{R: c.R, G: c.G, B: c.B, A: 255}), formFieldBg; got != want {
+		t.Errorf("interior = %+v, want the generic square's %+v (author background must be ignored)", got, want)
+	}
+}
+
+// TestPaintCheckboxAppearanceNoneHonoursBackground covers the confirmed real
+// trigger's central mechanism (developer.mozilla.org's <mdn-switch>, see
+// css.Style.AppearanceNone's own doc comment): `appearance:none` on a
+// checkbox switches it from this engine's generic square to a plain styled
+// box that paints the author's own cascaded background colour, matching
+// paintFormControl's own non-checkbox path.
+func TestPaintCheckboxAppearanceNoneHonoursBackground(t *testing.T) {
+	n := elem("input", map[string]string{"type": "checkbox"})
+	magenta := css.Color{R: 255, B: 255, A: 255}
+	style := &css.Style{AppearanceNone: true, Background: magenta}
+	dst := paintControlStyled(t, n, 13, 13, style)
+	c := dst.RGBAAt(9, 9)
+	if got := (css.Color{R: c.R, G: c.G, B: c.B, A: 255}); got != magenta {
+		t.Errorf("interior = %+v, want author background %+v", got, magenta)
+	}
+}
+
+// TestPaintCheckboxAppearanceNoneHonoursBackgroundImage covers the OTHER
+// half of the real trigger: MDN's own switch knob is a `background-image:
+// radial-gradient(...)`, not a solid colour — reusing paintBackgroundLayers
+// (the same helper a real layout.Box's own gradient background already
+// uses) must paint it here too.
+func TestPaintCheckboxAppearanceNoneHonoursBackgroundImage(t *testing.T) {
+	n := elem("input", map[string]string{"type": "checkbox"})
+	style := linearGradStyle(90, stop(css.Color{R: 0, G: 0, B: 0, A: 255}), stop(css.Color{R: 255, G: 255, B: 255, A: 255}))
+	style.AppearanceNone = true
+	dst := paintControlStyled(t, n, 40, 13, style)
+	left := dst.RGBAAt(5, 9)
+	right := dst.RGBAAt(44, 9) // item spans X:[5,45) — 44 is its rightmost pixel
+	if left.R > 8 {
+		t.Errorf("left = %+v, want ~black (gradient start)", left)
+	}
+	if right.R < 247 {
+		t.Errorf("right = %+v, want ~white (gradient end)", right)
+	}
+}
+
+// TestPaintCheckboxAppearanceNoneHonoursBorder covers the author's own
+// border (paintEdges, the SAME per-side helper a real element's border
+// uses) replacing the generic square's hardcoded outline — and, with no
+// border declared at all (css/ua.go's own `border:0` UA default for
+// checkbox/radio, left standing since `appearance:none` does not itself
+// paint a native fallback border), that NOTHING paints at the edge, mirroring
+// a real browser's own bare, unstyled appearance:none checkbox.
+func TestPaintCheckboxAppearanceNoneHonoursBorder(t *testing.T) {
+	n := elem("input", map[string]string{"type": "checkbox"})
+	green := css.Color{G: 128, A: 255}
+	styled := &css.Style{AppearanceNone: true, Border: css.Borders{
+		Top: css.BorderSide{Width: 2, Style: css.BorderSolid, Color: green},
+	}}
+	dst := paintControlStyled(t, n, 13, 13, styled)
+	edge := dst.RGBAAt(5, 5)
+	if got := (css.Color{R: edge.R, G: edge.G, B: edge.B, A: 255}); got != green {
+		t.Errorf("top edge = %+v, want author border %+v", got, green)
+	}
+
+	bare := &css.Style{AppearanceNone: true} // no Background, no Border at all
+	dstBare := paintControlStyled(t, n, 13, 13, bare)
+	// The item spans X:[5,18) Y:[5,18) on an 33x33 canvas — check every pixel
+	// inside that box (not hasNonBackgroundPixel, whose fixed 100px-wide scan
+	// range assumes the larger controls elsewhere in this file and would read
+	// past this small canvas's own bounds) stayed untouched white.
+	for y := 5; y < 18; y++ {
+		for x := 5; x < 18; x++ {
+			if c := dstBare.RGBAAt(x, y); c.R != 255 || c.G != 255 || c.B != 255 {
+				t.Fatalf("pixel (%d,%d) = %+v, want untouched white (no author background/border)", x, y, c)
+			}
+		}
+	}
+}
+
+// TestPaintCheckboxAppearanceNoneHonoursBorderRadius covers styleRadius
+// integration: a pill-shaped (border-radius: 50%) appearance:none checkbox
+// must leave its own corners unpainted (outside the rounded shape) while its
+// centre still fills — MDN's own switch relies on exactly this for its pill
+// track.
+func TestPaintCheckboxAppearanceNoneHonoursBorderRadius(t *testing.T) {
+	n := elem("input", map[string]string{"type": "checkbox"})
+	blue := css.Color{B: 255, A: 255}
+	style := &css.Style{AppearanceNone: true, Background: blue, BorderRadius: css.Length{IsPercent: true, Percent: 0.5}}
+	dst := paintControlStyled(t, n, 20, 20, style)
+	center := dst.RGBAAt(15, 15)
+	if got := (css.Color{R: center.R, G: center.G, B: center.B, A: 255}); got != blue {
+		t.Errorf("centre = %+v, want fill %+v", got, blue)
+	}
+	corner := dst.RGBAAt(5, 5) // the box's own extreme top-left corner pixel
+	if got := (css.Color{R: corner.R, G: corner.G, B: corner.B, A: 255}); got == blue {
+		t.Errorf("corner = %+v, want untouched white (outside the rounded/circular shape)", got)
+	}
+}
+
 // TestPaintFormControlDrawsSomeText covers that a control WITH a value
 // actually draws glyphs (some non-background pixel inside), and one with
 // none does not — the difference proves text painting is actually wired,

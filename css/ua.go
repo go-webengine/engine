@@ -30,11 +30,18 @@ var uaDescendantRules = ParseStylesheet(
 			// gets the SAME grey button chrome a real <button>/<select> gets
 			// (attribute selectors outrank the bare-tag rule they override,
 			// same specificity ordering as any real stylesheet). Checkbox/
-			// radio get no generic background/border at all — paint's own
-			// checkbox-square renderer never consults Style.Background/Border
-			// for them, so a leftover white field-coloured value would only
-			// ever be a trap for some future consumer (e.g. a JS
-			// getComputedStyle) reading a colour that is never actually drawn.
+			// radio get no generic background/border at all: paint's own
+			// checkbox-square renderer (paintCheckboxLike) only ever consults
+			// Style.Background/Border/BackgroundImages when the author also
+			// sets `appearance:none` (see AppearanceNone's own doc comment),
+			// in which case this transparent/0 default is exactly a real
+			// browser's own reset for a native-chrome-suppressed checkbox —
+			// invisible until the author's OWN rule (like this one) paints
+			// something, never a leftover white field-coloured square. In the
+			// far more common case of no appearance:none at all, this value
+			// is still never drawn (the generic square path ignores Style
+			// entirely), so it remains only a trap-avoider for some future
+			// consumer (e.g. a JS getComputedStyle) reading it.
 			"input[type=button], input[type=submit], input[type=reset] { background-color: #efefef }\n" +
 			"input[type=checkbox], input[type=radio] { background-color: transparent; border: 0 }\n")
 
