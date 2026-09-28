@@ -260,6 +260,44 @@ func TestDisabledEnabledPseudo(t *testing.T) {
 	}
 }
 
+// TestIndeterminatePseudo covers ":indeterminate" — entirely missing before
+// this fix, unlike ":checked"/":disabled" above it has NO backing content
+// attribute at all (dom.Node.Indeterminate is pure script-set runtime state,
+// see its own doc comment), so a real checkbox is matched by setting the
+// Node field directly rather than via an Attr map, mirroring how a script
+// would set `.indeterminate = true` at runtime. Real corpus trigger:
+// github.com's own behaviors.js sets this on its "select all" bulk-action
+// checkboxes.
+func TestIndeterminatePseudo(t *testing.T) {
+	on := &dom.Node{Type: dom.Element, Tag: "input", Attr: map[string]string{"type": "checkbox"}, Indeterminate: true}
+	off := &dom.Node{Type: dom.Element, Tag: "input", Attr: map[string]string{"type": "checkbox"}}
+
+	sel, ok := parseComplex("input:indeterminate")
+	if !ok {
+		t.Fatal("input:indeterminate should parse")
+	}
+	if !sel.Matches(on) {
+		t.Error(":indeterminate should match a checkbox with Indeterminate set")
+	}
+	if sel.Matches(off) {
+		t.Error(":indeterminate should NOT match a plain checkbox")
+	}
+
+	// A bare ":indeterminate" is a valid, real constraint on its own.
+	bare, ok := parseComplex(":indeterminate")
+	if !ok || bare.parts[0].Indeterminate != true {
+		t.Fatalf("bare :indeterminate = %+v ok=%v", bare, ok)
+	}
+	if !bare.Matches(on) || bare.Matches(off) {
+		t.Error("bare :indeterminate match wrong")
+	}
+
+	// ":indeterminate" contributes class-level specificity, same as ":checked".
+	if got := bare.Specificity(); got != 100 {
+		t.Errorf(":indeterminate specificity = %d, want 100", got)
+	}
+}
+
 func TestNotPseudo(t *testing.T) {
 	box := el("div", "", "box")
 	other := el("div", "", "other")

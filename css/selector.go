@@ -54,6 +54,14 @@ type compound struct {
 	// real-world need — only the element's own attribute is.
 	Disabled bool
 	Enabled  bool
+	// Indeterminate is set by the ":indeterminate" pseudo-class. Unlike
+	// Checked/Disabled above, there is no content attribute to read at
+	// static render time — "indeterminate" is a pure script-set runtime
+	// state (see dom.Node.Indeterminate's own doc comment) — so this simply
+	// mirrors that field directly, with no "at static render time" caveat:
+	// a script that sets it before this cascade runs is exactly the real
+	// case (see round 138's own corpus trigger).
+	Indeterminate bool
 	// FirstChild is set by the ":first-child" structural pseudo-class — the
 	// element has no preceding element sibling. Unlike ":nth-child(...)" this
 	// is cheap and common enough (and, critically, common as a ":not()"
@@ -372,6 +380,9 @@ func (c compound) matches(n *dom.Node) bool {
 	if c.Enabled && isDisabled(n) {
 		return false
 	}
+	if c.Indeterminate && !n.Indeterminate {
+		return false
+	}
 	if c.FirstChild && prevElementSibling(n) != nil {
 		return false
 	}
@@ -518,6 +529,9 @@ func (c compound) specificity() (idCount, classCount, tagCount int) {
 	}
 	if c.Enabled {
 		classCount++ // ":enabled" is a pseudo-class (class-level weight)
+	}
+	if c.Indeterminate {
+		classCount++ // ":indeterminate" is a pseudo-class (class-level weight)
 	}
 	if c.Host {
 		classCount++ // ":host" is itself a pseudo-class (class-level weight)
@@ -1263,6 +1277,8 @@ func parseSimple(s string) (compound, bool) {
 			c.Disabled = true
 		case "enabled":
 			c.Enabled = true
+		case "indeterminate":
+			c.Indeterminate = true
 		case "first-child":
 			c.FirstChild = true
 		case "last-child":
@@ -1394,7 +1410,7 @@ func parseSimple(s string) (compound, bool) {
 	// ":checked"/":first-child"/":not(...)"/attribute/":host" selectors carry a
 	// real constraint on their own.
 	if c.Tag == "" && c.ID == "" && len(c.Classes) == 0 &&
-		!c.Root && !c.Dynamic && !c.Checked && !c.Disabled && !c.Enabled && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && c.Part == "" && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet &&
+		!c.Root && !c.Dynamic && !c.Checked && !c.Disabled && !c.Enabled && !c.Indeterminate && !c.FirstChild && !c.LastChild && !c.Empty && !c.Host && c.Part == "" && len(c.Not) == 0 && len(c.Attrs) == 0 && !c.HasPresent && !c.NthChildSet &&
 		!c.OnlyChild && !c.FirstOfType && !c.LastOfType && !c.OnlyOfType && !c.NthOfTypeSet && !c.NthLastChildSet && !c.NthLastOfTypeSet {
 		return compound{}, false
 	}

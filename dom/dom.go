@@ -63,6 +63,17 @@ type Node struct {
 	// to centre (see css/ua.go's quirks-mode table rule).
 	Quirks bool
 
+	// Indeterminate is an <input type=checkbox>'s own "indeterminate" IDL
+	// state (HTML Standard §4.10.5.1.19): unlike Checked, it has NO backing
+	// content attribute at all — script is the only way to set it, so it
+	// lives here as a plain runtime field, the same shape as Quirks/Shadow
+	// above, rather than in Attr. Confirmed real usage: github.com's own
+	// behaviors.js sets `checkbox.indeterminate = true` on page load for any
+	// `[data-indeterminate]`-marked checkbox (its "select all" bulk-action
+	// tri-state pattern). Backs the JS `.indeterminate` accessor and the
+	// `:indeterminate` CSS pseudo-class (css/selector.go).
+	Indeterminate bool
+
 	// Shadow is the shadow root attached to this element (a declarative
 	// <template shadowrootmode> hoisted out at parse time — see
 	// attachDeclarativeShadowRoots), or nil for a plain element. When set,

@@ -558,6 +558,17 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 				b.removeAttr(n, "checked")
 			}
 		})
+	// indeterminate: unlike checked, this has NO backing content attribute at
+	// all (HTML Standard §4.10.5.1.19) — pure script-set runtime state, held
+	// directly on dom.Node (see its own doc comment) rather than reflected
+	// through setAttr/removeAttr like every other accessor on this element.
+	// Entirely missing before this fix. Real corpus usage confirmed on
+	// github.com's own behaviors.js, which sets `checkbox.indeterminate =
+	// true` on page load for its "select all" bulk-action tri-state
+	// checkboxes (`[data-indeterminate]`).
+	b.accessor(o, "indeterminate",
+		func() goja.Value { return b.vm.ToValue(n.Indeterminate) },
+		func(v goja.Value) { n.Indeterminate = v.ToBoolean() })
 	// HTMLDetailsElement.open — a plain boolean reflection (HTML Standard
 	// §4.11.1), the same presence-based shape as checked/hidden above — was
 	// entirely missing, so `details.open = true` from script silently

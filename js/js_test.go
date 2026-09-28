@@ -671,6 +671,29 @@ func TestScrollTopLeftReadWhatYouWrote(t *testing.T) {
 		"afterSet top=42 left=7")
 }
 
+// TestIndeterminateAccessor confirms `.indeterminate` — entirely missing
+// before this fix — round-trips a script-set value. Unlike checked/disabled,
+// it has NO backing content attribute (HTML Standard §4.10.5.1.19): setting
+// it must NOT touch getAttribute('indeterminate') at all, only the runtime
+// state the accessor (and the ":indeterminate" CSS pseudo-class,
+// css/selector_test.go) reads. Real corpus usage confirmed on github.com's
+// own behaviors.js, which sets it on page load for its "select all"
+// bulk-action tri-state checkboxes.
+func TestIndeterminateAccessor(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var d = document.getElementById('d');
+		console.log('default='+d.indeterminate);
+		d.indeterminate = true;
+		console.log('afterSet='+d.indeterminate+' attr='+d.getAttribute('indeterminate'));
+		d.indeterminate = false;
+		console.log('afterUnset='+d.indeterminate);
+	`))
+	mustHave(t, logs,
+		"default=false",
+		"afterSet=true attr=null",
+		"afterUnset=false")
+}
+
 // TestAddEventListenerOnce confirms addEventListener's `{once: true}` option
 // — entirely ignored before this fix (the third argument was never read at
 // all) — per the DOM standard's own "inner invoke" algorithm (§2.9): a once
