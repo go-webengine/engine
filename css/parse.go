@@ -1129,6 +1129,20 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 				s.RotateDeg = deg
 			}
 		}
+	case "appearance", "-webkit-appearance":
+		// Only "none" (suppress native chrome) is modelled — see
+		// AppearanceNone's own doc comment. "auto"/"initial"/"unset" reset to
+		// the initial value. Every other CSS Basic UI keyword (textfield,
+		// menulist-button, button, searchfield, ...) is syntactically valid
+		// but has no confirmed trigger and asks for nothing this engine paints
+		// differently from auto — left untouched rather than guessed at,
+		// same as an unsupported `transform` function is left untouched.
+		switch lv {
+		case "none":
+			s.AppearanceNone = true
+		case "auto", "initial", "unset":
+			s.AppearanceNone = false
+		}
 	case "flex-direction":
 		switch lv {
 		case "row", "row-reverse":
@@ -1448,6 +1462,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.ColumnCount, s.ColumnWidth = parent.ColumnCount, parent.ColumnWidth
 	case "rotate":
 		s.RotateDeg = parent.RotateDeg
+	case "appearance", "-webkit-appearance":
+		s.AppearanceNone = parent.AppearanceNone
 	}
 }
 

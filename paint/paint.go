@@ -171,7 +171,7 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 	}
 	// 3. Background-image layers (last-listed painted first; first on top).
 	if drawable && len(box.Style.BackgroundImages) > 0 {
-		paintBackgroundLayers(dst, box, rad, bgImgs, clip)
+		paintBackgroundLayers(dst, box.Style, rectOf(box), rad, bgImgs, clip)
 	}
 	// 4. Inset box-shadows paint over the background, under the border/content.
 	if drawable {
@@ -379,11 +379,11 @@ func styleRadius(st *css.Style, w, h float64) int {
 	return int(r + 0.5)
 }
 
-// paintBackgroundLayers paints the box's background-image layers into its border
-// box, clipped to the rounded-rect shape.
-func paintBackgroundLayers(dst *image.RGBA, box *layout.Box, rad int, bgImgs map[string]image.Image, clip image.Rectangle) {
-	st := box.Style
-	bx := rectOf(box)
+// paintBackgroundLayers paints st's background-image layers into bx (a
+// border box — the caller's, be it a real layout.Box's own rectOf(box) or a
+// form control's own painter.Rect-derived bounds), clipped to the rounded-
+// rect shape.
+func paintBackgroundLayers(dst *image.RGBA, st *css.Style, bx image.Rectangle, rad int, bgImgs map[string]image.Image, clip image.Rectangle) {
 	for i := len(st.BackgroundImages) - 1; i >= 0; i-- {
 		layer := st.BackgroundImages[i]
 		switch layer.Kind {
@@ -929,7 +929,7 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 		return
 	}
 	if it.FormControl != nil {
-		paintFormControl(dst, pp, it, f, imgs, clip)
+		paintFormControl(dst, pp, it, f, imgs, bgImgs, clip)
 		return
 	}
 	if it.Text == "" || it.Style == nil {
@@ -1009,13 +1009,13 @@ const buttonIconGap = 4
 // text — the visible, clickable rendering isReplacedTag-style items never
 // got before (see layout.go's isFormControlTag branch, which is what gives
 // it.FormControl a non-nil node and a real box size to paint here).
-func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, clip image.Rectangle) {
+func paintFormControl(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, clip image.Rectangle) {
 	n := it.FormControl
 	r := painter.Rect{X: int(it.X), Y: int(it.Y), W: int(it.Width), H: int(it.LineHeight)}
 	kind := formControlKind(n)
 
 	if kind == controlCheckbox || kind == controlRadio {
-		paintCheckboxLike(pp, r, n, clip)
+		paintCheckboxLike(dst, pp, r, n, it.Style, bgImgs, clip)
 		return
 	}
 
@@ -1134,12 +1134,41 @@ func strokeRect1px(pp *painter.PixelPainter, r painter.Rect, c css.Color, clip i
 	fillRectClipped(pp, painter.Rect{X: r.X + r.W - 1, Y: r.Y, W: 1, H: r.H}, c, clip)
 }
 
-// paintCheckboxLike draws a checkbox/radio as a small square: filled accent
-// when checked, outlined white otherwise. Checkbox vs. radio (square vs.
-// circular) is not distinguished — clickability and checked-state visibility
-// are what matter for this engine's driving use case (a login form), not
-// exact native chrome fidelity.
-func paintCheckboxLike(pp *painter.PixelPainter, r painter.Rect, n *dom.Node, clip image.Rectangle) {
+// paintCheckboxLike draws a checkbox/radio. By default (no `appearance:none`)
+// it draws this engine's own generic small square — filled accent when
+// checked, outlined otherwise. Checkbox vs. radio (square vs. circular) is
+// not distinguished, and neither is this engine's own real native OS chrome
+// (never modelled at all) — clickability and checked-state visibility are
+// what matter for this engine's driving use case (a login form), not exact
+// native fidelity.
+//
+// But when the author has set `appearance:none` (st.AppearanceNone — see its
+// own doc comment for the confirmed developer.mozilla.org <mdn-switch>
+// trigger, a custom toggle-switch built from a plain checkbox), the element
+// is no longer a native-look control at all: it becomes a plain styled box
+// like any other, and the SAME author style paintFormControl's own
+// non-checkbox path already honours (round 65's caniuse.com precedent) must
+// paint here too — background colour, background-image layers (gradients
+// and url() bitmaps, reusing paintBackgroundLayers exactly as a real
+// layout.Box's own background does), border-radius, and the per-side border.
+// A checked-state colour swap some custom-checkbox patterns apply via a
+// `:checked` rule (MDN's own switch does, for its knob's position and
+// accent colour) is not specially modelled here: it works automatically,
+// the same as any other `:checked`-matched rule already recascades this
+// element's Style before paint ever sees it.
+func paintCheckboxLike(dst *image.RGBA, pp *painter.PixelPainter, r painter.Rect, n *dom.Node, st *css.Style, bgImgs map[string]image.Image, clip image.Rectangle) {
+	if st != nil && st.AppearanceNone {
+		rad := styleRadius(st, float64(r.W), float64(r.H))
+		if st.Background.A > 0 {
+			fillRoundRectClipped(dst, pp, r, rad, st.Background, clip)
+		}
+		if len(st.BackgroundImages) > 0 {
+			bx := image.Rect(r.X, r.Y, r.X+r.W, r.Y+r.H)
+			paintBackgroundLayers(dst, st, bx, rad, bgImgs, clip)
+		}
+		paintEdges(pp, st.Border, r.X, r.Y, r.W, r.H, rad, true, true, clip)
+		return
+	}
 	_, checked := n.Attribute("checked")
 	bg, border := formFieldBg, formBorder
 	if checked {
