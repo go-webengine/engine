@@ -1010,6 +1010,58 @@ type Style struct {
 	// nowrap}` on its code-toolbar filename labels.
 	TextWrapNowrap bool
 
+	// WordBreakAll is `word-break: break-all`, INHERITED, initial false. Per
+	// spec it makes any character boundary a break opportunity for a line
+	// that would otherwise overflow — this engine models only the ONE
+	// visible effect that has a confirmed real-world trigger: a single
+	// unbreakable "word" (one InlineItem — see appendWords) WIDER than the
+	// whole line gets split at a rune boundary instead of overflowing its
+	// container (layoutInline's splitOverlongWord). The stronger, more
+	// aggressive part of the real spec — breaking mid-word EAGERLY even when
+	// the word would otherwise have fit on its own line, purely for more
+	// even line lengths — is not modelled: no corpus page's own confirmed
+	// trigger (see OverflowWrapAnywhere below) needs it, and it would also
+	// change ordinary greedy-wrap line counts for text that already fits,
+	// a much larger blast radius for an unevidenced refinement. `keep-all`
+	// (suppress even CJK's own default inter-character breaks) is not
+	// modelled either — this engine does not implement CJK line-breaking in
+	// the first place, so there is nothing for it to suppress.
+	//
+	// See the Style method BreaksOverlongWords, which OR-combines this with
+	// OverflowWrapAnywhere: the two properties are independent (either one
+	// requests the same one effect this engine models), so they are kept as
+	// separate fields rather than one shared boolean — collapsing them at
+	// parse time would let an unrelated `word-break: normal` on a LATER
+	// declaration silently cancel an EARLIER `overflow-wrap: break-word`'s
+	// own effect, which real CSS's cascade would not do (they are different
+	// properties; each keeps its own computed value independently).
+	WordBreakAll bool
+
+	// OverflowWrapAnywhere is `overflow-wrap`/`word-wrap: break-word` (the
+	// unprefixed and legacy-alias property names for the same property) or
+	// `anywhere`, and also the deprecated `word-break: break-word` value
+	// (per spec, an alias for `word-break: normal; overflow-wrap: anywhere`,
+	// so it sets THIS field, not WordBreakAll). INHERITED, initial false.
+	// The spec distinguishes `break-word` (breaks only as an overflow-
+	// avoidance last resort, like this engine's one modelled effect) from
+	// `anywhere` (also affects min-/max-content intrinsic-size calculations,
+	// letting a container shrink narrower than its longest unbreakable
+	// word) — that intrinsic-sizing distinction is not modelled, since
+	// every confirmed real trigger (see BreaksOverlongWords) only needs the
+	// line-breaking effect the two values already share.
+	//
+	// Confirmed live: developer.mozilla.org sets `overflow-wrap:break-word`
+	// on `html` itself (inherited page-wide); pkg.go.dev's own package-doc
+	// pages set `word-break:break-all` on `.UnitFiles-fileList` (a `<ul>` of
+	// long bare filenames with no natural break points) and `word-break:
+	// break-word` on `.UnitDirectories td` (a subdirectory-listing table
+	// cell); news.ycombinator.com sets `word-break:break-word` on `.title a`
+	// (every story headline link, which occasionally IS a long bare URL).
+	// Before this, a real production page like any of these would overflow
+	// its own container with unbroken text exactly where a real browser
+	// wraps mid-word instead.
+	OverflowWrapAnywhere bool
+
 	// LineClamp is `-webkit-line-clamp`/`line-clamp`'s value: the maximum
 	// number of lines an element's inline content renders before being cut
 	// off, 0 meaning "not set" (unclamped — the CSS `none` keyword resolves
@@ -1120,6 +1172,13 @@ func (h LineHeight) Resolve(fontSize float64) (float64, bool) {
 // Bold reports whether the weight renders as bold.
 func (s *Style) Bold() bool { return s.FontWeight >= 600 }
 
+// BreaksOverlongWords reports whether a single unbreakable "word" wider than
+// its own line may be split at a rune boundary instead of overflowing — see
+// WordBreakAll and OverflowWrapAnywhere's own doc comments for exactly which
+// property values request this and why they are two independent fields
+// rather than one.
+func (s *Style) BreaksOverlongWords() bool { return s.WordBreakAll || s.OverflowWrapAnywhere }
+
 // initialStyle is the root's starting style (CSS initial values for the
 // inherited properties, block display for the viewport root).
 func initialStyle() Style {
@@ -1229,6 +1288,9 @@ func inheritFrom(parent Style) Style {
 		TabSize:         parent.TabSize,
 		TextWrapBalance: parent.TextWrapBalance,
 		TextWrapNowrap:  parent.TextWrapNowrap,
+
+		WordBreakAll:         parent.WordBreakAll,         // inherited
+		OverflowWrapAnywhere: parent.OverflowWrapAnywhere, // inherited
 	}
 }
 

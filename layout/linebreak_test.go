@@ -31,6 +31,15 @@ func lineText(l *LineBox) string {
 	return strings.Join(parts, " ")
 }
 
+// linesText is lineText over a whole line list, for compact failure messages.
+func linesText(lines []*LineBox) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = lineText(l)
+	}
+	return out
+}
+
 func TestWrapItemsEmpty(t *testing.T) {
 	if got := WrapItems(nil, 100); got != nil {
 		t.Errorf("empty = %v", got)

@@ -1179,3 +1179,132 @@ func TestApplyBorderSpacing(t *testing.T) {
 		t.Errorf("border-spacing:inherit = (%v, %v), want parent's (4, 7)", s2.BorderSpacingH, s2.BorderSpacingV)
 	}
 }
+
+func TestApplyWordBreak(t *testing.T) {
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "word-break", Value: v}, 16, nil) }
+
+	if s.WordBreakAll {
+		t.Error("initialStyle().WordBreakAll = true, want false (initial value is normal)")
+	}
+	apply("break-all")
+	if !s.WordBreakAll {
+		t.Error("word-break:break-all left WordBreakAll false")
+	}
+	apply("normal")
+	if s.WordBreakAll {
+		t.Error("word-break:normal left WordBreakAll true")
+	}
+	apply("break-all")
+	apply("keep-all")
+	if s.WordBreakAll {
+		t.Error("word-break:keep-all left WordBreakAll true (not modelled, but must still reset like normal)")
+	}
+	// The deprecated break-word alias sets OverflowWrapAnywhere, not
+	// WordBreakAll — see OverflowWrapAnywhere's own doc comment.
+	apply("break-all")
+	apply("break-word")
+	if s.WordBreakAll {
+		t.Error("word-break:break-word left WordBreakAll true, want false (it is overflow-wrap's alias, not break-all's)")
+	}
+	if !s.OverflowWrapAnywhere {
+		t.Error("word-break:break-word did not set OverflowWrapAnywhere")
+	}
+
+	// An unrecognised token is invalid CSS and must leave the value UNCHANGED.
+	s.WordBreakAll = true
+	apply("not-a-real-value")
+	if !s.WordBreakAll {
+		t.Error("word-break:not-a-real-value (invalid) reset WordBreakAll, want unchanged")
+	}
+
+	// Inherited, per spec.
+	parent := initialStyle()
+	parent.WordBreakAll = true
+	child := inheritFrom(parent)
+	if !child.WordBreakAll {
+		t.Error("inheritFrom(parent).WordBreakAll = false, want inherited true")
+	}
+
+	// unset re-inherits the parent's value; so does the explicit inherit keyword.
+	s2 := initialStyle()
+	s2.apply(Declaration{Property: "word-break", Value: "unset"}, 16, &parent)
+	if !s2.WordBreakAll {
+		t.Error("word-break:unset did not inherit true from parent")
+	}
+	s3 := initialStyle()
+	s3.apply(Declaration{Property: "word-break", Value: "inherit"}, 16, &parent)
+	if !s3.WordBreakAll {
+		t.Error("word-break:inherit did not inherit true from parent")
+	}
+}
+
+func TestApplyOverflowWrap(t *testing.T) {
+	s := initialStyle()
+	apply := func(prop, v string) { s.apply(Declaration{Property: prop, Value: v}, 16, nil) }
+
+	if s.OverflowWrapAnywhere {
+		t.Error("initialStyle().OverflowWrapAnywhere = true, want false (initial value is normal)")
+	}
+	apply("overflow-wrap", "break-word")
+	if !s.OverflowWrapAnywhere {
+		t.Error("overflow-wrap:break-word left OverflowWrapAnywhere false")
+	}
+	apply("overflow-wrap", "normal")
+	if s.OverflowWrapAnywhere {
+		t.Error("overflow-wrap:normal left OverflowWrapAnywhere true")
+	}
+	apply("overflow-wrap", "anywhere")
+	if !s.OverflowWrapAnywhere {
+		t.Error("overflow-wrap:anywhere left OverflowWrapAnywhere false")
+	}
+
+	// word-wrap is the legacy alias for the exact same property.
+	s.OverflowWrapAnywhere = false
+	apply("word-wrap", "break-word")
+	if !s.OverflowWrapAnywhere {
+		t.Error("word-wrap:break-word (legacy alias) left OverflowWrapAnywhere false")
+	}
+
+	// An unrecognised token is invalid CSS and must leave the value UNCHANGED.
+	apply("overflow-wrap", "not-a-real-value")
+	if !s.OverflowWrapAnywhere {
+		t.Error("overflow-wrap:not-a-real-value (invalid) reset OverflowWrapAnywhere, want unchanged")
+	}
+
+	// Inherited, per spec.
+	parent := initialStyle()
+	parent.OverflowWrapAnywhere = true
+	child := inheritFrom(parent)
+	if !child.OverflowWrapAnywhere {
+		t.Error("inheritFrom(parent).OverflowWrapAnywhere = false, want inherited true")
+	}
+
+	// unset re-inherits the parent's value; so does the explicit inherit
+	// keyword, through either property name.
+	s2 := initialStyle()
+	s2.apply(Declaration{Property: "overflow-wrap", Value: "unset"}, 16, &parent)
+	if !s2.OverflowWrapAnywhere {
+		t.Error("overflow-wrap:unset did not inherit true from parent")
+	}
+	s3 := initialStyle()
+	s3.apply(Declaration{Property: "word-wrap", Value: "inherit"}, 16, &parent)
+	if !s3.OverflowWrapAnywhere {
+		t.Error("word-wrap:inherit did not inherit true from parent")
+	}
+}
+
+func TestBreaksOverlongWords(t *testing.T) {
+	s := initialStyle()
+	if s.BreaksOverlongWords() {
+		t.Error("initialStyle().BreaksOverlongWords() = true, want false")
+	}
+	s.WordBreakAll = true
+	if !s.BreaksOverlongWords() {
+		t.Error("WordBreakAll alone did not make BreaksOverlongWords true")
+	}
+	s.WordBreakAll, s.OverflowWrapAnywhere = false, true
+	if !s.BreaksOverlongWords() {
+		t.Error("OverflowWrapAnywhere alone did not make BreaksOverlongWords true")
+	}
+}

@@ -959,6 +959,33 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.TextWrapNowrap = n
 			s.TextWrapBalance = b
 		}
+	case "word-break":
+		if lv == "unset" { // unset is inherit for an inherited property
+			s.inheritProperty(d.Property, parent)
+		} else {
+			switch lv {
+			case "break-all":
+				s.WordBreakAll = true
+			case "break-word":
+				// Deprecated alias for `normal` + `overflow-wrap:anywhere` —
+				// see OverflowWrapAnywhere's own doc comment.
+				s.WordBreakAll = false
+				s.OverflowWrapAnywhere = true
+			case "normal", "keep-all":
+				s.WordBreakAll = false
+			}
+		}
+	case "overflow-wrap", "word-wrap":
+		if lv == "unset" { // unset is inherit for an inherited property
+			s.inheritProperty(d.Property, parent)
+		} else {
+			switch lv {
+			case "break-word", "anywhere":
+				s.OverflowWrapAnywhere = true
+			case "normal":
+				s.OverflowWrapAnywhere = false
+			}
+		}
 	case "-webkit-line-clamp", "line-clamp":
 		// Not inherited, so "unset"/"initial"/"none" all just reset to 0 (no
 		// clamp) — no inheritProperty special case needed, unlike the
@@ -1349,6 +1376,10 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 	case "text-wrap":
 		s.TextWrapBalance = parent.TextWrapBalance
 		s.TextWrapNowrap = parent.TextWrapNowrap
+	case "word-break":
+		s.WordBreakAll = parent.WordBreakAll
+	case "overflow-wrap", "word-wrap":
+		s.OverflowWrapAnywhere = parent.OverflowWrapAnywhere
 	// The break properties are not inherited by default, but an explicit
 	// `inherit` still copies the parent's computed value, per CSS Cascade.
 	case "break-before", "page-break-before":
