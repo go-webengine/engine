@@ -229,29 +229,70 @@ func (f *Fonts) styleFace(fam css.FontFamily, sizePx float64, weight int, italic
 	return f.face(fam, sizePx, weight >= 600, italic)
 }
 
+// requiredLigatureFeature is the one GSUB feature Measure and drawText always
+// shape with: OpenType's "rlig" (Required Ligatures), whose spec is explicit
+// that it is not optional — "Control of this feature should not generally be
+// exposed to the user" (Microsoft's OpenType feature registry, tag rlig) —
+// unlike "liga" (Standard Ligatures), which a real browser turns off under a
+// non-zero letter-spacing (MDN's letter-spacing page: with letter-spacing set,
+// "user agents do not apply optional ligatures, such as the liga... and clig
+// ... features") or a page's own font-variant-ligatures. Neither of those is
+// modeled here — Measure has no letter-spacing parameter, and plumbing one in
+// would touch every one of its call sites for a feature this engine does not
+// otherwise model — so a font leaning on "liga" for cosmetic ffi/fl-style
+// ligatures still renders unshaped, exactly as before this change.
+//
+// What rlig alone already fixes: the required-substitution case the spec
+// names — Arabic lam-alef, Syriac ligatures — and, found by this engine on a
+// real page (go.dev/blog), Google's icon web fonts (Material Icons, Material
+// Symbols), which substitute a whole ASCII word like "arrow_drop_down" into
+// one pictogram glyph under rlig specifically so it renders correctly even
+// with ligatures otherwise off. Before this, @font-face loaded and sized the
+// icon font correctly (paint/fonts_test.go and fontfaces_test.go already
+// covered that), but every icon glyph painted nothing at all: each letter of
+// the word maps to its own real (non-.notdef) glyph in the font's cmap — a
+// deliberate authoring convention so a renderer that skips rlig shows nothing
+// rather than mangled tofu-like letter shapes — so the old per-rune paint path
+// drew each of those individually-blank glyphs instead of ever asking for the
+// one substituted icon.
+const requiredLigatureFeature = "rlig"
+
 // Measure returns the advance width of text in CSS px at the exact size
-// asked: the glyphs' advances in font units scaled to sizePx, unrounded,
-// for the family's face and for the fallback face on the runs that need
-// it (see Runs). The raster painter still draws with a face at the nearest
-// whole-pixel size and whole-pixel advances, so its glyphs sit on the pixel
-// grid; layout, though, measures the truth — a consumer that draws at the
-// true size (a PDF) then finds the words where the layout put them. Before
-// this, a 14.4 px bold word was measured with a 14 px face, 2.8 % short,
-// and printed at 14.4 px it ran into the space after it.
+// asked: the shaped glyphs' advances in font units scaled to sizePx,
+// unrounded, for the family's face and for the fallback face on the runs
+// that need it (see Runs). The raster painter still draws with a face at the
+// nearest whole-pixel size and whole-pixel advances, so its glyphs sit on the
+// pixel grid; layout, though, measures the truth — a consumer that draws at
+// the true size (a PDF) then finds the words where the layout put them.
+// Before this, a 14.4 px bold word was measured with a 14 px face, 2.8 %
+// short, and printed at 14.4 px it ran into the space after it.
+//
+// Shaping (see requiredLigatureFeature) runs per Run, after Runs has already
+// split the text by cmap coverage: a ligature never spans a fallback-font
+// boundary, matching how a real text shaper only ever merges glyphs within
+// one already-selected face.
 func (f *Fonts) Measure(text string, fam css.FontFamily, sizePx float64, weight int, italic bool) float64 {
 	w := 0.0
 	for _, run := range f.Runs(text, fam, weight, italic) {
 		font := f.font(styleKey{fam, weight >= 600, italic})
+		face := f.styleFace(fam, sizePx, weight, italic)
 		if run.Fallback {
 			font = f.fallbackFont(weight >= 600, italic)
+			face = f.fallbackFace(sizePx, weight >= 600, italic)
 		}
 		upem := float64(font.UnitsPerEm())
-		for _, r := range run.Text {
-			gid, ok := font.GlyphIndex(r)
-			if !ok {
+		for _, gid := range face.Shape(run.Text, requiredLigatureFeature) {
+			if gid == 0 {
+				// Shape maps a rune neither face's cmap covers to glyph 0
+				// (.notdef) rather than dropping it (its own doc comment:
+				// "an unmapped rune becomes glyph 0"), so a GSUB-produced
+				// .notdef reads the same as an unshaped, uncovered rune —
+				// both cases render nothing (see drawText) and so must
+				// measure nothing, matching Runs, which still routes such a
+				// rune into a run rather than excluding it outright.
 				continue
 			}
-			w += float64(font.GlyphAdvance(gid)) * sizePx / upem
+			w += face.AdvanceIndexUnits(gid) * sizePx / upem
 		}
 	}
 	return w

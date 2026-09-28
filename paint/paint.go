@@ -928,8 +928,21 @@ func drawText(dst *image.RGBA, pp *painter.PixelPainter, f *Fonts, st *css.Style
 	penX := x
 	for _, run := range f.Runs(s, st.FontFamily, st.FontWeight, st.Italic) {
 		fc := f.runFace(run, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
-		for _, r := range run.Text {
-			bounds, mask, maskp, advance, ok := fc.GlyphMask(r, penX, baseline)
+		// Shape (see requiredLigatureFeature on Measure) before painting, not
+		// per rune: a required ligature (Arabic lam-alef, an icon web font's
+		// word-to-pictogram substitution) draws as the one glyph it shaped to,
+		// by index (GlyphMaskIndex), not by re-looking the run's own runes up
+		// in the cmap one at a time — which is exactly what a per-rune loop
+		// did before this and could never produce a ligature glyph at all.
+		for _, gid := range fc.Shape(run.Text, requiredLigatureFeature) {
+			if gid == 0 {
+				// See Measure's identical skip: a rune neither face's cmap
+				// covers shapes to .notdef rather than being dropped, and
+				// must still draw (and advance) nothing, as it did when this
+				// loop looked runes up in the cmap directly.
+				continue
+			}
+			bounds, mask, maskp, advance, ok := fc.GlyphMaskIndex(gid, penX, baseline)
 			if ok && mask != nil {
 				blitMask(dst, bounds, mask, maskp, col, clip)
 			}
