@@ -569,6 +569,48 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	b.accessor(o, "indeterminate",
 		func() goja.Value { return b.vm.ToValue(n.Indeterminate) },
 		func(v goja.Value) { n.Indeterminate = v.ToBoolean() })
+	// The Constraint Validation API (HTML Standard §4.10.21.3) was entirely
+	// missing. This engine models NO native constraints at all — no
+	// required/pattern/min/max/step checking against a value — so a
+	// CUSTOM validity message (dom.Node.CustomValidity, its own doc comment
+	// explains why) is the only thing that can ever make `.validity.valid`
+	// false; every other ValidityState flag (valueMissing, typeMismatch,
+	// patternMismatch, tooLong, tooShort, rangeUnderflow, rangeOverflow,
+	// stepMismatch, badInput) is always false, a disclosed scope boundary,
+	// not silently wrong — the object's SHAPE is spec-complete (a script
+	// reading any of them gets a real boolean, never undefined) even though
+	// the underlying checks are not modelled. Real, extensive corpus usage
+	// confirmed on github.com's own behaviors.js: its client-side form
+	// validation UI (username/label/2FA-code fields) calls
+	// `input.setCustomValidity(msg)` to mark a field invalid with a message,
+	// `""` to clear it, reads `input.validity.customError`/
+	// `.validationMessage` to decide what to show, and gates form submission
+	// on `form.checkValidity()`.
+	b.accessor(o, "validationMessage", func() goja.Value { return b.vm.ToValue(n.CustomValidity) }, nil)
+	b.accessor(o, "validity", func() goja.Value {
+		valid := n.CustomValidity == ""
+		v := b.vm.NewObject()
+		for _, k := range []string{"valueMissing", "typeMismatch", "patternMismatch", "tooLong",
+			"tooShort", "rangeUnderflow", "rangeOverflow", "stepMismatch", "badInput"} {
+			v.Set(k, false)
+		}
+		v.Set("customError", !valid)
+		v.Set("valid", valid)
+		return v
+	}, nil)
+	o.Set("setCustomValidity", func(call goja.FunctionCall) goja.Value {
+		n.CustomValidity = call.Argument(0).String()
+		return goja.Undefined()
+	})
+	o.Set("checkValidity", func(call goja.FunctionCall) goja.Value {
+		valid := n.CustomValidity == ""
+		if !valid {
+			ev := b.newEvent("invalid")
+			ev.Set("cancelable", true)
+			b.dispatch(n, "invalid", ev)
+		}
+		return b.vm.ToValue(valid)
+	})
 	// HTMLDetailsElement.open — a plain boolean reflection (HTML Standard
 	// §4.11.1), the same presence-based shape as checked/hidden above — was
 	// entirely missing, so `details.open = true` from script silently

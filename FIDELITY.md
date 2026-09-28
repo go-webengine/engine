@@ -18,6 +18,16 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-09-28 (round 139) — the Constraint Validation API (`setCustomValidity`/`.validity`/`.validationMessage`/`checkValidity`) was entirely missing — CONFIRMED extensive real usage on github.com's own client-side form-validation UI (username/label/2FA fields) (engine#239)
+
+Continued sweeping the same fresh github.com bundles round 138 found `.indeterminate` in, this time for method calls rather than property assignments. `.checkValidity(` (7 hits) and `.setCustomValidity(` (4 hits) stood out immediately, alongside `.validity.customError`/`.validationMessage` reads — GitHub's own form-validation UI relies on this API extensively for username/label/2FA-code field checks.
+
+- **Scoped precisely to what's evidenced, not the full spec surface**: this engine models NO native constraints at all — no `required`/`pattern`/`min`/`max`/`step` checking against a value. The corpus usage is exclusively the CUSTOM-validity pattern (`setCustomValidity(msg)` / `setCustomValidity("")` / reading `.validity.customError`/`.validationMessage` / gating on `.checkValidity()`), so that's what's implemented — but the `ValidityState` object's SHAPE is spec-complete (all nine other flags — `valueMissing`, `typeMismatch`, `patternMismatch`, `tooLong`, `tooShort`, `rangeUnderflow`, `rangeOverflow`, `stepMismatch`, `badInput` — are present and always `false`, not silently `undefined`), so a script that checks any of them gets a real, defined answer rather than a crash.
+- **Fixed** (`dom.Node.CustomValidity string`, the same non-attribute-runtime-field shape as round 138's `Indeterminate`; `js/dom.go`): `setCustomValidity(msg)` sets it; `.validationMessage` and `.validity.customError`/`.valid` read it; `checkValidity()` returns `validity.valid` and, per spec, fires a cancelable `"invalid"` event at the element when invalid.
+- **`.willValidate` deliberately left out**: zero corpus usage found for it anywhere in this session's fetched scripts, unlike the four members above.
+- **One new test**, git-stash-confirmed: reverting makes the test's own script throw `TypeError: Cannot read property 'valid' of undefined` — the same class of failure rounds 124-126 documented for a missing method.
+- **Bench**: flat/within already-documented noise across all ten pages, including github.com/golang/go itself (0.638, unchanged) — expected, pure JS-correctness fix with no paint-visible effect by design. All coverage floors held.
+
 ## 2026-09-28 (round 138) — `HTMLInputElement.indeterminate` and the `:indeterminate` CSS pseudo-class were entirely missing — CONFIRMED real corpus usage on github.com's own "select all" bulk-action checkboxes (engine#238)
 
 Broadened the corpus sweep to a genuinely fresh page (github.com's own homepage and its `behaviors.js`/`element-registry.js`/`environment.js` bundles, not previously in this session's ten-page set), after the existing corpus stopped turning up new evidenced gaps. `.indeterminate=` was the one new real hit: `(0,v.l)("[data-indeterminate]",{constructor:HTMLInputElement,initialize(e){e.indeterminate=!0}})` — GitHub's own tri-state "select all" checkbox pattern.

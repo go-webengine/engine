@@ -694,6 +694,38 @@ func TestIndeterminateAccessor(t *testing.T) {
 		"afterUnset=false")
 }
 
+// TestConstraintValidationAPI confirms setCustomValidity/validity/
+// validationMessage/checkValidity — entirely missing before this fix — the
+// Constraint Validation API subset this engine actually models: a CUSTOM
+// validity message is the only thing that can ever make an element invalid
+// (no native required/pattern/min/max/step checking is modelled at all, a
+// disclosed scope boundary), and checkValidity() fires a cancelable
+// "invalid" event when invalid, per spec. Real corpus usage confirmed on
+// github.com's own behaviors.js form-validation UI.
+func TestConstraintValidationAPI(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var d = document.getElementById('d');
+		console.log('defaultValid='+d.validity.valid+' customError='+d.validity.customError+' msg='+JSON.stringify(d.validationMessage));
+		console.log('defaultCheck='+d.checkValidity());
+
+		var invalidFired = false;
+		d.addEventListener('invalid', function(e){ invalidFired = true; console.log('invalidCancelable='+e.cancelable); });
+		d.setCustomValidity('nope');
+		console.log('afterSet valid='+d.validity.valid+' customError='+d.validity.customError+' msg='+d.validationMessage);
+		console.log('afterSetCheck='+d.checkValidity()+' fired='+invalidFired);
+
+		d.setCustomValidity('');
+		console.log('afterClear valid='+d.validity.valid+' customError='+d.validity.customError);
+	`))
+	mustHave(t, logs,
+		`defaultValid=true customError=false msg=""`,
+		"defaultCheck=true",
+		"afterSet valid=false customError=true msg=nope",
+		"afterSetCheck=false fired=true",
+		"invalidCancelable=true",
+		"afterClear valid=true customError=false")
+}
+
 // TestAddEventListenerOnce confirms addEventListener's `{once: true}` option
 // — entirely ignored before this fix (the third argument was never read at
 // all) — per the DOM standard's own "inner invoke" algorithm (§2.9): a once
