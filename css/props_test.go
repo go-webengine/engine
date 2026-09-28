@@ -623,11 +623,12 @@ func TestApplyTransformTranslate(t *testing.T) {
 		t.Errorf("transform:none => x=%+v y=%+v, want both reset", s.TranslateX, s.TranslateY)
 	}
 
-	// Any OTHER function, alone or mixed with translate, is unsupported —
-	// this engine has no general transform support, so it must not apply a
+	// Any OTHER function, alone or MIXED with translate — including
+	// rotate() now that it is its own recognised, but still separately-only,
+	// function (see TestApplyTransformRotate below) — is unsupported: this
+	// engine has no general transform support, so it must not apply a
 	// partial, wrong composition. The fields are left as they were.
 	cases := []string{
-		"rotate(10deg)",
 		"scale(2)",
 		"translateX(5px) rotate(10deg)",
 		"matrix(1,0,0,1,0,0)",
@@ -667,6 +668,125 @@ func TestApplyTransformTranslate(t *testing.T) {
 	applyOn(s, "transform", "translateX(10px) translateX(50%)", 16)
 	if !s.TranslateX.IsPercent || s.TranslateX.Percent != 0.5 {
 		t.Errorf("translateX(10px)+translateX(50%%) => %+v, want the later call (50%%)", s.TranslateX)
+	}
+}
+
+// TestApplyTransformRotate covers the round-145 companion to
+// TestApplyTransformTranslate: `rotate()`/`rotateZ()`, the second (and
+// still separately-only) transform function this engine understands —
+// confirmed live on tailwindcss.com's own `rotate-(--angle)` fanned card
+// stack and its `-rotate-90` vertical section label.
+func TestApplyTransformRotate(t *testing.T) {
+	s := &Style{}
+	applyOn(s, "transform", "rotate(45deg)", 16)
+	if s.RotateDeg != 45 {
+		t.Errorf("rotate(45deg) => RotateDeg=%v, want 45", s.RotateDeg)
+	}
+
+	// A valid rotate() clears any earlier translate, per CSS's own
+	// "a new transform value replaces the whole property" cascade rule —
+	// the mirror of TestApplyTransformTranslate's own "none" case above.
+	s = &Style{TranslateX: Length{Px: 10}, TranslateY: Length{Px: 20}}
+	applyOn(s, "transform", "rotate(90deg)", 16)
+	if s.RotateDeg != 90 || s.TranslateX != (Length{}) || s.TranslateY != (Length{}) {
+		t.Errorf("rotate(90deg) after a translate => RotateDeg=%v x=%+v y=%+v, want 90/0/0", s.RotateDeg, s.TranslateX, s.TranslateY)
+	}
+
+	// rotateZ is the 3D-syntax alias for the same 2D rotation.
+	s = &Style{}
+	applyOn(s, "transform", "rotateZ(-90deg)", 16)
+	if s.RotateDeg != -90 {
+		t.Errorf("rotateZ(-90deg) => RotateDeg=%v, want -90", s.RotateDeg)
+	}
+
+	// Other angle units, matching parseAngle's own coverage.
+	s = &Style{}
+	applyOn(s, "transform", "rotate(0.25turn)", 16)
+	if s.RotateDeg != 90 {
+		t.Errorf("rotate(0.25turn) => RotateDeg=%v, want 90", s.RotateDeg)
+	}
+	s = &Style{}
+	applyOn(s, "transform", "rotate(3.14159265rad)", 16)
+	if math.Abs(s.RotateDeg-180) > 1e-4 {
+		t.Errorf("rotate(3.14159265rad) => RotateDeg=%v, want ~180", s.RotateDeg)
+	}
+
+	// A valid rotate() then a LATER, valid translate() fully replaces it in
+	// turn — the same cascade rule, the other direction.
+	s = &Style{}
+	applyOn(s, "transform", "rotate(45deg)", 16)
+	applyOn(s, "transform", "translate(5px)", 16)
+	if s.RotateDeg != 0 || s.TranslateX != (Length{Px: 5}) {
+		t.Errorf("translate() after rotate() => RotateDeg=%v TranslateX=%+v, want 0/5px", s.RotateDeg, s.TranslateX)
+	}
+
+	// none / empty resets rotate to zero, same as translate.
+	s = &Style{RotateDeg: 45}
+	applyOn(s, "transform", "none", 16)
+	if s.RotateDeg != 0 {
+		t.Errorf("transform:none => RotateDeg=%v, want reset to 0", s.RotateDeg)
+	}
+
+	// An INVALID rotate() (or any other malformed/unrecognised value) must
+	// leave a pre-existing valid rotation UNTOUCHED, not reset it — an
+	// invalid declaration is dropped by the cascade, the same rule
+	// TestApplyTransformTranslate's own no-op cases already cover for
+	// translate.
+	for _, c := range []string{"rotate(bogus)", "rotate(", "rotate(45deg) rotate(10deg)"} {
+		s = &Style{RotateDeg: 42}
+		applyOn(s, "transform", c, 16)
+		if s.RotateDeg != 42 {
+			t.Errorf("transform:%q should be a no-op, got RotateDeg=%v", c, s.RotateDeg)
+		}
+	}
+}
+
+// TestApplyStandaloneRotateProperty covers the ACTUAL confirmed real
+// trigger for RotateDeg (round 145): CSS Transforms Level 2's own
+// standalone `rotate` property — a bare angle, not a function call — which
+// is what modern Tailwind (v4) compiles its `rotate-*` utilities to
+// (`rotate:90deg`, `rotate:var(--angle)`, confirmed directly from
+// tailwindcss.com's own compiled CSS bundle). Writes the SAME RotateDeg
+// field as `transform: rotate()` (TestApplyTransformRotate above).
+func TestApplyStandaloneRotateProperty(t *testing.T) {
+	s := &Style{}
+	applyOn(s, "rotate", "90deg", 16)
+	if s.RotateDeg != 90 {
+		t.Errorf("rotate:90deg => RotateDeg=%v, want 90", s.RotateDeg)
+	}
+	applyOn(s, "rotate", "-45deg", 16)
+	if s.RotateDeg != -45 {
+		t.Errorf("rotate:-45deg => RotateDeg=%v, want -45", s.RotateDeg)
+	}
+	applyOn(s, "rotate", "0.25turn", 16)
+	if s.RotateDeg != 90 {
+		t.Errorf("rotate:0.25turn => RotateDeg=%v, want 90", s.RotateDeg)
+	}
+
+	// none/initial/unset all reset to 0 — this property is not inherited.
+	for _, v := range []string{"none", "initial", "unset"} {
+		s = &Style{RotateDeg: 45}
+		applyOn(s, "rotate", v, 16)
+		if s.RotateDeg != 0 {
+			t.Errorf("rotate:%s => RotateDeg=%v, want reset to 0", v, s.RotateDeg)
+		}
+	}
+
+	// An invalid value leaves a pre-existing value untouched (dropped by
+	// the cascade), matching every other property's own convention.
+	s = &Style{RotateDeg: 42}
+	applyOn(s, "rotate", "bogus", 16)
+	if s.RotateDeg != 42 {
+		t.Errorf("rotate:bogus (invalid) => RotateDeg=%v, want unchanged 42", s.RotateDeg)
+	}
+
+	// Not inherited by default, but the explicit inherit keyword still
+	// copies the parent's computed value.
+	parent := Style{RotateDeg: 30}
+	s = &Style{}
+	s.apply(Declaration{Property: "rotate", Value: "inherit"}, 16, &parent)
+	if s.RotateDeg != 30 {
+		t.Errorf("rotate:inherit => RotateDeg=%v, want parent's 30", s.RotateDeg)
 	}
 }
 

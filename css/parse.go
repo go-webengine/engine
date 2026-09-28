@@ -1091,22 +1091,43 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		}
 	case "transform":
 		// This engine has no general CSS transform support (see FIDELITY.md's
-		// Known gaps) — but `translate`/`translateX`/`translateY` is the one
-		// subset worth pulling out on its own: a pure 2D offset, applied like
-		// a relative-position shift with no layout-flow effect, unlike
-		// rotate/scale/skew/matrix which would need real coordinate-transform
-		// support in paint. Confirmed load-bearing live: pkg.go.dev's mobile
-		// nav drawer hides itself off-screen via `transform:translate(100%)`
-		// (only overridden to `translate(0)` by a JS-toggled `.is-active`
-		// class) — without this, the drawer's real `display:block` (its
-		// media-query-gated `display:none` correctly does not apply at this
-		// engine's 1024px test viewport, matching a real browser) rendered it
-		// fully in place, overlapping the page. A value naming any OTHER
-		// function, or mixing one in among translate calls, is left
-		// unsupported entirely (both fields reset to zero) rather than
-		// applying a partial, wrong composition.
+		// Known gaps) — but `translate`/`translateX`/`translateY` and
+		// `rotate`/`rotateZ`, EACH ONLY on its own, are the two subsets
+		// pulled out (see TranslateX and RotateDeg's own doc comments for
+		// why, and their real confirmed triggers). A value naming any OTHER
+		// function, or mixing more than one of these two, is left
+		// unsupported entirely rather than applying a partial, wrong
+		// composition.
+		//
+		// A VALID value of either kind replaces the WHOLE previous computed
+		// value — CSS's own cascade semantics, not just whichever field this
+		// one rule happens to set — so each branch below clears the OTHER
+		// kind's fields alongside setting its own. An INVALID/mixed value,
+		// though, must leave every field UNTOUCHED, not reset to zero: an
+		// invalid declaration is dropped by the cascade entirely, so a
+		// valid `transform` from an earlier, lower-priority rule in the
+		// same cascade pass must keep standing, not be silently cleared by
+		// a later rule's own typo or unsupported function.
 		if tx, ty, ok := parseTransformTranslate(v, emRef); ok {
-			s.TranslateX, s.TranslateY = tx, ty
+			s.TranslateX, s.TranslateY, s.RotateDeg = tx, ty, 0
+		} else if deg, ok := parseTransformRotate(v); ok {
+			s.TranslateX, s.TranslateY, s.RotateDeg = Length{}, Length{}, deg
+		}
+	case "rotate":
+		// The standalone CSS Transforms Level 2 property — a bare angle,
+		// NOT a function call — confirmed as the actual real trigger (see
+		// css.Style.RotateDeg's own doc comment): modern Tailwind compiles
+		// its `rotate-*` utilities to THIS property, not `transform:
+		// rotate()`. Writes the SAME field as the `transform` function of
+		// the same name; see RotateDeg's own doc comment for why the two
+		// are not composed.
+		switch lv {
+		case "none", "initial", "unset":
+			s.RotateDeg = 0
+		default:
+			if deg, ok := parseAngle(lv); ok {
+				s.RotateDeg = deg
+			}
 		}
 	case "flex-direction":
 		switch lv {
@@ -1425,6 +1446,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.ColumnWidth = parent.ColumnWidth
 	case "columns":
 		s.ColumnCount, s.ColumnWidth = parent.ColumnCount, parent.ColumnWidth
+	case "rotate":
+		s.RotateDeg = parent.RotateDeg
 	}
 }
 
@@ -1773,6 +1796,43 @@ func addLength(a, b Length) Length {
 	default:
 		return b
 	}
+}
+
+// parseTransformRotate parses a `transform` value that is ONLY a single
+// `rotate()`/`rotateZ()` function — see css.Style.RotateDeg's own doc
+// comment for why this engine models only this one function on its own,
+// the same "no mixing" scope parseTransformTranslate already has. Returns
+// the angle in CSS's own degrees-clockwise-positive convention (see
+// parseAngle in background.go, already shared with linear-gradient's own
+// angle argument) and ok.
+func parseTransformRotate(v string) (deg float64, ok bool) {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, "none") || v == "" {
+		return 0, true
+	}
+	i := 0
+	for i < len(v) && isCSSSpace(v[i]) {
+		i++
+	}
+	nameStart := i
+	for i < len(v) && v[i] != '(' {
+		i++
+	}
+	if i >= len(v) {
+		return 0, false // a function name with no '('
+	}
+	name := strings.ToLower(strings.TrimSpace(v[nameStart:i]))
+	if name != "rotate" && name != "rotatez" {
+		return 0, false
+	}
+	closeIdx, matched := matchParen(v, i)
+	if !matched {
+		return 0, false
+	}
+	if rest := strings.TrimSpace(v[closeIdx+1:]); rest != "" {
+		return 0, false // a second function chained after rotate: mixing not supported
+	}
+	return parseAngle(strings.TrimSpace(v[i+1 : closeIdx]))
 }
 
 // isCSSSpace reports whether c is CSS whitespace, for scanning a
