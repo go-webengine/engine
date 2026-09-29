@@ -31,6 +31,140 @@ type FontFace struct {
 	Weight int
 	// Italic is set for `font-style: italic` or `oblique`.
 	Italic bool
+	// Ranges are the `unicode-range` descriptor's ranges: the characters this
+	// face is meant to be used for. Nil means the descriptor was absent or
+	// unreadable, which is the initial value `U+0-10FFFF` — every character.
+	//
+	// This is not a refinement: a font service splits ONE family and weight
+	// across several faces by range (Google Fonts serves six for a Latin
+	// family — cyrillic, cyrillic-ext, greek, vietnamese, latin-ext, latin),
+	// so a consumer that ignores it and keeps one face per family and weight
+	// keeps whichever came first and typesets the page in a subset that has
+	// none of its characters.
+	Ranges []UnicodeRange
+}
+
+// UnicodeRange is one range of an `@font-face` rule's `unicode-range`,
+// inclusive at both ends.
+type UnicodeRange struct{ Lo, Hi rune }
+
+// Covers reports whether r is one of the characters this face is for. A face
+// that declared no range covers every character, per the descriptor's initial
+// value.
+func (f FontFace) Covers(r rune) bool {
+	if len(f.Ranges) == 0 {
+		return true
+	}
+	for _, u := range f.Ranges {
+		if r >= u.Lo && r <= u.Hi {
+			return true
+		}
+	}
+	return false
+}
+
+// CoversAny reports whether this face is for any of the characters given —
+// the test that decides whether a document needs the face at all, and so
+// whether its file is worth fetching.
+func (f FontFace) CoversAny(runes map[rune]struct{}) bool {
+	if len(f.Ranges) == 0 {
+		return true
+	}
+	for r := range runes {
+		if f.Covers(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseUnicodeRange reads a `unicode-range` value: a comma-separated list of
+// single code points (`U+26`), ranges (`U+0-7F`) and wildcard forms (`U+4??`,
+// which is U+400 to U+4FF). An entry that does not parse is skipped rather
+// than failing the list, since a face with a partly readable range is still
+// more use than none.
+func ParseUnicodeRange(v string) []UnicodeRange {
+	var out []UnicodeRange
+	for _, entry := range splitTopLevelCommas(v) {
+		entry = strings.TrimSpace(entry)
+		if len(entry) < 3 || (entry[0] != 'u' && entry[0] != 'U') || entry[1] != '+' {
+			continue
+		}
+		body := entry[2:]
+		switch {
+		case strings.ContainsAny(body, "?"):
+			lo, hi, ok := wildcardRange(body)
+			if ok {
+				out = append(out, UnicodeRange{lo, hi})
+			}
+		case strings.Contains(body, "-"):
+			parts := strings.SplitN(body, "-", 2)
+			lo, ok1 := parseHexRune(parts[0])
+			hi, ok2 := parseHexRune(parts[1])
+			if ok1 && ok2 && hi >= lo {
+				out = append(out, UnicodeRange{lo, hi})
+			}
+		default:
+			if r, ok := parseHexRune(body); ok {
+				out = append(out, UnicodeRange{r, r})
+			}
+		}
+	}
+	return out
+}
+
+// wildcardRange expands a form like "4??" — every '?' stands for any hex
+// digit, so the range runs from all-zeros to all-Fs in those positions. The
+// '?' must be a suffix: "4?0" is not a range CSS defines.
+func wildcardRange(body string) (rune, rune, bool) {
+	i := strings.IndexByte(body, '?')
+	if i == 0 {
+		// All wildcards: the whole plane set the digit count allows.
+		if strings.Count(body, "?") != len(body) {
+			return 0, 0, false
+		}
+	}
+	for _, c := range body[i:] {
+		if c != '?' {
+			return 0, 0, false // a digit after a '?' is not a wildcard form
+		}
+	}
+	lo, ok := parseHexRune(strings.ReplaceAll(body, "?", "0"))
+	if !ok {
+		return 0, 0, false
+	}
+	hi, ok := parseHexRune(strings.ReplaceAll(body, "?", "f"))
+	if !ok {
+		return 0, 0, false
+	}
+	return lo, hi, true
+}
+
+// parseHexRune reads up to six hex digits as a code point.
+func parseHexRune(s string) (rune, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) > 6 {
+		return 0, false
+	}
+	var v rune
+	for _, c := range s {
+		var d rune
+		switch {
+		case c >= '0' && c <= '9':
+			d = c - '0'
+		case c >= 'a' && c <= 'f':
+			d = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			d = c - 'A' + 10
+		default:
+			return 0, false
+		}
+		v = v<<4 | d
+	}
+	if v > 0x10ffff {
+		return 0, false
+	}
+	return v, true
 }
 
 // FontSrc is one entry of an `@font-face` rule's `src`.
@@ -119,6 +253,8 @@ func parseFontFaceBody(body string) (FontFace, bool) {
 		case "font-style":
 			lv := strings.ToLower(strings.TrimSpace(d.Value))
 			f.Italic = strings.HasPrefix(lv, "italic") || strings.HasPrefix(lv, "oblique")
+		case "unicode-range":
+			f.Ranges = ParseUnicodeRange(d.Value)
 		}
 	}
 	if f.Family == "" || len(f.Srcs) == 0 {
