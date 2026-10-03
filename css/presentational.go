@@ -81,6 +81,26 @@ func presentationalHints(n *dom.Node) []Declaration {
 		}
 	}
 
+	// valign: a table cell's legacy attribute counterpart to `vertical-align`
+	// — confirmed load-bearing live (round 147, 2026-09-30): news.ycombinator.com's
+	// own story rows set `valign="top"` on their rank-number and vote-arrow
+	// `<td>`s, overriding the UA default `vertical-align:middle` (see ua.go's
+	// own td/th entries) those same cells would otherwise get. Scoped to
+	// td/th, the only tags real usage has confirmed need it — the spec also
+	// allows it on tr/thead/tbody/tfoot/col/colgroup, not modelled here.
+	if v, ok := attr("valign"); ok && (tag == "td" || tag == "th") {
+		switch strings.ToLower(v) {
+		case "top":
+			d = append(d, Declaration{Property: "vertical-align", Value: "top"})
+		case "middle":
+			d = append(d, Declaration{Property: "vertical-align", Value: "middle"})
+		case "bottom":
+			d = append(d, Declaration{Property: "vertical-align", Value: "bottom"})
+		case "baseline":
+			d = append(d, Declaration{Property: "vertical-align", Value: "baseline"})
+		}
+	}
+
 	// Table border attribute → a solid border of that width (border="0" is none).
 	if tag == "table" {
 		if v, ok := attr("border"); ok && v != "" && v != "0" {

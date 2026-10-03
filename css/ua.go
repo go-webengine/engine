@@ -96,10 +96,21 @@ func uaDeclarations(tag string, quirks bool) []Declaration {
 	case "tr":
 		return []Declaration{{Property: "display", Value: "table-row"}}
 	case "td":
-		return []Declaration{{Property: "display", Value: "table-cell"}, {Property: "padding", Value: "1px"}}
+		// vertical-align:middle is a real browser's own UA default for a
+		// table cell (distinct from every other box, whose default is the
+		// property's OWN initial value, baseline) — confirmed load-bearing
+		// live: news.ycombinator.com's own top-nav table (round 147, 2026-
+		// 09-30) sets no vertical-align/valign anywhere on its three cells
+		// (an 18px logo image, a line of nav text, a "login" link), which a
+		// real browser centres against each other; without this default they
+		// were all top-aligned instead, a ~4px visible misalignment in the
+		// very first row of the page.
+		return []Declaration{{Property: "display", Value: "table-cell"}, {Property: "padding", Value: "1px"},
+			{Property: "vertical-align", Value: "middle"}}
 	case "th":
 		return []Declaration{{Property: "display", Value: "table-cell"}, {Property: "padding", Value: "1px"},
-			{Property: "font-weight", Value: "bold"}, {Property: "text-align", Value: "center"}}
+			{Property: "font-weight", Value: "bold"}, {Property: "text-align", Value: "center"},
+			{Property: "vertical-align", Value: "middle"}}
 	case "center":
 		// The legacy <center> element: a block that centres its inline content and
 		// its definite-width block/table children (see AlignCenterBlocks).
