@@ -194,8 +194,36 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 		}
 		for j, cbox := range cellBoxes {
 			cs := l.cellStyle(r.cells[j])
+			naturalH := cbox.H
 			translateBox(cbox, (colX[r.colStart[j]]+cs.Margin.Left)-cbox.X, (y+cs.Margin.Top)-cbox.Y)
-			// Stretch the cell to the row height (content stays top-aligned).
+			// vertical-align:middle/bottom shifts the cell's own CONTENT down
+			// within the row-height slot — the box's own outer rect (its
+			// background/border, painted from cbox.X/Y/W/H directly) still
+			// spans the FULL row height regardless, matching a real
+			// browser's own table box model, where vertical-align never
+			// affects a cell's own background fill, only where its content
+			// sits inside it. Only top/middle/bottom move anything; every
+			// other keyword (baseline and its own row-wide first-line
+			// alignment, text-top/text-bottom/sub/super) has no confirmed
+			// real trigger on a table cell and keeps the pre-existing
+			// top-aligned behaviour, same as this field's own general
+			// doc comment already discloses for non-table contexts.
+			if slack := rowH - cs.Margin.Top - cs.Margin.Bottom - naturalH; slack > 0 {
+				var offset float64
+				switch cs.VerticalAlign {
+				case css.VAlignMiddle:
+					offset = slack / 2
+				case css.VAlignBottom:
+					offset = slack
+				}
+				if offset > 0 {
+					translateBox(cbox, 0, offset)
+					cbox.Y -= offset
+					cbox.ContentY -= offset
+				}
+			}
+			// Stretch the cell to the row height (content stays aligned per
+			// the offset just applied above, top by default).
 			cbox.H = rowH - cs.Margin.Top - cs.Margin.Bottom
 			rowBox.Children = append(rowBox.Children, cbox)
 		}

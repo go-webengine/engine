@@ -77,6 +77,9 @@ func TestPresentationalColorAndAlign(t *testing.T) {
 	if td.TextAlign != AlignRight {
 		t.Errorf("td align=right → %v, want AlignRight", td.TextAlign)
 	}
+	if td.VerticalAlign != VAlignTop {
+		t.Errorf("td valign=top → %v, want VAlignTop", td.VerticalAlign)
+	}
 	// align="center" on a flow cell centres blocks too; left/justify map straight.
 	tdc := styleOf(t, `<html><body><table><tr><td align="center">x</td></tr></table></body></html>`, "td")
 	if tdc.TextAlign != AlignCenterBlocks {
@@ -109,6 +112,55 @@ func TestPresentationalColorAndAlign(t *testing.T) {
 	}
 	if tr := styleOf(t, `<html><body><table align="right"><tr><td>x</td></tr></table></body></html>`, "table"); tr.Float != FloatRight {
 		t.Errorf("table align=right → float %v, want right", tr.Float)
+	}
+}
+
+// TestTdThDefaultToVerticalAlignMiddle covers the UA default a real browser
+// gives table cells (unlike every other box, whose default is the property's
+// own initial value, baseline) — confirmed load-bearing live on
+// news.ycombinator.com's own top-nav table (round 147), whose three cells set
+// no vertical-align/valign at all and rely on this default to centre an
+// 18px logo image against a shorter line of nav text.
+func TestTdThDefaultToVerticalAlignMiddle(t *testing.T) {
+	if td := styleOf(t, `<html><body><table><tr><td>x</td></tr></table></body></html>`, "td"); td.VerticalAlign != VAlignMiddle {
+		t.Errorf("plain td VerticalAlign = %v, want VAlignMiddle (UA default)", td.VerticalAlign)
+	}
+	if th := styleOf(t, `<html><body><table><tr><th>x</th></tr></table></body></html>`, "th"); th.VerticalAlign != VAlignMiddle {
+		t.Errorf("plain th VerticalAlign = %v, want VAlignMiddle (UA default)", th.VerticalAlign)
+	}
+	// An author's own vertical-align still overrides the UA default.
+	if td := styleOf(t, `<html><body><table><tr><td style="vertical-align:bottom">x</td></tr></table></body></html>`, "td"); td.VerticalAlign != VAlignBottom {
+		t.Errorf("author vertical-align:bottom → %v, want VAlignBottom", td.VerticalAlign)
+	}
+}
+
+// TestValignAttribute covers every valign keyword this engine models, and
+// that the attribute is scoped to td/th only (the spec also allows it on
+// tr/thead/tbody/tfoot/col/colgroup, not modelled — see presentational.go's
+// own doc comment), plus that an unrecognised value is ignored.
+func TestValignAttribute(t *testing.T) {
+	cases := []struct {
+		v    string
+		want VerticalAlign
+	}{
+		{"top", VAlignTop},
+		{"middle", VAlignMiddle},
+		{"bottom", VAlignBottom},
+		{"baseline", VAlignBaseline},
+	}
+	for _, c := range cases {
+		td := styleOf(t, `<html><body><table><tr><td valign="`+c.v+`">x</td></tr></table></body></html>`, "td")
+		if td.VerticalAlign != c.want {
+			t.Errorf("td valign=%s → %v, want %v", c.v, td.VerticalAlign, c.want)
+		}
+	}
+	// An unrecognised value is ignored, leaving the UA default (middle) standing.
+	if td := styleOf(t, `<html><body><table><tr><td valign="bogus">x</td></tr></table></body></html>`, "td"); td.VerticalAlign != VAlignMiddle {
+		t.Errorf("td valign=bogus (unrecognised) → %v, want VAlignMiddle (UA default left standing)", td.VerticalAlign)
+	}
+	// valign on a non-cell tag is not modelled — ignored.
+	if tr := styleOf(t, `<html><body><table><tr valign="bottom"><td>x</td></tr></table></body></html>`, "tr"); tr.VerticalAlign != VAlignBaseline {
+		t.Errorf("tr valign=bottom (unscoped tag) → %v, want VAlignBaseline (ignored, tr's own initial value)", tr.VerticalAlign)
 	}
 }
 
