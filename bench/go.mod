@@ -1,13 +1,13 @@
 module github.com/go-webengine/engine/bench
 
-go 1.26.4
+go 1.27
 
 // Local parent engine module. Keeps chromedp out of the engine's CGO=0,
 // 6-arch build and coverage gate.
 replace github.com/go-webengine/engine => ..
 
 require (
-	github.com/chromedp/cdproto v0.0.0-20260922220944-a19bff23514f
+	github.com/chromedp/cdproto v0.157.1
 	github.com/chromedp/chromedp v0.16.0
 	github.com/go-images/images v0.0.0-20260927173152-87444e36aac4
 	github.com/go-webengine/engine v0.0.0-00010101000000-000000000000
@@ -18,9 +18,8 @@ require (
 	github.com/ajroetker/go-highway v0.0.4 // indirect
 	github.com/andybalholm/brotli v1.2.5 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
-	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
-	github.com/dop251/goja v0.0.0-20260917113740-793a2a65c13b // indirect
+	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9 // indirect
 	github.com/evanw/esbuild v0.28.2 // indirect
 	github.com/go-browserhttp/browserhttp v0.2.0 // indirect
 	github.com/go-gfx/gfx v0.34.0 // indirect
@@ -29,7 +28,7 @@ require (
 	github.com/go-images/jpeg2000 v0.1.0 // indirect
 	github.com/go-images/png v0.1.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
-	github.com/go-opentype/fonts v0.9.1-0.20260907071658-dd9656234a3d // indirect
+	github.com/go-opentype/fonts v0.10.0 // indirect
 	github.com/go-opentype/opentype v0.13.1-0.20260927180318-ae6327b14eac // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/go-webengine/esbuildsandbox v0.1.0 // indirect
