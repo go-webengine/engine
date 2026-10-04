@@ -38,6 +38,15 @@ What limits the network is `maxPerHostConcurrency` (`transport.go`): every Tailw
 - **Correction (round 153)**: the 429 comparison above used two runs at cap 2 (0 429s) and two at cap 4 (3 each). Eight runs at the baseline cap of 2 produced 429s in six of them (3–5 each), so Wikimedia's 429s are not a function of this cap, and the cap-4 "regression" was a sampling artifact. The cap is not the lever for Wikimedia's limit. Its current baseline rate needs a separate investigation (retry/backoff behaviour, Retry-After handling, and whether the retried images still render).
 - **Adaptive limiter tried in round 153, not shipped**: start at 2, grow to 4 after a run of clean responses, drop back on a 429. Growing after 10 clean responses still produced 429s (5 in one of three runs); growing after 40 never grows on a single Wikipedia page, so it cannot help there, and its Tailwind gain was within noise. Parked, not merged.
 
+## 2026-10-04 (round 160) — module fetches ignored a rate-limited origin's Retry-After and retried inside its window, which could drop a module and break the page (engine#260, patch)
+
+A survey of how other renderers accelerate loading recommended honouring Retry-After in module fetches. Checked against the code before acting, because the survey also claimed that no Retry-After parsing existed and that image fetches had no 429 retry. Both claims were wrong: `doWithRateLimitRetry` and `retryAfterDelay` in `images.go` already honour Retry-After for images and fonts (three retries). The real gap was narrower: `fetchModuleSource` in `modules.go` retried after a fixed 150ms then 300ms, ignoring the header.
+
+- **Why it matters beyond latency**: a module refused with `Retry-After: 1` was retried 150ms later, drew another 429, and was dropped after the attempts ran out. A dropped module is a broken page, not a slow one.
+- **Fixed**: `fetchModuleOnce` returns the Retry-After delay for a 429, and `fetchModuleSource` waits that long when present, keeping the fixed backoff otherwise. The same helper as the image path is reused.
+- **Test**: `TestFetchModuleSourceHonoursRetryAfter` serves 429 with `Retry-After: 1` for the first second. With the fix it succeeds after about 1.0s. Stash-verified: the old code drops the module at 0.46s.
+- **Corpus effect**: none measured. The saved Tailwind, Wikipedia and Hacker News renders are pixel-identical before and after, because no module on those pages was rate-limited. The change corrects a case the corpus does not exercise.
+
 ## 2026-10-04 (round 158) — the settle loop is a small lever: about 0.26s of CPU on tailwindcss.com, all of it full re-cascades, bounded by the network wait (docs only, no behaviour change)
 
 Third candidate after the cascade and the image path: the settle-then-render loop. Profiling one Tailwind render shows `settle` at about 12% of CPU samples, and of that the cascade (`CascadeMediaContainers`) is almost all of it, about 0.26s. JavaScript execution is about 0.07s. A render performs five full cascades. Each is a whole-document pass.
