@@ -47,6 +47,23 @@ A survey of how other renderers accelerate loading recommended honouring Retry-A
 - **Test**: `TestFetchModuleSourceHonoursRetryAfter` serves 429 with `Retry-After: 1` for the first second. With the fix it succeeds after about 1.0s. Stash-verified: the old code drops the module at 0.46s.
 - **Corpus effect**: none measured. The saved Tailwind, Wikipedia and Hacker News renders are pixel-identical before and after, because no module on those pages was rate-limited. The change corrects a case the corpus does not exercise.
 
+## 2026-10-04 (round 161) — security audit: a 62KB image file could allocate 128MB; raster decode now refuses declared canvases above 25 megapixels; SSRF and toolchain findings recorded (engine#261, patch)
+
+Scope: outbound fetches the engine makes for a page (images, sheets, fonts, modules, fetch/XHR, form posts), the decode path for untrusted bytes, the link hit-map, and the Go toolchain (govulncheck).
+
+**Found and fixed**
+- **Decompression bomb (image decode)**. `codec.Decode` has no size guard, and the PNG decoder allocates the canvas from a valid compressed stream. Measured: a 62KB PNG of zeros declaring 4000×4000 allocates 128MB in 40ms. Fixed: `decodeRaster` reads the declared dimensions with `image.DecodeConfig` and refuses anything above 25 megapixels (about 100MB of RGBA, still admitting a 6000×4000 photograph). Both raster decode sites use it. Test: `TestDecodeRasterRefusesOversizedDeclaredImage`, which fails with the guard disabled.
+- **A correction to my own first measurement**: a header alone (IHDR with no pixel data) allocates nothing on the old path. It fails at the missing data. The allocation risk needs a valid compressed stream, as above. The test is named for what it proves (the declared size is refused), not for an allocation it does not reproduce.
+
+**Checked and found adequate**
+- Response bodies are capped on every fetch path (`LimitReader`: 32MB pages, 4MB sheets, 8MB fonts, 16MB images, 48MB module source, 32MB JS responses).
+- Scheme restrictions: images, fonts and sheets accept only http(s) and data:. Modules require an http prefix. The link hit-map rejects `javascript:`, `mailto:`, `tel:` and `data:` hrefs.
+- JS `fetch`/XHR go through the same client as the engine's own fetches.
+
+**Recorded, not changed (decisions for the owner)**
+- **SSRF is not guarded by the library.** A page can name any URL in an image, sheet, font, module, or script `fetch`, and the engine will fetch it, including private and link-local addresses. `browserproxy` guards this at dial time (`guard.go`, a `net.Dialer.Control` hook). A program that embeds the engine directly must add an equivalent dial guard through `Engine.Client`. The README now says so.
+- **Go toolchain**: govulncheck reports six standard-library findings fixed in go1.26.5 and go1.26.6 (`net/http`, `crypto/tls`, `net/url`, `encoding/xml`, `encoding/asn1`). The module pins go1.26.4 in `go.mod` and in CI. Moving the pin is a CI and supply-chain change, so it is left to the owner.
+
 ## 2026-10-04 (round 158) — the settle loop is a small lever: about 0.26s of CPU on tailwindcss.com, all of it full re-cascades, bounded by the network wait (docs only, no behaviour change)
 
 Third candidate after the cascade and the image path: the settle-then-render loop. Profiling one Tailwind render shows `settle` at about 12% of CPU samples, and of that the cascade (`CascadeMediaContainers`) is almost all of it, about 0.26s. JavaScript execution is about 0.07s. A render performs five full cascades. Each is a whole-document pass.

@@ -4,8 +4,10 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"image"
 	"io"
 	"net/http"
@@ -46,6 +48,27 @@ func resizeRaster(src *raster.Image, w, h int, mode resample.Mode) *raster.Image
 		return src
 	}
 	return out
+}
+
+// maxImagePixels bounds how many pixels one raster image may decode to. A
+// file's header can declare a far larger canvas than its compressed body, and
+// the decoder allocates that canvas before reading a pixel, so an unchecked
+// declared size lets a small file exhaust memory: a 62KB PNG of zeros declaring
+// 4000x4000 allocates 128MB in 40ms. Twenty-five megapixels (about 100MB of
+// RGBA) still admits a 6000x4000 photograph.
+const maxImagePixels = 25_000_000
+
+var errImageTooLarge = errors.New("image declares more pixels than the engine decodes")
+
+// decodeRaster decodes a raster image after checking its declared dimensions.
+// Formats the standard image package cannot read a header for fall through to
+// the codec unchecked, as before.
+func decodeRaster(data []byte) (*raster.Image, error) {
+	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err == nil &&
+		int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
+		return nil, errImageTooLarge
+	}
+	return codec.Decode(data)
 }
 
 // imgWorkers is the concurrency bound for image fetch+decode: enough to hide
@@ -295,7 +318,7 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 		}
 		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Data: data, Format: "svg", SourceW: w, SourceH: h}
 	}
-	src0, err := codec.Decode(data)
+	src0, err := decodeRaster(data)
 	if err != nil {
 		return nil
 	}
@@ -457,7 +480,7 @@ func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw strin
 		}
 		return b
 	}
-	img, err := codec.Decode(data)
+	img, err := decodeRaster(data)
 	if err != nil {
 		return nil
 	}
