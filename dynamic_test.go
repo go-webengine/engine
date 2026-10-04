@@ -79,16 +79,16 @@ func TestLayoutMetricsComputed(t *testing.T) {
 	n := &dom.Node{Type: dom.Element, Tag: "div"}
 	st := &css.Style{
 		Display: css.DisplayBlock, Position: css.PositionRelative,
-		Margin:     css.Edges{Top: 1, Right: 2, Bottom: 3, Left: 4},
-		Padding:    css.Edges{Top: 5, Right: 6, Bottom: 7, Left: 8},
-		FontSize:   16, FontWeight: 700, Italic: true,
+		Margin:   css.Edges{Top: 1, Right: 2, Bottom: 3, Left: 4},
+		Padding:  css.Edges{Top: 5, Right: 6, Bottom: 7, Left: 8},
+		FontSize: 16, FontWeight: 700, Italic: true,
 		LineHeight: css.LineHeight{Px: 24},
 		Color:      css.Color{R: 1, G: 2, B: 3, A: 255},
 		Background: css.Color{R: 4, G: 5, B: 6, A: 255},
 		TextAlign:  css.AlignCenter, BoxSizing: css.BorderBox,
 		HasOpacity: true, Opacity: 0.5,
 		ZIndexAuto: false, ZIndex: 7,
-		Top:    css.Length{Px: 10}, Right: css.Length{Auto: true},
+		Top: css.Length{Px: 10}, Right: css.Length{Auto: true},
 		Bottom: css.Length{IsPercent: true, Percent: 0.25}, Left: css.Length{Px: 0},
 	}
 	box := &layout.Box{Node: n, X: 0, Y: 0, W: 100, H: 50}

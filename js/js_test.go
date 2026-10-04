@@ -566,8 +566,8 @@ func TestElementLangDirTabIndex(t *testing.T) {
 		</script></body></html>`)
 	mustHave(t, logs,
 		"lang=fr dir=rtl",
-		"anchorTab=0",  // natively interactive: default 0
-		"divTab=-1",    // not interactive, no attribute: default -1
+		"anchorTab=0", // natively interactive: default 0
+		"divTab=-1",   // not interactive, no attribute: default -1
 		"explicitTab=5",
 		"badTab=-1", // unparseable tabindex falls back to the element's default
 		"setTab=3")

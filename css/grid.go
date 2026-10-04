@@ -375,4 +375,3 @@ func applyGridArea(s *Style, v string) {
 	s.GridRowEnd = get(2)
 	s.GridColumnEnd = get(3)
 }
-

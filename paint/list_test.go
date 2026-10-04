@@ -77,8 +77,8 @@ func TestPaintCircleMarker(t *testing.T) {
 func TestPaintDecimalMarker(t *testing.T) {
 	img := paintMarkerOnly(48, 24, &layout.Marker{
 		Type: css.ListDecimal, Text: "1.",
-		Style:  &css.Style{FontFamily: css.Sans, FontSize: 16, FontWeight: 400, Color: markerBlack},
-		X:      12, Y: 2, Ascent: 12,
+		Style: &css.Style{FontFamily: css.Sans, FontSize: 16, FontWeight: 400, Color: markerBlack},
+		X:     12, Y: 2, Ascent: 12,
 	})
 	// Some ink lands in the glyph region.
 	ink := 0

@@ -88,15 +88,15 @@ func TestSessionGeometryReadback(t *testing.T) {
 	mustHaveJS(t, logs,
 		"rect=10,20,200,40,210,60,10,20",
 		"off=200,40,200,40,200,40",
-		"soff=5,2",       // span relative to its offsetParent (the div)
-		"xoff=0,0,ow=0",  // unlaid-out node: zeros, no ancestor rect
-		"xrect=0",        // zero DOMRect
-		"rects=1,x=0",    // d has a rect; x has none
+		"soff=5,2",      // span relative to its offsetParent (the div)
+		"xoff=0,0,ow=0", // unlaid-out node: zeros, no ancestor rect
+		"xrect=0",       // zero DOMRect
+		"rects=1,x=0",   // d has a rect; x has none
 		"disp=block,w=186px",
-		"unknown=[]",              // unknown computed property → ""
-		"pri=[],txt=[]",           // priority + cssText inert
-		"has=true,keys=0",         // Has true, Keys empty (read-only view)
-		"dispAfter=block",         // setProperty/removeProperty were no-ops
+		"unknown=[]",      // unknown computed property → ""
+		"pri=[],txt=[]",   // priority + cssText inert
+		"has=true,keys=0", // Has true, Keys empty (read-only view)
+		"dispAfter=block", // setProperty/removeProperty were no-ops
 	)
 }
 

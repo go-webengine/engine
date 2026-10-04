@@ -164,8 +164,8 @@ func TestRenderDocumentGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read golden (run with UPDATE_GOLDEN=1 to create): %v", err)
 	}
-	if !bytes.Equal(png, want) {
-		t.Errorf("render does not match golden fixture.png (%d vs %d bytes)", len(png), len(want))
+	if !bytes.Equal(png, want) && !samePixels(t, png, want) {
+		t.Errorf("render does not match golden fixture.png (pixels differ)")
 	}
 }
 

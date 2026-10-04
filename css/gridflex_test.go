@@ -396,10 +396,10 @@ func TestParseGridTemplateAreas(t *testing.T) {
 
 func TestParseGridTemplateAreasRejects(t *testing.T) {
 	for _, v := range []string{
-		``,                    // no rows
-		`"a b" "c"`,           // ragged
-		`"unterminated`,       // missing close quote
-		`"" ""`,               // zero columns
+		``,              // no rows
+		`"a b" "c"`,     // ragged
+		`"unterminated`, // missing close quote
+		`"" ""`,         // zero columns
 	} {
 		if got, ok := parseGridTemplateAreas(v); ok {
 			t.Errorf("areas(%q) unexpectedly ok = %v", v, got)

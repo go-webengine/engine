@@ -47,6 +47,23 @@ A survey of how other renderers accelerate loading recommended honouring Retry-A
 - **Test**: `TestFetchModuleSourceHonoursRetryAfter` serves 429 with `Retry-After: 1` for the first second. With the fix it succeeds after about 1.0s. Stash-verified: the old code drops the module at 0.46s.
 - **Corpus effect**: none measured. The saved Tailwind, Wikipedia and Hacker News renders are pixel-identical before and after, because no module on those pages was rate-limited. The change corrects a case the corpus does not exercise.
 
+## 2026-10-04 (round 162) — Go 1.27.1 becomes the floor; the upgrade surfaced one real test-harness assumption (golden PNGs compared by encoded bytes), now corrected by pixels; govulncheck clean for the code (engine#262, v0.5.0)
+
+Upgrade: `go 1.27.1` in `go.mod`, the CI `GO_VERSION`, the README badge and floor, and the bench module. Go 1.27.1 is the final release (1.27.0 and 1.27.1 are published; 1.27 release candidates are not used).
+
+**Breakages found and what they were**
+- **Golden PNGs failed (`TestSVGGolden`, `TestRenderDocumentGolden`)**. The goldens compared the encoded PNG bytes. Go 1.27's DEFLATE chooses different block types, so the same pixels encode to different bytes (2503 vs 2394 bytes). Measured: the SVG golden has 0 differing pixels out of 28000. The golden comparison now accepts the same pixels, decoded; regeneration with `UPDATE_GOLDEN=1` is unchanged. This is a test-harness correction, not a rendering change.
+- **gofmt reindents** (the fleet note's first mechanism): a formatting-only change across 23 files, one of which removes a trailing blank line.
+- **Coverage**: unchanged floors met (css 99.5, layout 100, paint 100, dom 98.5, paginate 100).
+
+**Security (govulncheck, Go 1.27.1)**
+- Code-affected vulnerabilities: 0. The six standard-library findings that the go1.26.4 pin carried are fixed in the new toolchain.
+- Module dependency: `github.com/klauspost/compress` v1.17.4 → v1.18.7 (fix for GO-2026-5841). It is an indirect dependency through the browser HTTP transport.
+- `golang.org/x/crypto` v0.57.0 has GO-2026-5932, with no fixed release; the code does not call the affected path. It is recorded here, not worked around.
+- The SSRF finding from round 161 stands: the library does not filter destinations, and the README and docs say so.
+
+**Release**: minor under 0.x, because the Go floor rises to 1.27.1 for every consumer.
+
 ## 2026-10-04 (round 161) — security audit: a 62KB image file could allocate 128MB; raster decode now refuses declared canvases above 25 megapixels; SSRF and toolchain findings recorded (engine#261, patch)
 
 Scope: outbound fetches the engine makes for a page (images, sheets, fonts, modules, fetch/XHR, form posts), the decode path for untrusted bytes, the link hit-map, and the Go toolchain (govulncheck).

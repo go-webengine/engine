@@ -264,8 +264,8 @@ func TestGridJustifyStartBorderBoxWidth(t *testing.T) {
 		`<div style="width:60px;box-sizing:border-box;padding:0 10px">A</div></div></body></html>`
 	g := findBox(layoutHTML(t, src, 400), "div")
 	a := g.Children[0]
-	assertF(t, "jbb.A.W", a.W, 60)  // border-box width preserved
-	assertF(t, "jbb.A.X", a.X, 40)  // right-aligned: 100-60
+	assertF(t, "jbb.A.W", a.W, 60) // border-box width preserved
+	assertF(t, "jbb.A.X", a.X, 40) // right-aligned: 100-60
 }
 
 func TestFlexAlignContentFlexStart(t *testing.T) {
@@ -327,13 +327,13 @@ func TestGridAreaNameNotFound(t *testing.T) {
 
 func TestGridSpanStartVariants(t *testing.T) {
 	cases := []struct {
-		decl        string
+		decl         string
 		wantX, wantW float64
 	}{
-		{"grid-column:span 2", 0, 100},       // span-only start, auto-placed
-		{"grid-column:span 1 / 3", 50, 50},   // span 1 + end line
-		{"grid-column:span 3 / 2", 0, 150},   // span clamped to start 0
-		{"grid-column-end:span 1", 0, 50},    // end span of 1
+		{"grid-column:span 2", 0, 100},     // span-only start, auto-placed
+		{"grid-column:span 1 / 3", 50, 50}, // span 1 + end line
+		{"grid-column:span 3 / 2", 0, 150}, // span clamped to start 0
+		{"grid-column-end:span 1", 0, 50},  // end span of 1
 	}
 	for _, c := range cases {
 		src := `<html><body style="margin:0"><div style="display:grid;grid-template-columns:repeat(4, 50px)">` +

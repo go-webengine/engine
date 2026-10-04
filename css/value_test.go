@@ -121,11 +121,11 @@ func TestParseFontFamily(t *testing.T) {
 func TestParseFontFamilyKeepsTheNames(t *testing.T) {
 	cases := map[string]string{
 		`'IBM Plex Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif`: "ibm plex sans,helvetica neue,helvetica,arial",
-		`Spectral, 'Iowan Old Style', Palatino, Georgia, serif`:          "spectral,iowan old style,palatino,georgia",
-		`"IBM Plex Mono", Menlo, monospace`:                              "ibm plex mono,menlo",
-		"sans-serif":                                                     "",
-		"serif, sans-serif":                                              "",
-		`  Spectral  `:                                                   "spectral",
+		`Spectral, 'Iowan Old Style', Palatino, Georgia, serif`:           "spectral,iowan old style,palatino,georgia",
+		`"IBM Plex Mono", Menlo, monospace`:                               "ibm plex mono,menlo",
+		"sans-serif":                                                      "",
+		"serif, sans-serif":                                               "",
+		`  Spectral  `:                                                    "spectral",
 	}
 	for in, want := range cases {
 		if got := parseFontFamily(in); got.Names != want {
