@@ -18,6 +18,17 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-04 (round 150) — the cascade tested every author rule against every element; a rule index keyed on each selector's subject compound makes the same cascade ~10× cheaper, with byte-identical output (engine#251, performance only)
+
+Profiling tailwindcss.com showed the cascade (`css.computeElement` → `Selector.MatchesHost`) at 46% of CPU, with allocation and GC behind much of the rest. SIMD and assembly were not the bottleneck: image resampling and PNG together were 5–8%.
+
+- **Change**: `css/cascade.go` builds a `ruleIndex` once per document stylesheet, bucketing each selector by the id, class or tag its subject (rightmost) compound requires. Rules with no such key (`*`, `:root`, `::part`, `:host` subjects, empty selectors) go in an always-tested bucket. Candidates are returned sorted and de-duplicated, so declarations reach the cascade in exactly the source order a linear scan produced. Shadow-DOM scopes keep the linear scan, so their behaviour is untouched.
+- **Output identical**: nine saved pages (HN, Wikipedia, pkg.go.dev, caniuse, GitHub, react.dev, go.dev/blog, example.com, tailwindcss.com) render pixel-for-pixel the same before and after.
+- **Measured** (single runs, `-file` on saved snapshots): tailwindcss.com 7.8s→5.4s, GitHub 2.5s→0.7s, Wikipedia 2.3s→1.3s. Profiled tailwindcss.com: cascade 1.86s of 4.08s CPU → 0.19s of 2.02s. Pages whose cost lies outside the cascade (pkg.go.dev, go.dev/blog, caniuse) are unchanged.
+- **Tests**: `css/ruleindex_test.go` covers the bucket keys (id, class, tag, descendant subjects keyed on their subject, universal and `:root` always), sorted and de-duplicated candidates, and the `:host`/`::part`/empty subjects.
+- **Scope not done**: the rest of the time is still in style cloning (`cloneProps`), allocation churn and image/offscreen buffers. Those are the next round's targets.
+- **Bench**: no fidelity change is expected or claimed; the pixel-identity check above is the stronger guarantee.
+
 ## 2026-10-04 (round 149) — a `<tr>`'s own CSS height was ignored, so HN's `height:5px` spacer rows laid out at 0px; fixing it moves the front page from 140px short to 30px tall against Chrome (engine#250)
 
 Picked up round 148's parked finding. Round 148 blamed a Verdana font-metrics gap; that was WRONG, and it is corrected below. Measuring it properly ruled the font out: Chrome's own computed geometry for the same HN snapshot (rendered with its stylesheet inlined, so the cascade is real) gives a 13.3px title at a 16px line box and a 9.33px subtext at an 11px line box, and ours matches the 11px subtext line exactly.

@@ -104,12 +104,13 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 	// takes any of these branches (n.Shadow is nil, host stays nil, rules
 	// stays docRules throughout).
 	docRules := rules
-	var walk func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, host *dom.Node)
-	walk = func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, host *dom.Node) {
+	docIdx := buildRuleIndex(docRules)
+	var walk func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, idx *ruleIndex, host *dom.Node)
+	walk = func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, idx *ruleIndex, host *dom.Node) {
 		if n.Type != dom.Element {
 			// Text/Document nodes have no computed style; recurse with parent.
 			for _, c := range n.Children {
-				walk(c, parent, containerStack, rules, host)
+				walk(c, parent, containerStack, rules, idx, host)
 			}
 			return
 		}
@@ -125,7 +126,7 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		// AMBIENT scope n is being cascaded in (nil outside any shadow tree,
 		// or an OUTER shadow's host when n is itself shadow-tree content),
 		// an entirely different (and, for the host itself, unrelated) binding.
-		st := computeElement(n, parent, rules, hostRules, &counter, containerStack, containers, host, quirks)
+		st := computeElement(n, parent, rules, idx, hostRules, &counter, containerStack, containers, host, quirks)
 		sm[n] = &st
 		childStack := containerStack
 		if st.ContainerType != ContainerNormal {
@@ -142,7 +143,7 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		// is, correctly per spec, computed via the SAME outer scope as any
 		// other light-DOM element, never restyled by the shadow's rules).
 		for _, c := range n.Children {
-			walk(c, st, childStack, rules, host)
+			walk(c, st, childStack, rules, idx, host)
 		}
 		// n's shadow tree, if it has one: a NEW scope (shadowRules, host=n),
 		// plus any "::part(name)" selectors from n's OWN ambient scope
@@ -152,12 +153,12 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		if n.Shadow != nil {
 			shadowScope := append(append([]Rule{}, shadowRules...), filterPartSelectors(rules)...)
 			for _, c := range n.Shadow.Children {
-				walk(c, st, childStack, shadowScope, n)
+				walk(c, st, childStack, shadowScope, nil, n)
 			}
 		}
 	}
 	// The synthetic Document root has no style; seed children with initial.
-	walk(root, initialStyle(), nil, docRules, nil)
+	walk(root, initialStyle(), nil, docRules, docIdx, nil)
 	return sm
 }
 
@@ -174,7 +175,7 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 // element is never a member of the shadow tree it hosts). quirks is the
 // document's quirks-mode flag (see dom.Node.Quirks), consulted by
 // uaDeclarations for the handful of UA defaults that differ in quirks mode.
-func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node, quirks bool) Style {
+func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node, quirks bool) Style {
 	st := inheritFrom(parent)
 	// ownProps tracks whether st.CustomProps is this element's own (already
 	// cloned) map versus the parent's shared one, so we clone at most once.
@@ -223,25 +224,31 @@ func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter 
 	// MatchesHost (rather than plain Matches) is what lets a ":host"/
 	// ":host(...)" compound bind to host — everywhere outside a shadow scope
 	// host is nil, so this is identical to Matches(n) for every existing page.
-	addMatching := func(rs []Rule, matchHost *dom.Node) {
-		for _, r := range rs {
-			spec := -1
-			for _, sel := range r.Selectors {
-				if sel.MatchesHost(n, matchHost) {
-					if s := sel.Specificity(); s > spec {
-						spec = s
-					}
+	matchRule := func(r Rule, matchHost *dom.Node) {
+		spec := -1
+		for _, sel := range r.Selectors {
+			if sel.MatchesHost(n, matchHost) {
+				if s := sel.Specificity(); s > spec {
+					spec = s
 				}
-			}
-			if spec >= 0 {
-				if r.Container != nil && !r.Container.satisfied(containerStack, containers) {
-					continue // selector matched, but its @container condition does not (yet, or ever)
-				}
-				add(r.Declarations, precAuthor, spec)
 			}
 		}
+		if spec >= 0 {
+			if r.Container != nil && !r.Container.satisfied(containerStack, containers) {
+				return // selector matched, but its @container condition does not (yet, or ever)
+			}
+			add(r.Declarations, precAuthor, spec)
+		}
 	}
-	addMatching(rules, host)
+	if idx != nil {
+		for _, i := range idx.candidates(n) {
+			matchRule(rules[i], host)
+		}
+	} else {
+		for _, r := range rules {
+			matchRule(r, host)
+		}
+	}
 	// n's OWN shadow's ":host"-keyed rules (if any) — see computeElement's doc
 	// comment: always matched with n as its own host, independent of the
 	// ambient host binding above (an element is never inside the shadow tree
@@ -250,7 +257,9 @@ func computeElement(n *dom.Node, parent Style, rules, hostRules []Rule, counter 
 	// same-specificity document rule that also happens to match the host —
 	// consistent with how this engine otherwise treats "later in the effective
 	// stylesheet" as winning ties.
-	addMatching(hostRules, n)
+	for _, r := range hostRules {
+		matchRule(r, n)
+	}
 	// Inline style attribute (highest origin).
 	if inline, ok := n.Attribute("style"); ok {
 		add(ParseDeclarations(inline), precInline, 0)
@@ -381,4 +390,70 @@ func styleElementText(nodes []*dom.Node) string {
 		walk(n)
 	}
 	return sb.String()
+}
+
+// ruleIndex buckets a document stylesheet's rules by the id, class or tag their
+// selectors' SUBJECT compound (the rightmost one, the element a selector
+// styles) requires, so computeElement tests only the rules that can match an
+// element instead of every rule in the document. Rules whose subject carries
+// no such key (a bare "*", ":root", a ::part or :host subject) are tested for
+// every element. Candidates come back in source order, so the cascade sees
+// declarations in exactly the order a linear scan would produce.
+type ruleIndex struct {
+	byID, byClass, byTag map[string][]int
+	always               []int
+}
+
+func buildRuleIndex(rules []Rule) *ruleIndex {
+	ix := &ruleIndex{byID: map[string][]int{}, byClass: map[string][]int{}, byTag: map[string][]int{}}
+	for i, r := range rules {
+		for _, sel := range r.Selectors {
+			ix.add(i, sel)
+		}
+	}
+	return ix
+}
+
+func (ix *ruleIndex) add(i int, sel Selector) {
+	if len(sel.parts) == 0 {
+		ix.always = append(ix.always, i)
+		return
+	}
+	subj := sel.parts[len(sel.parts)-1]
+	switch {
+	case subj.Part != "" || subj.Host:
+		ix.always = append(ix.always, i)
+	case subj.ID != "":
+		ix.byID[subj.ID] = append(ix.byID[subj.ID], i)
+	case len(subj.Classes) > 0:
+		c := subj.Classes[0]
+		ix.byClass[c] = append(ix.byClass[c], i)
+	case subj.Tag != "" && !subj.Univ:
+		ix.byTag[subj.Tag] = append(ix.byTag[subj.Tag], i)
+	default:
+		ix.always = append(ix.always, i)
+	}
+}
+
+// candidates returns the sorted, de-duplicated indices of every rule that could
+// match n.
+func (ix *ruleIndex) candidates(n *dom.Node) []int {
+	var out []int
+	out = append(out, ix.always...)
+	if id := n.ID(); id != "" {
+		out = append(out, ix.byID[id]...)
+	}
+	for _, c := range n.Classes() {
+		out = append(out, ix.byClass[c]...)
+	}
+	out = append(out, ix.byTag[n.Tag]...)
+	sort.Ints(out)
+	w := 0
+	for i, v := range out {
+		if i == 0 || v != out[w-1] {
+			out[w] = v
+			w++
+		}
+	}
+	return out[:w]
 }
