@@ -1,6 +1,6 @@
 module github.com/go-webengine/engine
 
-go 1.26.4
+go 1.27.1
 
 require (
 	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9
@@ -29,7 +29,7 @@ require (
 	github.com/go-images/png v0.1.0 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
-	github.com/klauspost/compress v1.17.4 // indirect
+	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/sergeymakinen/go-bmp v1.0.0 // indirect
 	github.com/sergeymakinen/go-ico v1.0.0 // indirect

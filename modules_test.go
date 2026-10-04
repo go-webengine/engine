@@ -272,12 +272,12 @@ func TestResolveModuleSpecifier(t *testing.T) {
 		importer, spec, want string
 		ok                   bool
 	}{
-		{"", "https://cdn.ex/x.js", "https://cdn.ex/x.js", true},          // absolute
-		{"", "/packs/a.js", "https://ex.com/packs/a.js", true},            // root-relative vs page
+		{"", "https://cdn.ex/x.js", "https://cdn.ex/x.js", true},                   // absolute
+		{"", "/packs/a.js", "https://ex.com/packs/a.js", true},                     // root-relative vs page
 		{"https://ex.com/packs/a.js", "./b.js", "https://ex.com/packs/b.js", true}, // relative vs importer
 		{"https://ex.com/packs/sub/a.js", "../c.js", "https://ex.com/packs/c.js", true},
-		{"", "react", "", false},   // bare specifier
-		{"", "", "", false},        // empty
+		{"", "react", "", false}, // bare specifier
+		{"", "", "", false},      // empty
 	}
 	for _, c := range cases {
 		got, ok := resolveModuleSpecifier(page, c.importer, c.spec)

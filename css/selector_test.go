@@ -1084,8 +1084,8 @@ func TestAttributeSelectorGitHubDarkModeBug(t *testing.T) {
 // toggle is :checked. With no user interaction the toggle is unchecked, so the
 // reveal rule must NOT apply and the menu stays hidden — Chrome's static state.
 func TestCheckboxHack(t *testing.T) {
-	hide, _ := parseComplex(".menu")                      // display:none base rule
-	reveal, _ := parseComplex("#toggle:checked ~ .menu")  // reveal when checked
+	hide, _ := parseComplex(".menu")                     // display:none base rule
+	reveal, _ := parseComplex("#toggle:checked ~ .menu") // reveal when checked
 
 	toggle := checkbox("toggle", "checkbox", false)
 	menu := el("div", "", "menu")

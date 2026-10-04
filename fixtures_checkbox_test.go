@@ -13,9 +13,10 @@ import "testing"
 // Vector-2022 dropdowns. Solid-colour blocks only → font-independent bytes.
 //
 // Row layout (body margin 0, blocks stack):
-//   A hdr   y  0..20  green  (0,150,0)   ; A menu HIDDEN (unchecked)
-//   B hdr   y 20..40  olive  (150,150,0) ; B menu SHOWN  y 40..70 red (220,40,40)
-//   C hdr   y 70..90  teal   (0,150,150) ; C inv  HIDDEN (:not(:checked) matches)
+//
+//	A hdr   y  0..20  green  (0,150,0)   ; A menu HIDDEN (unchecked)
+//	B hdr   y 20..40  olive  (150,150,0) ; B menu SHOWN  y 40..70 red (220,40,40)
+//	C hdr   y 70..90  teal   (0,150,150) ; C inv  HIDDEN (:not(:checked) matches)
 func TestCheckboxHackGolden(t *testing.T) {
 	img := renderFixture(t, "checkbox_hack.html", 200, 130)
 

@@ -34,7 +34,7 @@ func TestMarginPercentShorthandNarrowsBoxSymmetrically(t *testing.T) {
 	// with body margin 0 so cw is exactly 1024.
 	src := `<html><body style="margin:0"><div style="margin:0 10%">x</div></body></html>`
 	div := findBox(layoutHTML(t, src, 1024), "div")
-	assertF(t, "percent-margin.X", div.X, 102.4)      // 1024 * 0.10
+	assertF(t, "percent-margin.X", div.X, 102.4)               // 1024 * 0.10
 	assertF(t, "percent-margin.ContentW", div.ContentW, 819.2) // 1024 - 2*102.4
 }
 
@@ -44,7 +44,7 @@ func TestMarginPercentLonghandsIndependently(t *testing.T) {
 	// the shorthand (applyMarginShorthand).
 	src := `<html><body style="margin:0"><div style="margin-left:25%;margin-right:5%">x</div></body></html>`
 	div := findBox(layoutHTML(t, src, 1000), "div")
-	assertF(t, "percent-longhand.X", div.X, 250)          // 1000 * 0.25
+	assertF(t, "percent-longhand.X", div.X, 250)               // 1000 * 0.25
 	assertF(t, "percent-longhand.ContentW", div.ContentW, 700) // 1000 - 250 - 50
 }
 
@@ -56,7 +56,7 @@ func TestMarginPercentLeftAutoRightMixed(t *testing.T) {
 	// pre-existing precedence.
 	src := `<html><body style="margin:0"><div style="width:200px;margin-left:10%;margin-right:auto">x</div></body></html>`
 	div := findBox(layoutHTML(t, src, 1000), "div")
-	assertF(t, "mixed.X", div.X, 100)          // 1000 * 0.10
+	assertF(t, "mixed.X", div.X, 100)               // 1000 * 0.10
 	assertF(t, "mixed.ContentW", div.ContentW, 200) // explicit width, unaffected
 }
 

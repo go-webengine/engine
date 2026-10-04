@@ -17,7 +17,7 @@ engine's `go build ./...` / `go test ./...` from the repo root do **not** see it
 
 ## Requirements
 
-- Go 1.26.4+
+- Go 1.27.1+
 - A Chrome / Chromium binary. Point `CHROME_BIN` at it; default is
   `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`.
 

@@ -17,12 +17,12 @@ import (
 func TestCSSImageSize(t *testing.T) {
 	// Intrinsic 900x298 (the go.dev Google wordmark shape).
 	cases := []struct {
-		name       string
-		st         *css.Style
-		iw, ih     int
-		wantW      int
-		wantH      int
-		wantOK     bool
+		name   string
+		st     *css.Style
+		iw, ih int
+		wantW  int
+		wantH  int
+		wantOK bool
 	}{
 		{"nil style keeps intrinsic", nil, 900, 298, 0, 0, false},
 		{"no CSS dims keeps intrinsic",

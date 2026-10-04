@@ -7,7 +7,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-webengine/engine.svg)](https://pkg.go.dev/github.com/go-webengine/engine)
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-0079A8)](https://go-webengine.github.io/docs/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
-[![Go 1.26.4+](https://img.shields.io/badge/Go-1.26.4%2B-00ADD8?logo=go)](https://go.dev/dl/)
+[![Go 1.27.1+](https://img.shields.io/badge/Go-1.27.1%2B-00ADD8?logo=go)](https://go.dev/dl/)
 
 A pure-Go, **`CGO_ENABLED=0`** headless web engine: it fetches a URL, parses the
 HTML into a DOM, applies a real CSS subset (cascade + inheritance + `var()` +
@@ -226,7 +226,7 @@ paint and paginate 100%, dom 97.4%), which CI fails below and which is raised
 paths (root `engine` package, `cmd/render`) are excluded from the gate because
 their coverage is not reproducible in CI. The `bench/` fidelity harness is a
 separate nested module (it pulls chromedp) and is not in the CGO=0 six-arch CI.
-`go.mod` floor is `go 1.26.4`; cross-built for all six 64-bit Go targets.
+`go.mod` floor is `go 1.27.1`; cross-built for all six 64-bit Go targets.
 
 ## Links
 

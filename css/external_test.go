@@ -85,11 +85,11 @@ func TestImportURLs(t *testing.T) {
 			[]string{"x.css"}, []string{""}},
 		{`  @import url( "spaced.css" ) ;`, []string{"spaced.css"}, []string{""}},
 		{`body{color:red}`, nil, nil},
-		{`@import ;`, nil, nil},            // no clause
+		{`@import ;`, nil, nil},                // no clause
 		{`@import url(unterminated`, nil, nil}, // no semicolon
-		{`@import url(;`, nil, nil},         // no closing paren before ;
-		{`@import badtoken.css;`, nil, nil}, // neither url() nor quoted
-		{`@import "";`, nil, nil},           // empty url
+		{`@import url(;`, nil, nil},            // no closing paren before ;
+		{`@import badtoken.css;`, nil, nil},    // neither url() nor quoted
+		{`@import "";`, nil, nil},              // empty url
 		{`/* unterminated comment`, nil, nil},
 		{`@charset "utf-8"`, nil, nil}, // charset without semicolon
 	}

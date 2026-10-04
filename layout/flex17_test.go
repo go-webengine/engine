@@ -99,7 +99,7 @@ func TestFlexRowGapWithWrap(t *testing.T) {
 		`<div style="width:100px;height:20px">C</div></div></body></html>`
 	outer := findBox(layoutHTML(t, src, 400), "div")
 	assertF(t, "rgap.C.Y", outer.Children[2].Y, 30) // 20 line + 10 gap
-	assertF(t, "rgap.container.H", outer.H, 50)      // 20 + 10 + 20
+	assertF(t, "rgap.container.H", outer.H, 50)     // 20 + 10 + 20
 }
 
 func TestFlexGapShorthandTwoValues(t *testing.T) {

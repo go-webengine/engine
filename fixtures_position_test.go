@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"image"
+	stdpng "image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -58,9 +59,38 @@ func checkGolden(t *testing.T, img *image.RGBA, name string) {
 	if err != nil {
 		t.Fatalf("read golden (run with UPDATE_GOLDEN=1 to create): %v", err)
 	}
-	if !bytes.Equal(png, want) {
-		t.Errorf("render does not match golden %s (%d vs %d bytes)", name, len(png), len(want))
+	// The contract is the pixels, not the encoder's output: the same pixels
+	// encode to different bytes when the compressor changes (Go 1.27 picks
+	// different DEFLATE block types), so compare the decoded images.
+	if !bytes.Equal(png, want) && !samePixels(t, png, want) {
+		t.Errorf("render does not match golden %s (pixels differ)", name)
 	}
+}
+
+func samePixels(t *testing.T, a, b []byte) bool {
+	t.Helper()
+	ia, err := stdpng.Decode(bytes.NewReader(a))
+	if err != nil {
+		t.Fatalf("decode render: %v", err)
+	}
+	ib, err := stdpng.Decode(bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("decode golden: %v", err)
+	}
+	if ia.Bounds() != ib.Bounds() {
+		return false
+	}
+	bounds := ia.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			r1, g1, b1, a1 := ia.At(x, y).RGBA()
+			r2, g2, b2, a2 := ib.At(x, y).RGBA()
+			if r1 != r2 || g1 != g2 || b1 != b2 || a1 != a2 {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // TestPositionDemoGolden verifies CSS position relative/absolute/fixed and
