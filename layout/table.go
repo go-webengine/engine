@@ -192,6 +192,12 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 				rowH = h
 			}
 		}
+		// A row's own CSS height is a minimum (CSS 2.1 §17.5.3), not just its
+		// cells' content. Confirmed live: news.ycombinator.com's spacer rows are
+		// `<tr class="spacer" style="height:5px">`, which laid out at 0px.
+		if rs := r.style; rs != nil && !rs.Height.Auto && !rs.Height.IsPercent && rs.Height.Px > rowH {
+			rowH = rs.Height.Px
+		}
 		for j, cbox := range cellBoxes {
 			cs := l.cellStyle(r.cells[j])
 			naturalH := cbox.H
