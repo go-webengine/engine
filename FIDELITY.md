@@ -18,6 +18,12 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-04 (round 155) — each Wikimedia 429 costs about 2s of wall time per article render (its Retry-After is 1s, plus queueing); pacing requests removes the 429s but makes renders slower (docs only, no behaviour change)
+
+Round 154 showed the 429s cost no fidelity. This round measures what they cost in time. Ten renders of the same saved en.wikipedia.org article: runs with no 429s take about 0.85s; runs with three take 2.9–3.1s; a run with five takes 4.0s. So each rate-limited response adds about 2s to the page, far more than the font-loading gain in round 151. Every 429 carried `Retry-After: 1`, which `images.go`'s retry honours, and the rest is queueing behind the other in-flight requests.
+
+Pacing was tried to avoid the 429s in the first place. A minimum gap between request starts per host removes them at 150ms and 300ms, but mean render time rises to 4.0s and 7.2s, because about 15 requests queue behind each other. At 40ms and 80ms the 429s persist (22 and 14 over eight runs) and the time does not improve. No pacing value beat the retry, and the source is unchanged.
+
 ## 2026-10-04 (round 154) — Wikimedia's 429s are recovered by the existing retry path: renders with 1–3 rate-limited thumbnails are pixel-identical to a clean run (docs only, no behaviour change)
 
 Round 153 left open whether the 429s that Wikimedia returns on en.wikipedia.org (about 3 per article load, in most runs) cost any image. Checked directly: six renders of the same saved article, each counted for 429 responses on the wikimedia host. Runs with 0, 1 and 3 such responses all produced PNGs byte-identical to the main-branch reference. `images.go`'s rate-limit retry (`maxRateLimitRetries`, honouring `Retry-After`, with a default backoff when the header is absent) recovers them within the same render. So the 429s cost latency, not fidelity, and the per-host cap question is a latency and politeness question only.
