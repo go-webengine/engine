@@ -18,6 +18,10 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-04 (round 154) — Wikimedia's 429s are recovered by the existing retry path: renders with 1–3 rate-limited thumbnails are pixel-identical to a clean run (docs only, no behaviour change)
+
+Round 153 left open whether the 429s that Wikimedia returns on en.wikipedia.org (about 3 per article load, in most runs) cost any image. Checked directly: six renders of the same saved article, each counted for 429 responses on the wikimedia host. Runs with 0, 1 and 3 such responses all produced PNGs byte-identical to the main-branch reference. `images.go`'s rate-limit retry (`maxRateLimitRetries`, honouring `Retry-After`, with a default backoff when the header is absent) recovers them within the same render. So the 429s cost latency, not fidelity, and the per-host cap question is a latency and politeness question only.
+
 ## 2026-10-04 (round 152, corrected round 153) — the remaining wall-clock cost on tailwindcss.com is the per-host concurrency cap of 2; raising it to 4 saves ~30%, but the Wikimedia 429 claim below was WRONG (docs only, no behaviour change)
 
 With the font change in (round 151), the request log shows the last network response at ~3.2s of a 3.7s render, so the critical path is now network, not CPU. Image decode/resample and the settle-time JS are small by comparison. The JS modules were checked too: esbuild already fetches them concurrently, with a deliberate retry policy, so they are not a serial bottleneck.
