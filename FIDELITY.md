@@ -38,6 +38,15 @@ What limits the network is `maxPerHostConcurrency` (`transport.go`): every Tailw
 - **Correction (round 153)**: the 429 comparison above used two runs at cap 2 (0 429s) and two at cap 4 (3 each). Eight runs at the baseline cap of 2 produced 429s in six of them (3–5 each), so Wikimedia's 429s are not a function of this cap, and the cap-4 "regression" was a sampling artifact. The cap is not the lever for Wikimedia's limit. Its current baseline rate needs a separate investigation (retry/backoff behaviour, Retry-After handling, and whether the retried images still render).
 - **Adaptive limiter tried in round 153, not shipped**: start at 2, grow to 4 after a run of clean responses, drop back on a 429. Growing after 10 clean responses still produced 429s (5 in one of three runs); growing after 40 never grows on a single Wikipedia page, so it cannot help there, and its Tailwind gain was within noise. Parked, not merged.
 
+## 2026-10-04 (round 158) — the settle loop is a small lever: about 0.26s of CPU on tailwindcss.com, all of it full re-cascades, bounded by the network wait (docs only, no behaviour change)
+
+Third candidate after the cascade and the image path: the settle-then-render loop. Profiling one Tailwind render shows `settle` at about 12% of CPU samples, and of that the cascade (`CascadeMediaContainers`) is almost all of it, about 0.26s. JavaScript execution is about 0.07s. A render performs five full cascades. Each is a whole-document pass.
+
+- **Ceiling**: removing every redundant cascade would save at most about 0.26s of CPU per page. The render is about 3.7s of wall time and is dominated by the network, so the realistic wall-clock gain is a few percent.
+- **What it would take**: knowing whether a settle pass changed anything the cascade reads (DOM structure, attributes, stylesheets). That needs a mutation or dirty flag through the DOM and the JS binding. A missed dirty path would silently keep stale styles, which is a fidelity risk that outweighs the gain.
+
+Not implemented. The lever is real but small, and the correctness risk is not justified by it.
+
 ## 2026-10-04 (round 157) — image decode and resampling are not the next lever: one redundant resample in 46 on tailwindcss.com, and decode is already parallel (docs only, no behaviour change)
 
 With the cascade and font loading done, the image path was the remaining CPU candidate. A CPU profile of one Tailwind render shows `loadOneImage` at about 12% of samples, decode about 10%, and resampling about 11% (mostly `resample.resampleH`/`resampleV`). Two hypotheses to check: that the same background bitmap is resampled again for every element that paints it, and that decoding is serial.
