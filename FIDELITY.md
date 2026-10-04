@@ -18,6 +18,16 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-04 (round 152) — the remaining wall-clock cost on tailwindcss.com is the per-host concurrency cap of 2; raising it to 4 saves ~30% but reproduces the Wikimedia 429s round 57 measured, so the cap stays (docs only, no behaviour change)
+
+With the font change in (round 151), the request log shows the last network response at ~3.2s of a 3.7s render, so the critical path is now network, not CPU. Image decode/resample and the settle-time JS are small by comparison. The JS modules were checked too: esbuild already fetches them concurrently, with a deliberate retry policy, so they are not a serial bottleneck.
+
+What limits the network is `maxPerHostConcurrency` (`transport.go`): every Tailwind font and image is on one host, and the cap of 2 in-flight requests serialises them into pairs.
+
+- **Measured, live tailwindcss.com, three interleaved pairs**: cap 2 at 4.3 / 3.5 / 3.9s; cap 4 at 2.8 / 2.6 / 2.7s, roughly 30% less wall time.
+- **Measured, en.wikipedia.org article, two runs each, counting every upload.wikimedia.org response**: cap 2 gives 12 requests and 0 HTTP 429s per run; cap 4 gives 15–16 requests and 3 HTTP 429s per run. This reproduces round 57's finding: the cap exists to avoid Wikimedia's rate limit, and raising it trades speed for 429s, which the retry then has to pay for.
+- **Decision left open**: raising the cap globally is not safe. An adaptive scheme (start at 2, raise a host's cap only while it returns no 429s, back off on a 429) would keep most of the speed without the Wikimedia regression, but it is a politeness policy and not one to tune silently. The cap is unchanged in this round.
+
 ## 2026-10-04 (round 151) — web fonts downloaded one after another, ~4.4s of serial waiting on tailwindcss.com; now fetched concurrently with the same fetches and identical pixels (engine#252, performance only)
 
 Logging every request through the engine's own client during one tailwindcss.com render showed the real wall-clock cost: not the CPU, but ten `@font-face` files fetched in a plain loop, each starting only when the previous finished (~430ms each, ~4.4s in total). Images, stylesheets and JS modules were already concurrent. CPU-side, after the round-150 rule index, the remaining costs are image decode/resample and PNG encode, which are smaller.
