@@ -304,48 +304,56 @@ func (e *Engine) fetchModuleSource(ctx context.Context, abs string) (string, boo
 		return "", false
 	}
 	for attempt := 0; ; attempt++ {
-		src, retry, ok := e.fetchModuleOnce(ctx, abs)
+		src, retry, ok, after := e.fetchModuleOnce(ctx, abs)
 		if ok {
 			return src, true
 		}
 		if !retry || attempt >= moduleFetchRetries || ctx.Err() != nil {
 			return "", false
 		}
-		// Small backoff to let a rate-limited origin recover, bounded by ctx.
+		// A rate-limited origin says how long to wait (Retry-After); retrying
+		// sooner just draws another 429. Otherwise a small backoff bounded by ctx.
+		wait := after
+		if wait == 0 {
+			wait = time.Duration(attempt+1) * 150 * time.Millisecond
+		}
 		select {
 		case <-ctx.Done():
 			return "", false
-		case <-time.After(time.Duration(attempt+1) * 150 * time.Millisecond):
+		case <-time.After(wait):
 		}
 	}
 }
 
 // fetchModuleOnce does a single fetch attempt. retry reports whether the failure
 // looks transient (worth another attempt): a network error or a 429/5xx.
-func (e *Engine) fetchModuleOnce(ctx context.Context, abs string) (body string, retry, ok bool) {
+func (e *Engine) fetchModuleOnce(ctx context.Context, abs string) (body string, retry, ok bool, after time.Duration) {
 	rctx, cancel := context.WithTimeout(ctx, moduleFetchTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(rctx, http.MethodGet, abs, nil)
 	if err != nil {
-		return "", false, false
+		return "", false, false, 0
 	}
 	if e.UserAgent != "" {
 		req.Header.Set("User-Agent", e.UserAgent)
 	}
 	resp, err := e.Client.Do(req)
 	if err != nil {
-		return "", true, false // network/timeout: transient
+		return "", true, false, 0 // network/timeout: transient
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		transient := resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500
-		return "", transient, false
+		if resp.StatusCode == http.StatusTooManyRequests && resp.Header.Get("Retry-After") != "" {
+			after = retryAfterDelay(resp.Header.Get("Retry-After"))
+		}
+		return "", transient, false, after
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxModuleSourceBytes))
 	if err != nil {
-		return "", true, false
+		return "", true, false, 0
 	}
-	return string(raw), false, true
+	return string(raw), false, true, 0
 }
 
 // awaitBounded runs fn in its own goroutine and returns its result with ok
