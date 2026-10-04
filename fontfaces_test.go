@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-opentype/fonts/cabin"
 	"github.com/go-webengine/engine/css"
@@ -17,13 +19,16 @@ import (
 )
 
 // fontServer serves one TTF at /f.ttf and counts the requests for it.
-func fontServer(t *testing.T) (*httptest.Server, *int) {
+func fontServer(t *testing.T) (*httptest.Server, func() int) {
 	t.Helper()
+	var mu sync.Mutex
 	n := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/f.ttf":
+			mu.Lock()
 			n++
+			mu.Unlock()
 			w.Header().Set("Content-Type", "font/ttf")
 			_, _ = w.Write(cabin.TTF)
 		case "/missing.ttf":
@@ -33,7 +38,11 @@ func fontServer(t *testing.T) (*httptest.Server, *int) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv, &n
+	return srv, func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return n
+	}
 }
 
 // The whole path: a sheet's @font-face rule, the file fetched, the face
@@ -54,8 +63,8 @@ func TestLoadFontFacesFetchesRegistersAndMeasures(t *testing.T) {
 	if len(faces[0].Data) != len(cabin.TTF) {
 		t.Errorf("Data is %d bytes, want the %d fetched", len(faces[0].Data), len(cabin.TTF))
 	}
-	if *hits != 1 {
-		t.Errorf("fetched the file %d times, want 1", *hits)
+	if hits() != 1 {
+		t.Errorf("fetched the file %d times, want 1", hits())
 	}
 	fonts := paint.NewFonts()
 	fam := css.FontFamily{Names: "cabin web", Generic: css.GenericSans}
@@ -127,8 +136,8 @@ func TestLoadFontFacesFetchesEachSlotOnce(t *testing.T) {
 	if len(faces) != 1 {
 		t.Errorf("got %d faces, want 1", len(faces))
 	}
-	if *hits != 1 {
-		t.Errorf("fetched %d times, want 1", *hits)
+	if hits() != 1 {
+		t.Errorf("fetched %d times, want 1", hits())
 	}
 }
 
@@ -192,4 +201,34 @@ func TestLoadFontFacesReadsAWOFF2(t *testing.T) {
 		t.Errorf("the woff2 face did not change the measurement (%v)", before)
 	}
 	t.Logf("Inter measured %.2f px, IBM Plex Sans from the woff2 %.2f px", before, after)
+}
+
+// Distinct slots load concurrently, not one after another, and the result
+// keeps declaration order. Each font is held for 300ms: serially four would
+// take 1.2s; concurrently the whole set finishes in roughly one delay.
+func TestLoadFontFacesLoadsSlotsConcurrentlyInDeclarationOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "font/ttf")
+		_, _ = w.Write(cabin.TTF)
+	}))
+	defer srv.Close()
+	var sheet string
+	for i, fam := range []string{"A", "B", "C", "D"} {
+		sheet += `@font-face { font-family: ` + fam + `; font-weight: ` + itoa(400+100*i) + `; src: url(` + srv.URL + `/` + fam + `.ttf); }`
+	}
+	start := time.Now()
+	faces := New().LoadFontFaces(context.Background(), &Document{URL: srv.URL + "/p.html"}, []string{sheet}, css.Media{})
+	elapsed := time.Since(start)
+	if len(faces) != 4 {
+		t.Fatalf("got %d faces, want 4", len(faces))
+	}
+	for i, fam := range []string{"a", "b", "c", "d"} { // family names are case-folded by the css layer
+		if faces[i].Family != fam {
+			t.Errorf("faces[%d].Family = %q, want %q (declaration order)", i, faces[i].Family, fam)
+		}
+	}
+	if elapsed >= 900*time.Millisecond {
+		t.Errorf("four 300ms fonts took %v; they should load concurrently (serially would be 1.2s)", elapsed)
+	}
 }
