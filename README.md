@@ -196,6 +196,17 @@ while go.dev, tailwindcss.com and the large pkg.go.dev page are slower. Re-run t
 harness with `cd bench && go run ./cmd/compare -urls urls.txt` (needs a
 Chrome/Chromium binary).
 
+## Security
+
+The engine fetches every resource a page names (images, stylesheets, fonts,
+scripts and modules, `fetch`/XHR targets, form posts). It does **not** filter
+destinations itself, so rendering an untrusted page from a machine with access to
+private networks can reach internal addresses. If you embed the engine directly,
+add a dial-time guard through `Engine.Client` that refuses loopback, private and
+link-local addresses. `browserproxy` ships one (`guard.go`). Decoding is
+bounded: raster images declaring more than 25 megapixels are refused, and every
+fetch is size-capped.
+
 ## Test
 
 ```
