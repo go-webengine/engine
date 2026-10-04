@@ -3,7 +3,7 @@
 # go-webengine / engine
 
 [![CI](https://github.com/go-webengine/engine/actions/workflows/ci.yml/badge.svg)](https://github.com/go-webengine/engine/actions/workflows/ci.yml)
-![coverage](https://img.shields.io/badge/coverage-97%25%2B%20ratchet-brightgreen)
+![coverage gate](https://img.shields.io/badge/coverage%20gate-css%2099.5%20%C2%B7%20layout%2Fpaint%2Fpaginate%20100%20%C2%B7%20dom%2097.4-brightgreen)
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-webengine/engine.svg)](https://pkg.go.dev/github.com/go-webengine/engine)
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-0079A8)](https://go-webengine.github.io/docs/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
@@ -93,7 +93,7 @@ reuse-vs-build decision.
 
 ## What works / What doesn't
 
-The full per-feature and per-page assessment (five live pages, committed golden
+The full per-feature and per-page assessment (ten live pages, committed golden
 PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 [`bench/REPORT.md`](bench/REPORT.md). Short version:
 
@@ -111,16 +111,30 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - **Colour & decoration**: named/`#rgb`/`#rrggbb`, modern `rgb()`/`hsl()`,
   `background-color`, **linear & radial gradients**, `background-image: url()`,
   **border** + **border-radius**, **box-shadow**, group **opacity**.
+- **Transforms and effects**: `translate` and `rotate` (the function and the
+  standalone property), CSS `filter` (blur and colour-matrix functions),
+  `backdrop-filter`, `mask-image` (a single `url()` mask), group `opacity`.
+- **Lists and columns**: `ul`/`ol` markers (`list-style` discs, circles and
+  squares, `start`/`value`), and multi-column layout for `columns`,
+  `column-count` and `column-width`.
 - **Text**: anti-aliased proportional text (go-opentype) with **real bold and
   italic faces** (no faux-bold), serif / sans / mono, complex scripts (Cyrillic,
   Vietnamese, …); `white-space: pre` and `nowrap`; `text-transform`
   (`uppercase`/`lowercase`/`capitalize`, applied before measurement);
+  `letter-spacing`, `word-break`/`overflow-wrap`, `text-overflow: ellipsis`,
+  `-webkit-line-clamp`;
   **`@font-face`** — the document's own typefaces are fetched and registered
   before anything is measured, **WOFF2 included**, so a page is set in the
   face it asked for and not in a substitute at other metrics.
 - **Tables**: automatic table layout (CSS 2.1 §17.5.2.2) — every column keeps
   at least its longest unbreakable word, percentage and fixed cell widths are
-  honoured, surplus goes to the auto columns; `colspan`.
+  honoured, surplus goes to the auto columns; `colspan`, `border-spacing`,
+  `vertical-align` on cells (with the UA `middle` default and the `valign`
+  attribute), and a row's own CSS `height` as its minimum.
+- **Form controls**: inputs and buttons with UA chrome, and checkboxes/radios
+  honouring `appearance: none` (custom toggle switches).
+- **Containers and shadow DOM**: `@container` size queries, and declarative
+  shadow DOM (`<template shadowrootmode>`) with `<slot>` distribution.
 - **Images**: `<img>` over http(s) + `data:` (PNG/JPEG) and **SVG**
   (oksvg/rasterx) via `<img *.svg>`, `data:image/svg+xml` and **inline `<svg>`**.
 - **JavaScript**: page scripts run via [goja](https://github.com/dop251/goja)
@@ -133,35 +147,54 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 
 **Honest limits (not overclaimed)**
 
-- No `conic-gradient`, CSS `filter` or `mask`; SVG has no `<filter>`/`<mask>`/
-  `<pattern>`/embedded `<image>`/`<text>`, and a per-page image budget caps very
-  icon-heavy pages.
-- No `<li>` `list-style` marker discs yet; some icon-font / `visually-hidden`
-  chrome renders as text where a browser shows an icon.
-- Large computed pages (pkg.go.dev, go.dev) render **slower** than Chrome — an
-  open perf gap, not a fidelity one.
+- `conic-gradient` is recognised but not painted. `filter` and `mask-image` are
+  modelled narrowly (see above): a mask is a single `url()` stretched over the
+  box, with no `mask-size`/`mask-position`/`mask-repeat`. Transforms other than
+  translate and rotate (`scale`, `skew`, `matrix`) are not supported.
+  SVG has no `<filter>`/`<mask>`/`<pattern>`/embedded `<image>`/`<text>`, and a
+  per-page image budget caps very icon-heavy pages.
+- `::before`/`::after` generated content is not synthesised, so icon-font and
+  `visually-hidden` chrome can render as text where a browser shows an icon.
+- `vertical-align` on a table cell models `top`, `middle` and `bottom`; the
+  `baseline` alignment across a row is approximated as top.
+- Rate-limited image hosts (Wikimedia's CDN, measured round 154) answer some
+  requests with HTTP 429. The engine retries them, and the renders are
+  pixel-identical, but each retry costs about 2 seconds of wall time on that page
+  (measured round 155).
+- Several pages render **slower** than Chrome (go.dev/blog, tailwindcss.com,
+  pkg.go.dev): an open performance gap, not a fidelity one. The measured causes so
+  far are the per-host request cap and the time spent on rate-limited responses.
 - This is **not** a standards-complete browser and **not** "as good as Chromium".
-  Measured mean windowed-SSIM across the five bench pages is **≈ 0.69**, with
-  clear diminishing returns; the Wikipedia number (≈ 0.44) is JS-confounded and
+  Measured mean windowed-SSIM across the ten bench pages is **≈ 0.66**, with
+  clear diminishing returns; the Wikipedia number (≈ 0.42) is JS-confounded and
   noisy. See the numbers below.
 
 ## Measured fidelity vs headless Chrome
 
-From [`bench/REPORT.md`](bench/REPORT.md) (windowed SSIM over the common
-top-left region, 1024px width; `speed×` = `chrome_ms / webengine_ms`, >1 = faster;
-timings include the live network fetch and vary with it):
+From [`bench/REPORT.md`](bench/REPORT.md): windowed SSIM over the common top-left
+region at 1024px width (1.0 = identical), pixel-diff %, and `speed×` =
+`chrome_ms / webengine_ms` (>1 = webengine faster). Single run against live pages,
+so the content of several pages moves between runs (see the notes in FIDELITY.md).
 
 | URL | SSIM | pixdiff % | speed× | note |
 |-----|-----:|----------:|-------:|:-----|
-| example.com/ | **0.954** | 1.5 | 34.8 | near-parity, ~35× faster |
-| react.dev/ | 0.727 | 26.4 | 1.15 | SPA; gradients + React SVG atom render |
-| go.dev/blog/ | 0.670 | 33.2 | 0.34 | dark-mode + SVG logos render; slower |
-| pkg.go.dev/net/http | 0.629 | 36.5 | 0.14 | large computed page; perf gap |
-| en.wikipedia.org/wiki/Go | 0.441 | 22.4 | 1.20 | JS-confounded, noisy metric |
+| example.com/ | **0.831** | 5.6 | 18.3 | near-parity; its JS cross-fade is not modelled |
+| en.wikipedia.org/wiki/Go | 0.417 | 30.3 | 1.6 | live article; JS and rate-limited thumbnails |
+| pkg.go.dev/net/http | 0.716 | 11.3 | 0.8 | large computed page |
+| go.dev/blog/ | 0.700 | 16.6 | 0.45 | slower than Chrome |
+| react.dev/ | 0.725 | 33.0 | 1.3 | SPA; hydration fails, so the static fallback renders |
+| news.ycombinator.com/ | 0.615 | 13.7 | 1.75 | table layout; rotating front page |
+| developer.mozilla.org/…/CSS | 0.606 | 18.1 | 3.3 | docs layout |
+| github.com/golang/go | 0.637 | 14.2 | 2.0 | live repository counters |
+| tailwindcss.com/ | 0.724 | 12.2 | 0.5 | sponsor carousel rotates; slower |
+| caniuse.com/ | 0.660 | 18.0 | 0.8 | data grid |
 
-`example.com` is at near-parity and much faster; the JS-heavy and large computed
-pages are the honest frontier. Re-run the harness with `cd bench && go run
-./cmd/compare -urls urls.txt` (needs a Chrome/Chromium binary).
+Mean SSIM over the ten pages is **≈ 0.66**. Summed over the run, webengine took
+26.1 s and headless Chrome 26.3 s, so the overall time is at parity, but the
+per-page spread is wide: example.com and the static docs pages are much faster,
+while go.dev, tailwindcss.com and the large pkg.go.dev page are slower. Re-run the
+harness with `cd bench && go run ./cmd/compare -urls urls.txt` (needs a
+Chrome/Chromium binary).
 
 ## Test
 
@@ -176,8 +209,9 @@ The pure logic (cascade/inheritance, line-breaker, box metrics, DOM, selector
 engine) is asserted at exact geometry; committed golden PNGs — including offline
 JS/dynamic/gradient/position/SVG fixtures with a `DisableJS` control — cover the
 paint path. `scripts/coverage-gate.sh` enforces a **ratchet** coverage floor per
-pure-logic package (`css`/`layout`/`paint`/`dom`), which CI fails below and which
-is raised (never lowered) toward 100% as the engine matures. The live-network
+pure-logic package (`css`/`layout`/`paint`/`dom`/`paginate`: css 99.5%, layout,
+paint and paginate 100%, dom 97.4%), which CI fails below and which is raised
+(never lowered) toward 100% as the engine matures. The live-network
 paths (root `engine` package, `cmd/render`) are excluded from the gate because
 their coverage is not reproducible in CI. The `bench/` fidelity harness is a
 separate nested module (it pulls chromedp) and is not in the CGO=0 six-arch CI.

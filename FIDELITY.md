@@ -30,7 +30,7 @@ Round 153 left open whether the 429s that Wikimedia returns on en.wikipedia.org 
 
 ## 2026-10-04 (round 152, corrected round 153) — the remaining wall-clock cost on tailwindcss.com is the per-host concurrency cap of 2; raising it to 4 saves ~30%, but the Wikimedia 429 claim below was WRONG (docs only, no behaviour change)
 
-With the font change in (round 151), the request log shows the last network response at ~3.2s of a 3.7s render, so the critical path is now network, not CPU. Image decode/resample and the settle-time JS are small by comparison. The JS modules were checked too: esbuild already fetches them concurrently, with a deliberate retry policy, so they are not a serial bottleneck.
+With the font change in (round 151), the request log shows the last network response at ~3.2s of a 3.7s render, so the critical path is now network, not CPU. Image decode/resample and the settle-time JS are small by comparison. The JS modules were checked too: their requests run effectively one after another (~20ms apart, ~0.4s in total for tailwindcss.com). That is small next to the fonts, but it is serial, and the cause was not isolated (corrected in round 156).
 
 What limits the network is `maxPerHostConcurrency` (`transport.go`): every Tailwind font and image is on one host, and the cap of 2 in-flight requests serialises them into pairs.
 
@@ -40,7 +40,7 @@ What limits the network is `maxPerHostConcurrency` (`transport.go`): every Tailw
 
 ## 2026-10-04 (round 151) — web fonts downloaded one after another, ~4.4s of serial waiting on tailwindcss.com; now fetched concurrently with the same fetches and identical pixels (engine#252, performance only)
 
-Logging every request through the engine's own client during one tailwindcss.com render showed the real wall-clock cost: not the CPU, but ten `@font-face` files fetched in a plain loop, each starting only when the previous finished (~430ms each, ~4.4s in total). Images, stylesheets and JS modules were already concurrent. CPU-side, after the round-150 rule index, the remaining costs are image decode/resample and PNG encode, which are smaller.
+Logging every request through the engine's own client during one tailwindcss.com render showed the real wall-clock cost: not the CPU, but ten `@font-face` files fetched in a plain loop, each starting only when the previous finished (~430ms each, ~4.4s in total). Images and stylesheets were already concurrent; JS modules were effectively serial (corrected in round 156). CPU-side, after the round-150 rule index, the remaining costs are image decode/resample and PNG encode, which are smaller.
 
 - **Change**: `LoadFontFaces` (`fontfaces.go`) groups candidate faces by slot in declaration order and loads the slots concurrently. Within a slot, candidates still run in order and stop at the first that loads, so the same fetches happen; results are returned in declaration order. Font fetching writes no shared engine state, so concurrency is safe.
 - **Test fixture fix**: the font test server's hit counter was unsynchronised. It is now guarded, since concurrent fetches would race under `-race`.
