@@ -18,6 +18,16 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-04 (round 151) — web fonts downloaded one after another, ~4.4s of serial waiting on tailwindcss.com; now fetched concurrently with the same fetches and identical pixels (engine#252, performance only)
+
+Logging every request through the engine's own client during one tailwindcss.com render showed the real wall-clock cost: not the CPU, but ten `@font-face` files fetched in a plain loop, each starting only when the previous finished (~430ms each, ~4.4s in total). Images, stylesheets and JS modules were already concurrent. CPU-side, after the round-150 rule index, the remaining costs are image decode/resample and PNG encode, which are smaller.
+
+- **Change**: `LoadFontFaces` (`fontfaces.go`) groups candidate faces by slot in declaration order and loads the slots concurrently. Within a slot, candidates still run in order and stop at the first that loads, so the same fetches happen; results are returned in declaration order. Font fetching writes no shared engine state, so concurrency is safe.
+- **Test fixture fix**: the font test server's hit counter was unsynchronised. It is now guarded, since concurrent fetches would race under `-race`.
+- **Tests**: `TestLoadFontFacesLoadsSlotsConcurrentlyInDeclarationOrder` serves four 300ms fonts and asserts both declaration order and that the total stays under 900ms. Stash-verified: against the serial loader it takes 1.21s and fails. The existing font tests pass under `-race`.
+- **Measured**: live tailwindcss.com, three interleaved pairs, HEAD 6.0 / 7.7 / 7.0s against new 4.5 / 6.3 / 5.3s, roughly 25% less wall time. The saved pages (Tailwind, react.dev, Wikipedia, pkg.go.dev, HN) render pixel-identically.
+- **Next**: image decode/resample and the settle-loop JS sequencing, both measured by the same request log.
+
 ## 2026-10-04 (round 150) — the cascade tested every author rule against every element; a rule index keyed on each selector's subject compound makes the same cascade ~10× cheaper, with byte-identical output (engine#251, performance only)
 
 Profiling tailwindcss.com showed the cascade (`css.computeElement` → `Selector.MatchesHost`) at 46% of CPU, with allocation and GC behind much of the rest. SIMD and assembly were not the bottleneck: image resampling and PNG together were 5–8%.

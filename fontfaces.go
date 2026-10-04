@@ -8,7 +8,9 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
+	"sync"
 
 	"github.com/go-opentype/opentype"
 	"github.com/go-webengine/engine/css"
@@ -54,20 +56,61 @@ type LoadedFontFace struct {
 // go-opentype to become reachable. Fetch failures, oversized bodies and
 // unparseable files are skipped the same way — a missing font degrades the
 // typeface, it does not fail the render.
+//
+// Slots load concurrently: each @font-face is one network round trip, and a
+// page naming ten faces otherwise waits for all ten in turn (tailwindcss.com,
+// round 151: ~4.4s of serial font downloads). Within a slot the candidates
+// still run in declaration order, stopping at the first that loads, so the
+// same fetches happen as before; the result keeps declaration order.
 func (e *Engine) LoadFontFaces(ctx context.Context, doc *Document, sheets []string, m css.Media) []LoadedFontFace {
-	var out []LoadedFontFace
-	seen := map[string]bool{} // one fetch per slot, first rule wins
+	type candidate struct {
+		idx  int
+		face css.FontFace
+	}
+	var slots []string
+	bySlot := map[string][]candidate{}
+	idx := 0
 	for _, src := range sheets {
 		for _, face := range css.ParseFontFaces(src, m) {
 			slot := face.Family + "/" + boolKey(face.Italic) + itoa(face.Weight)
-			if seen[slot] {
-				continue
+			if _, ok := bySlot[slot]; !ok {
+				slots = append(slots, slot)
 			}
-			if lf, ok := e.loadOneFontFace(ctx, doc, face); ok {
-				seen[slot] = true
-				out = append(out, lf)
-			}
+			bySlot[slot] = append(bySlot[slot], candidate{idx, face})
+			idx++
 		}
+	}
+	type loaded struct {
+		idx int
+		lf  LoadedFontFace
+	}
+	results := make([]loaded, len(slots))
+	found := make([]bool, len(slots))
+	var wg sync.WaitGroup
+	for i, slot := range slots {
+		wg.Add(1)
+		go func(i int, cands []candidate) {
+			defer wg.Done()
+			for _, c := range cands {
+				if lf, ok := e.loadOneFontFace(ctx, doc, c.face); ok {
+					results[i] = loaded{c.idx, lf}
+					found[i] = true
+					return
+				}
+			}
+		}(i, bySlot[slot])
+	}
+	wg.Wait()
+	var order []loaded
+	for i := range results {
+		if found[i] {
+			order = append(order, results[i])
+		}
+	}
+	sort.Slice(order, func(a, b int) bool { return order[a].idx < order[b].idx })
+	out := make([]LoadedFontFace, 0, len(order))
+	for _, r := range order {
+		out = append(out, r.lf)
 	}
 	return out
 }
