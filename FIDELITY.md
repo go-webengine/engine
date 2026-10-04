@@ -38,6 +38,15 @@ What limits the network is `maxPerHostConcurrency` (`transport.go`): every Tailw
 - **Correction (round 153)**: the 429 comparison above used two runs at cap 2 (0 429s) and two at cap 4 (3 each). Eight runs at the baseline cap of 2 produced 429s in six of them (3–5 each), so Wikimedia's 429s are not a function of this cap, and the cap-4 "regression" was a sampling artifact. The cap is not the lever for Wikimedia's limit. Its current baseline rate needs a separate investigation (retry/backoff behaviour, Retry-After handling, and whether the retried images still render).
 - **Adaptive limiter tried in round 153, not shipped**: start at 2, grow to 4 after a run of clean responses, drop back on a 429. Growing after 10 clean responses still produced 429s (5 in one of three runs); growing after 40 never grows on a single Wikipedia page, so it cannot help there, and its Tailwind gain was within noise. Parked, not merged.
 
+## 2026-10-04 (round 157) — image decode and resampling are not the next lever: one redundant resample in 46 on tailwindcss.com, and decode is already parallel (docs only, no behaviour change)
+
+With the cascade and font loading done, the image path was the remaining CPU candidate. A CPU profile of one Tailwind render shows `loadOneImage` at about 12% of samples, decode about 10%, and resampling about 11% (mostly `resample.resampleH`/`resampleV`). Two hypotheses to check: that the same background bitmap is resampled again for every element that paints it, and that decoding is serial.
+
+- **Resample calls**: 46 `scaleTile` calls per render, 2.38 Mpx of output. Keyed by source, size and mode, 45 are distinct and one is a repeat. A repeat cache would save about 2% of the resampling work, not worth the complexity.
+- **Decode**: already fan-out through `parallelDo`, bounded by `imgWorkers` (up to 8). There is no serial decode to remove.
+
+So the image path is close to minimal for this page: the remaining work follows from the number of distinct images at their display sizes. Nothing changed. Further CPU gains would need a faster codec, or skipping decode of images a page never shows, and neither is measured yet.
+
 ## 2026-10-04 (round 151) — web fonts downloaded one after another, ~4.4s of serial waiting on tailwindcss.com; now fetched concurrently with the same fetches and identical pixels (engine#252, performance only)
 
 Logging every request through the engine's own client during one tailwindcss.com render showed the real wall-clock cost: not the CPU, but ten `@font-face` files fetched in a plain loop, each starting only when the previous finished (~430ms each, ~4.4s in total). Images and stylesheets were already concurrent; JS modules were effectively serial (corrected in round 156). CPU-side, after the round-150 rule index, the remaining costs are image decode/resample and PNG encode, which are smaller.
