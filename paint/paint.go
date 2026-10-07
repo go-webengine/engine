@@ -1660,7 +1660,23 @@ func paintRotated(dst *image.RGBA, box *layout.Box, f *Fonts, imgs map[*dom.Node
 	if bx.Empty() {
 		return
 	}
-	tmp := image.NewRGBA(image.Rect(0, 0, dst.Rect.Dx(), bx.Max.Y))
+	// tmp must be tall enough for everything paintBoxContent's recursion can
+	// actually write to, not just box's own border box: a shrink-wrapped
+	// float, a negative margin, a marker or a box-shadow can place painted
+	// content below box.Y+box.H (subtreeExtent's own doc comment, already
+	// relied on by the filter/opacity/mask-image group path below) even
+	// though none of that reaches the FINAL rotated image (src, two lines
+	// down, still crops to bx alone — the disclosed border-box-only scope
+	// above is unchanged). Confirmed live: smashingmagazine.com crashed
+	// blendPixel with an out-of-range index because tmp was undersized by a
+	// few rows — a real out-of-bounds WRITE, not merely a cosmetic clip.
+	// subtreeExtent's own base rect already covers box's full border box
+	// (shadowExpandedRect starts from box.X/Y/W/H unconditionally), so its
+	// extent already contains bx without unioning it in, and the result is
+	// never shorter than bx (bx ⊆ dst.Rect and bx ⊆ the extent, so their
+	// intersection is too) — no floor to clamp against.
+	tmpH := subtreeExtent(box).Intersect(dst.Rect).Max.Y
+	tmp := image.NewRGBA(image.Rect(0, 0, dst.Rect.Dx(), tmpH))
 	tpp := painter.NewPixelPainter(tmp.Pix, tmp.Rect.Dx(), tmp.Rect.Dy())
 	paintBoxContent(tmp, tpp, box, f, imgs, bgImgs, clip)
 	src := image.NewRGBA(image.Rect(0, 0, bx.Dx(), bx.Dy()))

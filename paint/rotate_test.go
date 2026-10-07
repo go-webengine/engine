@@ -4,6 +4,8 @@
 package paint
 
 import (
+	"image"
+	"image/color"
 	"testing"
 
 	"github.com/go-webengine/engine/css"
@@ -151,4 +153,55 @@ func TestRotateNegativeAngle(t *testing.T) {
 	if bottom.R < 200 || bottom.B > 50 {
 		t.Errorf("bottom of -90°-rotated box = %+v, want red (was the LEFT half before a counter-clockwise 90°)", bottom)
 	}
+}
+
+// TestRotateDoesNotCrashWhenAChildOverflowsTheBoxBottom covers a real crash
+// (round 165, found by a 500-page corpus sweep on smashingmagazine.com):
+// paintRotated's own offscreen buffer was sized only to the rotated box's
+// OWN border box (rectOf), trusting it to bound everything paintBoxContent's
+// recursion could write — but a shrink-wrapped float, a negative margin, a
+// marker or a box-shadow can place a descendant's painted pixels below the
+// box's own Y+H (subtreeExtent's own doc comment, already relied on by the
+// filter/opacity/mask-image group path). The buffer was then too short, and
+// blendPixel wrote past its own Pix slice — an out-of-bounds WRITE, not a
+// mere clipping inaccuracy, and it crashed the whole render.
+func TestRotateDoesNotCrashWhenAChildOverflowsTheBoxBottom(t *testing.T) {
+	dst := white(100, 80)
+	imgNode := &dom.Node{Type: dom.Element, Tag: "img"}
+	src := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	// Opaque: a zero-value (fully transparent) source would let blitImage's
+	// own zero-coverage short-circuit in blendPixel skip the actual pixel
+	// write entirely, silently NOT exercising the out-of-bounds write this
+	// test exists to catch.
+	for py := 0; py < 4; py++ {
+		for px := 0; px < 4; px++ {
+			src.SetRGBA(px, py, color.RGBA{R: 0, G: 180, B: 0, A: 255})
+		}
+	}
+	root := &layout.Box{
+		Node: &dom.Node{Type: dom.Element, Tag: "div"}, Style: &css.Style{},
+		X: 0, Y: 0, W: 100, H: 80,
+		Children: []*layout.Box{{
+			Node: &dom.Node{Type: dom.Element, Tag: "div"}, Style: &css.Style{RotateDeg: 10},
+			X: 0, Y: 0, W: 60, H: 40,
+			Children: []*layout.Box{{
+				// A real child box (e.g. a shrink-wrapped float or a negative
+				// margin placed it here) whose own border box — Y:[35,55) —
+				// extends 15px below the rotated box's own bottom edge (40),
+				// while still within dst's own 80px canvas. Its image is
+				// painted via paintItem -> blitImage -> blendPixel, the exact
+				// real crash trace (round 165, smashingmagazine.com) — blitImage
+				// writes straight to dst.Pix with no bound beyond the outer
+				// clip, which paintRotated's old tmp (sized only to the ROTATED
+				// box's own bottom, not its subtree's) did not account for.
+				Node: &dom.Node{Type: dom.Element, Tag: "div"}, Style: &css.Style{},
+				X: 10, Y: 35, W: 20, H: 20,
+				Lines: []*layout.LineBox{{X: 10, Y: 35, W: 20, H: 20, Items: []*layout.InlineItem{
+					{Image: imgNode, X: 10, Y: 37, ImgW: 4, ImgH: 4, Width: 4, LineHeight: 4},
+				}}},
+			}},
+		}},
+	}
+	// The old code panicked inside blendPixel; this must simply not crash.
+	PaintFull(dst, root, NewFonts(), map[*dom.Node]image.Image{imgNode: src}, nil)
 }
