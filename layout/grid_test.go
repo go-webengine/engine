@@ -172,6 +172,37 @@ func TestGridRowSpan(t *testing.T) {
 	assertF(t, "rspan.C.Y", byText["C"].Y, 30) // second row
 }
 
+func TestGridRowSpanFullWithNoExplicitRowsDoesNotCrash(t *testing.T) {
+	// TestGridRowSpanFullNegativeLineReservesOccupancy (below) covers
+	// `grid-row:1 / -1` with an explicit grid-template-rows, where the
+	// negative end line resolves against that explicit track count. With NO
+	// grid-template-rows at all (a grid relying purely on implicit/auto
+	// rows — common for a single-row "sidebar spans everything" layout),
+	// resolveAxisPlacement's nTracks argument is -1 (unresolved), and its
+	// norm() helper then does a bare `n-1` on the negative end line with
+	// nothing to resolve against: start=1 -> norm=0, end=-1 -> norm=-2, the
+	// e<s swap makes s=-2 e=0, then clamping s to 0 (a track index can't be
+	// negative) left the span as `e - clampedS` = 0 - 0 = 0 — a degenerate,
+	// ZERO-track span. With this as the grid's ONLY item (no sibling to give
+	// nRows a normal >=1 span of its own — a second item auto-placed at
+	// row 0 span 1 would mask the bug by raising nRows to 1 regardless),
+	// nRows never rises above nRowsExplicit(0), so sizeRows/trackOffsets
+	// return empty slices and grid()'s `rowY[it.r0]` panics with "index out
+	// of range [0] with length 0". Confirmed live on https://www.lego.com/
+	// during the 500-page bench corpus (round 167) — a real, reachable
+	// crash, not a contrived one; reproduced with `cmd/render` against the
+	// live URL, independent of the bench harness.
+	src := `<html><body style="margin:0"><div style="display:grid;grid-template-columns:100px">` +
+		`<div style="grid-row:1 / -1">A</div></div></body></html>`
+	g := findBox(layoutHTML(t, src, 400), "div")
+	if len(g.Children) != 1 {
+		t.Fatalf("want 1 grid item, got %d", len(g.Children))
+	}
+	if g.Children[0].H <= 0 {
+		t.Errorf("item should have a non-zero height, got %v", g.Children[0].H)
+	}
+}
+
 func TestGridRowSpanFullNegativeLineReservesOccupancy(t *testing.T) {
 	// `grid-row: 1 / -1` (Tailwind's row-span-full) in a 3-row explicit grid
 	// must span all 3 rows and reserve column 0 in every row, exactly like a
