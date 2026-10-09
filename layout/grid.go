@@ -292,7 +292,23 @@ func resolveAxisPlacement(start, end css.GridLine, nTracks int) (start0, span in
 		if e == s {
 			e = s + 1
 		}
-		return clampNonNeg(s), e - clampNonNeg(s), true
+		// Clamping s to 0 can undo the e>s gap this far established: e.g.
+		// `grid-row:1 / -1` with no grid-template-rows (nTracks=-1, so norm
+		// never resolves the -1 against anything real) gives s=0, e=-2, swaps
+		// to s=-2, e=0 — already a non-empty [s,e) span — but THEN clamping s
+		// alone to 0 leaves e=0 too, a degenerate ZERO-track span. A grid
+		// item always occupies at least one track per axis (CSS Grid §8.3:
+		// an omitted/unresolvable line implies a span of 1), so re-check
+		// after the clamp and widen rather than collapse. Confirmed live on
+		// https://www.lego.com/ (round 167): a lone item using exactly this
+		// pattern left every row-related slice (sizeRows, trackOffsets)
+		// empty despite the item being non-empty, panicking grid() with
+		// "index out of range [0] with length 0" at rowY[it.r0].
+		cs := clampNonNeg(s)
+		if e <= cs {
+			e = cs + 1
+		}
+		return cs, e - cs, true
 	case !start.Auto && !start.Span && end.Span:
 		s := clampNonNeg(norm(start.N))
 		return s, maxInt(end.N, 1), true
