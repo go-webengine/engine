@@ -23,18 +23,25 @@ type LinkRef struct {
 // that carry the "alternate" token, or that have an empty href, are skipped.
 func StylesheetLinks(root *dom.Node) []LinkRef {
 	var refs []LinkRef
-	var walk func(n *dom.Node)
-	walk = func(n *dom.Node) {
+	var walk func(n *dom.Node, depth int)
+	walk = func(n *dom.Node, depth int) {
+		if depth > maxTreeDepth {
+			// See cascade.go's own depth check: this is the first DOM walk in
+			// the render pipeline (engine.go calls it before any cascade), so
+			// without this cap it would be the first to crash on a
+			// pathologically deep, script-built tree.
+			return
+		}
 		if n.Type == dom.Element && n.Tag == "link" {
 			if ref, ok := linkRef(n); ok {
 				refs = append(refs, ref)
 			}
 		}
 		for _, c := range n.Children {
-			walk(c)
+			walk(c, depth+1)
 		}
 	}
-	walk(root)
+	walk(root, 0)
 	return refs
 }
 

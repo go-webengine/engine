@@ -107,3 +107,38 @@ func TestImportURLsSingleQuoteUnterminated(t *testing.T) {
 		t.Fatalf("want nil for unterminated quote, got %#v", u)
 	}
 }
+
+func TestStylesheetLinksDoesNotCrashOnAPathologicallyDeepTree(t *testing.T) {
+	// See TestCascadeDoesNotCrashOnAPathologicallyDeepTree (cascade_test.go)
+	// for the full rationale: a script-built chain (document.createElement +
+	// appendChild in a loop) can nest far past what golang.org/x/net/html
+	// would ever parse, and this walk — the first one to run in the whole
+	// render pipeline, called before any cascade — needs its own maxTreeDepth
+	// cap for the same reason.
+	const depth = 10000
+	root := &dom.Node{Type: dom.Document}
+	html := &dom.Node{Type: dom.Element, Tag: "html", Attr: map[string]string{}}
+	root.Children = []*dom.Node{html}
+	html.Parent = root
+	cur := html
+	for i := 0; i < depth; i++ {
+		d := &dom.Node{Type: dom.Element, Tag: "div", Attr: map[string]string{}}
+		d.Parent = cur
+		cur.Children = append(cur.Children, d)
+		cur = d
+	}
+	// One <link> within the cap, one past it: only the first is found.
+	within := &dom.Node{Type: dom.Element, Tag: "link",
+		Attr: map[string]string{"rel": "stylesheet", "href": "within.css"}}
+	within.Parent = html
+	html.Children = append(html.Children, within)
+	beyond := &dom.Node{Type: dom.Element, Tag: "link",
+		Attr: map[string]string{"rel": "stylesheet", "href": "beyond.css"}}
+	beyond.Parent = cur
+	cur.Children = append(cur.Children, beyond)
+
+	got := StylesheetLinks(root)
+	if len(got) != 1 || got[0].Href != "within.css" {
+		t.Fatalf("StylesheetLinks = %#v, want only within.css", got)
+	}
+}

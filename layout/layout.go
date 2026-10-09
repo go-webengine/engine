@@ -76,6 +76,14 @@ type layouter struct {
 	// any downstream painter, know which piece of which <span> a word belongs
 	// to. Nil for ordinary text, and reset at each inline formatting context.
 	decor []inlineDecor
+
+	// depth counts nested place calls — every recursive box placement in this
+	// package (plain block/inline children, flex items, grid items, floats,
+	// multicol columns, inline-block/flex descendants) ultimately calls
+	// l.place for each child box, so incrementing it there alone (see place's
+	// own doc comment) bounds total Go call-stack depth regardless of which
+	// container algorithm is driving the recursion at any given level.
+	depth int
 }
 
 // beginInlineContext resets the whitespace-collapsing and pending-margin state
@@ -196,14 +204,35 @@ func firstElement(n *dom.Node) *dom.Node {
 	return nil
 }
 
+// maxLayoutDepth bounds place's own recursion depth — see css.maxTreeDepth
+// (the equivalent, independently-enforced bound in the cascade walk that runs
+// before layout) for the full rationale and the measured crash threshold this
+// reuses the same generous constant against: a script can build a DOM tree far
+// deeper than any real page (document.createElement + appendChild in a loop,
+// which bypasses the HTML parser's own 512-node depth limit entirely), and
+// this package's own place/contents mutual recursion walks node.Children
+// directly — independently of however deep css.Cascade's StyleMap actually
+// reaches — so it needs its own cap to avoid the same unrecoverable "fatal
+// error: stack overflow" even when the StyleMap feeding it was already
+// truncated.
+const maxLayoutDepth = 512
+
 // place lays out one block-level box within a containing block whose content
 // origin x is cx and content width cw, advancing the block formatting context b.
 func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) *Box {
+	l.depth++
+	defer func() { l.depth-- }()
 	if st == nil {
 		s := css.Style{Display: css.DisplayBlock, Width: css.Length{Auto: true},
 			MinWidth: css.Length{Auto: true}, MaxWidth: css.Length{Auto: true},
 			Height: css.Length{Auto: true}, ColumnWidth: css.Length{Auto: true}}
 		st = &s
+	}
+	if l.depth > maxLayoutDepth {
+		// Beyond the cap, stop descending: return a minimal, childless box
+		// (with the same non-nil, fully-populated style every Box carries,
+		// computed just above) rather than recursing into contents.
+		return &Box{Node: node, Style: st}
 	}
 	box := &Box{Node: node, Style: st}
 

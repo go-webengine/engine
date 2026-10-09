@@ -625,6 +625,39 @@ func TestCascadeMarginBlockInlineShorthand(t *testing.T) {
 	}
 }
 
+func TestCascadeDoesNotCrashOnAPathologicallyDeepTree(t *testing.T) {
+	// A page's HTML can never nest this deep — golang.org/x/net/html already
+	// refuses to parse markup past 512 levels — but a script building a chain
+	// at runtime (document.createElement + appendChild in a loop) bypasses
+	// that parser-only guard entirely (dom.AppendChild has no depth check of
+	// its own). Before maxTreeDepth existed, this crashed BOTH of Cascade's
+	// own tree walks (styleElementText, called first via
+	// collectAuthorRules, and the main element walk) with an unrecoverable
+	// "fatal error: stack overflow" (not a panic — recover() cannot catch
+	// it) somewhere between 150,000 and 200,000 levels; this uses 10,000,
+	// comfortably past maxTreeDepth(512) while staying fast to build and run.
+	const depth = 10000
+	root := &dom.Node{Type: dom.Document}
+	html := &dom.Node{Type: dom.Element, Tag: "html", Attr: map[string]string{}}
+	root.Children = []*dom.Node{html}
+	html.Parent = root
+	cur := html
+	for i := 0; i < depth; i++ {
+		d := &dom.Node{Type: dom.Element, Tag: "div", Attr: map[string]string{}}
+		d.Parent = cur
+		cur.Children = append(cur.Children, d)
+		cur = d
+	}
+	sm := Cascade(root)
+	// Styling stops at maxTreeDepth: the root Document (depth 0, never
+	// itself styled) recurses to html at depth 1, so exactly maxTreeDepth
+	// elements (html plus maxTreeDepth-1 divs) get styled before the walk
+	// gives up on everything past that.
+	if len(sm) != maxTreeDepth {
+		t.Fatalf("styled %d nodes, want %d (maxTreeDepth)", len(sm), maxTreeDepth)
+	}
+}
+
 // TestCascadePaddingLogicalProperties covers padding-block-start/end,
 // padding-inline-start/end, and the padding-block/padding-inline shorthands
 // — the padding-side sibling of the margin logical-property fix above.
