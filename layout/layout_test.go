@@ -595,6 +595,46 @@ func TestEmptyDocument(t *testing.T) {
 	}
 }
 
+func TestLayoutDoesNotCrashOnAPathologicallyDeepTree(t *testing.T) {
+	// A page's HTML can never nest this deep — golang.org/x/net/html already
+	// refuses to parse markup past 512 levels — but a script building a chain
+	// at runtime (document.createElement + appendChild in a loop) bypasses
+	// that parser-only guard entirely (dom.AppendChild has no depth check of
+	// its own). Before maxLayoutDepth existed, place's own recursion into
+	// contents crashed with an unrecoverable "fatal error: stack overflow"
+	// (not a panic — recover() cannot catch it) somewhere between 150,000 and
+	// 200,000 levels; this uses 10,000, comfortably past maxLayoutDepth(512)
+	// while staying fast to build and run.
+	const depth = 10000
+	root := &dom.Node{Type: dom.Document}
+	html := &dom.Node{Type: dom.Element, Tag: "html", Attr: map[string]string{}}
+	root.Children = []*dom.Node{html}
+	html.Parent = root
+	// A real StyleMap entry per node, not css.Cascade's own output: Cascade
+	// has its own, independently-enforced depth cap (css.maxTreeDepth, same
+	// value) that would otherwise leave every node past ~512 unstyled —
+	// hasBlockLevelChild treats a nil style as "not block-level" and stops
+	// recursing right there, which would stop this test from ever reaching
+	// deep enough to need LAYOUT's own cap at all. Building the map by hand
+	// isolates the two caps so each is actually exercised by its own test.
+	blockStyle := &css.Style{Display: css.DisplayBlock, Width: css.Length{Auto: true},
+		MinWidth: css.Length{Auto: true}, MaxWidth: css.Length{Auto: true},
+		Height: css.Length{Auto: true}, ColumnWidth: css.Length{Auto: true}}
+	sm := css.StyleMap{html: blockStyle}
+	cur := html
+	for i := 0; i < depth; i++ {
+		d := &dom.Node{Type: dom.Element, Tag: "div", Attr: map[string]string{}}
+		d.Parent = cur
+		cur.Children = append(cur.Children, d)
+		sm[d] = blockStyle
+		cur = d
+	}
+	box, _ := LayoutDocument(root, sm, 1024, fakeMeasurer{}, nil)
+	if box == nil {
+		t.Fatal("LayoutDocument returned a nil box")
+	}
+}
+
 func TestAttrFloat(t *testing.T) {
 	el := &dom.Node{Type: dom.Element, Tag: "img", Attr: map[string]string{
 		"width": "12px", "bad": "xyz",

@@ -13,6 +13,21 @@ import "strings"
 // var() chains are only a few levels deep.
 const maxVarDepth = 64
 
+// maxTreeDepth bounds DOM-tree recursion depth in every whole-document walk in
+// this package (StylesheetLinks, collectAuthorRules's styleElementText, and
+// Cascade's own element walk). golang.org/x/net/html already refuses to PARSE
+// markup nested past 512 levels ("html: open stack of elements exceeds 512
+// nodes"), but that guard lives in the parser alone: a page's script can still
+// build an arbitrarily deep tree at runtime (document.createElement +
+// appendChild in a loop — dom.AppendChild has no depth check of its own, by
+// design: it is a generic tree-mutation primitive, not a parser). Confirmed
+// live: an unguarded recursive walk over such a tree hits an unrecoverable
+// "fatal error: stack overflow" (not a panic; recover() cannot catch it, so it
+// kills the whole embedding process) somewhere between 150,000 and 200,000
+// levels — reusing the parser's own 512 bound here is both consistent with it
+// and enormously generous relative to that measured threshold.
+const maxTreeDepth = 512
+
 // isCustomProperty reports whether a property name is a CSS custom property
 // (its name starts with two dashes, e.g. "--main-color"). Custom-property names
 // are case-sensitive, unlike normal property names.

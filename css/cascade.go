@@ -105,12 +105,29 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 	// stays docRules throughout).
 	docRules := rules
 	docIdx := buildRuleIndex(docRules)
-	var walk func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, idx *ruleIndex, host *dom.Node)
-	walk = func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, idx *ruleIndex, host *dom.Node) {
+	var walk func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, idx *ruleIndex, host *dom.Node, depth int)
+	walk = func(n *dom.Node, parent Style, containerStack []containerFrame, rules []Rule, idx *ruleIndex, host *dom.Node, depth int) {
+		if depth > maxTreeDepth {
+			// A page's real DOM is never this deep; the only way to reach it is a
+			// script building a pathological chain (document.createElement +
+			// appendChild in a loop), which bypasses the HTML parser's own
+			// "open stack of elements exceeds 512 nodes" guard entirely (that
+			// guard only applies to parsed markup — see dom.AppendChild, which
+			// has no depth check of its own). Confirmed live: a synthetic
+			// 200000-deep tree crashes this walk with an unrecoverable "fatal
+			// error: stack overflow" (not a panic — recover() cannot catch it,
+			// so it takes down the whole embedding process, not just this
+			// render) well before reaching that depth. Leaving n and its
+			// subtree unstyled here is a deliberate, cheap truncation — layout
+			// already treats a nil style as an anonymous block box (see
+			// layouter.place), and layout's own matching cap (maxLayoutDepth)
+			// stops it from ever walking this deep into node.Children anyway.
+			return
+		}
 		if n.Type != dom.Element {
 			// Text/Document nodes have no computed style; recurse with parent.
 			for _, c := range n.Children {
-				walk(c, parent, containerStack, rules, idx, host)
+				walk(c, parent, containerStack, rules, idx, host, depth+1)
 			}
 			return
 		}
@@ -143,7 +160,7 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		// is, correctly per spec, computed via the SAME outer scope as any
 		// other light-DOM element, never restyled by the shadow's rules).
 		for _, c := range n.Children {
-			walk(c, st, childStack, rules, idx, host)
+			walk(c, st, childStack, rules, idx, host, depth+1)
 		}
 		// n's shadow tree, if it has one: a NEW scope (shadowRules, host=n),
 		// plus any "::part(name)" selectors from n's OWN ambient scope
@@ -153,12 +170,12 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		if n.Shadow != nil {
 			shadowScope := append(append([]Rule{}, shadowRules...), filterPartSelectors(rules)...)
 			for _, c := range n.Shadow.Children {
-				walk(c, st, childStack, shadowScope, nil, n)
+				walk(c, st, childStack, shadowScope, nil, n, depth+1)
 			}
 		}
 	}
 	// The synthetic Document root has no style; seed children with initial.
-	walk(root, initialStyle(), nil, docRules, docIdx, nil)
+	walk(root, initialStyle(), nil, docRules, docIdx, nil, 0)
 	return sm
 }
 
@@ -372,8 +389,16 @@ func collectAuthorRulesFrom(nodes []*dom.Node, m Media) []Rule {
 // context (DocumentPage, page.go) read it.
 func styleElementText(nodes []*dom.Node) string {
 	var sb strings.Builder
-	var walk func(n *dom.Node)
-	walk = func(n *dom.Node) {
+	var walk func(n *dom.Node, depth int)
+	walk = func(n *dom.Node, depth int) {
+		if depth > maxTreeDepth {
+			// See the main cascade walk's own depth check for why this bound
+			// exists: this walk runs BEFORE it (collectAuthorRules is called
+			// first, to build the rules the main walk then matches), so without
+			// its own cap it would be the first of the two to crash on a
+			// pathologically deep, script-built tree.
+			return
+		}
 		if n.Type == dom.Element && n.Tag == "style" {
 			for _, c := range n.Children {
 				if c.Type == dom.Text {
@@ -383,11 +408,11 @@ func styleElementText(nodes []*dom.Node) string {
 			}
 		}
 		for _, c := range n.Children {
-			walk(c)
+			walk(c, depth+1)
 		}
 	}
 	for _, n := range nodes {
-		walk(n)
+		walk(n, 0)
 	}
 	return sb.String()
 }
