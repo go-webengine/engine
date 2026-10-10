@@ -196,6 +196,35 @@ while go.dev, tailwindcss.com and the large pkg.go.dev page are slower. Re-run t
 harness with `cd bench && go run ./cmd/compare -urls urls.txt` (needs a
 Chrome/Chromium binary).
 
+### Larger corpora
+
+Ten pages is a small, curated sample. Two larger, less-curated corpora —
+[`bench/urls-100.txt`](bench/urls-100.txt) (100 pages, 100 distinct sites) and
+[`bench/urls-500.txt`](bench/urls-500.txt) (500 pages across 268 sites, built
+from each site's own sitemap, ≤4 pages/site) — exist specifically to surface
+what a small hand-picked sample won't: round 166's and round 167's crash
+fixes (an unrecoverable stack overflow from a script-built DOM tree past 512
+levels, and a CSS Grid panic on `grid-row:1 / -1` with no explicit row
+template) were both found this way, on `smashingmagazine.com` and `lego.com`
+respectively — real pages no ten-page sample happened to include. Full
+results: [`bench/REPORT-100.md`](bench/REPORT-100.md),
+[`bench/REPORT-500.md`](bench/REPORT-500.md).
+
+Mean windowed-SSIM is **≈ 0.53** on both (100-page median 0.55, 500-page
+median 0.56) — lower than the curated ten-page set, which is expected: this
+sample includes large, JS-heavy, highly dynamic sites (news homepages,
+cloud-vendor marketing pages) the ten-page set was never meant to represent,
+not a regression. 95 of 500 pages (19%) failed to render in BOTH webengine
+and headless Chrome — dead URLs, DNS failures and timeouts, not an engine
+gap; exactly one page failed in webengine alone (a transient DNS flake on the
+measuring machine). Round 168 found and fixed a real, separate performance
+bug this way too: several of the 500 pages' own origins (large organizations'
+own CDNs/WAFs, confirmed via `www.cs.cmu.edu`) rendered 10-20× slower than
+Chrome, traced to a font-face loading path that tried several candidate font
+files in series instead of concurrently (see FIDELITY.md's own round-168
+entry) — fixed, but the 500-page numbers above predate that fix and have not
+yet been re-measured against it.
+
 ## Security
 
 The engine fetches every resource a page names (images, stylesheets, fonts,
