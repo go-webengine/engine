@@ -4,5 +4,16 @@
 *.test
 *.out
 
+# Per-page montages for the larger (100/500-page) bench corpora: bench/out/
+# (the canonical ten-page corpus) IS committed since it is small (~11MB,
+# 10 files), but the same policy at 100x-500x the page count would be
+# hundreds of megabytes of binary PNGs in git history permanently. The
+# measured numbers that matter (bench/REPORT-100.md, bench/REPORT-500.md,
+# bench/results-100.json, bench/results-500.json) ARE committed; the
+# montages themselves are reproducible by re-running the documented bench
+# command against bench/urls-100.txt / bench/urls-500.txt.
+/bench/out-100/
+/bench/out-500/
+
 # Editor/OS cruft
 .DS_Store
