@@ -59,9 +59,21 @@ type LoadedFontFace struct {
 //
 // Slots load concurrently: each @font-face is one network round trip, and a
 // page naming ten faces otherwise waits for all ten in turn (tailwindcss.com,
-// round 151: ~4.4s of serial font downloads). Within a slot the candidates
-// still run in declaration order, stopping at the first that loads, so the
-// same fetches happen as before; the result keeps declaration order.
+// round 151: ~4.4s of serial font downloads). Within a slot, every candidate
+// rule ALSO fetches concurrently (round 168) rather than one at a time: this
+// engine has no unicode-range model (css.FontFace carries no such field), so
+// several genuinely distinct @font-face rules that a real browser would pick
+// among BY CODEPOINT collapse into one slot here, as redundant-looking
+// alternatives of each other — confirmed live on cs.cmu.edu's Font Awesome
+// v4-compatibility shim, which declares five separate 'FontAwesome'-family,
+// weight-400 rules (solid/brands/regular/compat, split only by unicode-range)
+// that all land in ONE slot. Trying them one at a time cost ~52s when the
+// origin's /webfonts/ path was erroring (each failed attempt still waits out
+// the full ~6.4s server response): a page need not be malicious or even
+// unusual for a single slot to carry several slow-to-fail candidates. The
+// result keeps declaration order regardless of which candidate's fetch
+// finishes first — same winner as the old sequential loop, just not
+// waiting for each loser to fail before starting the next.
 func (e *Engine) LoadFontFaces(ctx context.Context, doc *Document, sheets []string, m css.Media) []LoadedFontFace {
 	type candidate struct {
 		idx  int
@@ -91,9 +103,48 @@ func (e *Engine) LoadFontFaces(ctx context.Context, doc *Document, sheets []stri
 		wg.Add(1)
 		go func(i int, cands []candidate) {
 			defer wg.Done()
+			// Every DISTINCT candidate in this slot fetches concurrently (not
+			// one at a time, stopping only at a success) — see this
+			// function's own doc comment for why a slot can hold several
+			// genuinely distinct, slow-to-fail rules rather than true format
+			// alternatives of one file. A rule repeated verbatim (the same
+			// src list parsed from two stylesheets, or the same stylesheet
+			// named twice) still fetches only once: deduped by its own src
+			// key below, same as the old sequential loop's incidental effect
+			// of never re-fetching a slot's later identical entry once an
+			// earlier one had already resolved it. Declaration order still
+			// decides the winner among distinct candidates: sorted by idx
+			// below, so which fetch happens to FINISH first never matters.
+			type attempt struct {
+				idx int
+				lf  LoadedFontFace
+				ok  bool
+			}
+			firstIdx := map[string]int{} // src key -> that key's own goroutine slot in attempts
+			var unique []candidate
 			for _, c := range cands {
-				if lf, ok := e.loadOneFontFace(ctx, doc, c.face); ok {
-					results[i] = loaded{c.idx, lf}
+				key := srcsKey(c.face.Srcs)
+				if _, dup := firstIdx[key]; dup {
+					continue
+				}
+				firstIdx[key] = len(unique)
+				unique = append(unique, c)
+			}
+			attempts := make([]attempt, len(unique))
+			var cwg sync.WaitGroup
+			for j, c := range unique {
+				cwg.Add(1)
+				go func(j int, c candidate) {
+					defer cwg.Done()
+					lf, ok := e.loadOneFontFace(ctx, doc, c.face)
+					attempts[j] = attempt{c.idx, lf, ok}
+				}(j, c)
+			}
+			cwg.Wait()
+			sort.Slice(attempts, func(a, b int) bool { return attempts[a].idx < attempts[b].idx })
+			for _, a := range attempts {
+				if a.ok {
+					results[i] = loaded{a.idx, a.lf}
 					found[i] = true
 					return
 				}
@@ -224,6 +275,24 @@ func RegisterFontFaces(fonts *paint.Fonts, faces []LoadedFontFace) int {
 		}
 	}
 	return n
+}
+
+// srcsKey identifies a FontFace by its own src list — two rules with the same
+// URLs and format hints, in the same order, are the same fetch regardless of
+// how many times the same rule was parsed (the same stylesheet named twice,
+// or the same rule appearing in two separate sheets), so LoadFontFaces's
+// per-slot dedup key is this, not the whole FontFace value.
+func srcsKey(srcs []css.FontSrc) string {
+	var b strings.Builder
+	for i, s := range srcs {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(s.URL)
+		b.WriteByte('\x00')
+		b.WriteString(s.Format)
+	}
+	return b.String()
 }
 
 func boolKey(b bool) string {
