@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,6 +151,69 @@ func TestLoadFontFacesKeepsDistinctSlots(t *testing.T) {
 	faces := New().LoadFontFaces(context.Background(), &Document{URL: srv.URL + "/p.html"}, []string{sheet}, css.Media{})
 	if len(faces) != 3 {
 		t.Fatalf("got %d faces, want 3: %+v", len(faces), faces)
+	}
+}
+
+// A real page can carry several @font-face rules sharing one (family,
+// weight, italic) slot even though they are NOT fallback formats of the same
+// file: this engine has no unicode-range model (css.FontFace carries no such
+// field), so distinct rules a real browser would pick among by codepoint
+// collapse into one slot here. Confirmed live (round 168) on cs.cmu.edu's
+// Font Awesome v4-compatibility shim: five separate 'FontAwesome'-family,
+// weight-400 rules (solid/brands/regular/compat, split only by
+// unicode-range) landed in one slot, and the server's own /webfonts/ path
+// was erroring — each failed attempt still waited out the full ~6s response,
+// serially, costing ~52s of the page's render time via a chain of slow
+// failures nothing in the page's own markup ever asked this engine to try
+// one at a time.
+func TestLoadFontFacesTriesSlotCandidatesConcurrentlyNotSequentially(t *testing.T) {
+	const delay = 150 * time.Millisecond
+	const slow = 5 // every candidate but the last is a slow failure
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		if r.URL.Path == "/good.ttf" {
+			w.Header().Set("Content-Type", "font/ttf")
+			_, _ = w.Write(cabin.TTF)
+			return
+		}
+		time.Sleep(delay)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	var sheet string
+	for i := 0; i < slow; i++ {
+		sheet += `@font-face { font-family: F; font-weight: 400; src: url(` + srv.URL + `/bad` + itoa(i) + `.ttf); }` + "\n"
+	}
+	// Declared LAST: with the old sequential "stop at first success" loop,
+	// this is only tried after all `slow` failures above have each waited
+	// out their own delay in turn — `slow*delay` of pure waiting. Tried
+	// concurrently with its siblings, it finishes in about one `delay`.
+	sheet += `@font-face { font-family: F; font-weight: 400; src: url(` + srv.URL + `/good.ttf); }`
+
+	start := time.Now()
+	faces := New().LoadFontFaces(context.Background(), &Document{URL: srv.URL + "/p.html"}, []string{sheet}, css.Media{})
+	elapsed := time.Since(start)
+
+	if len(faces) != 1 {
+		t.Fatalf("got %d faces, want 1", len(faces))
+	}
+	// e.Client's own per-host concurrency cap (transport.go,
+	// maxPerHostConcurrency, 2 at the time of writing) still applies here —
+	// this test is about THIS function's own candidate loop, not about
+	// bypassing that separate, deliberately-tuned limit — so `slow+1`
+	// candidates batch through it ceil((slow+1)/cap) at a time (measured:
+	// ~3*delay), not all at once. Fully SEQUENTIAL waiting — one candidate
+	// completely finishing, including the one that fails, before the next
+	// even starts — takes `slow*delay` (measured: ~5*delay, the old code's
+	// own behavior, confirmed by stash-reverting this file while writing
+	// this test). The threshold sits roughly midway between the two.
+	if elapsed > delay*4 {
+		t.Errorf("elapsed = %v, want well under %v (the slow candidates should batch through the per-host cap concurrently, not queue one at a time)", elapsed, delay*4)
+	}
+	if got := atomic.LoadInt32(&hits); got != slow+1 {
+		t.Errorf("hits = %d, want %d (every distinct candidate fetched exactly once)", got, slow+1)
 	}
 }
 
