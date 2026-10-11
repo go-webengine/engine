@@ -102,7 +102,23 @@ func evalCalcExpr(s string) (val float64, hasUnit bool, ok bool) {
 type calcParser struct {
 	s string
 	i int
+	// depth counts nested '(' ... ')' groups — factor's own recursion into
+	// expr for a parenthesized sub-expression (via term) is the only cycle
+	// in this grammar, so bounding it there bounds total Go call-stack
+	// depth. A value's own source text is this parser's only input, and
+	// nothing upstream limits how many parens it can carry (a style="..."
+	// attribute on the main document, itself capped only at 32MB — see
+	// engine.go's own body-size cap — can trivially carry millions):
+	// confirmed live, a 3,000,000-deep calc((((...1...)))) crashes with an
+	// unrecoverable "fatal error: stack overflow" (not a panic — recover()
+	// cannot catch it) where 1,000,000 does not yet. maxCalcDepth is
+	// enormously generous against that measured threshold while being far
+	// past anything a real calc() expression ever nests (a handful of
+	// levels, in practice).
+	depth int
 }
+
+const maxCalcDepth = 256
 
 func (p *calcParser) skipSpace() {
 	for p.i < len(p.s) && (p.s[p.i] == ' ' || p.s[p.i] == '\t' || p.s[p.i] == '\n' || p.s[p.i] == '\r') {
@@ -182,6 +198,14 @@ func (p *calcParser) term() (float64, bool, bool) {
 func (p *calcParser) factor() (float64, bool, bool) {
 	p.skipSpace()
 	if p.i < len(p.s) && p.s[p.i] == '(' {
+		if p.depth >= maxCalcDepth {
+			// Past the cap, treat this calc() as unparseable — the same
+			// failure this parser already returns for any other malformed
+			// input — rather than recursing further into expr.
+			return 0, false, false
+		}
+		p.depth++
+		defer func() { p.depth-- }()
 		p.i++
 		v, u, ok := p.expr()
 		if !ok {
