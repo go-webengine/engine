@@ -3,7 +3,10 @@
 
 package css
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestResolveCalcNoOccurrence(t *testing.T) {
 	got, ok := resolveCalc("1px solid red")
@@ -47,6 +50,21 @@ func TestResolveCalcNestedParens(t *testing.T) {
 	got, ok := resolveCalc("calc((10px + 2px) * 3)")
 	if !ok || got != "36px" {
 		t.Fatalf("resolveCalc nested = %q,%v want 36px,true", got, ok)
+	}
+}
+
+func TestResolveCalcDoesNotCrashOnPathologicallyDeepParens(t *testing.T) {
+	// A style="..." attribute on the main document (itself capped only at
+	// 32MB, see engine.go) can trivially carry a calc() value with millions
+	// of nested parens. Before maxCalcDepth existed, factor's own recursion
+	// into expr for each '(' crashed with an unrecoverable "fatal error:
+	// stack overflow" (not a panic — recover() cannot catch it) somewhere
+	// between 1,000,000 and 3,000,000 levels; this uses 10,000, comfortably
+	// past maxCalcDepth(256) while staying fast to build and run.
+	const depth = 10000
+	value := "calc(" + strings.Repeat("(", depth) + "1" + strings.Repeat(")", depth) + ")"
+	if _, ok := resolveCalc(value); ok {
+		t.Error("want ok=false past the depth cap, got true")
 	}
 }
 
