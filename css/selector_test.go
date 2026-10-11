@@ -4,6 +4,7 @@
 package css
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/go-webengine/engine/dom"
@@ -51,6 +52,68 @@ func TestParseSelectorList(t *testing.T) {
 	x := sels[3].parts[0]
 	if x.Tag != "" || len(x.Classes) != 1 || x.Classes[0] != "x" {
 		t.Errorf("pseudo = %+v", x)
+	}
+}
+
+func TestExpandFunctionalPseudosCapsCombinatorialBlowup(t *testing.T) {
+	// A comma-containing wrapper doubles its OUTPUT COUNT at every level it
+	// is nested inside another one of itself: n levels of
+	// ":is(X,X)" (X = the previous level) gives 2^n alternatives from a
+	// selector whose own nesting depth is just n, not 2^n. Confirmed live
+	// (round 170): 20 such levels already produced 1,048,576 alternatives
+	// and took seconds — a quite plausible-looking, if elaborate, selector,
+	// not an obviously pathological one. maxSelectorExpansions should hold
+	// the total far below that regardless of how much deeper it nests.
+	build := func(depth int) string {
+		s := "a"
+		for i := 0; i < depth; i++ {
+			s = ":is(" + s + "," + s + ")"
+		}
+		return s
+	}
+	// The INPUT string's own length is exponential in depth too (build
+	// doubles it each level), so this stays well short of depths that would
+	// make the TEST itself slow to construct — the cap holding at 15 proves
+	// it holds at 20+ just as well, since nothing about the mechanism
+	// changes with depth once past it.
+	for _, depth := range []int{10, 13, 15} {
+		sel := "div" + build(depth)
+		got := expandFunctionalPseudos(sel)
+		if len(got) > maxSelectorExpansions {
+			t.Errorf("depth %d: got %d expansions, want <= %d (maxSelectorExpansions)", depth, len(got), maxSelectorExpansions)
+		}
+	}
+}
+
+func TestExpandFunctionalPseudosBudgetEntryGuard(t *testing.T) {
+	// expandFunctionalPseudosBudget's own entry check (budget already
+	// exhausted) is reached only from its "empty :is()/:where() matches
+	// nothing" fallback call — a real but awkward-to-drive-naturally path
+	// (it needs the budget to hit zero mid-loop AND every alternative
+	// processed so far to have trimmed to empty). Exercised directly here
+	// rather than contorting a selector to hit it, the same "a defensive
+	// guard proven reachable deserves a direct test, not a convoluted one"
+	// judgment call this package already makes elsewhere.
+	budget := 0
+	if got := expandFunctionalPseudosBudget("div:is(a)", &budget); got != nil {
+		t.Errorf("got %v, want nil with an already-exhausted budget", got)
+	}
+}
+
+func TestParseSimpleDoesNotCrashOnPathologicallyDeepNotNesting(t *testing.T) {
+	// A style="..." attribute on the main document (capped only at 32MB —
+	// see engine.go) can trivially carry a selector-like value with
+	// millions of nested ":not(...)" wrappers. Before maxSelectorNestingDepth
+	// existed, parseSimple's own recursion through parseSimpleSelectorList
+	// back into parseSimple (once per ":not(") cost increasingly more work
+	// per level against an ever-larger remaining string, and crashed with an
+	// unrecoverable "fatal error: stack overflow" at a few million levels;
+	// this uses 10,000, comfortably past maxSelectorNestingDepth(256) while
+	// staying fast to build and run.
+	const depth = 10000
+	sel := strings.Repeat(":not(", depth) + "a" + strings.Repeat(")", depth)
+	if _, ok := parseSimple(sel, 0); ok {
+		t.Error("want ok=false past the depth cap, got true")
 	}
 }
 
@@ -1131,7 +1194,7 @@ func TestParseComplexEdgeCases(t *testing.T) {
 	} else if sel.Matches(el("div", "", "")) {
 		t.Error(":hover must never match statically")
 	}
-	c, ok := parseSimple("p.")
+	c, ok := parseSimple("p.", 0)
 	if !ok || c.Tag != "p" || len(c.Classes) != 0 {
 		t.Errorf("p. = %+v %v", c, ok)
 	}
@@ -1140,13 +1203,13 @@ func TestParseComplexEdgeCases(t *testing.T) {
 		len(attr.parts[0].Attrs) != 1 || attr.parts[0].Attrs[0] != (attrMatch{Name: "type", Op: attrEqual, Value: "text"}) {
 		t.Errorf("attr selector = %+v %v", attr, ok)
 	}
-	if _, ok := parseSimple(""); ok {
+	if _, ok := parseSimple("", 0); ok {
 		t.Error("empty simple should fail")
 	}
 	// A bare attribute compound (no tag/class/id) is a real, modelled
 	// constraint on its own — e.g. the "[hidden]" idiom — so it must parse,
 	// not be dropped as "reduces to nothing".
-	if c, ok := parseSimple("[x]"); !ok || len(c.Attrs) != 1 || c.Attrs[0] != (attrMatch{Name: "x", Op: attrPresence}) {
+	if c, ok := parseSimple("[x]", 0); !ok || len(c.Attrs) != 1 || c.Attrs[0] != (attrMatch{Name: "x", Op: attrPresence}) {
 		t.Errorf("bare attribute compound = %+v %v, want a presence check on \"x\"", c, ok)
 	}
 }
