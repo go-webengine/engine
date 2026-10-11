@@ -912,7 +912,7 @@ func hasMatchingDescendant(n *dom.Node, sel compound) bool {
 // multi-compound chain, an unmodelled/dynamic pseudo, ...) is skipped —
 // never treated as "no constraint" (see compound.Has's own doc comment for
 // why :has() specifically fails closed rather than open).
-func parseHasSelectorList(arg string) []hasRelative {
+func parseHasSelectorList(arg string, depth int) []hasRelative {
 	var out []hasRelative
 	for _, alt := range splitSelectorCommas(arg) {
 		alt = strings.TrimSpace(alt)
@@ -928,7 +928,7 @@ func parseHasSelectorList(arg string) []hasRelative {
 		case '~':
 			kind, alt = hasSubsequentSibling, strings.TrimSpace(alt[1:])
 		}
-		sel, ok := parseSimple(alt)
+		sel, ok := parseSimple(alt, depth)
 		if !ok || sel.Dynamic {
 			continue
 		}
@@ -990,12 +990,54 @@ func splitSelectorCommas(s string) []string {
 // is approximated as its argument's (a minor over-count that does not affect
 // these pages). Selectors with no such wrapper are returned unchanged.
 func expandFunctionalPseudos(sel string) []string {
+	budget := maxSelectorExpansions
+	return expandFunctionalPseudosBudget(sel, &budget)
+}
+
+// maxSelectorExpansions bounds the TOTAL number of strings
+// expandFunctionalPseudos may ever produce across its entire recursive
+// expansion, not merely how deeply it nests. Nesting depth alone is not what
+// makes this dangerous: a comma-containing wrapper doubles (or more) its
+// OUTPUT COUNT at every level it is nested inside another one of itself —
+// `:is(:is(a,b),:is(a,b))` repeated n levels deep produces 2^n alternatives
+// from a selector whose own nesting depth is just n, not 2^n. Confirmed
+// live: 20 such levels (a perfectly plausible-looking, if elaborate,
+// selector — nothing about it screams "attack") already produces 1,048,576
+// alternatives and takes several seconds; one more size class up and the
+// cost becomes a genuine denial of service from a selector well within this
+// engine's existing page-size limits. 4096 is enormously generous against
+// any real selector (which needs at most a handful of true alternatives,
+// not thousands) while keeping the worst case trivial.
+const maxSelectorExpansions = 4096
+
+// maxSelectorNestingDepth bounds parseSimple/parseSimpleSelectorList/
+// parseHasSelectorList's own mutual recursion — see parseSimple's own doc
+// comment for why. 256 matches css/calc.go's maxCalcDepth: both guard the
+// same shape of bug (a text-level parser recursing with no depth check,
+// bounded only by the document's own 32MB fetch cap) and both are
+// enormously generous against any real selector while keeping the worst
+// case trivial.
+const maxSelectorNestingDepth = 256
+
+// expandFunctionalPseudosBudget is expandFunctionalPseudos's own recursive
+// implementation, threading a shared output budget through every level so
+// the cap applies to the TOTAL expansion, not a fresh allowance per call.
+// Hitting the cap truncates the result (a selector list with fewer
+// alternatives than the source literally names) rather than failing the
+// whole selector — the same "reduce, don't drop" degradation this package
+// already applies to every other "too much to fully handle" case.
+func expandFunctionalPseudosBudget(sel string, budget *int) []string {
+	if *budget <= 0 {
+		return nil
+	}
 	open, argOpen := findFunctionalPseudo(sel)
 	if open < 0 {
+		*budget--
 		return []string{sel}
 	}
 	close, ok := matchParenAt(sel, argOpen)
 	if !ok {
+		*budget--
 		return []string{sel} // malformed; leave as-is (will likely fail to parse)
 	}
 	prefix := sel[:open]
@@ -1003,6 +1045,9 @@ func expandFunctionalPseudos(sel string) []string {
 	inner := sel[argOpen+1 : close]
 	var out []string
 	for _, alt := range splitSelectorCommas(inner) {
+		if *budget <= 0 {
+			break
+		}
 		alt = strings.TrimSpace(alt)
 		if alt == "" {
 			continue
@@ -1024,16 +1069,16 @@ func expandFunctionalPseudos(sel string) []string {
 		// stripTrailingSelfCombinator.
 		if prefix != "" {
 			if head, comb, ok := stripTrailingSelfCombinator(alt); ok {
-				out = append(out, expandFunctionalPseudos(head+string(comb)+prefix+suffix)...)
+				out = append(out, expandFunctionalPseudosBudget(head+string(comb)+prefix+suffix, budget)...)
 				continue
 			}
 		}
-		out = append(out, expandFunctionalPseudos(prefix+alt+suffix)...)
+		out = append(out, expandFunctionalPseudosBudget(prefix+alt+suffix, budget)...)
 	}
 	if len(out) == 0 {
 		// An empty :is()/:where() matches nothing; drop the wrapper's effect by
 		// keeping the surrounding selector.
-		return expandFunctionalPseudos(prefix + suffix)
+		return expandFunctionalPseudosBudget(prefix+suffix, budget)
 	}
 	return out
 }
@@ -1159,7 +1204,7 @@ func parseComplex(s string) (Selector, bool) {
 			pendingComb, haveComb = t.combKind, true
 			continue
 		}
-		c, ok := parseSimple(t.text)
+		c, ok := parseSimple(t.text, 0)
 		if !ok {
 			return Selector{}, false
 		}
@@ -1253,7 +1298,20 @@ func tokenizeSelector(s string) []selToken {
 // a class token like `.dark\:bg-wash-dark` (Tailwind's `dark:`, `sm:`, `lg:`
 // variant syntax) is parsed as the single class `dark:bg-wash-dark` rather than
 // being truncated at the colon. Without this, no Tailwind variant class matches.
-func parseSimple(s string) (compound, bool) {
+//
+// depth counts nested :not()/:has()/:host() argument parsing — parseSimple,
+// parseSimpleSelectorList and parseHasSelectorList form one mutually
+// recursive cycle (the three pseudos' own arguments are themselves parsed
+// via this same function), and depth bounds it the same way css/calc.go's
+// own parser bounds paren nesting: `:not(:not(:not(...)))` has no parser-
+// level guard the way deep HTML element nesting does, and a page's CSS text
+// is bounded only by the main document's own 32MB cap (engine.go) — ample
+// room for a pathological chain. A root call (parseComplex, ParseSelectorList's
+// own callers) always passes 0.
+func parseSimple(s string, depth int) (compound, bool) {
+	if depth > maxSelectorNestingDepth {
+		return compound{}, false
+	}
 	var c compound
 	// Separate the compound's tag/class/id/attribute base from its pseudo tokens
 	// at the first top-level (not inside [] or ()) ':'. ":root" is honoured (it
@@ -1320,13 +1378,13 @@ func parseSimple(s string) (compound, bool) {
 			// to unknown pseudos. Attribute selectors inside ":not()" ARE modelled
 			// (see below), so `:not([data-theme])` is now a real negation, not a
 			// no-op.
-			c.Not = append(c.Not, parseSimpleSelectorList(arg)...)
+			c.Not = append(c.Not, parseSimpleSelectorList(arg, depth+1)...)
 		case "has":
 			// ":has(<relative-selector-list>)" — see compound.Has's own doc
 			// comment for the scope (single-compound alternatives, four
 			// relationship kinds) and why this fails closed rather than open.
 			c.HasPresent = true
-			c.Has = parseHasSelectorList(arg)
+			c.Has = parseHasSelectorList(arg, depth+1)
 		case "host":
 			// ":host" / ":host(<selector-list>)" — see compound.Host's doc
 			// comment. ":host-context(...)" is a real, related pseudo (matches
@@ -1347,7 +1405,7 @@ func parseSimple(s string) (compound, bool) {
 			c.Host = true
 			if arg != "" {
 				c.HostHasArg = true
-				c.HostSelector = parseSimpleSelectorList(arg)
+				c.HostSelector = parseSimpleSelectorList(arg, depth+1)
 			}
 		case "part":
 			// "::part(<name>)" — see compound.Part's own doc comment. An empty
@@ -1502,14 +1560,14 @@ func pseudoNameArg(p string) (name, arg string) {
 // constraints (tag/class/id/:checked/nested :not/:host) are returned, so
 // `:not(:checked)` is precise while `:root:not([data-theme])` degrades to
 // `:root` rather than dropping the rule.
-func parseSimpleSelectorList(arg string) []compound {
+func parseSimpleSelectorList(arg string, depth int) []compound {
 	var out []compound
 	for _, alt := range splitSelectorCommas(arg) {
 		alt = strings.TrimSpace(alt)
 		if alt == "" {
 			continue
 		}
-		neg, ok := parseSimple(alt)
+		neg, ok := parseSimple(alt, depth)
 		if !ok || neg.Dynamic {
 			continue // unmodelled or always-true-statically → no constraint
 		}

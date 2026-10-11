@@ -110,10 +110,10 @@ func TestMarginShorthandFiveValues(t *testing.T) {
 }
 
 func TestParseSimpleAllEmpty(t *testing.T) {
-	if _, ok := parseSimple("."); ok {
+	if _, ok := parseSimple(".", 0); ok {
 		t.Error("lone . should fail (no name)")
 	}
-	if _, ok := parseSimple(":only"); ok {
+	if _, ok := parseSimple(":only", 0); ok {
 		t.Error("lone pseudo should fail")
 	}
 }

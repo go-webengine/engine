@@ -189,7 +189,7 @@ func TestSelectorListKeepsNonDynamicMembers(t *testing.T) {
 
 func TestDynamicPseudoSpecificity(t *testing.T) {
 	// A dynamic pseudo contributes class-level specificity, like :root.
-	c, ok := parseSimple(".btn:hover")
+	c, ok := parseSimple(".btn:hover", 0)
 	if !ok || !c.Dynamic {
 		t.Fatalf("parse .btn:hover => %+v ok=%v", c, ok)
 	}
