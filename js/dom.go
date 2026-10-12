@@ -15,6 +15,18 @@ import (
 	"github.com/go-webengine/engine/dom"
 )
 
+// maxDOMWalkDepth bounds a few DOM methods' own recursion
+// (isEqualNode/cloneNode) that a script reaches directly, independently of
+// the cascade/layout pipeline round 166 already capped at the same value
+// (css.maxTreeDepth, layout.maxLayoutDepth). A page's own createElement+
+// appendChild loop can build a tree deeper than golang.org/x/net/html would
+// ever parse (dom.AppendChild has no depth check of its own, by design), and
+// calling one of these methods on such a tree would otherwise recurse with
+// no bound at all. 512 matches the other two caps for the same reason they
+// chose it: the HTML parser's own empirically-confirmed limit, enormously
+// generous against any real page while keeping the worst case trivial.
+const maxDOMWalkDepth = 512
+
 // accessor defines a JS accessor property on o. A nil set makes it read-only.
 func (b *binder) accessor(o *goja.Object, name string, get func() goja.Value, set func(goja.Value)) {
 	getter := b.vm.ToValue(func(goja.FunctionCall) goja.Value { return get() })
@@ -402,7 +414,7 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		return b.vm.ToValue(contains(n, b.node(call.Argument(0))))
 	})
 	o.Set("isEqualNode", func(call goja.FunctionCall) goja.Value {
-		return b.vm.ToValue(isEqualNode(n, b.node(call.Argument(0))))
+		return b.vm.ToValue(isEqualNode(n, b.node(call.Argument(0)), 0))
 	})
 	o.Set("hasChildNodes", func(call goja.FunctionCall) goja.Value {
 		return b.vm.ToValue(len(n.Children) > 0)
@@ -1681,7 +1693,22 @@ func precedesInTreeOrder(root, a, b *dom.Node) bool {
 // already-documented reskin/orphaned-node gap (rounds 10/19): that washed-
 // out-prose symptom is still present, unchanged, after this fix. The two
 // are independent defects that happen to both live in the same settle path.
-func isEqualNode(a, b *dom.Node) bool {
+//
+// depth bounds this function's own recursion the same way round 166's
+// DOM-walk caps do (css.maxTreeDepth, layout.maxLayoutDepth) — but
+// independently of them: those guard the CASCADE/LAYOUT pipeline a page's
+// tree flows through automatically, while isEqualNode is a DOM method a
+// script calls directly (node.isEqualNode(other)), on ANY tree it can build
+// via createElement+appendChild (which, per those same rounds' own finding,
+// has no depth check of its own) — a separate call path round 166 never
+// covered. A root call (the JS binding below) always passes 0.
+func isEqualNode(a, b *dom.Node, depth int) bool {
+	if depth > maxDOMWalkDepth {
+		// Two trees too deep to safely compare are deemed unequal rather
+		// than crashing — the same "a result that degrades rather than
+		// matches" choice contains/cloneNode make past their own cap.
+		return false
+	}
 	if a == nil || b == nil {
 		return a == b
 	}
@@ -1700,7 +1727,7 @@ func isEqualNode(a, b *dom.Node) bool {
 		return false
 	}
 	for i, ca := range a.Children {
-		if !isEqualNode(ca, b.Children[i]) {
+		if !isEqualNode(ca, b.Children[i], depth+1) {
 			return false
 		}
 	}
@@ -1729,7 +1756,16 @@ func isEqualNode(a, b *dom.Node) bool {
 // element (as opposed to the far more common `tpl.content.cloneNode(true)`
 // idiom, which never went through this path since .content is itself a
 // plain fragment) would crash on the very next `.content` access.
+//
+// depth bounds this function's own recursion the same way isEqualNode's own
+// doc comment explains — a script calling `node.cloneNode(true)` reaches
+// this independently of the cascade/layout caps round 166 added, on any
+// tree it built itself. A root call (the JS bindings) always passes 0.
 func cloneNode(n *dom.Node, deep bool) *dom.Node {
+	return cloneNodeDepth(n, deep, 0)
+}
+
+func cloneNodeDepth(n *dom.Node, deep bool, depth int) *dom.Node {
 	if n == nil {
 		return nil
 	}
@@ -1740,17 +1776,24 @@ func cloneNode(n *dom.Node, deep bool) *dom.Node {
 			c.Attr[k] = v
 		}
 	}
+	// Past the cap, stop descending: the clone's subtree below this point is
+	// left empty rather than crashing — the only degradation that keeps the
+	// clone a real, usable node of the right type rather than failing the
+	// whole call.
+	if depth > maxDOMWalkDepth {
+		return c
+	}
 	if n.Tag == "template" {
 		c.Content = &dom.Node{Type: dom.Element, Tag: "#fragment", Attr: map[string]string{}}
 		if deep && n.Content != nil {
 			for _, ch := range n.Content.Children {
-				dom.AppendChild(c.Content, cloneNode(ch, true))
+				dom.AppendChild(c.Content, cloneNodeDepth(ch, true, depth+1))
 			}
 		}
 	}
 	if deep {
 		for _, ch := range n.Children {
-			dom.AppendChild(c, cloneNode(ch, true))
+			dom.AppendChild(c, cloneNodeDepth(ch, true, depth+1))
 		}
 	}
 	return c
