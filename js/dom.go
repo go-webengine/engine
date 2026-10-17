@@ -1761,39 +1761,70 @@ func isEqualNode(a, b *dom.Node, depth int) bool {
 // doc comment explains — a script calling `node.cloneNode(true)` reaches
 // this independently of the cascade/layout caps round 166 added, on any
 // tree it built itself. A root call (the JS bindings) always passes 0.
+//
+// budget bounds the TOTAL node count a single top-level cloneNode(true) call
+// may produce — a separate dimension from depth, found the hard way (round
+// 172): `root.appendChild(root.cloneNode(true))` in a 25-iteration loop
+// builds a BUSHY tree (each clone nests a full copy of everything so far,
+// one level deeper under root), so no single clone call's own recursion
+// ever exceeds maxDOMWalkDepth, yet the TOTAL node count still doubles each
+// iteration. Measured: this allocates ~20GB of real (not virtual/sparse)
+// memory in under 9 seconds, and the existing JS heap watchdog
+// (heapGuardedContext) cannot stop it regardless of how low its limit is
+// set — its Interrupt() takes effect only at the NEXT bytecode instruction
+// goja executes, but a single already-in-flight cloneNode(true) call is one
+// uninterruptible native Go call from goja's own point of view, and that one
+// call alone is what balloons memory once the input tree is already large.
+// Bounding it from WITHIN the clone turns unbounded-per-call exponential
+// growth into bounded-per-call linear growth — the same shape as round
+// 170's expandFunctionalPseudosBudget. maxCloneNodes is generous for any
+// real page (tens of thousands of DOM nodes is already an unusually large
+// document) while keeping one call's own worst case a sane, bounded amount
+// of memory.
 func cloneNode(n *dom.Node, deep bool) *dom.Node {
-	return cloneNodeDepth(n, deep, 0)
+	budget := maxCloneNodes
+	return cloneNodeDepth(n, deep, 0, &budget)
 }
 
-func cloneNodeDepth(n *dom.Node, deep bool, depth int) *dom.Node {
+// maxCloneNodes bounds the total nodes one cloneNode(true) call may create.
+const maxCloneNodes = 200000
+
+func cloneNodeDepth(n *dom.Node, deep bool, depth int, budget *int) *dom.Node {
 	if n == nil {
 		return nil
 	}
 	c := &dom.Node{Type: n.Type, Tag: n.Tag, Text: n.Text}
+	*budget--
 	if n.Attr != nil {
 		c.Attr = map[string]string{}
 		for k, v := range n.Attr {
 			c.Attr[k] = v
 		}
 	}
-	// Past the cap, stop descending: the clone's subtree below this point is
-	// left empty rather than crashing — the only degradation that keeps the
-	// clone a real, usable node of the right type rather than failing the
-	// whole call.
-	if depth > maxDOMWalkDepth {
+	// Past either cap, stop descending: the clone's subtree below this point
+	// is left empty rather than crashing — the only degradation that keeps
+	// the clone a real, usable node of the right type rather than failing
+	// the whole call.
+	if depth > maxDOMWalkDepth || *budget <= 0 {
 		return c
 	}
 	if n.Tag == "template" {
 		c.Content = &dom.Node{Type: dom.Element, Tag: "#fragment", Attr: map[string]string{}}
 		if deep && n.Content != nil {
 			for _, ch := range n.Content.Children {
-				dom.AppendChild(c.Content, cloneNodeDepth(ch, true, depth+1))
+				if *budget <= 0 {
+					break
+				}
+				dom.AppendChild(c.Content, cloneNodeDepth(ch, true, depth+1, budget))
 			}
 		}
 	}
 	if deep {
 		for _, ch := range n.Children {
-			dom.AppendChild(c, cloneNodeDepth(ch, true, depth+1))
+			if *budget <= 0 {
+				break
+			}
+			dom.AppendChild(c, cloneNodeDepth(ch, true, depth+1, budget))
 		}
 	}
 	return c

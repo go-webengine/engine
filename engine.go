@@ -503,10 +503,26 @@ func (e *Engine) heapGuardedContext(parent context.Context) (context.Context, fu
 	}
 }
 
+// maxCanvasPixels bounds the output image's total pixel count (width ×
+// height). image.NewRGBA allocates and zero-fills every byte up front —
+// confirmed NOT the sparse, cheap-until-painted allocation it might look
+// like: a canvas this large, built from nothing more than a script growing
+// a page's content height via ordinary DOM calls (round 172's own finding —
+// `root.appendChild(root.cloneNode(true))` in a 25-iteration loop; no
+// pathologically large string or recursion depth needed at all), measured
+// at ~20GB of REAL resident memory in under 10 seconds, not virtual/sparse.
+// The tallest page in this engine's own 500-page bench corpus is Wikipedia
+// at 1024×28,562 (~29M pixels); 200 megapixels is generous against that by
+// 7×, bounding worst case to ~800MB (4 bytes/pixel) rather than tens of GB.
+const maxCanvasPixels = 200_000_000
+
 // newCanvas allocates the output image, fills the white base and paints the page
 // backdrop (body/html background) over the whole viewport, matching a browser.
-// The height is grown to the laid-out content, at least the viewport height, and
-// clamped to a minimum of one pixel.
+// The height is grown to the laid-out content, at least the viewport height,
+// clamped to a minimum of one pixel and a maximum set by maxCanvasPixels (a
+// page whose real content is taller than that gets a TRUNCATED render rather
+// than an unbounded allocation — no corpus page measured anywhere near this
+// limit, so no legitimate page should ever visibly hit it).
 func (e *Engine) newCanvas(doc *Document, rp *renderPass, viewport image.Rectangle, vpW int) *image.RGBA {
 	canvasH := viewport.Dy()
 	if int(rp.height) > canvasH {
@@ -514,6 +530,12 @@ func (e *Engine) newCanvas(doc *Document, rp *renderPass, viewport image.Rectang
 	}
 	if canvasH <= 0 {
 		canvasH = 1
+	}
+	if vpW > 0 && int64(vpW)*int64(canvasH) > maxCanvasPixels {
+		canvasH = int(maxCanvasPixels / int64(vpW))
+		if canvasH <= 0 {
+			canvasH = 1
+		}
 	}
 	img := image.NewRGBA(image.Rect(0, 0, vpW, canvasH))
 	// Base paper: the configured Backdrop when opaque, else white.

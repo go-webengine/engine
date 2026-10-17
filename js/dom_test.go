@@ -62,3 +62,53 @@ func TestCloneNodeDoesNotCrashOnPathologicallyDeepTree(t *testing.T) {
 		t.Errorf("clone.Tag = %q, want %q", clone.Tag, root.Tag)
 	}
 }
+
+func countNodes(n *dom.Node) int {
+	c := 1
+	for _, ch := range n.Children {
+		c += countNodes(ch)
+	}
+	return c
+}
+
+func TestCloneNodeCapsTotalNodeCountPerCall(t *testing.T) {
+	// A single cloneNode(true) call recurses depth-first, so maxDOMWalkDepth
+	// alone does not bound a BUSHY tree: round 172 found that a script doing
+	// `root.appendChild(root.cloneNode(true))` in a loop builds one (each
+	// clone nests a full copy of everything so far, one level deeper under
+	// root), no single call's own recursion ever exceeding the depth cap,
+	// yet TOTAL node count still doubling every iteration — measured at
+	// ~20GB of real memory in under 10 seconds. A wide tree with more than
+	// maxCloneNodes children exercises the same budget this round added,
+	// without needing the full doubling construction to prove it works.
+	root := &dom.Node{Type: dom.Element, Tag: "div", Attr: map[string]string{}}
+	for i := 0; i < maxCloneNodes+1000; i++ {
+		ch := &dom.Node{Type: dom.Element, Tag: "span", Attr: map[string]string{}}
+		ch.Parent = root
+		root.Children = append(root.Children, ch)
+	}
+	clone := cloneNode(root, true)
+	if got := countNodes(clone); got > maxCloneNodes {
+		t.Errorf("cloneNode produced %d nodes, want <= %d (maxCloneNodes)", got, maxCloneNodes)
+	}
+}
+
+func TestCloneNodeCapsTotalNodeCountInsideTemplateContent(t *testing.T) {
+	// The <template> content-fragment clone (see cloneNode's own doc
+	// comment, cloning steps for template elements) is a SEPARATE loop from
+	// the generic Children walk, sharing the same budget — this exercises
+	// that loop's own budget-exhausted break specifically, not just the
+	// generic Children one TestCloneNodeCapsTotalNodeCountPerCall already
+	// covers.
+	tpl := &dom.Node{Type: dom.Element, Tag: "template", Attr: map[string]string{}}
+	tpl.Content = &dom.Node{Type: dom.Element, Tag: "#fragment", Attr: map[string]string{}}
+	for i := 0; i < maxCloneNodes+1000; i++ {
+		ch := &dom.Node{Type: dom.Element, Tag: "span", Attr: map[string]string{}}
+		ch.Parent = tpl.Content
+		tpl.Content.Children = append(tpl.Content.Children, ch)
+	}
+	clone := cloneNode(tpl, true)
+	if got := countNodes(clone.Content); got > maxCloneNodes {
+		t.Errorf("cloned template content has %d nodes, want <= %d (maxCloneNodes)", got, maxCloneNodes)
+	}
+}
