@@ -167,7 +167,8 @@ func Parse(htmlSrc string) (*Node, error) {
 		return nil, err
 	}
 	doc := &Node{Type: Document, Quirks: !hasDoctype(root)}
-	convertChildren(root, doc)
+	budget := maxParsedNodes
+	convertChildren(root, doc, &budget)
 	attachDeclarativeShadowRoots(doc)
 	return doc, nil
 }
@@ -184,14 +185,37 @@ func hasDoctype(root *html.Node) bool {
 	return false
 }
 
+// maxParsedNodes bounds the total nodes one Parse/ParseFragment call may
+// produce. golang.org/x/net/html already refuses markup nested past 512
+// levels, but that guard is about DEPTH, not total node count — a WIDE
+// document (millions of SIBLING elements, never nesting past a handful of
+// levels) sails through it untouched. Confirmed live: a single statement,
+// `root.innerHTML = "<div>x</div>".repeat(3000000)`, allocates ~11.5GB of
+// real memory in 15 seconds — no loop, no deep nesting, no large string by
+// pathological standards (the repeated fragment is 13 bytes). 200,000
+// matches js.maxCloneNodes (the same shape of bug, found one round
+// earlier, for cloneNode's own bushy-growth case) — generous for any real
+// page while keeping one parse's own worst case a bounded amount of memory.
+const maxParsedNodes = 200000
+
 // convertChildren walks h's children, converting element, text and comment
 // nodes and dropping everything else (doctype, processing instructions — no
 // real page's rendering depends on either surviving into the DOM). A
 // <template>'s own children are parsed into its Content fragment instead of
 // its Children, per spec (see Node.Content's doc comment) — this is the ONE
 // place besides NewElement a template can originate from, so both must agree.
-func convertChildren(h *html.Node, parent *Node) {
+//
+// budget bounds the TOTAL nodes this call (and its own recursion) may add —
+// see maxParsedNodes. Past zero, remaining siblings/descendants are simply
+// not converted (the real tree loses nodes near this bound rather than
+// crashing or exhausting memory) — the same "reduce, don't drop entirely"
+// shape as the budget caps elsewhere in this codebase (css's
+// expandFunctionalPseudosBudget, js's cloneNode).
+func convertChildren(h *html.Node, parent *Node, budget *int) {
 	for c := h.FirstChild; c != nil; c = c.NextSibling {
+		if *budget <= 0 {
+			return
+		}
 		switch c.Type {
 		case html.CommentNode:
 			parent.Children = append(parent.Children, &Node{
@@ -199,6 +223,7 @@ func convertChildren(h *html.Node, parent *Node) {
 				Text:   c.Data,
 				Parent: parent,
 			})
+			*budget--
 		case html.ElementNode:
 			tag := strings.ToLower(c.Data)
 			el := &Node{
@@ -211,11 +236,12 @@ func convertChildren(h *html.Node, parent *Node) {
 				el.Attr[strings.ToLower(a.Key)] = a.Val
 			}
 			parent.Children = append(parent.Children, el)
+			*budget--
 			if tag == "template" {
 				el.Content = &Node{Type: Element, Tag: "#fragment", Attr: map[string]string{}}
-				convertChildren(c, el.Content)
+				convertChildren(c, el.Content, budget)
 			} else {
-				convertChildren(c, el)
+				convertChildren(c, el, budget)
 			}
 		case html.TextNode:
 			// Preserve the raw text; whitespace handling is a layout concern.
@@ -224,6 +250,7 @@ func convertChildren(h *html.Node, parent *Node) {
 				Text:   c.Data,
 				Parent: parent,
 			})
+			*budget--
 		}
 	}
 }
