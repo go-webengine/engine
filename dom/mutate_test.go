@@ -3,7 +3,10 @@
 
 package dom
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestNewElementAndText(t *testing.T) {
 	el := NewElement("DIV")
@@ -245,6 +248,37 @@ func TestParseFragment(t *testing.T) {
 		if n.Parent != nil {
 			t.Fatal("fragment nodes must be detached")
 		}
+	}
+}
+
+func countTreeNodes(nodes []*Node) int {
+	c := 0
+	for _, n := range nodes {
+		c++
+		c += countTreeNodes(n.Children)
+		if n.Content != nil {
+			c++
+			c += countTreeNodes(n.Content.Children)
+		}
+	}
+	return c
+}
+
+func TestParseFragmentCapsTotalNodeCount(t *testing.T) {
+	// A WIDE document (many sibling elements, never nesting past a handful
+	// of levels) sails straight through golang.org/x/net/html's own
+	// 512-level DEPTH guard untouched — that guard is about depth, not
+	// total node count. Confirmed live: a single statement,
+	// `root.innerHTML = "<div>x</div>".repeat(3000000)` (SetInnerHTML calls
+	// ParseFragment), allocated ~11.5GB of real memory in 15 seconds with
+	// no loop and no deep nesting at all — the 13-byte repeated fragment is
+	// nowhere near a pathologically large string by itself.
+	nodes, err := ParseFragment(strings.Repeat("<div>x</div>", maxParsedNodes+1000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := countTreeNodes(nodes); got > maxParsedNodes {
+		t.Errorf("ParseFragment produced %d nodes, want <= %d (maxParsedNodes)", got, maxParsedNodes)
 	}
 }
 

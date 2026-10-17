@@ -3,7 +3,10 @@
 
 package dom
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseAndAttributes(t *testing.T) {
 	root, err := Parse(`<!DOCTYPE html><html><head><title> Hi </title></head>` +
@@ -149,5 +152,24 @@ func TestParseQuirksMode(t *testing.T) {
 	}
 	if withDoctype.Quirks {
 		t.Error("<!DOCTYPE html> present: want Quirks=false")
+	}
+}
+
+func TestParseCapsTotalNodeCount(t *testing.T) {
+	// See TestParseFragmentCapsTotalNodeCount (mutate_test.go) for the full
+	// rationale: golang.org/x/net/html's own depth guard (512 levels) does
+	// nothing against a WIDE document, and this is the top-level Parse
+	// (the main document fetch) rather than ParseFragment, sharing the same
+	// convertChildren budget.
+	root, err := Parse(`<html><body>` + strings.Repeat("<div>x</div>", maxParsedNodes+1000) + `</body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// +1: root itself is the synthetic Document wrapper Parse creates BEFORE
+	// calling convertChildren, so it is one node outside the budget
+	// convertChildren's own recursion tracks (confirmed: without the +1,
+	// this reported exactly maxParsedNodes+1, not a looser overshoot).
+	if got := countTreeNodes([]*Node{root}); got > maxParsedNodes+1 {
+		t.Errorf("Parse produced %d nodes, want <= %d (maxParsedNodes+1)", got, maxParsedNodes+1)
 	}
 }

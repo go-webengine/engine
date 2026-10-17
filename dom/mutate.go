@@ -263,7 +263,8 @@ func ParseFragment(htmlSrc string) ([]*Node, error) {
 		container.AppendChild(p)
 	}
 	holder := &Node{Type: Element, Tag: "body", Attr: map[string]string{}}
-	convertChildren(container, holder)
+	budget := maxParsedNodes
+	convertChildren(container, holder, &budget)
 	for _, c := range holder.Children {
 		c.Parent = nil
 	}
