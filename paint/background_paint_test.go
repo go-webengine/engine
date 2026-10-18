@@ -492,6 +492,22 @@ func BenchmarkPaintBgBitmapRepeat(b *testing.B) {
 	}
 }
 
+// BenchmarkBlitImageLargePhoto exercises a plain <img> blit (no repeat
+// multiplier, unlike BenchmarkPaintBgBitmapRepeat above) at a realistic
+// full-bleed photo size, since blitImage has the IDENTICAL
+// src.At(...).RGBA() pattern blitTileClipped had before round 175's fix —
+// flagged in that round's PR as a known, smaller instance of the same
+// anti-pattern, unmeasured at the time. One element, not stamped many
+// times, so the question here is whether a SINGLE large image's own pixel
+// count alone makes the interface-boxing/premultiply cost worth fixing.
+func BenchmarkBlitImageLargePhoto(b *testing.B) {
+	dst := white(1920, 1080)
+	src := solidImage(1920, 1080, color.RGBA{10, 20, 200, 255})
+	for i := 0; i < b.N; i++ {
+		blitImage(dst, src, 0, 0, dst.Rect)
+	}
+}
+
 func TestBgMode(t *testing.T) {
 	if bgMode(nil) != resample.Bicubic {
 		t.Error("nil style should default to bicubic")

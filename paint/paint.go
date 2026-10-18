@@ -1660,8 +1660,19 @@ func toNRGBA(src image.Image) *image.NRGBA {
 
 // blitImage draws src onto dst with its top-left at (dx, dy), confined to clip
 // (an ancestor's overflow clip; always within the image bounds).
+//
+// src is normalised to *image.NRGBA once, here, rather than read through the
+// image.Image/color.Color interface per pixel — the same fix round 175 made
+// for blitTileClipped's background-repeat path (see toNRGBA's own doc
+// comment), flagged there as a known, smaller instance of the same pattern:
+// no repeat multiplier here, but a full-bleed photo is still hundreds of
+// thousands to millions of pixels for one element, and the interface read
+// also double-applied alpha the same way (At().RGBA() already premultiplies;
+// passing that as blendPixel's straight colour argument alongside the same
+// alpha again as coverage), invisible at alpha=255.
 func blitImage(dst *image.RGBA, src image.Image, dx, dy int, clip image.Rectangle) {
-	b := src.Bounds()
+	tile := toNRGBA(src)
+	b := tile.Bounds()
 	for sy := b.Min.Y; sy < b.Max.Y; sy++ {
 		ty := dy + (sy - b.Min.Y)
 		if ty < clip.Min.Y || ty >= clip.Max.Y {
@@ -1672,9 +1683,11 @@ func blitImage(dst *image.RGBA, src image.Image, dx, dy int, clip image.Rectangl
 			if tx < clip.Min.X || tx >= clip.Max.X {
 				continue
 			}
-			r, g, bl, a := src.At(sx, sy).RGBA()
-			cov := uint8(a >> 8)
-			blendPixel(dst, tx, ty, css.Color{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(bl >> 8), A: 255}, cov)
+			c := tile.NRGBAAt(sx, sy)
+			if c.A == 0 {
+				continue
+			}
+			blendPixel(dst, tx, ty, css.Color{R: c.R, G: c.G, B: c.B, A: 255}, c.A)
 		}
 	}
 }
