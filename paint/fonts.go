@@ -10,7 +10,9 @@ package paint
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
+	"sync"
 
 	"github.com/go-opentype/fonts/dejavusans"
 	"github.com/go-opentype/fonts/gomono"
@@ -83,27 +85,46 @@ type faceKey struct {
 // bold/italic fall back to it, as the family ships no other styles). It panics
 // only if a bundled font fails to parse, which would be a build-time defect in
 // the fonts module, not a runtime condition.
+//
+// The bundled files are parsed once per process and the parsed fonts shared
+// by every Fonts: an *opentype.Font is read-only once parsed (a Face, which
+// caches glyphs, is what is per-registry). Parsing them per registry — once
+// per render — was most of the time and allocation of rendering a small page.
 func NewFonts() *Fonts {
-	f := &Fonts{fonts: map[styleKey]*opentype.Font{}, faces: map[faceKey]*opentype.Face{},
-		fallback: map[faceStyle]*opentype.Font{}, fallbackFaces: map[fallbackKey]*opentype.Face{},
+	b := bundled()
+	f := &Fonts{fonts: make(map[styleKey]*opentype.Font, len(b.fonts)), faces: map[faceKey]*opentype.Face{},
+		fallback: make(map[faceStyle]*opentype.Font, len(b.fallback)), fallbackFaces: map[fallbackKey]*opentype.Face{},
 		named: map[namedKey]*opentype.Font{}, namedWeight: map[namedKey]int{}}
-	f.fallback[faceStyle{false, false}] = mustParseFont(dejavusans.TTF)
-	f.fallback[faceStyle{true, false}] = mustParseFont(dejavusans.BoldTTF)
-	f.fallback[faceStyle{false, true}] = mustParseFont(dejavusans.ItalicTTF)
-	f.fallback[faceStyle{true, true}] = mustParseFont(dejavusans.BoldItalicTTF)
+	maps.Copy(f.fonts, b.fonts)
+	maps.Copy(f.fallback, b.fallback)
+	return f
+}
+
+// bundledFonts are the parsed bundled families, shared read-only.
+type bundledFonts struct {
+	fonts    map[styleKey]*opentype.Font
+	fallback map[faceStyle]*opentype.Font
+}
+
+var bundled = sync.OnceValue(func() bundledFonts {
+	b := bundledFonts{fonts: map[styleKey]*opentype.Font{}, fallback: map[faceStyle]*opentype.Font{}}
+	b.fallback[faceStyle{false, false}] = mustParseFont(dejavusans.TTF)
+	b.fallback[faceStyle{true, false}] = mustParseFont(dejavusans.BoldTTF)
+	b.fallback[faceStyle{false, true}] = mustParseFont(dejavusans.ItalicTTF)
+	b.fallback[faceStyle{true, true}] = mustParseFont(dejavusans.BoldItalicTTF)
 	set := func(fam css.FontFamily, reg, bold, italic, boldItalic []byte) {
-		f.fonts[styleKey{fam, false, false}] = mustParseFont(reg)
-		f.fonts[styleKey{fam, true, false}] = mustParseFont(bold)
-		f.fonts[styleKey{fam, false, true}] = mustParseFont(italic)
-		f.fonts[styleKey{fam, true, true}] = mustParseFont(boldItalic)
+		b.fonts[styleKey{fam, false, false}] = mustParseFont(reg)
+		b.fonts[styleKey{fam, true, false}] = mustParseFont(bold)
+		b.fonts[styleKey{fam, false, true}] = mustParseFont(italic)
+		b.fonts[styleKey{fam, true, true}] = mustParseFont(boldItalic)
 	}
 	set(css.Sans, inter.TTF, inter.BoldTTF, inter.ItalicTTF, inter.BoldItalicTTF)
 	set(css.Serif, lora.TTF, lora.BoldTTF, lora.ItalicTTF, lora.BoldItalicTTF)
 	// Go Mono ships a single upright regular; its bold/italic requests fall back
 	// to it through font() (the family ships no other styles).
-	f.fonts[styleKey{css.Mono, false, false}] = mustParseFont(gomono.TTF)
-	return f
-}
+	b.fonts[styleKey{css.Mono, false, false}] = mustParseFont(gomono.TTF)
+	return b
+})
 
 // mustParseFont parses a bundled font, panicking on failure — which would be a
 // build-time defect in the fonts module, not a runtime condition.
@@ -169,6 +190,22 @@ func (f *Fonts) Register(family string, weight int, italic bool, sfnt []byte) er
 	ft, err := opentype.Parse(sfnt)
 	if err != nil {
 		return fmt.Errorf("paint: Register %q: %w", family, err)
+	}
+	return f.RegisterFont(family, weight, italic, ft)
+}
+
+// RegisterFont is Register for a font already parsed, which a caller that
+// parsed it to validate it, or keeps parsed fonts across renders, passes
+// instead of the bytes. The font is only read, never modified, so one
+// *opentype.Font may be registered with any number of registries,
+// concurrently.
+func (f *Fonts) RegisterFont(family string, weight int, italic bool, ft *opentype.Font) error {
+	family = strings.ToLower(strings.TrimSpace(family))
+	if family == "" {
+		return errors.New("paint: RegisterFont: no family name")
+	}
+	if ft == nil {
+		return fmt.Errorf("paint: RegisterFont %q: no font", family)
 	}
 	if weight <= 0 {
 		weight = 400

@@ -181,8 +181,14 @@ func parseFontSrc(v string) []FontSrc {
 }
 
 // urlToken extracts the url(...) target of one src entry, unquoted.
+//
+// It and formatHint match in place (indexFold) rather than lowercasing a
+// copy of the entry: an entry is often a whole font inlined as a data: URI,
+// hundreds of kilobytes that were copied twice per rule per render. In place,
+// the index is also an index into entry itself, which ToLower did not
+// promise once a non-ASCII character changed length.
 func urlToken(entry string) (string, bool) {
-	i := strings.Index(strings.ToLower(entry), "url(")
+	i := indexFold(entry, "url(")
 	if i < 0 {
 		return "", false
 	}
@@ -203,7 +209,7 @@ func urlToken(entry string) (string, bool) {
 // unquoted; empty when the entry gives none. A "woff2-variations" style hint
 // keeps only its base token, which is what decides decodability.
 func formatHint(entry string) string {
-	i := strings.Index(strings.ToLower(entry), "format(")
+	i := indexFold(entry, "format(")
 	if i < 0 {
 		return ""
 	}

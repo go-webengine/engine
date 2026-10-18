@@ -136,6 +136,17 @@ type Engine struct {
 	// reflects the scale. 0 or 1 (the default) renders at one device pixel per
 	// CSS px, exactly as before.
 	DeviceScale float64
+	// FontFaces are typefaces the host provides to every render, as a
+	// browser's installed fonts: text whose font-family names one of these
+	// families is set in it without the page declaring an @font-face. A
+	// family the page does declare a face for keeps the page's. Only
+	// Family, Weight, Italic and Data (SFNT, WOFF or WOFF2 bytes) are read;
+	// a face that does not parse is skipped. The files are parsed once and
+	// the parsed fonts reused across renders, which makes this far cheaper
+	// than inlining the same fonts into every page as data: URIs — a host
+	// rendering many pages in one typeface (a slide deck, page by page)
+	// otherwise pays for decoding and parsing them on each.
+	FontFaces []LoadedFontFace
 }
 
 // New returns an Engine with a browser-like HTTP client (Chrome TLS
@@ -398,6 +409,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// exported to render offline) declares its faces there, as data: URIs.
 	fontSheets := append(rp.sheets[:len(rp.sheets):len(rp.sheets)], css.InlineStyleText(doc.Root))
 	RegisterFontFaces(fonts, e.LoadFontFaces(ctx, doc, fontSheets, e.media(vpW)))
+	registerHostFaces(fonts, e.FontFaces)
 	rp.sm = e.cascade(doc.Root, vpW, rp.sheets, nil)
 
 	// TEXT-FIRST progressive frame (progressive path ONLY): lay out and emit the

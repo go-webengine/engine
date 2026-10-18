@@ -125,7 +125,11 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   `-webkit-line-clamp`;
   **`@font-face`** — the document's own typefaces are fetched and registered
   before anything is measured, **WOFF2 included**, so a page is set in the
-  face it asked for and not in a substitute at other metrics.
+  face it asked for and not in a substitute at other metrics. A host can also
+  install typefaces of its own with **`Engine.FontFaces`** (built with
+  `ParseFontFace`), as a browser's system fonts; parsed fonts are shared
+  across renders, so a page set in the same faces as the last one does not
+  parse them again.
 - **Tables**: automatic table layout (CSS 2.1 §17.5.2.2) — every column keeps
   at least its longest unbreakable word, percentage and fixed cell widths are
   honoured, surplus goes to the auto columns; `colspan`, `border-spacing`,
