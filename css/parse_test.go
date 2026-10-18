@@ -68,7 +68,7 @@ func TestParseDeclarationsEmptyCustomPropertyKept(t *testing.T) {
 // whitespace around the !important marker, and that a plain declaration is
 // unaffected.
 func TestParseDeclarationsImportantCaseAndSpacing(t *testing.T) {
-	d := ParseDeclarations("a: 1 !IMPORTANT; b: 2  !important  ; c: 3")
+	d := ParseDeclarations("a: 1 !IMPORTANT; b: 2  !important  ; c: 3; e: x!imp; f: 'Ⱥ!' !Important; g: y !!important")
 	want := map[string]struct {
 		val       string
 		important bool
@@ -76,6 +76,9 @@ func TestParseDeclarationsImportantCaseAndSpacing(t *testing.T) {
 		"a": {"1", true},
 		"b": {"2", true},
 		"c": {"3", false},
+		"e": {"x!imp", false}, // a '!' that does not start the word, too short to hold it
+		"f": {"'Ⱥ!'", true},   // the index stays right after a non-ASCII character
+		"g": {"y !", true},    // the last '!' is the one that starts the word
 	}
 	if len(d) != len(want) {
 		t.Fatalf("got %d decls: %v", len(d), d)

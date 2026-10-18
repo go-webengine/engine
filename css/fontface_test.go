@@ -85,6 +85,23 @@ func TestParseFontFacesSrcList(t *testing.T) {
 	}
 }
 
+// url() and format() match in any case, and the URL keeps its own case —
+// including after a non-ASCII character, whose lowercase form is a
+// different length (Ⱥ is 2 bytes, ⱥ 3): an index found in a lowercased
+// copy would cut the entry at the wrong byte.
+func TestParseFontFacesSrcCase(t *testing.T) {
+	src := `@font-face{font-family:F;src:URL("Ⱥ/Data.TTF") FORMAT("TrueType"), Url(x.woff) Format(woff)}`
+	faces := ParseFontFaces(src, Media{})
+	if len(faces) != 1 {
+		t.Fatalf("got %d faces", len(faces))
+	}
+	want := []FontSrc{{"Ⱥ/Data.TTF", "truetype"}, {"x.woff", "woff"}}
+	got := faces[0].Srcs
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("srcs = %+v, want %+v", got, want)
+	}
+}
+
 // A rule with nothing to load, or no family to load it for, is not a face.
 func TestParseFontFacesDropsUnusable(t *testing.T) {
 	for _, src := range []string{

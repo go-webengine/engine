@@ -5,7 +5,9 @@
 package engine
 
 import (
+	"container/list"
 	"context"
+	"crypto/sha256"
 	"io"
 	"net/http"
 	"sort"
@@ -35,6 +37,10 @@ type LoadedFontFace struct {
 	Italic bool
 	Data   []byte // SFNT bytes, ready for opentype.Parse
 	URL    string // where they came from, resolved
+
+	// font is Data parsed, when LoadFontFaces parsed it, so that
+	// RegisterFontFaces does not parse it again.
+	font *opentype.Font
 }
 
 // LoadFontFaces fetches the files the document's own @font-face rules name and
@@ -186,11 +192,12 @@ func (e *Engine) loadOneFontFace(ctx context.Context, doc *Document, face css.Fo
 		// PDF exporter embedding these very bytes — would otherwise be handed
 		// a file that is not a font at all. A data: URI carrying the wrong
 		// payload is the case that showed it.
-		if _, err := opentype.Parse(sfnt); err != nil {
+		ft, err := parsedFonts.parse(sfnt)
+		if err != nil {
 			continue
 		}
 		abs, _ := resolveURL(doc.URL, s.URL)
-		return LoadedFontFace{Family: face.Family, Weight: face.Weight, Italic: face.Italic, Data: sfnt, URL: abs}, true
+		return LoadedFontFace{Family: face.Family, Weight: face.Weight, Italic: face.Italic, Data: sfnt, URL: abs, font: ft}, true
 	}
 	return LoadedFontFace{}, false
 }
@@ -273,11 +280,118 @@ func decodeFontFile(data []byte) ([]byte, bool) {
 func RegisterFontFaces(fonts *paint.Fonts, faces []LoadedFontFace) int {
 	n := 0
 	for _, f := range faces {
-		if err := fonts.Register(f.Family, f.Weight, f.Italic, f.Data); err == nil {
+		ft := f.font
+		if ft == nil {
+			var err error
+			if ft, err = parsedFonts.parse(f.Data); err != nil {
+				continue
+			}
+		}
+		if fonts.RegisterFont(f.Family, f.Weight, f.Italic, ft) == nil {
 			n++
 		}
 	}
 	return n
+}
+
+// ParseFontFace parses a font file (SFNT, WOFF or WOFF2) into a face for
+// Engine.FontFaces. A face built this way is parsed once, here; one built
+// as a bare struct literal is parsed on first use and then found in the
+// cache of parsed fonts by the hash of its bytes, on every render.
+func ParseFontFace(family string, weight int, italic bool, data []byte) (LoadedFontFace, error) {
+	ft, err := parsedFonts.parse(data)
+	if err != nil {
+		return LoadedFontFace{}, err
+	}
+	return LoadedFontFace{Family: family, Weight: weight, Italic: italic, Data: data, font: ft}, nil
+}
+
+// registerHostFaces registers the Engine's own FontFaces for the families
+// the document did not bring a face for: a page's @font-face wins over an
+// installed font of the same name, as in a browser.
+func registerHostFaces(fonts *paint.Fonts, faces []LoadedFontFace) {
+	var fill []LoadedFontFace
+	for _, f := range faces {
+		if !fonts.Registered(f.Family) {
+			fill = append(fill, f)
+		}
+	}
+	RegisterFontFaces(fonts, fill)
+}
+
+// parsedFonts keeps the fonts @font-face rules brought, parsed, across
+// renders. Parsing a font is the dearest step of loading it — a slide deck
+// rendered page by page, or a site's pages sharing its web fonts, asked for
+// the same files on every render and parsed each of them twice (once to
+// validate, once to register). A parsed font is read-only, so one copy
+// serves every render, concurrently.
+//
+// It is keyed by the SHA-256 of the file's bytes, not by URL: a key can
+// only ever name the bytes it was parsed from, whoever serves them and
+// whatever caching headers say. It is bounded, least recently used out
+// first, by count and by the bytes of the files, so that a process
+// rendering arbitrary pages holds at most fontCacheBytes of files (and
+// their parsed tables) however many distinct fonts it meets.
+var parsedFonts = newFontCache(fontCacheEntries, fontCacheBytes)
+
+const (
+	fontCacheEntries = 64
+	fontCacheBytes   = 32 << 20
+)
+
+type fontCache struct {
+	mu         sync.Mutex
+	maxEntries int
+	maxBytes   int
+	bytes      int
+	byKey      map[[sha256.Size]byte]*list.Element
+	lru        *list.List // of *fontCacheEntry, most recent first
+}
+
+type fontCacheEntry struct {
+	key  [sha256.Size]byte
+	size int
+	font *opentype.Font
+}
+
+func newFontCache(maxEntries, maxBytes int) *fontCache {
+	return &fontCache{maxEntries: maxEntries, maxBytes: maxBytes, byKey: map[[sha256.Size]byte]*list.Element{}, lru: list.New()}
+}
+
+// parse returns sfnt parsed, from the cache when these bytes were parsed
+// before. Two renders missing at once both parse; the second to finish
+// finds the first's entry and keeps it.
+func (c *fontCache) parse(sfnt []byte) (*opentype.Font, error) {
+	key := sha256.Sum256(sfnt)
+	c.mu.Lock()
+	if el, ok := c.byKey[key]; ok {
+		c.lru.MoveToFront(el)
+		ft := el.Value.(*fontCacheEntry).font
+		c.mu.Unlock()
+		return ft, nil
+	}
+	c.mu.Unlock()
+	ft, err := opentype.Parse(sfnt)
+	if err != nil {
+		return nil, err // a file that does not parse is not kept: it costs nothing to refuse again
+	}
+	if len(sfnt) > c.maxBytes {
+		return ft, nil // larger than the whole cache: used, not kept
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.byKey[key]; ok {
+		c.lru.MoveToFront(el)
+		return el.Value.(*fontCacheEntry).font, nil
+	}
+	c.byKey[key] = c.lru.PushFront(&fontCacheEntry{key: key, size: len(sfnt), font: ft})
+	c.bytes += len(sfnt)
+	for c.lru.Len() > c.maxEntries || c.bytes > c.maxBytes {
+		old := c.lru.Remove(c.lru.Back()).(*fontCacheEntry)
+		delete(c.byKey, old.key)
+		c.bytes -= old.size
+	}
+	return ft, nil
 }
 
 // srcsKey identifies a FontFace by its own src list — two rules with the same

@@ -430,7 +430,7 @@ func ParseDeclarations(body string) []Declaration {
 		// A trailing !important is not part of the value — strip it here, once,
 		// so no property parser downstream ever has to know about it.
 		important := false
-		if idx := strings.LastIndex(strings.ToLower(val), "!important"); idx >= 0 {
+		if idx := lastImportant(val); idx >= 0 {
 			val = strings.TrimSpace(val[:idx])
 			important = true
 		}
@@ -453,6 +453,21 @@ func ParseDeclarations(body string) []Declaration {
 		out = append(out, Declaration{Property: prop, Value: val, Important: important})
 	}
 	return out
+}
+
+// lastImportant is the byte index of the last "!important" in val, in any
+// ASCII case, or -1. It looks only where a '!' is, instead of searching a
+// lowercased copy of the value: a value is often a data: URI — an inlined
+// image or font, hundreds of kilobytes — that was copied for every
+// declaration of every render.
+func lastImportant(val string) int {
+	const word = "!important"
+	for i := strings.LastIndexByte(val, '!'); i >= 0; i = strings.LastIndexByte(val[:i], '!') {
+		if i+len(word) <= len(val) && equalFoldASCII(val[i:i+len(word)], word) {
+			return i
+		}
+	}
+	return -1
 }
 
 // splitDeclChunks splits a declaration block on top-level semicolons, ignoring
