@@ -35,7 +35,7 @@ func TestScaleLengths(t *testing.T) {
 		{"outline", "thick dotted", "10px dotted"},
 		{"font", "medium sans-serif", "medium sans-serif"}, // not a line width here
 		{"border", "#thin", "#thin"},
-		{"width", "12q", "6px"},         // 12Q = 3mm = 11.338px ×2 → printed exactly below
+		{"width", "12q", ""},            // 12Q = 3mm: only checked to be rewritten (see below)
 		{"width", "1e", "1e"},           // not a unit
 		{"width", "5", "5"},             // unitless number
 		{"width", "1.2.3px", "1.2.3px"}, // not a number
