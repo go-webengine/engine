@@ -299,7 +299,7 @@ func applyGap(s *Style, v string, emRef float64) {
 // applyPlaceItems parses the place-items shorthand (<align-items>
 // [<justify-items>]); a single value applies to both axes.
 func applyPlaceItems(s *Style, v string) {
-	fields := strings.Fields(strings.ToLower(v))
+	fields := alignmentValues(strings.ToLower(v))
 	if len(fields) == 0 {
 		return
 	}
@@ -316,9 +316,12 @@ func applyPlaceItems(s *Style, v string) {
 }
 
 // applyPlaceContent parses the place-content shorthand (<align-content>
-// [<justify-content>]); a single value applies to both axes.
+// [<justify-content>]); a single value applies to both axes (CSS Box
+// Alignment 3 §5.2). An <overflow-position> keyword stays with the value it
+// qualifies, so Marp's `place-content: safe center center` sets both axes to
+// center rather than dropping align-content on an unknown `safe`.
 func applyPlaceContent(s *Style, lv string) {
-	fields := strings.Fields(lv)
+	fields := alignmentValues(lv)
 	if len(fields) == 0 {
 		return
 	}
@@ -337,7 +340,7 @@ func applyPlaceContent(s *Style, lv string) {
 // applyPlaceSelf parses the place-self shorthand (<align-self>
 // [<justify-self>]); a single value applies to both axes.
 func applyPlaceSelf(s *Style, v string) {
-	fields := strings.Fields(strings.ToLower(v))
+	fields := alignmentValues(strings.ToLower(v))
 	if len(fields) == 0 {
 		return
 	}

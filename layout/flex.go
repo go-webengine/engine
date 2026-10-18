@@ -32,6 +32,7 @@ type flexItem struct {
 	minContent float64
 	box        *Box
 	cross      float64 // outer cross size after layout
+	crossOff   float64 // column container: the item's cross-axis (x) offset
 }
 
 // flexLine is one flex line (a row of items in a row container) with its
@@ -281,12 +282,30 @@ func (l *layouter) flexRow(box *Box, items []*flexItem, st *css.Style, cx, cw, t
 	}
 	totalCross += crossGap * float64(len(fls)-1)
 
+	// CSS Flexbox 1 §9.4, "Calculate the cross size of each flex line": when
+	// the container is single-line and has a definite cross size, the line's
+	// cross size IS the container's inner cross size — not the tallest item.
+	// Without this, align-items:center (and stretch) aligned items inside a
+	// line only as tall as its content, so a definite-height row container
+	// left every item at its top edge.
+	// (totalCross, the content extent this function returns, is left alone:
+	// an item taller than the container still overflows it.)
+	singleDefinite := crossDefinite && st.FlexWrap == css.FlexNoWrap
+	if singleDefinite {
+		fls[0].cross = containerH
+	}
+
 	// Cross container size: a definite height wins, else it fits the lines.
 	containerCross := totalCross
 	if crossDefinite && containerH > totalCross {
 		containerCross = containerH
 	}
-	lineOff, lineGap := alignContentDistribute(st.AlignContent, containerCross-totalCross, len(fls))
+	var lineOff, lineGap float64
+	if !singleDefinite {
+		// align-content packs lines in the free cross space; a single line
+		// that already fills the container leaves none (§8.4).
+		lineOff, lineGap = alignContentDistribute(st.AlignContent, containerCross-totalCross, len(fls))
+	}
 	if st.FlexWrap == css.FlexWrapReverse {
 		reverseLines(fls)
 	}
@@ -479,10 +498,7 @@ func (l *layouter) flexColumn(box *Box, items []*flexItem, st *css.Style, cx, cw
 	// Cross axis is horizontal. Determine each item's cross (width) and lay it
 	// out to get its main (height); stack along the vertical main axis.
 	y := top
-	for i, it := range items {
-		if i > 0 {
-			y += rowGap
-		}
+	for _, it := range items {
 		// layoutIsolated takes a CONTENT width, so the item's own padding and
 		// border come off the line it is handed: what stretch makes fill the
 		// line is the item's MARGIN box, not its content box. Leaving them on
@@ -508,8 +524,31 @@ func (l *layouter) flexColumn(box *Box, items []*flexItem, st *css.Style, cx, cw
 		}
 		it.box = l.layoutIsolated(it.node, it.st, crossW)
 		outerCrossW := it.box.W + it.hMargin
-		cxOff := crossOffset(ai, cw, outerCrossW)
-		translateBox(it.box, (cx+cxOff+it.st.Margin.Left)-it.box.X, (y+it.st.Margin.Top)-it.box.Y)
+		it.crossOff = crossOffset(ai, cw, outerCrossW)
+	}
+
+	// Main axis: CSS Flexbox 1 §9.5, "Align the items along the main-axis per
+	// justify-content". The free space is the container's definite inner main
+	// size (its height) less the items' outer heights and gaps; with an auto
+	// height the container fits its items and there is none. Before this, a
+	// column container ignored justify-content entirely, so
+	// `display:flex;flex-direction:column;justify-content:center` on a fixed-
+	// height box (every Marp slide) left its content at the top.
+	var used float64
+	for _, it := range items {
+		used += it.box.H + it.vMargin
+	}
+	used += rowGap * float64(len(items)-1)
+	var offset, jgap float64
+	if containerH, ok := flexCrossHeight(st, cw); ok {
+		offset, jgap = distribute(st.JustifyContent, math.Max(containerH-used, 0), len(items))
+	}
+	y += offset
+	for i, it := range items {
+		if i > 0 {
+			y += rowGap + jgap
+		}
+		translateBox(it.box, (cx+it.crossOff+it.st.Margin.Left)-it.box.X, (y+it.st.Margin.Top)-it.box.Y)
 		box.Children = append(box.Children, it.box)
 		y += it.box.H + it.vMargin
 	}

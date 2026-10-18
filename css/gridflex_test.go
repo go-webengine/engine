@@ -209,6 +209,39 @@ func TestApplyPlaceContent(t *testing.T) {
 		t.Errorf("place-content single = %v %v", s2.AlignContent, s2.JustifyContent)
 	}
 	applyOn(newStyle(), "place-content", "", 16)
+
+	// <overflow-position> (CSS Box Alignment 3 §4.4) stays with the value it
+	// qualifies: Marp's `safe center center`, a single `unsafe end`.
+	s3 := newStyle()
+	applyOn(s3, "place-content", "safe center center", 16)
+	if s3.AlignContent != AlignContentCenter || s3.JustifyContent != JustifyCenter {
+		t.Errorf("place-content safe center center = %v %v", s3.AlignContent, s3.JustifyContent)
+	}
+	s4 := newStyle()
+	applyOn(s4, "place-content", "unsafe end", 16)
+	if s4.AlignContent != AlignContentEnd || s4.JustifyContent != JustifyEnd {
+		t.Errorf("place-content unsafe end = %v %v", s4.AlignContent, s4.JustifyContent)
+	}
+}
+
+func TestOverflowPositionKeywords(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"safe center", "center"},
+		{"unsafe  flex-end", "flex-end"},
+		{"center", "center"},
+		{"safe", "safe"},             // a lone keyword is not a value: left for the parser to reject
+		{"safecenter", "safecenter"}, // not a keyword boundary
+	} {
+		if got := trimOverflowPosition(tc.in); got != tc.want {
+			t.Errorf("trimOverflowPosition(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if a, ok := parseAlignItems("safe center"); !ok || a != AlignCenterItems {
+		t.Errorf("align-items safe center = %v,%v", a, ok)
+	}
+	if a, ok := parseAlignSelf("unsafe end"); !ok || a != AlignSelfEnd {
+		t.Errorf("align-self unsafe end = %v,%v", a, ok)
+	}
 }
 
 func TestApplyPlaceSelf(t *testing.T) {

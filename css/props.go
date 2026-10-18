@@ -69,8 +69,40 @@ func applyListStyle(s *Style, lv string) {
 	}
 }
 
+// trimOverflowPosition strips a leading <overflow-position> keyword (`safe` or
+// `unsafe`, CSS Box Alignment 3 §4.4) from an alignment value, so `safe
+// center` parses as `center`. The engine's alignment already never pushes an
+// overflowing subject past the start edge (free space is clamped at 0), which
+// is what `safe` asks for; `unsafe` (honour the alignment even when it
+// overflows the start edge) is accepted but not modelled.
+func trimOverflowPosition(lv string) string {
+	for _, kw := range []string{"safe", "unsafe"} {
+		if rest, ok := strings.CutPrefix(lv, kw); ok && rest != "" && (rest[0] == ' ' || rest[0] == '\t' || rest[0] == '\n') {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return lv
+}
+
+// alignmentValues splits a place-* shorthand value into its component
+// alignment values, keeping an <overflow-position> keyword attached to the
+// value it qualifies: "safe center center" is ["safe center", "center"].
+func alignmentValues(lv string) []string {
+	var out []string
+	pending := ""
+	for _, f := range strings.Fields(lv) {
+		if f == "safe" || f == "unsafe" {
+			pending = f + " "
+			continue
+		}
+		out = append(out, pending+f)
+		pending = ""
+	}
+	return out
+}
+
 func parseJustify(lv string) (Justify, bool) {
-	switch lv {
+	switch trimOverflowPosition(lv) {
 	case "flex-start", "start", "left", "normal":
 		return JustifyStart, true
 	case "flex-end", "end", "right":
@@ -88,7 +120,7 @@ func parseJustify(lv string) (Justify, bool) {
 }
 
 func parseAlignItems(lv string) (AlignItems, bool) {
-	switch lv {
+	switch trimOverflowPosition(lv) {
 	case "stretch", "normal":
 		return AlignStretch, true
 	case "flex-start", "start", "self-start", "baseline":
@@ -114,7 +146,7 @@ func parseFlexWrap(lv string) (FlexWrap, bool) {
 }
 
 func parseAlignContent(lv string) (AlignContent, bool) {
-	switch lv {
+	switch trimOverflowPosition(lv) {
 	case "stretch", "normal":
 		return AlignContentStretch, true
 	case "flex-start", "start":
@@ -134,7 +166,7 @@ func parseAlignContent(lv string) (AlignContent, bool) {
 }
 
 func parseAlignSelf(lv string) (AlignSelf, bool) {
-	switch lv {
+	switch trimOverflowPosition(lv) {
 	case "auto":
 		return AlignSelfAuto, true
 	case "stretch", "normal":
