@@ -968,6 +968,10 @@ type Style struct {
 	// element (or an ancestor) defines a custom property.
 	CustomProps map[string]string
 
+	// ColorScheme is the inherited `color-scheme` (CSS Color Adjust 1 §2.2);
+	// its UsedDark picks light-dark()'s branch. Zero value: `normal`.
+	ColorScheme ColorScheme
+
 	// Background image layers (gradients and url() bitmaps) and their paint
 	// parameters. Each list is indexed per layer (first-listed paints on top);
 	// a shorter size/position/repeat list repeats its last value. All nil == no
@@ -1378,6 +1382,7 @@ func inheritFrom(parent Style) Style {
 		ListStyleType:     parent.ListStyleType,
 		ListStylePosition: parent.ListStylePosition,
 		CustomProps:       parent.CustomProps, // inherited (shared until copy-on-write)
+		ColorScheme:       parent.ColorScheme, // inherited
 
 		// position and the offsets are not inherited: reset to static / auto.
 		Top:        Length{Auto: true},

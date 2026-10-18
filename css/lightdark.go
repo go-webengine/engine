@@ -5,20 +5,72 @@ package css
 
 import "strings"
 
+// ColorScheme is the computed value of the inherited `color-scheme` property
+// (CSS Color Adjust 1 §2.2) reduced to what this engine acts on: which of the
+// two UA-supported schemes the element declares support for. The zero value
+// is `normal` (no scheme declared). Custom-ident schemes are ignored, and so
+// is `only` (it forbids UA overrides such as forced colours, which this
+// engine never applies).
+type ColorScheme uint8
+
+const (
+	ColorSchemeLight ColorScheme = 1 << iota // `light` listed
+	ColorSchemeDark                          // `dark` listed
+)
+
+// parseColorScheme parses a `color-scheme` value. ok is false for a value
+// that is not valid per the grammar `normal | [ light | dark | <custom-ident> ]+
+// && only?` as far as this engine can tell (empty, or `normal` mixed with
+// other keywords), so the declaration is dropped.
+func parseColorScheme(v string) (ColorScheme, bool) {
+	fields := strings.Fields(strings.ToLower(v))
+	if len(fields) == 0 {
+		return 0, false
+	}
+	if len(fields) == 1 && fields[0] == "normal" {
+		return 0, true
+	}
+	var cs ColorScheme
+	idents := 0
+	for _, f := range fields {
+		switch f {
+		case "normal", "initial", "unset", "revert", "default", "none":
+			return 0, false
+		case "only":
+			continue
+		case "light":
+			cs |= ColorSchemeLight
+		case "dark":
+			cs |= ColorSchemeDark
+		}
+		idents++
+	}
+	if idents == 0 {
+		return 0, false // `only` alone
+	}
+	return cs, true
+}
+
+// UsedDark reports whether the element's used colour scheme is dark, per the
+// "determine the used color scheme" algorithm of CSS Color Adjust 1 §2.3 with
+// this engine's fixed preference: when an element supports BOTH schemes the
+// preferred one is used, which here is dark — the same fixed answer
+// js/window.go's matchMedia gives for `prefers-color-scheme` (the bench suite's
+// reference Chromium runs with a dark appearance). One supported scheme is
+// used as is. With none (`normal`) the UA default scheme applies, which is
+// light: Gecko's LookAndFeel::ColorSchemeForStyle ("Otherwise default content
+// to light"), and Chromium likewise renders a page that never opts in light.
+func (cs ColorScheme) UsedDark() bool {
+	return cs&ColorSchemeDark != 0
+}
+
 // resolveLightDark replaces every top-level light-dark(light, dark) function in
-// value with whichever branch the engine's colour scheme picks, returning false
-// (declaration dropped, same as an unresolvable var()) when a light-dark() is
-// malformed: unterminated, or without exactly one top-level comma splitting its
-// two arguments.
-//
-// This engine has no live "current appearance" concept (no window, no OS
-// theme) — it picks the SAME fixed answer window.go's matchMedia uses for
-// `prefers-color-scheme`: dark. That is not an arbitrary default; the bench
-// suite's reference screenshots come from a real headless Chromium that
-// inherits the host's actual (dark) appearance, so matching Chrome requires
-// matching that same preference here, not the CSS spec's neutral fallback.
-// See mediaQueryMatches in js/window.go for the sibling decision this mirrors.
-func resolveLightDark(value string) (string, bool) {
+// value with the branch the element's used colour scheme picks (CSS Color 5
+// §7: the first colour when the element colour scheme is light, the second
+// when it is dark), returning false (declaration dropped, same as an
+// unresolvable var()) when a light-dark() is malformed: unterminated, or
+// without exactly one top-level comma splitting its two arguments.
+func resolveLightDark(value string, dark bool) (string, bool) {
 	if findLightDarkFunc(value, 0) < 0 {
 		return value, true
 	}
@@ -38,11 +90,15 @@ func resolveLightDark(value string) (string, bool) {
 			return "", false
 		}
 		inner := value[open+1 : closeIdx]
-		_, dark, hasDark := splitVarArgs(inner)
+		light, darkArg, hasDark := splitVarArgs(inner)
 		if !hasDark {
 			return "", false
 		}
-		b.WriteString(strings.TrimSpace(dark))
+		pick := light
+		if dark {
+			pick = darkArg
+		}
+		b.WriteString(strings.TrimSpace(pick))
 		i = closeIdx + 1
 	}
 	return b.String(), true
