@@ -8,6 +8,26 @@ import (
 	"testing"
 )
 
+// TestWhiteSpaceValues: each white-space keyword keeps its own value (CSS
+// Text 3 §3); pre-wrap/pre-line used to collapse into pre.
+func TestWhiteSpaceValues(t *testing.T) {
+	for kw, want := range map[string]WhiteSpace{
+		"normal": WSNormal, "pre": WSPre, "nowrap": WSNoWrap,
+		"pre-wrap": WSPreWrap, "break-spaces": WSBreakSpaces, "pre-line": WSPreLine,
+	} {
+		s := newStyle()
+		applyOn(s, "white-space", kw, 16)
+		if s.WhiteSpace != want {
+			t.Errorf("white-space:%s = %v, want %v", kw, s.WhiteSpace, want)
+		}
+	}
+	for ws, want := range map[WhiteSpace]bool{WSNormal: false, WSPre: true, WSNoWrap: false, WSPreWrap: true, WSBreakSpaces: true, WSPreLine: false} {
+		if ws.PreservesSpaces() != want {
+			t.Errorf("%v.PreservesSpaces() = %v", ws, !want)
+		}
+	}
+}
+
 func newStyle() *Style {
 	s := initialStyle()
 	return &s

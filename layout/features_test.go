@@ -5,6 +5,7 @@ package layout
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/go-webengine/engine/css"
@@ -453,6 +454,68 @@ func TestInlineNowrapSpan(t *testing.T) {
 	}
 	if commonAncestor(p.Node, p.Node) != p.Node {
 		t.Error("commonAncestor(a, a) != a")
+	}
+}
+
+// TestWhiteSpaceWrappingValues: pre-wrap / break-spaces preserve spaces and
+// newlines and wrap; pre-line collapses spaces, keeps newlines and wraps
+// (CSS Text 3 §3 table).
+func TestWhiteSpaceWrappingValues(t *testing.T) {
+	lines := func(ws, text string, width int) []*LineBox {
+		t.Helper()
+		root := layoutHTML(t, `<html><body style="margin:0"><p id="p" style="margin:0;width:`+
+			strconv.Itoa(width)+`px;white-space:`+ws+`">`+text+`</p></body></html>`, 400)
+		return findBoxByID(root, "p").Lines
+	}
+	texts := func(ls []*LineBox) []string {
+		var out []string
+		for _, l := range ls {
+			s := ""
+			for _, it := range l.Items {
+				s += "[" + it.Text + "]"
+			}
+			out = append(out, s)
+		}
+		return out
+	}
+	// pre-wrap: indentation kept, inner runs become SpaceBefore, trailing
+	// spaces hang (dropped), a tab expands, a blank line is a line.
+	pw := lines("pre-wrap", "  ab   cd  \n\n\tx", 400)
+	if got := texts(pw); len(got) != 3 || got[0] != "[  ab][cd]" || got[1] != "" || got[2] != "[        x]" {
+		t.Errorf("pre-wrap lines = %q", got)
+	}
+	if sb := pw[0].Items[1].SpaceBefore; sb <= 0 {
+		t.Errorf("pre-wrap inner run SpaceBefore = %v, want the run's width", sb)
+	}
+	// pre-wrap wraps at its space runs.
+	if n := len(lines("pre-wrap", "aaaa bbbb cccc dddd", 30)); n < 2 {
+		t.Errorf("pre-wrap did not wrap: %d line(s)", n)
+	}
+	// break-spaces: spaces stay with the word before them, next word breaks.
+	bs := lines("break-spaces", "ab  cd", 400)
+	if got := texts(bs); len(got) != 1 || got[0] != "[ab  ][cd]" || !bs[0].Items[1].BreakBefore {
+		t.Errorf("break-spaces lines = %q", got)
+	}
+	if n := len(lines("break-spaces", "aaaa bbbb cccc dddd", 30)); n < 2 {
+		t.Errorf("break-spaces did not wrap: %d line(s)", n)
+	}
+	// pre-line: spaces collapse, newline breaks, spaces around it vanish.
+	if got := texts(lines("pre-line", "a    b  \n   c", 400)); len(got) != 2 || got[0] != "[a][b]" || got[1] != "[c]" {
+		t.Errorf("pre-line lines = %q", got)
+	}
+	// The text's own element decides: a white-space:normal span inside pre
+	// collapses its spaces.
+	root := layoutHTML(t, `<html><body style="margin:0"><pre id="p" style="margin:0">a  <span style="white-space:normal">b    c</span></pre></body></html>`, 400)
+	if got := texts(findBoxByID(root, "p").Lines); len(got) != 1 || got[0] != "[a  ][b][c]" {
+		t.Errorf("normal span in pre = %q", got)
+	}
+	// A line of spaces only: they hang under pre-wrap (no item), take room
+	// under break-spaces.
+	if got := texts(lines("pre-wrap", "a\n   \nb", 400)); len(got) != 3 || got[1] != "" {
+		t.Errorf("pre-wrap blank-ish line = %q", got)
+	}
+	if got := texts(lines("break-spaces", "a\n   \nb", 400)); len(got) != 3 || got[1] != "[   ]" {
+		t.Errorf("break-spaces blank-ish line = %q", got)
 	}
 }
 

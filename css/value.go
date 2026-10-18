@@ -531,7 +531,21 @@ const (
 	// WSNoWrap collapses whitespace like WSNormal but never wraps: the
 	// block's content stays on one line, however wide.
 	WSNoWrap
+	// WSPreWrap preserves spaces and newlines and wraps; preserved spaces at
+	// the end of a line hang (CSS Text 3 §3, §4.1.2).
+	WSPreWrap
+	// WSBreakSpaces is WSPreWrap except that preserved spaces never hang:
+	// they take room and a line may break after any of them.
+	WSBreakSpaces
+	// WSPreLine collapses spaces like WSNormal but preserves newlines (as
+	// forced breaks) and wraps.
+	WSPreLine
 )
+
+// PreservesSpaces reports whether spaces and tabs are kept as written.
+func (w WhiteSpace) PreservesSpaces() bool {
+	return w == WSPre || w == WSPreWrap || w == WSBreakSpaces
+}
 
 // ImageRendering selects the resampling filter used to scale a raster image
 // (an <img> or a background-image) to a size other than its intrinsic one. It

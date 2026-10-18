@@ -42,7 +42,7 @@ func (l *layouter) minContentWidth(node *dom.Node, st *css.Style) float64 {
 	}
 	// Content that never wraps (white-space: pre / nowrap) has no unit
 	// smaller than its longest line: min-content equals max-content.
-	if st.WhiteSpace != css.WSNormal {
+	if st.WhiteSpace == css.WSPre || st.WhiteSpace == css.WSNoWrap {
 		return l.preferredWidth(node, st)
 	}
 	// A single-line flex row keeps its items side by side, so its min-content
