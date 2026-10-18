@@ -424,7 +424,7 @@ func parseRadialPosition(g *Gradient, pos string, emRef float64) {
 // looksLikeStop reports whether a gradient argument is a colour stop (starts
 // with a colour) rather than a direction/shape prefix.
 func looksLikeStop(arg string) bool {
-	fields := strings.Fields(arg)
+	fields := splitTopLevel(arg) // keeps "rgb(1 2 3)" / "color-mix(in srgb, …)" whole
 	if len(fields) == 0 {
 		return false
 	}
@@ -442,7 +442,10 @@ func parseColorStops(args []string, emRef float64) ([]ColorStop, bool) {
 		if a == "" {
 			continue
 		}
-		fields := strings.Fields(a)
+		// Split on whitespace OUTSIDE parentheses: a colour function's own
+		// spaces (modern `rgb(1 2 3)`, `color-mix(in srgb, a 50%, b)`) must
+		// not cut the colour token in two.
+		fields := splitTopLevel(a)
 		c, ok := parseColor(fields[0])
 		if !ok {
 			// A bare position with no colour is a transition hint; skip it (the
