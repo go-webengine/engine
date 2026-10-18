@@ -448,7 +448,23 @@ func paintBgBitmap(dst *image.RGBA, bx image.Rectangle, rad int, src image.Image
 	// Resample the source to the drawn tile size once, up front (bicubic by
 	// default; nearest for image-rendering:pixelated). Every stamp below is then
 	// a plain 1:1 copy — the resampling quality lives here, not in the blitter.
-	tile := scaleTile(src, tw, th, bgMode(st))
+	//
+	// toNRGBA normalises the format here too, ONCE, rather than inside
+	// blitTileClipped's per-pixel loop: a repeating background-image stamps the
+	// same tile many times across its box, so a format conversion paid per
+	// blitted DESTINATION pixel is paid again for every stamp, while paying it
+	// here costs only the tile's own (usually much smaller) pixel count once.
+	// Found live on www.cia.gov: a handful of repeating background-image boxes
+	// drove the paint phase to ~1.2 BILLION calls through image.Image's At(),
+	// each one both heap-allocating to box the returned color.Color (the
+	// NRGBA/RGBA concrete value doesn't fit the interface for free) and
+	// re-deriving premultiplied output from straight storage — tens of seconds
+	// of real wall-clock time on one ordinary, non-malicious page, with the
+	// caller's context.Context deadline never consulted because nothing in this
+	// per-pixel loop checks it (same uninterruptible-native-call shape as round
+	// 172's cloneNode finding, but reached through ordinary CSS, not a crafted
+	// script). blitTileClipped's own cost is now a plain direct Pix read.
+	tile := toNRGBA(scaleTile(src, tw, th, bgMode(st)))
 	// Position: percentage aligns the image's p% point to the box's p% point.
 	ox := resolvePos(pos.X, bw-float64(tw))
 	oy := resolvePos(pos.Y, bh-float64(th))
@@ -549,11 +565,22 @@ func resolvePos(l css.Length, free float64) float64 {
 	return l.Px
 }
 
-// blitTileClipped stamps an already-scaled tile at integer offset (dx,dy) with a
-// 1:1 pixel copy, clipping each pixel to the rounded box rect (and to clip and
-// the destination bounds). A source pixel with zero alpha is skipped; others are
-// blended straight over the destination at their own alpha as coverage.
-func blitTileClipped(dst *image.RGBA, tile image.Image, dx, dy int, bx image.Rectangle, rad int, clip image.Rectangle) {
+// blitTileClipped stamps an already-scaled, already-*image.NRGBA tile at
+// integer offset (dx,dy) with a 1:1 pixel copy, clipping each pixel to the
+// rounded box rect (and to clip and the destination bounds). A source pixel
+// with zero alpha is skipped; others are blended straight over the
+// destination at their own alpha as coverage.
+//
+// tile.NRGBAAt reads straight R/G/B/A directly off *image.NRGBA's own Pix
+// slice — no image.Image/color.Color interface indirection (which would heap-
+// allocate a box for the returned value on every call) and no premultiply/
+// unpremultiply round trip (color.Color.RGBA() always premultiplies; this
+// pixel's straight values are exactly what blendPixel's col/cov contract
+// wants, matching every other blendPixel call site in this file). See the
+// caller's own comment (paintBgBitmap, where tile is normalised to NRGBA
+// exactly once) for why doing this per blitted pixel instead was the
+// bottleneck on a real page.
+func blitTileClipped(dst *image.RGBA, tile *image.NRGBA, dx, dy int, bx image.Rectangle, rad int, clip image.Rectangle) {
 	b := tile.Bounds()
 	region := image.Rect(dx, dy, dx+b.Dx(), dy+b.Dy()).Intersect(bx).Intersect(dst.Rect).Intersect(clip)
 	for y := region.Min.Y; y < region.Max.Y; y++ {
@@ -561,12 +588,11 @@ func blitTileClipped(dst *image.RGBA, tile image.Image, dx, dy int, bx image.Rec
 			if !insideRoundRect(x, y, bx, rad) {
 				continue
 			}
-			r, g, bl, a := tile.At(b.Min.X+(x-dx), b.Min.Y+(y-dy)).RGBA()
-			cov := uint8(a >> 8)
-			if cov == 0 {
+			c := tile.NRGBAAt(b.Min.X+(x-dx), b.Min.Y+(y-dy))
+			if c.A == 0 {
 				continue
 			}
-			blendPixel(dst, x, y, css.Color{R: uint8(r >> 8), G: uint8(g >> 8), B: uint8(bl >> 8), A: 255}, cov)
+			blendPixel(dst, x, y, css.Color{R: c.R, G: c.G, B: c.B, A: 255}, c.A)
 		}
 	}
 }
@@ -913,7 +939,7 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 			if bw, bh := it.Width, it.LineHeight; fit != css.ObjectFitFill && bw > 0 && bh > 0 {
 				iw, ih := float64(src.Bounds().Dx()), float64(src.Bounds().Dy())
 				tw, th := coverContain(iw, ih, bw, bh, fit == css.ObjectFitCover)
-				tile := scaleTile(src, int(math.Round(tw)), int(math.Round(th)), bgMode(it.Style))
+				tile := toNRGBA(scaleTile(src, int(math.Round(tw)), int(math.Round(th)), bgMode(it.Style)))
 				bx := image.Rect(int(it.X), int(it.Y), int(it.X+bw), int(it.Y+bh))
 				ox := int(it.X) + int(math.Round((bw-tw)/2))
 				oy := int(it.Y) + int(math.Round((bh-th)/2))
@@ -1614,6 +1640,20 @@ func toRGBA(src image.Image) *image.RGBA {
 		return rgba
 	}
 	out := image.NewRGBA(src.Bounds())
+	draw.Draw(out, out.Bounds(), src, src.Bounds().Min, draw.Src)
+	return out
+}
+
+// toNRGBA returns src as an *image.NRGBA (straight alpha), unchanged if it
+// already is one — the common case, since scaleTile's own resample path
+// already produces NRGBA. blitTileClipped's per-pixel loop needs direct,
+// straight-alpha Pix access (see its own doc comment for why going through
+// the image.Image/color.Color interface per blitted pixel was the problem).
+func toNRGBA(src image.Image) *image.NRGBA {
+	if n, ok := src.(*image.NRGBA); ok {
+		return n
+	}
+	out := image.NewNRGBA(src.Bounds())
 	draw.Draw(out, out.Bounds(), src, src.Bounds().Min, draw.Src)
 	return out
 }

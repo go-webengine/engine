@@ -7,7 +7,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-webengine/engine.svg)](https://pkg.go.dev/github.com/go-webengine/engine)
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-0079A8)](https://go-webengine.github.io/docs/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
-[![Go 1.27.1+](https://img.shields.io/badge/Go-1.27.1%2B-00ADD8?logo=go)](https://go.dev/dl/)
+[![Go 1.27.2+](https://img.shields.io/badge/Go-1.27.2%2B-00ADD8?logo=go)](https://go.dev/dl/)
 
 A pure-Go, **`CGO_ENABLED=0`** headless web engine: it fetches a URL, parses the
 HTML into a DOM, applies a real CSS subset (cascade + inheritance + `var()` +
@@ -232,9 +232,45 @@ scripts and modules, `fetch`/XHR targets, form posts). It does **not** filter
 destinations itself, so rendering an untrusted page from a machine with access to
 private networks can reach internal addresses. If you embed the engine directly,
 add a dial-time guard through `Engine.Client` that refuses loopback, private and
-link-local addresses. `browserproxy` ships one (`guard.go`). Decoding is
-bounded: raster images declaring more than 25 megapixels are refused, and every
-fetch is size-capped.
+link-local addresses. `browserproxy` ships one (`guard.go`).
+
+Since a renderer's whole job is turning arbitrary, untrusted page content into
+output, several unrelated kinds of pathological input have been found and
+capped (each confirmed live against a synthetic reproduction, not assumed):
+
+- **Decoding**: raster images declaring more than 25 megapixels are refused
+  before decode; every fetch is size-capped.
+- **Tree-depth recursion**: a script-built DOM tree past 512 levels (bypassing
+  the HTML parser's own 512-level parse limit via `createElement`+
+  `appendChild`) used to crash the whole process with an unrecoverable Go
+  stack overflow — not a panic, `recover()` cannot catch it — in the CSS
+  cascade, layout, `cloneNode`/`isEqualNode`, and three CSS parsers
+  (`calc()`, `:not()`/`:has()`/`:host()`, `:is()`/`:where()`/`:matches()`,
+  the last of these via a shared output budget rather than a depth cap,
+  since it explodes in alternative COUNT, not nesting depth). All are now
+  capped at 512 (matching the parser's own bound) or a generous output
+  budget.
+- **Memory exhaustion**: a single `innerHTML` assignment, or a `cloneNode`
+  call repeated in a tight loop, could previously allocate tens of
+  gigabytes of real memory from a few lines of ordinary-looking script —
+  no deep nesting or large string needed. `cloneNode` and the HTML→DOM
+  conversion shared by `Parse`/`ParseFragment` (and so `innerHTML`/
+  `outerHTML`/`insertAdjacentHTML`) now cap total node count per call; the
+  rendered canvas itself is capped by total pixel count.
+- **Unresponsive render, no malicious input required**: an ordinary,
+  non-malicious page with several `background-repeat` sections (found live
+  on a real production site, not a crafted page) drove the paint phase to
+  roughly a billion per-pixel calls through `image.Image`'s `At()` — each
+  one heap-allocating to box the returned `color.Color` and re-deriving a
+  premultiplied value from straight storage — taking tens of seconds of
+  CPU with the caller's `context.Context` deadline never consulted, because
+  nothing in that per-pixel loop checked it. Fixed by normalising a
+  background-image tile to a concrete `*image.NRGBA` once, before it is
+  stamped, instead of once per stamped pixel.
+
+See `FIDELITY.md`'s rounds 166–175 for the full measured writeups. None of
+these change how a well-formed page renders — only how a pathological one
+degrades (truncated output, never a crash or unbounded allocation).
 
 ## Test
 
@@ -250,12 +286,12 @@ engine) is asserted at exact geometry; committed golden PNGs — including offli
 JS/dynamic/gradient/position/SVG fixtures with a `DisableJS` control — cover the
 paint path. `scripts/coverage-gate.sh` enforces a **ratchet** coverage floor per
 pure-logic package (`css`/`layout`/`paint`/`dom`/`paginate`: css 99.5%, layout,
-paint and paginate 100%, dom 97.4%), which CI fails below and which is raised
+paint and paginate 100%, dom 98.5%), which CI fails below and which is raised
 (never lowered) toward 100% as the engine matures. The live-network
 paths (root `engine` package, `cmd/render`) are excluded from the gate because
 their coverage is not reproducible in CI. The `bench/` fidelity harness is a
 separate nested module (it pulls chromedp) and is not in the CGO=0 six-arch CI.
-`go.mod` floor is `go 1.27.1`; cross-built for all six 64-bit Go targets.
+`go.mod` floor is `go 1.27.2`; cross-built for all six 64-bit Go targets.
 
 ## Links
 

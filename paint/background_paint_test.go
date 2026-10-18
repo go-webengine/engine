@@ -420,7 +420,7 @@ func TestBlitTileClippedBounds(t *testing.T) {
 	// A tile stamped partly off the box is clipped to the region; the pixels that
 	// land inside paint, those outside are left alone.
 	dst := white(10, 10)
-	src := solidImage(4, 4, color.RGBA{0, 0, 200, 255})
+	src := toNRGBA(solidImage(4, 4, color.RGBA{0, 0, 200, 255}))
 	blitTileClipped(dst, src, 8, 8, image.Rect(0, 0, 10, 10), 0, dst.Rect)
 	if c := dst.RGBAAt(9, 9); c.B < 150 {
 		t.Errorf("clipped tile pixel = %+v want blue", c)
@@ -432,10 +432,63 @@ func TestBlitTileClippedBounds(t *testing.T) {
 func TestBlitTileClippedTransparentPixel(t *testing.T) {
 	// A source pixel with alpha 0 is skipped (cov==0 branch).
 	dst := white(4, 4)
-	src := image.NewRGBA(image.Rect(0, 0, 2, 2)) // all transparent
+	src := image.NewNRGBA(image.Rect(0, 0, 2, 2)) // all transparent
 	blitTileClipped(dst, src, 0, 0, image.Rect(0, 0, 4, 4), 0, dst.Rect)
 	if c := dst.RGBAAt(0, 0); c.R != 255 {
 		t.Errorf("transparent source pixel painted: %+v", c)
+	}
+}
+
+// TestBlitTileClippedHalfTransparentPixel pins the blend math for a PARTIALLY
+// transparent source pixel against hand-computed straight-alpha-over-white: a
+// straight (0,0,200,128) source over opaque white should land close to
+// (128,128,228) — round((0*128+255*127)/255), etc. Before this round, the
+// pixel went through tile.At(...).RGBA() (always premultiplied per the
+// color.Color contract) and that ALREADY-premultiplied value was then passed
+// as blendPixel's straight col.R/G/B with cov applying alpha a SECOND time —
+// correct only by coincidence at alpha=255 (every other test here happens to
+// use fully opaque or fully transparent source pixels, so this regression
+// shipped unnoticed). Reading straight R/G/B/A directly via NRGBAAt fixes it.
+func TestBlitTileClippedHalfTransparentPixel(t *testing.T) {
+	dst := white(2, 2)
+	src := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	src.SetNRGBA(0, 0, color.NRGBA{R: 0, G: 0, B: 200, A: 128})
+	blitTileClipped(dst, src, 0, 0, image.Rect(0, 0, 2, 2), 0, dst.Rect)
+	c := dst.RGBAAt(0, 0)
+	// Allow ±2 for integer rounding in the two independent blend paths
+	// (blendPixel's own float64 compositing vs. this test's hand computation).
+	want := color.RGBA{R: 128, G: 128, B: 228, A: 255}
+	if absDiff(c.R, want.R) > 2 || absDiff(c.G, want.G) > 2 || absDiff(c.B, want.B) > 2 {
+		t.Errorf("half-transparent blend = %+v, want ~%+v", c, want)
+	}
+}
+
+func absDiff(a, b uint8) int {
+	if a > b {
+		return int(a - b)
+	}
+	return int(b - a)
+}
+
+// BenchmarkPaintBgBitmapRepeat exercises paintBgBitmap's background-repeat
+// tiling loop — the path round 175 found driving the engine to ~1.2 BILLION
+// per-pixel image.Image.At() calls (each heap-allocating to box the returned
+// color.Color, plus NRGBA.RGBA()'s per-channel division) rendering a single
+// real page (cia.gov) with several ordinary repeating background-image
+// sections, taking tens of seconds of CPU with the caller's context deadline
+// never consulted. A 64×64 tile repeated across a 2000×2000 box is ~1000
+// stamps of ~4096 px each — a smaller but representative instance of the
+// same shape (many repeat stamps of one small-ish tile).
+func BenchmarkPaintBgBitmapRepeat(b *testing.B) {
+	dst := white(2000, 2000)
+	src := solidImage(64, 64, color.RGBA{10, 20, 200, 255})
+	box := image.Rect(0, 0, 2000, 2000)
+	for i := 0; i < b.N; i++ {
+		paintBgBitmap(dst, box, 0, src,
+			css.BgSize{Kind: css.SizeAuto},
+			css.BgPosition{},
+			css.RepeatBoth,
+			dst.Rect, nil)
 	}
 }
 
