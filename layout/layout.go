@@ -874,7 +874,50 @@ func (l *layouter) collectInline(node *dom.Node, st *css.Style, pre bool, cw flo
 	l.beginInlineContext()
 	l.appendInline(node, st, &items, pre, cw)
 	resolveInlineEdges(items)
+	l.markNoWrap(items)
 	return items
+}
+
+// markNoWrap sets NoWrapBefore on every item whose break opportunity with the
+// previous item is suppressed by white-space: per CSS Text 3 §5.5 the
+// white-space property on the nearest common ancestor of the two characters
+// controls breaking at their boundary, and white-space applies to — and is
+// inherited through — inline elements (§3). So the spaces inside an inline
+// `white-space:nowrap` (or pre) span break nothing, while the boundaries
+// around the span, whose common ancestor is the wrapping parent, still do.
+// (The block-level case is the layouter's own nowrap flag.)
+func (l *layouter) markNoWrap(items []*InlineItem) {
+	for i := 1; i < len(items); i++ {
+		a, b := items[i-1].Node, items[i].Node
+		if a == nil || b == nil {
+			continue
+		}
+		anc := commonAncestor(a, b)
+		if anc == nil {
+			continue
+		}
+		if st := l.sm[anc]; st != nil && (st.WhiteSpace == css.WSNoWrap || st.WhiteSpace == css.WSPre) {
+			items[i].NoWrapBefore = true
+		}
+	}
+}
+
+// commonAncestor returns the nearest element that is a or b or an ancestor
+// of both (nil when they share none).
+func commonAncestor(a, b *dom.Node) *dom.Node {
+	if a == b {
+		return a
+	}
+	seen := map[*dom.Node]bool{}
+	for n := a; n != nil; n = n.Parent {
+		seen[n] = true
+	}
+	for n := b; n != nil; n = n.Parent {
+		if seen[n] {
+			return n
+		}
+	}
+	return nil
 }
 
 func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool, cw float64) []*InlineItem {
@@ -892,6 +935,7 @@ func (l *layouter) collectInlineFrom(nodes []*dom.Node, st *css.Style, pre bool,
 		}
 	}
 	resolveInlineEdges(items)
+	l.markNoWrap(items)
 	return items
 }
 
@@ -1767,6 +1811,13 @@ func forceOne(items []*InlineItem) (*LineBox, int) {
 	if i < len(items) {
 		line.Items = append(line.Items, items[i])
 		i++
+		// Items white-space forbids breaking between (NoWrapBefore) stay
+		// together: a nowrap run overflows the line as a whole, as in a
+		// browser, rather than being torn apart one word per line.
+		for i < len(items) && !items[i].LineBreak && items[i].NoWrapBefore {
+			line.Items = append(line.Items, items[i])
+			i++
+		}
 	}
 	return line, i
 }
