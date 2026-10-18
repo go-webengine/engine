@@ -421,6 +421,23 @@ func TestBlockAlignContent(t *testing.T) {
 	}
 }
 
+// TestPercentageHeight: CSS 2.1 §10.5 — against a definite containing block
+// height the percentage resolves; against an auto one it computes to auto.
+// An abspos box with top+bottom and height:auto has a solved, definite
+// height (§10.6.4 rule 5) its children can resolve against.
+func TestPercentageHeight(t *testing.T) {
+	root := layoutHTML(t, `<html><body style="margin:0"><div style="height:200px"><div id="a" style="height:25%">x</div></div>`+
+		`<div><div id="b" style="height:50%">x</div></div>`+
+		`<div style="position:relative;height:100px"><div id="c" style="position:absolute;top:10px;bottom:30px;left:0"><div id="d" style="height:50%">x</div></div></div>`+
+		`</body></html>`, 300)
+	assertF(t, "a.H", findBoxByID(root, "a").H, 50)
+	if h := findBoxByID(root, "b").H; h >= 50 {
+		t.Errorf("b.H = %v: a percentage against an auto-height parent must compute to auto", h)
+	}
+	assertF(t, "c.H", findBoxByID(root, "c").H, 60)
+	assertF(t, "d.H", findBoxByID(root, "d").H, 30)
+}
+
 func TestFlexColumn(t *testing.T) {
 	src := `<html><body style="margin:0"><div style="display:flex;flex-direction:column">` +
 		`<div style="height:30px">A</div><div style="height:40px">B</div></div></body></html>`

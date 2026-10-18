@@ -197,7 +197,25 @@ func (l *layouter) placeAbsolute(n *dom.Node, st *css.Style, cb cbRect, item out
 
 	contentW := l.absoluteContentWidth(n, st, cb, hExtra, hMargin)
 
-	box := l.layoutIsolated(n, st, contentW)
+	// An absolutely positioned box's percentage height is relative to its
+	// containing block's padding box (CSS 2.1 §10.5), which is always
+	// definite here. With height auto and both top and bottom set, the
+	// constraint equation of §10.6.4 (rule 5) solves the height, and that
+	// height is definite too (CSS Sizing 3), so the box's own percentage-
+	// height children can resolve against it.
+	savedH, savedDef := l.cbH, l.cbHDefinite
+	l.cbH, l.cbHDefinite = cb.h, true
+	lst := st
+	if st.Height.Auto && !st.Top.Auto && !st.Bottom.Auto {
+		vExtra := bw.Top + bw.Bottom + st.Padding.Top + st.Padding.Bottom
+		h := cb.h - st.Top.Resolve(cb.h) - st.Bottom.Resolve(cb.h) - st.Margin.Top - st.Margin.Bottom - vExtra
+		clone := *st
+		clone.Height = css.Length{Px: math.Max(h, 0)}
+		clone.BoxSizing = css.ContentBox
+		lst = &clone
+	}
+	box := l.layoutIsolated(n, lst, contentW)
+	l.cbH, l.cbHDefinite = savedH, savedDef
 	// Resolve any relative descendants inside this out-of-flow subtree (its own
 	// content box is their containing block) before translating it into place.
 	applyRelative(box, contentW, box.ContentH)

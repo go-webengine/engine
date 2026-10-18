@@ -257,7 +257,7 @@ func breakLines(items []*flexItem, mainSize, mainGap float64, wrap bool) [][]*fl
 func (l *layouter) flexRow(box *Box, items []*flexItem, st *css.Style, cx, cw, top float64) float64 {
 	mainGap := gapLen(st.ColumnGap)
 	crossGap := gapLen(st.RowGap)
-	containerH, crossDefinite := flexCrossHeight(st, cw)
+	containerH, crossDefinite := l.flexCrossHeight()
 
 	for _, it := range items {
 		it.base = it.clampMainRow(it.mainBaseRow(l, cw), cw)
@@ -271,7 +271,20 @@ func (l *layouter) flexRow(box *Box, items []*flexItem, st *css.Style, cx, cw, t
 		resolveMainRow(line, cw, mainGap)
 		var lineCross float64
 		for _, it := range line {
-			it.box = l.layoutIsolated(it.node, it.st, it.main)
+			lst := it.st
+			if crossDefinite && st.FlexWrap == css.FlexNoWrap && it.st.Height.Auto &&
+				it.st.AlignSelf.Resolve(st.AlignItems) == css.AlignStretch {
+				// CSS Flexbox 1 §9.8 item 3: a stretched item in a single-line
+				// container with a definite cross size has a DEFINITE cross
+				// size, the line's (§9.4: the container's inner cross size).
+				// Laying it out at that height lets its own percentage-height
+				// children resolve against it, instead of computing to auto.
+				clone := *it.st
+				clone.Height = css.Length{Px: math.Max(it.clampCrossHeight(containerH, containerH)-it.vMargin-it.vEdges, 0)}
+				clone.BoxSizing = css.ContentBox
+				lst = &clone
+			}
+			it.box = l.layoutIsolated(it.node, lst, it.main)
 			it.cross = it.clampCrossHeight(it.box.H+it.vMargin, containerH)
 			if it.cross > lineCross {
 				lineCross = it.cross
@@ -446,17 +459,13 @@ func gapLen(l css.Length) float64 {
 	return math.Max(l.Px, 0)
 }
 
-// flexCrossHeight returns the flex container's definite cross height (row) and
-// whether it is definite. cw is used only for box-sizing. Passes 0 for
-// usedHeight's own contentW (aspect-ratio) parameter: a flex container sized
-// by its own aspect-ratio has no confirmed real caller, unlike the plain
-// block-box case usedHeight's other call site (layout.go's place) resolves —
-// see css.Style.AspectRatio's own doc comment.
-func flexCrossHeight(st *css.Style, cw float64) (float64, bool) {
-	if h, ok := usedHeight(st, st.Border.Widths(), cw, 0); ok {
-		return h, true
-	}
-	return 0, false
+// flexCrossHeight returns the flex (or grid) container's definite content
+// height and whether it is definite: the used height place() resolved for the
+// container whose contents are being laid out (l.ownH), which already
+// accounts for box-sizing, a percentage against a definite containing block
+// (CSS 2.1 §10.5) and aspect-ratio.
+func (l *layouter) flexCrossHeight() (float64, bool) {
+	return l.ownH, l.ownHDefinite
 }
 
 // alignContentDistribute returns the leading cross offset and extra inter-line
@@ -540,7 +549,7 @@ func (l *layouter) flexColumn(box *Box, items []*flexItem, st *css.Style, cx, cw
 	}
 	used += rowGap * float64(len(items)-1)
 	var offset, jgap float64
-	if containerH, ok := flexCrossHeight(st, cw); ok {
+	if containerH, ok := l.flexCrossHeight(); ok {
 		offset, jgap = distribute(st.JustifyContent, math.Max(containerH-used, 0), len(items))
 	}
 	y += offset
