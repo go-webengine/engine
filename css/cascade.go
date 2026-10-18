@@ -322,7 +322,7 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hos
 	// it; a var() that cannot resolve (and has no fallback) drops the whole
 	// declaration, leaving the inherited/initial value in place.
 	applyResolved := func(d Declaration, emRef float64) {
-		v, ok := resolveDeclValue(d.Value, st.CustomProps)
+		v, ok := resolveDeclValueScheme(d.Value, st.CustomProps, st.ColorScheme.UsedDark())
 		if !ok {
 			return
 		}
@@ -330,7 +330,14 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hos
 		st.apply(d, emRef, &parent)
 	}
 
-	// Pass 1: resolve font-size first (its em is relative to the parent).
+	// Pass 1: resolve color-scheme and font-size first: every light-dark() in
+	// the remaining declarations resolves against the element's OWN used colour
+	// scheme (CSS Color 5 §7), and em is relative to the parent's font size.
+	for _, c := range cands {
+		if c.decl.Property == "color-scheme" {
+			applyResolved(c.decl, parent.FontSize)
+		}
+	}
 	for _, c := range cands {
 		if c.decl.Property == "font-size" {
 			applyResolved(c.decl, parent.FontSize)
@@ -338,7 +345,7 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hos
 	}
 	// Pass 2: everything else, with em relative to the element's own size.
 	for _, c := range cands {
-		if c.decl.Property != "font-size" && !isCustomProperty(c.decl.Property) {
+		if c.decl.Property != "font-size" && c.decl.Property != "color-scheme" && !isCustomProperty(c.decl.Property) {
 			applyResolved(c.decl, st.FontSize)
 		}
 	}

@@ -547,6 +547,20 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			// `display:none` rule in effect no matter how wide the viewport was.
 			s.Display = DisplayInline
 		}
+	case "color-scheme":
+		switch lv {
+		case "initial":
+			s.ColorScheme = 0
+		case "unset":
+			// inherited property: unset == inherit
+			if parent != nil {
+				s.ColorScheme = parent.ColorScheme
+			}
+		default:
+			if cs, ok := parseColorScheme(lv); ok {
+				s.ColorScheme = cs
+			}
+		}
 	case "visibility":
 		switch lv {
 		case "visible":
@@ -1407,6 +1421,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 	switch prop {
 	case "color":
 		s.Color = parent.Color
+	case "color-scheme":
+		s.ColorScheme = parent.ColorScheme
 	case "visibility":
 		s.Visibility = parent.Visibility
 	case "font-weight":

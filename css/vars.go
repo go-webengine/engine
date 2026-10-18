@@ -45,6 +45,14 @@ func isCustomProperty(prop string) bool {
 // by the caller (so the property keeps its inherited/initial value). A value
 // with none of these constructs is returned unchanged.
 func resolveDeclValue(value string, props map[string]string) (string, bool) {
+	return resolveDeclValueScheme(value, props, false)
+}
+
+// resolveDeclValueScheme is resolveDeclValue for an element whose used colour
+// scheme is dark when dark is true: light-dark() resolves AFTER var()
+// substitution, so a custom property holding light-dark() takes the scheme of
+// the element that uses it, not of the one that declared it.
+func resolveDeclValueScheme(value string, props map[string]string, dark bool) (string, bool) {
 	if findVarFunc(value, 0) >= 0 {
 		v, ok := substituteVars(value, props, 0)
 		if !ok {
@@ -56,7 +64,7 @@ func resolveDeclValue(value string, props map[string]string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return resolveLightDark(v)
+	return resolveLightDark(v, dark)
 }
 
 // substituteVars replaces every var() function in value with the referenced
