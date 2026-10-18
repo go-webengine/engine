@@ -109,3 +109,21 @@ func TestTreeSignature(t *testing.T) {
 	}
 	(&layoutMetrics{}).Refresh() // a static snapshot: no-op
 }
+
+// TestScrollAndClientSize: scrollWidth is the width of the element's
+// scrolling area — its padding box plus any content overflowing it (CSSOM
+// View §scrollWidth) — and clientWidth the padding box (no borders).
+func TestScrollAndClientSize(t *testing.T) {
+	got := scriptTitle(t, `<!DOCTYPE html><html><head><style>body{margin:0}</style></head><body>`+
+		`<h1 id="h" style="white-space:nowrap;width:10px;margin:0;font-size:20px">Short text here</h1>`+
+		`<div id="b" style="width:50px;height:20px;border:5px solid;padding:2px"><div style="width:200px;height:100px"></div></div>`+
+		`<div id="c" style="width:50px;height:20px;padding:3px"><div style="width:10px;height:5px"></div></div>`+
+		`<script>var h=document.getElementById('h'),b=document.getElementById('b'),c=document.getElementById('c');`+
+		`document.title=[h.scrollWidth>50,h.clientWidth,b.offsetWidth,b.clientWidth,b.scrollWidth,b.scrollHeight,c.scrollWidth,c.scrollHeight].join(',')</script></body></html>`)
+	// b: border box 50+2*2+2*5 = 64; padding box 54; content 200 wide starting
+	// at the padding edge + 2 → scroll width 2+200 = 202 (CSSOM View counts
+	// the start padding); height 2+100 = 102. c: no overflow → padding box.
+	if got != "true,10,64,54,202,102,56,26" {
+		t.Errorf("got %q, want true,10,64,54,202,102,56,26", got)
+	}
+}

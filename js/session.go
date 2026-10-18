@@ -41,6 +41,16 @@ type Refresher interface {
 	Refresh()
 }
 
+// BoxMetrics is an optional Metrics extension giving the two boxes CSSOM View
+// distinguishes from the border box: the client area (the padding box, no
+// borders and no scrollbar — this engine draws none) and the scrolling area
+// (the padding box extended by any content overflowing it). Without it,
+// client* and scroll* fall back to the border box.
+type BoxMetrics interface {
+	ClientSize(n *dom.Node) (w, h float64, ok bool)
+	ScrollSize(n *dom.Node) (w, h float64, ok bool)
+}
+
 // Session is a live page-script execution bound to one DOM tree and one goja
 // runtime. Unlike the one-shot Run, it stays resident across layout passes: the
 // engine lays the page out, feeds the geometry in via SetMetrics, runs scripts

@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"image"
 	"io"
+	"math"
 	"sort"
 	"strconv"
 	"time"
@@ -47,6 +48,9 @@ type layoutMetrics struct {
 	vpW, vpH int
 	scale    float64 // device px per CSS px; 0 means 1 (see scaled)
 
+	box   *layout.Box               // the tree idx was built from
+	boxes map[*dom.Node]*layout.Box // element → its block-level box, built on first use
+
 	// Forced synchronous layout (see liveMetrics / Refresh): the document, the
 	// signature of the DOM the current geometry was laid out from, and how to
 	// lay it out again. relayout is nil for a static snapshot.
@@ -56,7 +60,7 @@ type layoutMetrics struct {
 }
 
 func newLayoutMetrics(box *layout.Box, sm css.StyleMap, vpW, vpH int) *layoutMetrics {
-	return &layoutMetrics{idx: layout.BuildIndex(box), sm: sm, vpW: vpW, vpH: vpH}
+	return &layoutMetrics{idx: layout.BuildIndex(box), sm: sm, vpW: vpW, vpH: vpH, box: box}
 }
 
 // liveMetrics is the Metrics a script session reads: the pass rp just laid
@@ -90,7 +94,7 @@ func (m *layoutMetrics) Refresh() {
 		return
 	}
 	box, sm := m.relayout()
-	m.idx, m.sm, m.sig = layout.BuildIndex(box), sm, sig
+	m.idx, m.sm, m.box, m.boxes, m.sig = layout.BuildIndex(box), sm, box, nil, sig
 }
 
 // treeSignature hashes everything layout depends on in the DOM — structure,
@@ -143,6 +147,88 @@ func treeSignature(root *dom.Node) uint64 {
 	}
 	walk(root, 0)
 	return h.Sum64()
+}
+
+// boxOf returns n's block-level box in the current tree, or nil for an
+// element that is inline-level or not laid out.
+func (m *layoutMetrics) boxOf(n *dom.Node) *layout.Box {
+	if m.boxes == nil {
+		m.boxes = map[*dom.Node]*layout.Box{}
+		var visit func(b *layout.Box)
+		visit = func(b *layout.Box) {
+			if b == nil {
+				return
+			}
+			if b.Node != nil && m.boxes[b.Node] == nil {
+				m.boxes[b.Node] = b
+			}
+			for _, c := range b.Children {
+				visit(c)
+			}
+		}
+		visit(m.box)
+	}
+	return m.boxes[n]
+}
+
+// paddingRect is a box's padding box (border box less its borders).
+func paddingRect(b *layout.Box) (x, y, w, h float64) {
+	bw := css.Edges{}
+	if b.Style != nil {
+		bw = b.Style.Border.Widths()
+	}
+	return b.X + bw.Left, b.Y + bw.Top, math.Max(b.W-bw.Left-bw.Right, 0), math.Max(b.H-bw.Top-bw.Bottom, 0)
+}
+
+// ClientSize implements js.BoxMetrics: the padding box (CSSOM View
+// clientWidth/clientHeight; this engine renders no scrollbars). An element
+// with no box, or an inline-level one, reports 0.
+func (m *layoutMetrics) ClientSize(n *dom.Node) (w, h float64, ok bool) {
+	b := m.boxOf(n)
+	if b == nil {
+		return 0, 0, true
+	}
+	_, _, pw, ph := paddingRect(b)
+	return m.css(pw), m.css(ph), true
+}
+
+// ScrollSize implements js.BoxMetrics: the size of the element's scrolling
+// area (CSSOM View scrollWidth/scrollHeight), i.e. its scrollable overflow
+// area (CSS Overflow 3 §3.3): the union of its padding box, the line boxes
+// and inline content it contains, and its descendants' border boxes —
+// descending into a descendant only when that descendant does not clip its
+// own overflow — measured from the padding box's top-left corner. An
+// inline-level element reports its border box; one with no box, 0.
+func (m *layoutMetrics) ScrollSize(n *dom.Node) (w, h float64, ok bool) {
+	b := m.boxOf(n)
+	if b == nil {
+		if r, ok := m.idx[n]; ok {
+			return m.css(r.W), m.css(r.H), true
+		}
+		return 0, 0, true
+	}
+	px, py, pw, ph := paddingRect(b)
+	right, bottom := px+pw, py+ph
+	grow := func(r, bt float64) {
+		right, bottom = math.Max(right, r), math.Max(bottom, bt)
+	}
+	var visit func(b *layout.Box)
+	visit = func(b *layout.Box) {
+		for _, ln := range b.Lines {
+			grow(ln.X+ln.W, ln.Y+ln.H)
+			for _, it := range ln.Items {
+				grow(it.X+it.Width, it.Y+it.LineHeight)
+			}
+		}
+		for _, c := range b.Children {
+			grow(c.X+c.W, c.Y+c.H)
+			if c.Style == nil || (c.Style.OverflowX == css.OverflowVisible && c.Style.OverflowY == css.OverflowVisible) {
+				visit(c)
+			}
+		}
+	}
+	visit(b)
+	return m.css(right - px), m.css(bottom - py), true
 }
 
 // Rect returns n's used border-box rect (document coords).
