@@ -438,6 +438,24 @@ func TestPercentageHeight(t *testing.T) {
 	assertF(t, "d.H", findBoxByID(root, "d").H, 30)
 }
 
+// TestInlineNowrapSpan: the spaces inside an inline white-space:nowrap span
+// offer no wrap opportunity (CSS Text 3 §5.5), and a nowrap run wider than
+// the line overflows as one piece instead of one word per line.
+func TestInlineNowrapSpan(t *testing.T) {
+	root := layoutHTML(t, `<html><body style="margin:0"><p id="p" style="width:60px;margin:0">`+
+		`<span style="white-space:nowrap">aaa bbb ccc ddd eee fff</span> ggg</p></body></html>`, 300)
+	p := findBoxByID(root, "p")
+	if len(p.Lines) != 2 {
+		t.Fatalf("lines = %d, want 2 (the nowrap run, then ggg)", len(p.Lines))
+	}
+	if n := len(p.Lines[0].Items); n != 6 {
+		t.Errorf("first line holds %d items, want the 6 words of the nowrap span", n)
+	}
+	if commonAncestor(p.Node, p.Node) != p.Node {
+		t.Error("commonAncestor(a, a) != a")
+	}
+}
+
 func TestFlexColumn(t *testing.T) {
 	src := `<html><body style="margin:0"><div style="display:flex;flex-direction:column">` +
 		`<div style="height:30px">A</div><div style="height:40px">B</div></div></body></html>`

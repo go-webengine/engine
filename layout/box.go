@@ -85,8 +85,14 @@ type InlineItem struct {
 
 	Width       float64 // advance of the word / DISPLAY width of the image
 	SpaceBefore float64 // width of a space in this item's font
-	Ascent      float64
-	LineHeight  float64
+
+	// NoWrapBefore suppresses the soft wrap opportunity between the previous
+	// item and this one even when SpaceBefore > 0: the white-space of their
+	// nearest common ancestor forbids wrapping (CSS Text 3 §5.5) — the spaces
+	// inside an inline `white-space:nowrap` span. See markNoWrap.
+	NoWrapBefore bool
+	Ascent       float64
+	LineHeight   float64
 
 	// BaselineShift moves this item DOWN (positive) from where plain
 	// baseline alignment (Y = line top + line baseline - Ascent) would place
