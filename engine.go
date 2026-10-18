@@ -373,8 +373,11 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// The document's own typefaces, before anything is measured: a face
 	// registered after layout would be drawn at metrics the line was not
 	// built for. A rule whose file cannot be fetched or decoded simply
-	// leaves the bundled family in place (see LoadFontFaces).
-	RegisterFontFaces(fonts, e.LoadFontFaces(ctx, doc, rp.sheets, css.Media{Width: float64(vpW)}))
+	// leaves the bundled family in place (see LoadFontFaces). The document's
+	// own <style> elements count too: a self-contained document (a slide deck
+	// exported to render offline) declares its faces there, as data: URIs.
+	fontSheets := append(rp.sheets[:len(rp.sheets):len(rp.sheets)], css.InlineStyleText(doc.Root))
+	RegisterFontFaces(fonts, e.LoadFontFaces(ctx, doc, fontSheets, css.Media{Width: float64(vpW)}))
 	rp.sm = css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
 
 	// TEXT-FIRST progressive frame (progressive path ONLY): lay out and emit the

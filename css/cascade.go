@@ -390,6 +390,15 @@ func collectAuthorRulesFrom(nodes []*dom.Node, m Media) []Rule {
 	return ParseStylesheetMedia(styleElementText(nodes), m)
 }
 
+// InlineStyleText returns the document's embedded stylesheet: the text of
+// every <style> element under root, in document order. It is what the
+// cascade itself reads besides the linked sheets, exported so a consumer of
+// the OTHER at-rules a stylesheet carries (the engine's @font-face loading)
+// sees the same CSS the cascade does.
+func InlineStyleText(root *dom.Node) string {
+	return styleElementText([]*dom.Node{root})
+}
+
 // styleElementText concatenates the text of every <style> element under
 // nodes, in document order, one element per line: the document's embedded
 // stylesheet, as both the cascade (collectAuthorRulesFrom) and the page
