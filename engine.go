@@ -116,6 +116,16 @@ type Engine struct {
 	// triggers on a page that renders any real content, so normal pages are
 	// byte-identical whether it is on or off.
 	MetaFallback bool
+	// FileRoot, when non-empty, lets a render read file: URLs — images,
+	// stylesheets (and their @imports) and @font-face files — from under this
+	// directory, and nowhere else: a path that leaves it through "..", or
+	// through a symbolic link resolving outside it, is refused, as is a file:
+	// URL naming a host other than localhost. Empty (the default) refuses every
+	// file: URL, as a browser does for a page that was not given
+	// --allow-file-access-from-files (marp-cli: --allow-local-files). A host
+	// rendering a local document (a slide deck referencing ./images/…) sets it
+	// to that document's directory and passes a file: base URL.
+	FileRoot string
 }
 
 // New returns an Engine with a browser-like HTTP client (Chrome TLS
@@ -778,12 +788,25 @@ func (e *Engine) fetchSheet(ctx context.Context, absURL string, cache map[string
 // bounded by maxSheetBytes. Non-2xx or oversized/undecodable responses report
 // false.
 func (e *Engine) fetchSheetNet(ctx context.Context, absURL string) (string, bool) {
-	if !strings.HasPrefix(absURL, "http://") && !strings.HasPrefix(absURL, "https://") {
-		return "", false
-	}
-	body, _, ctype, err := e.get(ctx, absURL)
-	if err != nil {
-		return "", false
+	var body []byte
+	var ctype string
+	if isFileURL(absURL) {
+		// Only under Engine.FileRoot; no Content-Type, so the charset comes
+		// from @charset / BOM sniffing alone.
+		b, ok := e.readFileURL(absURL, maxSheetBytes)
+		if !ok {
+			return "", false
+		}
+		body, ctype = b, "text/css"
+	} else {
+		if !strings.HasPrefix(absURL, "http://") && !strings.HasPrefix(absURL, "https://") {
+			return "", false
+		}
+		b, _, ct, err := e.get(ctx, absURL)
+		if err != nil {
+			return "", false
+		}
+		body, ctype = b, ct
 	}
 	if len(body) > maxSheetBytes {
 		body = body[:maxSheetBytes]

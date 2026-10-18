@@ -551,6 +551,9 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 		return decodeDataURI(src)
 	}
 	abs, ok := resolveURL(base, src)
+	if ok && isFileURL(abs) {
+		return e.readFileURL(abs, 16<<20) // only under Engine.FileRoot
+	}
 	if !ok || !(strings.HasPrefix(abs, "http://") || strings.HasPrefix(abs, "https://")) {
 		return nil, false
 	}
