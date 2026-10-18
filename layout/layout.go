@@ -246,8 +246,12 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 
 	topSep := bw.Top + st.Padding.Top
 	botSep := bw.Bottom + st.Padding.Bottom
+	alignFactor := blockAlignContentFactor(st)
+	// A block container whose align-content is not normal establishes an
+	// independent formatting context (CSS Box Alignment 3 §5.1.1), so its
+	// children's margins stay inside the content it aligns.
 	establishes := st.Display == css.DisplayFlex || st.Display == css.DisplayTable ||
-		st.Display == css.DisplayGrid
+		st.Display == css.DisplayGrid || alignFactor > 0
 
 	var borderTopY, contentTopY float64
 	sep := topSep > 0 || establishes
@@ -261,7 +265,16 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 
 	contentBottom := l.contents(box, node, st, contentX, contentW, contentTopY, b, sep)
 
+	var alignShift float64
 	if h, ok := usedHeight(st, bw, cw, contentW); ok {
+		if alignFactor > 0 {
+			// align-content on a block container (CSS Box Alignment 3
+			// §5.1.1): the whole content, as a unit, moves along the block
+			// axis inside the content box. Without an <overflow-position>
+			// the alignment is safe, and an overflowing subject stays at the
+			// start edge — hence no shift when there is no free space.
+			alignShift = math.Max(h-(contentBottom-contentTopY), 0) * alignFactor
+		}
 		// An explicit height fixes the content box height; taller content
 		// overflows (overflow:visible) rather than growing the box.
 		contentBottom = contentTopY + h
@@ -298,7 +311,36 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 	}
 	box.Float = st.Float
 	box.Position = st.Position
+	if alignShift > 0 {
+		// Move the content, not the box: translateBox carries the box's own
+		// rect along, so put that back.
+		translateBox(box, 0, alignShift)
+		box.Y -= alignShift
+		box.ContentY -= alignShift
+	}
 	return box
+}
+
+// blockAlignContentFactor returns where align-content puts a block
+// container's content in its free block-axis space: 0 at the start, 0.5
+// centred, 1 at the end. It is 0 for everything but a block or inline-block
+// container — flex and grid containers distribute align-content themselves,
+// and a table cell is aligned by vertical-align (table.go). normal (and
+// stretch, which this engine parses to the same value) behaves as start
+// (§5.1.1); a <content-distribution> value uses its fallback alignment
+// (§4.3): space-between → start, space-around/space-evenly → center.
+// `unsafe` is accepted but not modelled (free space is clamped at 0).
+func blockAlignContentFactor(st *css.Style) float64 {
+	if st.Display != css.DisplayBlock && st.Display != css.DisplayInlineBlock {
+		return 0
+	}
+	switch st.AlignContent {
+	case css.AlignContentCenter, css.AlignContentSpaceAround, css.AlignContentSpaceEvenly:
+		return 0.5
+	case css.AlignContentEnd:
+		return 1
+	}
+	return 0
 }
 
 // firstContentTop returns the top y of the first placed content (the border-top
