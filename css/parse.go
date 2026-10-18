@@ -620,6 +620,17 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		// simply survived untouched. Set to transparent FIRST, then overwrite
 		// with a real colour token if the value has one.
 		s.Background = Transparent
+		// ...and so do the other longhands (CSS Backgrounds 3 §2.10: each
+		// layer's longhands are first reset to their initial values, then
+		// the explicit values are assigned; CSS Cascade 4 §3: a shorthand
+		// declares all its longhands, !important included). Without this,
+		// `background: transparent` / `background: none` left an earlier
+		// background-image in place — Marp's `background: transparent
+		// !important` on its pseudo layer repainted gaia's gradient.
+		s.BackgroundImages = nil
+		s.BackgroundSize = nil
+		s.BackgroundPosition = nil
+		s.BackgroundRepeat = nil
 		if c, ok := parseColor(backgroundColorToken(v)); ok {
 			s.Background = c
 		}

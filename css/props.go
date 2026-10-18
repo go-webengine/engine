@@ -54,19 +54,33 @@ func parseListStyleType(lv string) (ListStyleType, bool) {
 // and position. A recognised type keyword sets ListStyleType; inside/outside set
 // the position; a list-style-image (url()) or any other token is ignored at this
 // fidelity (the shorthand's `none` is treated as type none).
+//
+// The omitted longhands take their initial values (disc / outside; CSS
+// Cascade 4 §3), so `list-style: square` after `list-style-position: inside`
+// is an outside square. A url() image is accepted and ignored; any other
+// unknown token makes the value invalid, and it changes nothing.
 func applyListStyle(s *Style, lv string) {
-	for _, tok := range strings.Fields(lv) {
-		switch tok {
-		case "inside":
-			s.ListStylePosition = ListInside
-		case "outside":
-			s.ListStylePosition = ListOutside
+	typ, pos := ListDisc, ListOutside
+	toks := splitTopLevel(lv)
+	if len(toks) == 0 {
+		return
+	}
+	for _, tok := range toks {
+		switch {
+		case tok == "inside":
+			pos = ListInside
+		case tok == "outside":
+			pos = ListOutside
+		case strings.HasPrefix(tok, "url("):
 		default:
-			if t, ok := parseListStyleType(tok); ok {
-				s.ListStyleType = t
+			t, ok := parseListStyleType(tok)
+			if !ok {
+				return
 			}
+			typ = t
 		}
 	}
+	s.ListStyleType, s.ListStylePosition = typ, pos
 }
 
 // trimOverflowPosition strips a leading <overflow-position> keyword (`safe` or
@@ -183,19 +197,32 @@ func parseAlignSelf(lv string) (AlignSelf, bool) {
 
 // applyFlexFlow parses the flex-flow shorthand (flex-direction and/or
 // flex-wrap, in any order).
+//
+// Like every shorthand it sets both longhands, an omitted one to its initial
+// value (row / nowrap; CSS Cascade 4 §3) — `flex-flow: column` after
+// `flex-wrap: wrap` is a non-wrapping column. A value with an unknown token
+// is invalid and changes nothing.
 func applyFlexFlow(s *Style, v string) {
-	for _, f := range strings.Fields(strings.ToLower(v)) {
+	dir, wrap := FlexRow, FlexNoWrap
+	fields := strings.Fields(strings.ToLower(v))
+	if len(fields) == 0 {
+		return
+	}
+	for _, f := range fields {
 		switch f {
 		case "row", "row-reverse":
-			s.FlexDirection = FlexRow
+			dir = FlexRow
 		case "column", "column-reverse":
-			s.FlexDirection = FlexColumn
+			dir = FlexColumn
 		default:
-			if w, ok := parseFlexWrap(f); ok {
-				s.FlexWrap = w
+			w, ok := parseFlexWrap(f)
+			if !ok {
+				return
 			}
+			wrap = w
 		}
 	}
+	s.FlexDirection, s.FlexWrap = dir, wrap
 }
 
 // applyFlexShorthand parses the flex shorthand. It supports the common forms:
