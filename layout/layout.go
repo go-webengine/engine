@@ -1162,7 +1162,30 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 	// downstream then see one and the same string.
 	text = applyTextTransform(text, st)
 	asc, lh := l.lineMetricsFor(st)
-	if pre {
+	// The white-space value governing this text (CSS Text 3 §3) is that of
+	// the element directly containing it, already inherited through its
+	// ancestors — so a white-space:normal span inside a <pre> collapses, as
+	// in a browser. (pre, the enclosing block's flag, no longer decides here;
+	// it still drives the block's own no-wrap placement.)
+	ws := st.WhiteSpace
+	switch ws {
+	case css.WSPreWrap, css.WSBreakSpaces:
+		l.appendPreservedWrapping(text, st, items, origin, asc, lh, ws == css.WSBreakSpaces)
+		return
+	case css.WSPreLine:
+		// Spaces collapse as in normal, but every newline is a forced break
+		// (§4.1.1/§4.1.2: segment breaks are preserved). Spaces around the
+		// break are removed: the next line starts afresh.
+		for i, seg := range strings.Split(text, "\n") {
+			if i > 0 {
+				*items = append(*items, &InlineItem{LineBreak: true, Style: st, Node: origin})
+				l.wsPending = false
+			}
+			l.appendCollapsed(seg, st, items, origin, asc, lh)
+		}
+		return
+	}
+	if ws == css.WSPre {
 		for i, seg := range strings.Split(text, "\n") {
 			if i > 0 {
 				*items = append(*items, &InlineItem{LineBreak: true, Style: st, Node: origin})
@@ -1189,6 +1212,82 @@ func (l *layouter) appendWords(text string, st *css.Style, items *[]*InlineItem,
 		}
 		return
 	}
+	l.appendCollapsed(text, st, items, origin, asc, lh)
+}
+
+// appendPreservedWrapping appends text whose spaces and newlines are
+// preserved but which may wrap (CSS Text 3 §3: pre-wrap, break-spaces).
+// Each newline is a forced break; within a line, leading spaces stay part of
+// the first word (indentation survives a wrap-free line start), and each
+// following run of spaces is a soft wrap opportunity at its end (§5.1).
+// Under pre-wrap the run becomes the next word's SpaceBefore — measured at
+// its real width, and, like any SpaceBefore, not counted at a line start or
+// end, which is how preserved spaces at the end of a line hang (§4.1.2).
+// Under break-spaces the spaces never hang: they stay in the previous word's
+// width and the next word carries BreakBefore. (Breaking between two spaces
+// of one run, which break-spaces also allows, is not modelled.)
+func (l *layouter) appendPreservedWrapping(text string, st *css.Style, items *[]*InlineItem, origin *dom.Node, asc, lh float64, breakSpaces bool) {
+	measure := func(s string) float64 {
+		return l.m.Measure(s, st.FontFamily, st.FontSize, st.FontWeight, st.Italic) + letterSpacingWidth(s, st)
+	}
+	isBlank := func(c byte) bool { return c == ' ' || c == '\t' }
+	for li, seg := range strings.Split(text, "\n") {
+		if li > 0 {
+			*items = append(*items, &InlineItem{LineBreak: true, Style: st, Node: origin})
+			l.preCol = 0
+		}
+		seg = l.expandTabs(seg, st.TabSize)
+		i, first := 0, true
+		for i < len(seg) {
+			// [spaces][word]
+			s := i
+			for i < len(seg) && isBlank(seg[i]) {
+				i++
+			}
+			spaces := seg[s:i]
+			w := i
+			for i < len(seg) && !isBlank(seg[i]) {
+				i++
+			}
+			word := seg[w:i]
+			if breakSpaces {
+				// The spaces after the word belong to it.
+				e := i
+				for e < len(seg) && isBlank(seg[e]) {
+					e++
+				}
+				word, i = seg[w:e], e
+			}
+			it := &InlineItem{Style: st, Node: origin, Ascent: asc, LineHeight: lh, decor: l.decor}
+			switch {
+			case first && word == "" && !breakSpaces:
+				continue // a line of only spaces: they all hang (pre-wrap)
+			case first:
+				it.Text = spaces + word // leading indentation is content
+				it.SpaceBefore = l.takeMargin()
+			case breakSpaces:
+				it.Text = word
+				it.BreakBefore = true
+			default:
+				if word == "" {
+					continue // trailing spaces of the line hang
+				}
+				it.Text = word
+				it.SpaceBefore = measure(spaces)
+			}
+			it.Width = measure(it.Text)
+			*items = append(*items, it)
+			first = false
+		}
+	}
+	l.wsEmitted = true
+	l.wsPending = false
+}
+
+// appendCollapsed appends text under white-space collapsing (normal, nowrap,
+// and each line of pre-line): runs of white space become one space between
+// words, which is a soft wrap opportunity.
+func (l *layouter) appendCollapsed(text string, st *css.Style, items *[]*InlineItem, origin *dom.Node, asc, lh float64) {
 	space := l.m.Measure(" ", st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 	// Words split on collapsible whitespace ONLY (isSpace) — never on
 	// strings.Fields' unicode.IsSpace, which also splits on the no-break

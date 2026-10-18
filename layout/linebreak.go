@@ -21,7 +21,7 @@ package layout
 func glueRun(items []*InlineItem, i int) (j int, runW float64) {
 	j = i + 1
 	runW = items[i].padLead + items[i].Width + items[i].padTrail
-	for j < len(items) && !items[j].LineBreak && (items[j].SpaceBefore == 0 || items[j].NoWrapBefore) {
+	for j < len(items) && !items[j].LineBreak && ((items[j].SpaceBefore == 0 && !items[j].BreakBefore) || items[j].NoWrapBefore) {
 		// A space that offers no wrap opportunity (NoWrapBefore) still
 		// occupies its width inside the run.
 		runW += items[j].SpaceBefore + items[j].padLead + items[j].Width + items[j].padTrail

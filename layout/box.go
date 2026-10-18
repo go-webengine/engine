@@ -91,8 +91,14 @@ type InlineItem struct {
 	// nearest common ancestor forbids wrapping (CSS Text 3 §5.5) — the spaces
 	// inside an inline `white-space:nowrap` span. See markNoWrap.
 	NoWrapBefore bool
-	Ascent       float64
-	LineHeight   float64
+
+	// BreakBefore is a soft wrap opportunity before this item even though
+	// SpaceBefore is 0: under white-space:break-spaces the preserved spaces
+	// are part of the previous item's own width (they take room) and the
+	// line may break right after them (CSS Text 3 §3, §4.1.2).
+	BreakBefore bool
+	Ascent      float64
+	LineHeight  float64
 
 	// BaselineShift moves this item DOWN (positive) from where plain
 	// baseline alignment (Y = line top + line baseline - Ascent) would place
