@@ -4,6 +4,7 @@
 package layout
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/go-webengine/engine/css"
@@ -353,6 +354,40 @@ func TestFlexAlignItemsCenter(t *testing.T) {
 	// container cross = 60; A (20 tall) centred → offset (60-20)/2 = 20.
 	assertF(t, "aic.A.Y", a.Y, 20)
 	assertF(t, "aic.B.Y", outer.Children[1].Y, 0)
+}
+
+// TestFlexAlignOnDefiniteContainer: a definite-size container's free space is
+// what justify-content (column main axis, CSS Flexbox 1 §9.5) and
+// align-items (single-line row: the line's cross size is the container's
+// inner cross size, §9.4) distribute — a Marp slide's centring.
+func TestFlexAlignOnDefiniteContainer(t *testing.T) {
+	col := `<html><body style="margin:0"><div style="display:flex;flex-direction:column;justify-content:%s;height:200px;row-gap:10px">` +
+		`<div style="height:20px">A</div><div style="height:30px">B</div></div></body></html>`
+	for _, tc := range []struct {
+		jc     string
+		ay, by float64
+	}{
+		{"center", 70, 100},       // free 200-60=140 → offset 70
+		{"flex-end", 140, 170},    // offset 140
+		{"space-between", 0, 170}, // gap 10+140
+		{"safe center", 70, 100},  // overflow-position keyword accepted
+		{"normal", 0, 30},         // start
+	} {
+		outer := findBox(layoutHTML(t, fmt.Sprintf(col, tc.jc), 300), "div")
+		assertF(t, tc.jc+".A.Y", outer.Children[0].Y, tc.ay)
+		assertF(t, tc.jc+".B.Y", outer.Children[1].Y, tc.by)
+	}
+	// Overflowing column: no negative free space, items start at the top.
+	over := findBox(layoutHTML(t, `<html><body style="margin:0"><div style="display:flex;flex-direction:column;justify-content:center;height:10px">`+
+		`<div style="height:20px">A</div></div></body></html>`, 300), "div")
+	assertF(t, "overflow.A.Y", over.Children[0].Y, 0)
+
+	row := findBox(layoutHTML(t, `<html><body style="margin:0"><div style="display:flex;align-items:center;height:100px;align-content:flex-end">`+
+		`<div style="width:50px;height:20px">A</div><div style="width:50px">B</div></div></body></html>`, 300), "div")
+	assertF(t, "row.A.Y", row.Children[0].Y, 40) // (100-20)/2, align-content ignored on a single line
+	stretch := findBox(layoutHTML(t, `<html><body style="margin:0"><div style="display:flex;height:100px">`+
+		`<div style="width:50px">A</div></div></body></html>`, 300), "div")
+	assertF(t, "stretch.A.H", stretch.Children[0].H, 100) // stretched to the line = container
 }
 
 func TestFlexColumn(t *testing.T) {
