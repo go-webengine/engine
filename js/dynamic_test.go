@@ -133,6 +133,49 @@ func TestSessionRefreshBeforeGeometryReads(t *testing.T) {
 	}
 }
 
+// boxFakeMetrics adds BoxMetrics to refreshFakeMetrics.
+type boxFakeMetrics struct {
+	refreshFakeMetrics
+	client, scroll map[*dom.Node][2]float64
+}
+
+func (m *boxFakeMetrics) ClientSize(n *dom.Node) (w, h float64, ok bool) {
+	v, ok := m.client[n]
+	return v[0], v[1], ok
+}
+func (m *boxFakeMetrics) ScrollSize(n *dom.Node) (w, h float64, ok bool) {
+	v, ok := m.scroll[n]
+	return v[0], v[1], ok
+}
+
+// TestSessionBoxMetrics: client* and scroll* come from BoxMetrics when the
+// source provides them (0 for a node it does not know), after a Refresh.
+func TestSessionBoxMetrics(t *testing.T) {
+	root, err := dom.Parse(`<html><body><div id="d"></div><b id="x"></b><script>
+		var d=document.getElementById('d'),x=document.getElementById('x');
+		console.log('box='+[d.offsetWidth,d.clientWidth,d.clientHeight,d.scrollWidth,d.scrollHeight,x.clientWidth,x.scrollWidth].join(','));
+	</script></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dom.Find(root, "div")
+	m := &boxFakeMetrics{
+		refreshFakeMetrics: refreshFakeMetrics{fakeMetrics: fakeMetrics{rect: map[*dom.Node][4]float64{d: {0, 0, 64, 34}}}},
+		client:             map[*dom.Node][2]float64{d: {54, 24}},
+		scroll:             map[*dom.Node][2]float64{d: {202.4, 102}},
+	}
+	var logs []string
+	sess := Begin(root, Options{PageURL: "https://demo.test/", Timeout: 3 * time.Second,
+		Log: func(l string) { logs = append(logs, l) }})
+	sess.SetMetrics(m)
+	sess.RunInitial()
+	sess.Close()
+	mustHaveJS(t, logs, "box=64,54,24,202,102,0,0")
+	if m.refreshes != 7 {
+		t.Errorf("Refresh called %d times, want 7 (one per read)", m.refreshes)
+	}
+}
+
 // TestSessionRunPending proves a <script> injected by a running script is picked
 // up and executed by the next RunPending, in the same runtime — and only once.
 func TestSessionRunPending(t *testing.T) {

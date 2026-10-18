@@ -29,6 +29,31 @@ func (b *binder) refreshLayout() {
 	}
 }
 
+// clientSize / scrollSize return n's client and scroll area sizes, rounded
+// as the integer IDL attributes are, falling back to the border box when the
+// Metrics source does not provide them (see BoxMetrics).
+func (b *binder) clientSize(n *dom.Node) (int, int) {
+	if bm, ok := b.metrics.(BoxMetrics); ok {
+		b.refreshLayout()
+		if w, h, ok := bm.ClientSize(n); ok {
+			return int(math.Round(w)), int(math.Round(h))
+		}
+		return 0, 0
+	}
+	return b.borderW(n), b.borderH(n)
+}
+
+func (b *binder) scrollSize(n *dom.Node) (int, int) {
+	if bm, ok := b.metrics.(BoxMetrics); ok {
+		b.refreshLayout()
+		if w, h, ok := bm.ScrollSize(n); ok {
+			return int(math.Round(w)), int(math.Round(h))
+		}
+		return 0, 0
+	}
+	return b.borderW(n), b.borderH(n)
+}
+
 // boundingRect builds a DOMRect object for n from its laid-out geometry. An
 // unlaid-out node yields an all-zero rect (matching a display:none element).
 func (b *binder) boundingRect(n *dom.Node) goja.Value {
