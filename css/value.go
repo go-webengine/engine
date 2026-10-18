@@ -1443,6 +1443,9 @@ func parseColor(s string) (Color, bool) {
 	if strings.HasPrefix(s, "rgb") || strings.HasPrefix(s, "hsl") {
 		return parseColorFunc(s)
 	}
+	if strings.HasPrefix(s, "color-mix(") {
+		return parseColorMix(s)
+	}
 	return Color{}, false
 }
 

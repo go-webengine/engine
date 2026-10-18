@@ -1941,9 +1941,11 @@ func genericBucketFor(fam string) (Generic, bool) {
 func backgroundColorToken(v string) string {
 	v = strings.TrimSpace(v)
 	lv := strings.ToLower(v)
-	for _, fn := range []string{"rgb(", "rgba(", "hsl(", "hsla("} {
+	for _, fn := range []string{"rgb(", "rgba(", "hsl(", "hsla(", "color-mix("} {
 		if strings.HasPrefix(lv, fn) {
-			if close := strings.IndexByte(v, ')'); close >= 0 {
+			// The MATCHING parenthesis: color-mix()'s arguments nest their
+			// own colour functions, so the first ')' is not the end.
+			if close, ok := matchParen(v, len(fn)-1); ok {
 				return v[:close+1]
 			}
 		}
