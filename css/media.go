@@ -3,7 +3,11 @@
 
 package css
 
-import "strings"
+import (
+	"regexp"
+	"strconv"
+	"strings"
+)
 
 // Media is what a stylesheet is evaluated against: the media TYPE — screen
 // (the zero value) or print — that "@media print", "@media screen" and a
@@ -16,6 +20,19 @@ import "strings"
 type Media struct {
 	Type  string  // Screen ("" or "screen") or Print; compared case-insensitively
 	Width float64 // viewport width, CSS px
+	// Scale is the device pixel ratio: device pixels per CSS px (CSSOM View
+	// devicePixelRatio). 0 means 1. It is what the `resolution` media feature
+	// reports (Media Queries 4 §5.1, in dppx), and a cascade run against it
+	// computes every absolute length in device pixels (see scaleLengths).
+	Scale float64
+}
+
+// scale returns m.Scale, with 0 (unset) and negative values meaning 1.
+func (m Media) scale() float64 {
+	if m.Scale <= 0 {
+		return 1
+	}
+	return m.Scale
 }
 
 // Media types a Media.Type can name. Any other type (speech, tv, …) never
@@ -86,7 +103,74 @@ func mediaQueryMatches(q string, m Media) bool {
 		}
 		q = rest
 	}
-	return widthFeaturesHold(q, m.Width) && inputFeaturesHold(q)
+	return widthFeaturesHold(q, m.Width) && inputFeaturesHold(q) && resolutionFeaturesHold(q, m.scale())
+}
+
+var (
+	// (resolution: 2dppx), (min-resolution: 192dpi), (max-resolution: 1x)
+	mediaResolutionRe = regexp.MustCompile(`(min-|max-)?resolution\s*:\s*([0-9]*\.?[0-9]+)\s*(dppx|x|dpi|dpcm)`)
+	// Level 4 range form: (resolution >= 2dppx)
+	mediaResolutionCmpRe = regexp.MustCompile(`resolution\s*(<=|>=|<|>)\s*([0-9]*\.?[0-9]+)\s*(dppx|x|dpi|dpcm)`)
+	// The legacy WebKit spelling, a unitless dppx value.
+	mediaDPRRe = regexp.MustCompile(`-webkit-(min-|max-)?device-pixel-ratio\s*:\s*([0-9]*\.?[0-9]+)`)
+)
+
+// toDPPX converts a <resolution> to dppx (CSS Values 4 §7.4: 1dppx = 96dpi,
+// 1dpcm = 2.54dpi; x is an alias of dppx).
+func toDPPX(num, unit string) float64 {
+	v, _ := strconv.ParseFloat(num, 64)
+	switch unit {
+	case "dpi":
+		return v / 96
+	case "dpcm":
+		return v * 2.54 / 96
+	}
+	return v
+}
+
+// resolutionFeaturesHold reports whether every resolution feature in q holds
+// at scale device pixels per CSS px (Media Queries 4 §5.1). A condition with
+// no such feature holds. Equality is compared with a small tolerance, since
+// a dpi value rarely divides exactly.
+func resolutionFeaturesHold(q string, scale float64) bool {
+	const eps = 1e-6
+	check := func(prefix string, v float64) bool {
+		switch prefix {
+		case "min-":
+			return scale >= v-eps
+		case "max-":
+			return scale <= v+eps
+		}
+		return scale > v-eps && scale < v+eps
+	}
+	for _, m := range mediaResolutionRe.FindAllStringSubmatch(q, -1) {
+		if !check(m[1], toDPPX(m[2], m[3])) {
+			return false
+		}
+	}
+	for _, m := range mediaDPRRe.FindAllStringSubmatch(q, -1) {
+		if !check(m[1], toDPPX(m[2], "dppx")) {
+			return false
+		}
+	}
+	for _, m := range mediaResolutionCmpRe.FindAllStringSubmatch(q, -1) {
+		v := toDPPX(m[2], m[3])
+		var ok bool
+		switch m[1] {
+		case "<":
+			ok = scale < v-eps
+		case "<=":
+			ok = scale <= v+eps
+		case ">":
+			ok = scale > v+eps
+		default: // ">="
+			ok = scale >= v-eps
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // leadingWord splits a leading identifier ([a-z-]+) off q when one is there

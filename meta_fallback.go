@@ -15,7 +15,6 @@ import (
 	"html"
 	"strings"
 
-	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 	"github.com/go-webengine/engine/layout"
 	"github.com/go-webengine/engine/paint"
@@ -118,10 +117,10 @@ func (e *Engine) buildMetaFallback(ctx context.Context, doc *Document, vpW int, 
 	sd := &Document{URL: doc.URL, Root: root}
 
 	rp := &renderPass{}
-	rp.sm = css.CascadeVW(root, float64(vpW), nil)
-	rp.imgSize, rp.imgs = e.loadImages(ctx, sd, rp.sm, vpW)
+	rp.sm = e.cascade(root, vpW, nil, nil)
+	rp.imgSize, rp.imgs = e.loadImages(ctx, sd, rp.sm, e.deviceW(vpW))
 	rp.bgImgs = e.loadBackgroundImages(ctx, sd, rp.sm)
-	rp.box, rp.height = layout.LayoutDocument(root, rp.sm, float64(vpW), fonts, rp.imgSize)
+	rp.box, rp.height = e.layoutDoc(root, rp.sm, vpW, 0, fonts, rp.imgSize)
 	return rp
 }
 

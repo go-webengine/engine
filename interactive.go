@@ -18,7 +18,6 @@ import (
 	"errors"
 	"image"
 
-	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 	"github.com/go-webengine/engine/js"
 	"github.com/go-webengine/engine/layout"
@@ -175,9 +174,9 @@ func (d *LiveDocument) resettle(ctx context.Context) {
 			d.rp.sheets = d.e.fetchExternalSheets(ctx, d.doc, float64(d.vpW))
 			d.prevLinks = k
 		}
-		newSm := css.CascadeVW(d.doc.Root, float64(d.vpW), d.rp.sheets)
-		newBox, newHeight := layout.LayoutDocumentViewport(d.doc.Root, newSm, float64(d.vpW), float64(d.vpH), d.fonts, d.rp.imgSize)
-		newSm, newBox, newHeight = layoutWithContainers(d.doc.Root, d.rp.sheets, float64(d.vpW), float64(d.vpH), d.fonts, d.rp.imgSize, newSm, newBox, newHeight)
+		newSm := d.e.cascade(d.doc.Root, d.vpW, d.rp.sheets, nil)
+		newBox, newHeight := d.e.layoutDoc(d.doc.Root, newSm, d.vpW, d.vpH, d.fonts, d.rp.imgSize)
+		newSm, newBox, newHeight = d.e.layoutWithContainers(d.doc.Root, d.rp.sheets, d.vpW, d.vpH, d.fonts, d.rp.imgSize, newSm, newBox, newHeight)
 
 		// Same wipe-guard settle applies: never let a pass erase an
 		// already-good render (see dynamic.go's settle for the full
@@ -190,7 +189,7 @@ func (d *LiveDocument) resettle(ctx context.Context) {
 		d.rp.sm, d.rp.box, d.rp.height = newSm, newBox, newHeight
 		relaidOut = true
 
-		d.sess.SetMetrics(newLayoutMetrics(d.rp.box, d.rp.sm, d.vpW, d.vpH))
+		d.sess.SetMetrics(newLayoutMetrics(d.rp.box, d.rp.sm, d.vpW, d.vpH).scaled(d.e.devScale()))
 		// A newly-inserted <script> (rare from a plain interaction, but a
 		// click handler could add one) gets the same chance settle gives it;
 		// no new script means this mutation is fully reflected already.
@@ -202,10 +201,10 @@ func (d *LiveDocument) resettle(ctx context.Context) {
 	d.doc.Title = dom.Title(d.doc.Root)
 
 	if relaidOut {
-		d.rp.imgSize, d.rp.imgs = d.e.loadImages(ctx, d.doc, d.rp.sm, d.vpW)
+		d.rp.imgSize, d.rp.imgs = d.e.loadImages(ctx, d.doc, d.rp.sm, d.e.deviceW(d.vpW))
 		d.rp.bgImgs = d.e.loadBackgroundImages(ctx, d.doc, d.rp.sm)
-		d.rp.box, d.rp.height = layout.LayoutDocumentViewport(d.doc.Root, d.rp.sm, float64(d.vpW), float64(d.vpH), d.fonts, d.rp.imgSize)
-		d.rp.sm, d.rp.box, d.rp.height = layoutWithContainers(d.doc.Root, d.rp.sheets, float64(d.vpW), float64(d.vpH), d.fonts, d.rp.imgSize, d.rp.sm, d.rp.box, d.rp.height)
+		d.rp.box, d.rp.height = d.e.layoutDoc(d.doc.Root, d.rp.sm, d.vpW, d.vpH, d.fonts, d.rp.imgSize)
+		d.rp.sm, d.rp.box, d.rp.height = d.e.layoutWithContainers(d.doc.Root, d.rp.sheets, d.vpW, d.vpH, d.fonts, d.rp.imgSize, d.rp.sm, d.rp.box, d.rp.height)
 	}
 }
 

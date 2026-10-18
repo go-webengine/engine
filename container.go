@@ -42,10 +42,14 @@ const maxContainerPasses = 4
 // on the first check, at the cost of one BuildIndex walk — cheap, and it
 // keeps this function safe to call unconditionally from every layout call
 // site rather than requiring each caller to pre-check for container-type.
-func layoutWithContainers(root *dom.Node, sheets []string, vw, vh float64, m layout.Measurer, imgSize map[*dom.Node][2]float64, sm css.StyleMap, box *layout.Box, height float64) (css.StyleMap, *layout.Box, float64) {
+//
+// vw/vh are the CSS-px viewport; the layout itself is in device px (see
+// Engine.layoutDoc), so measured container sizes are converted back to CSS
+// px before @container conditions — written in CSS px — are evaluated.
+func (e *Engine) layoutWithContainers(root *dom.Node, sheets []string, vw, vh int, m layout.Measurer, imgSize map[*dom.Node][2]float64, sm css.StyleMap, box *layout.Box, height float64) (css.StyleMap, *layout.Box, float64) {
 	var prevSizes map[*dom.Node]css.ContainerSize
 	for pass := 0; pass < maxContainerPasses; pass++ {
-		sizes := gatherContainerSizes(sm, layout.BuildIndex(box))
+		sizes := gatherContainerSizes(sm, layout.BuildIndex(box), e.devScale())
 		if len(sizes) == 0 {
 			break // nothing establishes a query container: no @container rule can ever match
 		}
@@ -53,8 +57,8 @@ func layoutWithContainers(root *dom.Node, sheets []string, vw, vh float64, m lay
 			break // fixpoint: another pass would recompute the identical sizes
 		}
 		prevSizes = sizes
-		sm = css.CascadeVWContainers(root, vw, sheets, sizes)
-		box, height = layout.LayoutDocumentViewport(root, sm, vw, vh, m, imgSize)
+		sm = e.cascade(root, vw, sheets, sizes)
+		box, height = e.layoutDoc(root, sm, vw, vh, m, imgSize)
 	}
 	return sm, box, height
 }
@@ -71,7 +75,7 @@ func layoutWithContainers(root *dom.Node, sheets []string, vw, vh float64, m lay
 // InlineSize is always the container's border-box width; BlockSize (border-
 // box height) is only measured for a ContainerTypeSize container, matching
 // what ContainerCondition.satisfied ever consults (see css/container.go).
-func gatherContainerSizes(sm css.StyleMap, idx map[*dom.Node]layout.Rect) map[*dom.Node]css.ContainerSize {
+func gatherContainerSizes(sm css.StyleMap, idx map[*dom.Node]layout.Rect, scale float64) map[*dom.Node]css.ContainerSize {
 	var out map[*dom.Node]css.ContainerSize
 	for n, st := range sm {
 		if st.ContainerType == css.ContainerNormal {
@@ -84,9 +88,9 @@ func gatherContainerSizes(sm css.StyleMap, idx map[*dom.Node]layout.Rect) map[*d
 		if out == nil {
 			out = map[*dom.Node]css.ContainerSize{}
 		}
-		cs := css.ContainerSize{InlineSize: r.W}
+		cs := css.ContainerSize{InlineSize: r.W / scale}
 		if st.ContainerType == css.ContainerTypeSize {
-			cs.BlockSize = r.H
+			cs.BlockSize = r.H / scale
 		}
 		out[n] = cs
 	}

@@ -193,6 +193,19 @@ var svgRasterizer = func(icon *oksvg.SvgIcon, w, h, iw, ih int) image.Image {
 // aspect ratio. Finally an image wider than the viewport is scaled down
 // proportionally.
 func (e *Engine) usedSize(st *css.Style, attrW, attrH, iw, ih, viewportW int) (int, int) {
+	// The SVG's own size and the presentation attributes are CSS px; the
+	// style and viewportW are in device px at a device scale (see
+	// Engine.DeviceScale), so bring the former to device px too — the
+	// vector image is then rasterised at full device resolution.
+	if s := e.devScale(); s != 1 {
+		sc := func(v int) int {
+			if v <= 0 {
+				return v
+			}
+			return iround(float64(v) * s)
+		}
+		iw, ih, attrW, attrH = sc(iw), sc(ih), sc(attrW), sc(attrH)
+	}
 	w, h := iw, ih
 	// Presentation attributes (lower priority than CSS, applied first).
 	switch {

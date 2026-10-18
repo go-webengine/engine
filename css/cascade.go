@@ -80,6 +80,7 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 	// Node.Quirks is set (see its doc comment) — read it once here rather
 	// than re-deriving it per element.
 	quirks := root.Type == dom.Document && root.Quirks
+	scale := m.scale()
 	// External <link> stylesheets precede in-document <style> rules (they load in
 	// the head), so they take lower precedence at equal specificity.
 	var rules []Rule
@@ -143,7 +144,7 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		// AMBIENT scope n is being cascaded in (nil outside any shadow tree,
 		// or an OUTER shadow's host when n is itself shadow-tree content),
 		// an entirely different (and, for the host itself, unrelated) binding.
-		st := computeElement(n, parent, rules, idx, hostRules, &counter, containerStack, containers, host, quirks)
+		st := computeElement(n, parent, rules, idx, hostRules, &counter, containerStack, containers, host, quirks, scale)
 		sm[n] = &st
 		childStack := containerStack
 		if st.ContainerType != ContainerNormal {
@@ -174,8 +175,12 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 			}
 		}
 	}
-	// The synthetic Document root has no style; seed children with initial.
-	walk(root, initialStyle(), nil, docRules, docIdx, nil, 0)
+	// The synthetic Document root has no style; seed children with initial —
+	// whose one absolute length, the 16px initial font size, is in device
+	// pixels like every other length of a scaled cascade (see scaleLengths).
+	init := initialStyle()
+	init.FontSize *= scale
+	walk(root, init, nil, docRules, docIdx, nil, 0)
 	return sm
 }
 
@@ -192,7 +197,7 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 // element is never a member of the shadow tree it hosts). quirks is the
 // document's quirks-mode flag (see dom.Node.Quirks), consulted by
 // uaDeclarations for the handful of UA defaults that differ in quirks mode.
-func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node, quirks bool) Style {
+func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node, quirks bool, scale float64) Style {
 	st := inheritFrom(parent)
 	// ownProps tracks whether st.CustomProps is this element's own (already
 	// cloned) map versus the parent's shared one, so we clone at most once.
@@ -326,7 +331,9 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hos
 		if !ok {
 			return
 		}
-		d.Value = v
+		// After var()/calc()/light-dark() resolution, so a length reaching
+		// this declaration through a custom property is scaled exactly once.
+		d.Value = scaleLengths(d.Property, v, scale)
 		st.apply(d, emRef, &parent)
 	}
 
