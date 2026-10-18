@@ -84,6 +84,23 @@ type layouter struct {
 	// own doc comment) bounds total Go call-stack depth regardless of which
 	// container algorithm is driving the recursion at any given level.
 	depth int
+
+	// cbH is the content height of the containing block of the box being
+	// placed, and cbHDefinite whether that height is definite (CSS Sizing 3
+	// §2.1): what a percentage height resolves against (CSS 2.1 §10.5).
+	// place() sets them to its own used content height around its contents,
+	// so they always describe the box whose children are being laid out;
+	// placeAbsolute sets them to the containing block's padding box; a
+	// stretched flex item gets its stretched size (CSS Flexbox 1 §9.8).
+	cbH         float64
+	cbHDefinite bool
+
+	// ownH / ownHDefinite: the used content height of the box whose contents
+	// are being laid out right now — what flex and grid distribute free space
+	// in (see flexCrossHeight). Differs from cbH only for grid and table
+	// containers, whose children's percentages stay indefinite.
+	ownH         float64
+	ownHDefinite bool
 }
 
 // beginInlineContext resets the whitespace-collapsing and pending-margin state
@@ -174,6 +191,9 @@ func LayoutDocument(root *dom.Node, sm css.StyleMap, viewportW float64, m Measur
 // only thing this affects; everything else about layout is unchanged).
 func LayoutDocumentViewport(root *dom.Node, sm css.StyleMap, viewportW, viewportH float64, m Measurer, imgSize map[*dom.Node][2]float64) (*Box, float64) {
 	l := &layouter{sm: sm, m: m, imgSize: imgSize, floats: &floatCtx{}}
+	// The root element's percentage height is relative to the initial
+	// containing block (CSS 2.1 §10.5), which has the viewport's size.
+	l.cbH, l.cbHDefinite = viewportH, viewportH > 0
 	start := firstElement(root)
 	if start == nil {
 		return &Box{}, 0
@@ -185,11 +205,37 @@ func LayoutDocumentViewport(root *dom.Node, sm css.StyleMap, viewportW, viewport
 	if fb := l.floats.bottom(); fb > total {
 		total = fb
 	}
+	// ...and any in-flow content overflowing a fixed-height ancestor: the
+	// document's scrollable overflow. Since a percentage height resolves
+	// against the viewport for the root (CSS 2.1 §10.5), the ubiquitous
+	// `html,body{height:100%}` makes body exactly viewport-tall, and a
+	// full-page capture must still reach the content below it.
+	if ob := overflowBottom(box); ob > total {
+		total = ob
+	}
 	// Positioned pass: apply relative offsets, then place out-of-flow
 	// (absolute/fixed) boxes against their containing blocks. May grow the page
 	// height to cover absolutely-positioned content.
 	total = l.positioned(box, viewportW, viewportH, total)
 	return box, total
+}
+
+// overflowBottom returns the lowest edge of box and of every descendant box
+// and line box that reaches the page, not descending into a box whose
+// overflow clips its contents vertically (that content is not scrollable
+// overflow of the document).
+func overflowBottom(box *Box) float64 {
+	bottom := box.Y + box.H
+	if box.Style != nil && box.Style.OverflowY != css.OverflowVisible {
+		return bottom
+	}
+	for _, ln := range box.Lines {
+		bottom = math.Max(bottom, ln.Y+ln.H)
+	}
+	for _, c := range box.Children {
+		bottom = math.Max(bottom, overflowBottom(c))
+	}
+	return bottom
 }
 
 func firstElement(n *dom.Node) *dom.Node {
@@ -263,10 +309,23 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 		contentTopY = b.y // provisional; carry still pending, corrected below
 	}
 
+	// This box's own used height, resolved against ITS containing block, is
+	// then the containing block height its children's percentages see.
+	ownH, ownDefinite := usedHeight(st, bw, cw, contentW, l.cbH, l.cbHDefinite)
+	savedH, savedDef, savedOwn, savedOwnDef := l.cbH, l.cbHDefinite, l.ownH, l.ownHDefinite
+	l.cbH, l.cbHDefinite = ownH, ownDefinite
+	l.ownH, l.ownHDefinite = ownH, ownDefinite
+	if st.Display == css.DisplayGrid || st.Display == css.DisplayTable {
+		// A grid item's containing block is its grid area and a cell's is
+		// its row, neither of which is this box's height: leave their
+		// percentages indefinite (auto), as before.
+		l.cbHDefinite = false
+	}
 	contentBottom := l.contents(box, node, st, contentX, contentW, contentTopY, b, sep)
+	l.cbH, l.cbHDefinite, l.ownH, l.ownHDefinite = savedH, savedDef, savedOwn, savedOwnDef
 
 	var alignShift float64
-	if h, ok := usedHeight(st, bw, cw, contentW); ok {
+	if h, ok := ownH, ownDefinite; ok {
 		if alignFactor > 0 {
 			// align-content on a block container (CSS Box Alignment 3
 			// §5.1.1): the whole content, as a unit, moves along the block
@@ -773,14 +832,21 @@ func widthBound(l css.Length, cw, extra float64, bs css.BoxSizing) (float64, boo
 // is needed for the aspect-ratio branch. Only width-known/height-auto is
 // resolved — see css.Style.AspectRatio's own doc comment for why the reverse
 // direction isn't attempted.
-func usedHeight(st *css.Style, bw css.Edges, cw, contentW float64) (float64, bool) {
-	if st.Height.Auto || st.Height.IsPercent {
+//
+// A percentage height resolves against cbH, the containing block's height,
+// when cbDefinite (CSS 2.1 §10.5); otherwise it computes to auto.
+func usedHeight(st *css.Style, bw css.Edges, cw, contentW, cbH float64, cbDefinite bool) (float64, bool) {
+	pct := st.Height.IsPercent && !st.Height.Auto
+	if st.Height.Auto || (pct && !cbDefinite) {
 		if st.AspectRatio > 0 && contentW > 0 {
 			return contentW / st.AspectRatio, true
 		}
 		return 0, false
 	}
 	h := st.Height.Px
+	if pct {
+		h = st.Height.Resolve(cbH)
+	}
 	if st.BoxSizing == css.BorderBox {
 		h -= bw.Top + bw.Bottom + st.Padding.Top + st.Padding.Bottom
 	}

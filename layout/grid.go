@@ -73,7 +73,7 @@ func (l *layouter) grid(box *Box, node *dom.Node, st *css.Style, cx, cw, top flo
 	}
 
 	rowGap := gapPxCSS(st.RowGap, 0)
-	containerH, hDef := flexCrossHeight(st, cw)
+	containerH, hDef := l.flexCrossHeight()
 	rowH := l.sizeRows(items, st, nRows, containerH, hDef, rowGap)
 	rowY := trackOffsets(top, rowH, rowGap)
 

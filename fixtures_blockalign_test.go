@@ -56,8 +56,9 @@ func TestBlockAlignContent(t *testing.T) {
 		{"two children", "align-content:center", child + child, 80, 119},
 		{"overflow hidden", "overflow:hidden;align-content:center", child, 90, 109},
 		{"inline content", "align-content:center;line-height:20px;font-size:16px", `<span style="display:inline-block;width:20px;height:20px;background:#ff0000;vertical-align:top"></span>`, 90, 109},
-		// Overflowing content: safe → stays at the start edge.
-		{"overflow safe", "align-content:center", `<div style="height:300px;background:#ff0000"></div>`, 0, 199},
+		// Overflowing content: safe → stays at the start edge (and, being
+		// scrollable overflow, extends the full-page capture to 300px).
+		{"overflow safe", "align-content:center", `<div style="height:300px;background:#ff0000"></div>`, 0, 299},
 		// Auto height: no free space, nothing moves.
 		{"auto height", "height:auto;align-content:center", child, 0, 19},
 	}
