@@ -390,6 +390,37 @@ func TestFlexAlignOnDefiniteContainer(t *testing.T) {
 	assertF(t, "stretch.A.H", stretch.Children[0].H, 100) // stretched to the line = container
 }
 
+// TestBlockAlignContent: align-content on a block container moves its whole
+// content along the block axis (CSS Box Alignment 3 §5.1.1), safe by
+// default; flex/grid/table-cell are left to their own algorithms.
+func TestBlockAlignContent(t *testing.T) {
+	for _, tc := range []struct {
+		box  string
+		want float64
+	}{
+		{"align-content:center", 90},
+		{"align-content:end", 180},
+		{"align-content:space-evenly", 90},
+		{"align-content:space-around", 90},
+		{"align-content:space-between", 0},
+		{"align-content:normal", 0},
+		{"align-content:center;height:10px", 0}, // overflowing: safe
+		{"align-content:center;height:auto", 0}, // no free space
+	} {
+		src := `<html><body style="margin:0"><div style="width:200px;height:200px;` + tc.box + `">` +
+			`<div style="height:20px">A</div></div></body></html>`
+		outer := findBox(layoutHTML(t, src, 300), "div")
+		assertF(t, tc.box+" inner.Y", outer.Children[0].Y, tc.want)
+		assertF(t, tc.box+" outer.Y", outer.Y, 0)
+	}
+	if f := blockAlignContentFactor(&css.Style{Display: css.DisplayTableCell, AlignContent: css.AlignContentCenter}); f != 0 {
+		t.Errorf("table cell factor = %v, want 0 (vertical-align governs cells)", f)
+	}
+	if f := blockAlignContentFactor(&css.Style{Display: css.DisplayInlineBlock, AlignContent: css.AlignContentEnd}); f != 1 {
+		t.Errorf("inline-block end factor = %v, want 1", f)
+	}
+}
+
 func TestFlexColumn(t *testing.T) {
 	src := `<html><body style="margin:0"><div style="display:flex;flex-direction:column">` +
 		`<div style="height:30px">A</div><div style="height:40px">B</div></div></body></html>`
