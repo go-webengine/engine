@@ -217,6 +217,31 @@ func TestFontSizeAttr(t *testing.T) {
 	}
 }
 
+// TestSVGLengthHint: an <svg>'s width/height are SVG presentation
+// attributes taking any CSS length (SVG 2 §7.8).
+func TestSVGLengthHint(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"40", "40px"},
+		{"2em", "2em"},
+		{"100%", "100%"},
+		{"3rem", "3rem"},
+		{"12pt", "12pt"},
+		{"auto", ""},
+		{"-5", ""},
+		{"-2em", ""},
+		{"-10%", ""},
+		{"bogus", ""},
+	} {
+		if got := svgLengthHint(tc.in); got != tc.want {
+			t.Errorf("svgLengthHint(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	st := styleOf(t, `<html><body style="font-size:20px"><svg width="2em" height="50%"></svg></body></html>`, "svg")
+	if st.Width.Px != 40 || !st.Height.IsPercent || st.Height.Percent != 0.5 {
+		t.Errorf("svg width=2em height=50%% → %+v %+v", st.Width, st.Height)
+	}
+}
+
 // TestLengthHintEmptyAndBadPercent covers the empty-string and malformed-percent
 // branches of lengthHint via width attributes.
 func TestLengthHintEmptyAndBadPercent(t *testing.T) {
