@@ -43,6 +43,22 @@ func presentationalHints(n *dom.Node) []Declaration {
 		}
 	}
 
+	// An <svg>'s width/height are not HTML length hints but SVG presentation
+	// attributes for the CSS width/height properties (SVG 2 §7.8), so they
+	// take any CSS <length-percentage> — 100%, 2em, 3rem — and auto (which
+	// keeps the intrinsic, viewBox-derived size). Mapped here so the cascade
+	// resolves them like any other length; nested <svg> elements are SVG
+	// content, never laid out as boxes, so only the outermost one matters.
+	if tag == "svg" {
+		for _, name := range []string{"width", "height"} {
+			if v, ok := attr(name); ok {
+				if p := svgLengthHint(v); p != "" {
+					d = append(d, Declaration{Property: name, Value: p})
+				}
+			}
+		}
+	}
+
 	// bgcolor → background-color (table, cells, rows, body, and legacy others).
 	if v, ok := attr("bgcolor"); ok && v != "" {
 		d = append(d, Declaration{Property: "background-color", Value: v})
@@ -154,6 +170,26 @@ func lengthHint(v string) string {
 		return v + "px"
 	}
 	return ""
+}
+
+// svgLengthHint turns an SVG width/height presentation attribute into a CSS
+// length: a bare number is user units (px), anything else must already be a
+// valid non-negative CSS length or percentage. auto, negative or unparseable
+// values are dropped (SVG 2 §7.8: a negative value is invalid and behaves as
+// auto).
+func svgLengthHint(v string) string {
+	v = strings.TrimSpace(v)
+	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		if f < 0 {
+			return ""
+		}
+		return v + "px"
+	}
+	l, ok := parseLength(v, 16)
+	if !ok || l.Auto || l.Px < 0 || l.Percent < 0 {
+		return ""
+	}
+	return v
 }
 
 // fontSizeAttr maps a legacy <font size> value to a CSS font-size. Absolute
