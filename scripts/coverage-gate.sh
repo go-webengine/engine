@@ -23,7 +23,7 @@ declare -A FLOOR=(
   [css]=99.5
   [layout]=100.0
   [paint]=100.0
-  [dom]=97.4
+  [dom]=98.5
   [paginate]=100.0
 )
 
