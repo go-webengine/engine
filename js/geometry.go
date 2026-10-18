@@ -17,7 +17,16 @@ func (b *binder) rectOf(n *dom.Node) (x, y, w, h float64, ok bool) {
 	if b.metrics == nil {
 		return 0, 0, 0, 0, false
 	}
+	b.refreshLayout()
 	return b.metrics.Rect(n)
+}
+
+// refreshLayout asks the Metrics source to catch up with any DOM mutation
+// before geometry is read (see Refresher).
+func (b *binder) refreshLayout() {
+	if r, ok := b.metrics.(Refresher); ok {
+		r.Refresh()
+	}
 }
 
 // boundingRect builds a DOMRect object for n from its laid-out geometry. An
@@ -92,6 +101,7 @@ func (c *computedStyleObj) prop(name string) string {
 	if c.b.metrics == nil {
 		return styleProp(c.n, camelToKebab(name))
 	}
+	c.b.refreshLayout()
 	if v, ok := c.b.metrics.Computed(c.n, camelToKebab(name)); ok {
 		return v
 	}

@@ -189,7 +189,7 @@ func (d *LiveDocument) resettle(ctx context.Context) {
 		d.rp.sm, d.rp.box, d.rp.height = newSm, newBox, newHeight
 		relaidOut = true
 
-		d.sess.SetMetrics(newLayoutMetrics(d.rp.box, d.rp.sm, d.vpW, d.vpH).scaled(d.e.devScale()))
+		d.sess.SetMetrics(d.e.liveMetrics(d.doc, d.rp, d.fonts, d.vpW, d.vpH))
 		// A newly-inserted <script> (rare from a plain interaction, but a
 		// click handler could add one) gets the same chance settle gives it;
 		// no new script means this mutation is fully reflected already.

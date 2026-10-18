@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image"
+	"io"
+	"sort"
 	"strconv"
 	"time"
 
@@ -44,10 +46,103 @@ type layoutMetrics struct {
 	sm       css.StyleMap
 	vpW, vpH int
 	scale    float64 // device px per CSS px; 0 means 1 (see scaled)
+
+	// Forced synchronous layout (see liveMetrics / Refresh): the document, the
+	// signature of the DOM the current geometry was laid out from, and how to
+	// lay it out again. relayout is nil for a static snapshot.
+	root     *dom.Node
+	sig      uint64
+	relayout func() (*layout.Box, css.StyleMap)
 }
 
 func newLayoutMetrics(box *layout.Box, sm css.StyleMap, vpW, vpH int) *layoutMetrics {
 	return &layoutMetrics{idx: layout.BuildIndex(box), sm: sm, vpW: vpW, vpH: vpH}
+}
+
+// liveMetrics is the Metrics a script session reads: the pass rp just laid
+// out, plus the means to lay the document out again when a script has
+// mutated it since — so geometry read right after a mutation (Marp's fitting
+// headings wrap a heading's content in a new span and measure it at once) is
+// the geometry of the mutated DOM, as CSSOM View's getBoundingClientRect /
+// offset* / client* / scroll* require. The re-layout is private to the
+// metrics: the settle loop still decides what the render's own pass is.
+func (e *Engine) liveMetrics(doc *Document, rp *renderPass, fonts *paint.Fonts, vpW, vpH int) *layoutMetrics {
+	m := newLayoutMetrics(rp.box, rp.sm, vpW, vpH).scaled(e.devScale())
+	m.root, m.sig = doc.Root, treeSignature(doc.Root)
+	sheets, imgSize := rp.sheets, rp.imgSize
+	m.relayout = func() (*layout.Box, css.StyleMap) {
+		sm := e.cascade(doc.Root, vpW, sheets, nil)
+		box, h := e.layoutDoc(doc.Root, sm, vpW, vpH, fonts, imgSize)
+		sm, box, _ = e.layoutWithContainers(doc.Root, sheets, vpW, vpH, fonts, imgSize, sm, box, h)
+		return box, sm
+	}
+	return m
+}
+
+// Refresh implements js.Refresher: when the DOM differs from the one the
+// current geometry describes, lay it out again first.
+func (m *layoutMetrics) Refresh() {
+	if m.relayout == nil {
+		return
+	}
+	sig := treeSignature(m.root)
+	if sig == m.sig {
+		return
+	}
+	box, sm := m.relayout()
+	m.idx, m.sm, m.sig = layout.BuildIndex(box), sm, sig
+}
+
+// treeSignature hashes everything layout depends on in the DOM — structure,
+// tags, attributes (class and style included) and text — without
+// serialising it, so the check before every geometry read stays cheap. Each
+// node's child count is folded in, so moving a node to another parent
+// changes it even when the markup reads the same.
+func treeSignature(root *dom.Node) uint64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	num := func(v uint64) {
+		for i := range buf {
+			buf[i] = byte(v >> (8 * i))
+		}
+		_, _ = h.Write(buf[:])
+	}
+	str := func(s string) {
+		num(uint64(len(s)))
+		_, _ = io.WriteString(h, s)
+	}
+	var walk func(n *dom.Node, depth int)
+	walk = func(n *dom.Node, depth int) {
+		if n == nil || depth > 512 {
+			return
+		}
+		num(uint64(n.Type))
+		str(n.Tag)
+		str(n.Text)
+		num(uint64(len(n.Attr)))
+		if len(n.Attr) > 0 {
+			keys := make([]string, 0, len(n.Attr))
+			for k := range n.Attr {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys) // map order is random; the hash must not be
+			for _, k := range keys {
+				str(k)
+				str(n.Attr[k])
+			}
+		}
+		num(uint64(len(n.Children)))
+		for _, c := range n.Children {
+			walk(c, depth+1)
+		}
+		if n.Shadow != nil {
+			for _, c := range n.Shadow.Children {
+				walk(c, depth+1)
+			}
+		}
+	}
+	walk(root, 0)
+	return h.Sum64()
 }
 
 // Rect returns n's used border-box rect (document coords).
@@ -296,7 +391,7 @@ func domSignature(root *dom.Node) uint64 {
 func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, initialLayout time.Duration, onStage func(stage string, rp *renderPass)) *js.Session {
 	sess := js.Begin(doc.Root, e.jsOptions(ctx, doc, vpW, vpH))
 
-	sess.SetMetrics(newLayoutMetrics(rp.box, rp.sm, vpW, vpH).scaled(e.devScale()))
+	sess.SetMetrics(e.liveMetrics(doc, rp, fonts, vpW, vpH))
 	// Signature of the DOM the INITIAL layout was computed from (client-js already
 	// applied), captured before the scripts run so a mutation is detectable.
 	sig := domSignature(doc.Root)
@@ -408,7 +503,7 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 			onStage("settle", rp)
 		}
 
-		sess.SetMetrics(newLayoutMetrics(rp.box, rp.sm, vpW, vpH).scaled(e.devScale()))
+		sess.SetMetrics(e.liveMetrics(doc, rp, fonts, vpW, vpH))
 		// Run any <script> injected since the last pass (a ResourceLoader chain).
 		// If none ran, a layout change alone triggers no further JS, so the state
 		// just computed is final.

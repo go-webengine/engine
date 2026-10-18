@@ -32,6 +32,15 @@ type Metrics interface {
 	Computed(n *dom.Node, prop string) (string, bool)
 }
 
+// Refresher is an optional Metrics extension: Refresh brings the geometry up
+// to date with the DOM before it is read, re-laying the page out if a script
+// mutated it since the last layout — the "forced synchronous layout" CSSOM
+// View's getBoundingClientRect / offset* / client* / scroll* /
+// getComputedStyle imply. The binder calls it before every geometry read.
+type Refresher interface {
+	Refresh()
+}
+
 // Session is a live page-script execution bound to one DOM tree and one goja
 // runtime. Unlike the one-shot Run, it stays resident across layout passes: the
 // engine lays the page out, feeds the geometry in via SetMetrics, runs scripts

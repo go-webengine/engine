@@ -100,6 +100,39 @@ func TestSessionGeometryReadback(t *testing.T) {
 	)
 }
 
+// refreshFakeMetrics adds Refresher to fakeMetrics.
+type refreshFakeMetrics struct {
+	fakeMetrics
+	refreshes int
+}
+
+func (m *refreshFakeMetrics) Refresh() { m.refreshes++ }
+
+// TestSessionRefreshBeforeGeometryReads: every geometry read first calls
+// Refresh — the forced synchronous layout.
+func TestSessionRefreshBeforeGeometryReads(t *testing.T) {
+	root, err := dom.Parse(`<html><body><div id="d"></div><script>
+		var d=document.getElementById('d');
+		console.log('w='+d.offsetWidth+','+d.getBoundingClientRect().width);
+		getComputedStyle(d).width;
+	</script></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := dom.Find(root, "div")
+	m := &refreshFakeMetrics{fakeMetrics: fakeMetrics{rect: map[*dom.Node][4]float64{d: {0, 0, 64, 34}}}}
+	var logs []string
+	sess := Begin(root, Options{PageURL: "https://demo.test/", Timeout: 3 * time.Second,
+		Log: func(l string) { logs = append(logs, l) }})
+	sess.SetMetrics(m)
+	sess.RunInitial()
+	sess.Close()
+	mustHaveJS(t, logs, "w=64,64")
+	if m.refreshes != 3 {
+		t.Errorf("Refresh called %d times, want once per geometry read (3)", m.refreshes)
+	}
+}
+
 // TestSessionRunPending proves a <script> injected by a running script is picked
 // up and executed by the next RunPending, in the same runtime — and only once.
 func TestSessionRunPending(t *testing.T) {
