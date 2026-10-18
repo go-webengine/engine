@@ -329,6 +329,15 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 	format, lossy := sniffImageFormat(data)
 	li := &LoadedImage{Data: data, Format: format, Lossy: lossy, SourceW: w, SourceH: h}
 	mode := resampleMode(sm[n])
+	// The bitmap's natural size is its intrinsic size in CSS px; at a device
+	// scale the styles (and so every size below) are in device px, so the
+	// intrinsic size is too — the image is resampled up, as a browser does
+	// for a 1x image on a 2x screen.
+	if s := e.devScale(); s != 1 {
+		sw, sh := iround(float64(w)*s), iround(float64(h)*s)
+		src0 = resizeRaster(src0, sw, sh, mode)
+		w, h = sw, sh
+	}
 	// Apply a single-axis CSS width/height as a browser does: the specified axis
 	// is used and the other is scaled by the intrinsic aspect ratio (so e.g. a
 	// wide logo constrained to height:1.5rem is ~72px wide, not its full intrinsic
@@ -486,6 +495,12 @@ func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw strin
 	}
 	if img.W <= 0 || img.H <= 0 {
 		return nil
+	}
+	// Natural size = intrinsic size in CSS px; paint sizes an `auto`
+	// background from the bitmap, so at a device scale it must be in device
+	// px like everything else (see loadOneImage).
+	if s := e.devScale(); s != 1 {
+		img = resizeRaster(img, iround(float64(img.W)*s), iround(float64(img.H)*s), resample.Bicubic)
 	}
 	return img.ToNRGBA()
 }

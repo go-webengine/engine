@@ -45,6 +45,9 @@ type Options struct {
 	// ViewportWidth / ViewportHeight back window.innerWidth / innerHeight.
 	ViewportWidth  int
 	ViewportHeight int
+	// DevicePixelRatio backs window.devicePixelRatio and the `resolution`
+	// feature of matchMedia (CSSOM View; Media Queries 4 §5.1). 0 means 1.
+	DevicePixelRatio float64
 	// Log, if non-nil, receives console.* output as "level: message" lines.
 	Log func(string)
 }

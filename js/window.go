@@ -34,7 +34,7 @@ func (b *binder) install() {
 	g.Set("innerHeight", b.opt.ViewportHeight)
 	g.Set("outerWidth", b.opt.ViewportWidth)
 	g.Set("outerHeight", b.opt.ViewportHeight)
-	g.Set("devicePixelRatio", 1)
+	g.Set("devicePixelRatio", b.dpr())
 	g.Set("scrollX", 0)
 	g.Set("scrollY", 0)
 	g.Set("pageXOffset", 0)
@@ -366,7 +366,17 @@ func (b *binder) mediaQueryMatches(q string) bool {
 		strings.Contains(lq, "prefers-reduced-data") {
 		return strings.Contains(lq, "no-preference")
 	}
-	return css.MediaApplies(q, float64(b.opt.ViewportWidth))
+	return css.MediaAppliesTo(q, css.Media{Width: float64(b.opt.ViewportWidth), Scale: b.dpr()})
+}
+
+// dpr is the page's device pixel ratio: Options.DevicePixelRatio, with 0
+// (unset) meaning 1 — CSSOM View's answer when no output device says
+// otherwise.
+func (b *binder) dpr() float64 {
+	if b.opt.DevicePixelRatio <= 0 {
+		return 1
+	}
+	return b.opt.DevicePixelRatio
 }
 
 func (b *binder) newMediaQueryList(q string) goja.Value {

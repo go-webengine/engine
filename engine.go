@@ -31,7 +31,6 @@ import (
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
 	"github.com/go-webengine/engine/js"
-	"github.com/go-webengine/engine/layout"
 	"github.com/go-webengine/engine/paint"
 )
 
@@ -126,6 +125,17 @@ type Engine struct {
 	// rendering a local document (a slide deck referencing ./images/…) sets it
 	// to that document's directory and passes a file: base URL.
 	FileRoot string
+	// DeviceScale is the number of device pixels per CSS pixel — a browser's
+	// devicePixelRatio (CSSOM View), Chrome's deviceScaleFactor, marp-cli's
+	// --image-scale. The viewport given to a render stays in CSS px; the
+	// returned image is viewport × DeviceScale device pixels, painted at that
+	// density (text rasterised at size × DeviceScale, vector images and
+	// gradients at full resolution, raster images resampled from their CSS-px
+	// intrinsic size). Scripts see window.devicePixelRatio and CSS-px
+	// geometry; @media width features stay in CSS px and `resolution`
+	// reflects the scale. 0 or 1 (the default) renders at one device pixel per
+	// CSS px, exactly as before.
+	DeviceScale float64
 }
 
 // New returns an Engine with a browser-like HTTP client (Chrome TLS
@@ -387,8 +397,8 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// own <style> elements count too: a self-contained document (a slide deck
 	// exported to render offline) declares its faces there, as data: URIs.
 	fontSheets := append(rp.sheets[:len(rp.sheets):len(rp.sheets)], css.InlineStyleText(doc.Root))
-	RegisterFontFaces(fonts, e.LoadFontFaces(ctx, doc, fontSheets, css.Media{Width: float64(vpW)}))
-	rp.sm = css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
+	RegisterFontFaces(fonts, e.LoadFontFaces(ctx, doc, fontSheets, e.media(vpW)))
+	rp.sm = e.cascade(doc.Root, vpW, rp.sheets, nil)
 
 	// TEXT-FIRST progressive frame (progressive path ONLY): lay out and emit the
 	// fully-styled page BEFORE the slow, network-bound image fetch. Images reserve
@@ -399,7 +409,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// gates the first styled paint. The batch path (onStage==nil) skips this so it
 	// does exactly one layout, keeping its output byte-identical to before.
 	if onStage != nil {
-		rp.box, rp.height = layout.LayoutDocumentViewport(doc.Root, rp.sm, float64(vpW), float64(vpH), fonts, nil)
+		rp.box, rp.height = e.layoutDoc(doc.Root, rp.sm, vpW, vpH, fonts, nil)
 		onStage("initial", rp)
 	}
 
@@ -407,11 +417,11 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// with the real intrinsic sizes. This is the geometry the page's scripts see
 	// through getBoundingClientRect / offset* / getComputedStyle, so it runs
 	// BEFORE the JS settle loop in both paths.
-	rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, vpW)
+	rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, e.deviceW(vpW))
 	rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
 
 	start := time.Now()
-	rp.box, rp.height = layout.LayoutDocumentViewport(doc.Root, rp.sm, float64(vpW), float64(vpH), fonts, rp.imgSize)
+	rp.box, rp.height = e.layoutDoc(doc.Root, rp.sm, vpW, vpH, fonts, rp.imgSize)
 	// Resolve @container queries against real geometry: rp.sm above necessarily
 	// had every @container rule inactive (CascadeVW passes no container sizes),
 	// so re-cascade/re-layout to a bounded fixpoint now that a real layout
@@ -419,7 +429,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// anywhere returns immediately after one cheap BuildIndex walk. This runs
 	// BEFORE the JS settle loop (like the image load above) so a script reading
 	// geometry back already sees the container-query-resolved layout.
-	rp.sm, rp.box, rp.height = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), float64(vpH), fonts, rp.imgSize, rp.sm, rp.box, rp.height)
+	rp.sm, rp.box, rp.height = e.layoutWithContainers(doc.Root, rp.sheets, vpW, vpH, fonts, rp.imgSize, rp.sm, rp.box, rp.height)
 	initialLayout := time.Since(start)
 
 	// Refinement frame: the same styled page WITH images placed. The caller dedups
@@ -537,7 +547,10 @@ const maxCanvasPixels = 200_000_000
 // than an unbounded allocation — no corpus page measured anywhere near this
 // limit, so no legitimate page should ever visibly hit it).
 func (e *Engine) newCanvas(doc *Document, rp *renderPass, viewport image.Rectangle, vpW int) *image.RGBA {
-	canvasH := viewport.Dy()
+	// viewport and vpW are CSS px; the canvas, like rp.height and every box,
+	// is in device px (Engine.DeviceScale).
+	vpW = e.deviceW(vpW)
+	canvasH := e.deviceW(viewport.Dy())
 	if int(rp.height) > canvasH {
 		canvasH = int(rp.height)
 	}

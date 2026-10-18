@@ -43,6 +43,7 @@ type layoutMetrics struct {
 	idx      map[*dom.Node]layout.Rect
 	sm       css.StyleMap
 	vpW, vpH int
+	scale    float64 // device px per CSS px; 0 means 1 (see scaled)
 }
 
 func newLayoutMetrics(box *layout.Box, sm css.StyleMap, vpW, vpH int) *layoutMetrics {
@@ -55,7 +56,7 @@ func (m *layoutMetrics) Rect(n *dom.Node) (x, y, w, h float64, ok bool) {
 	if !ok {
 		return 0, 0, 0, 0, false
 	}
-	return r.X, r.Y, r.W, r.H, true
+	return m.css(r.X), m.css(r.Y), m.css(r.W), m.css(r.H), true
 }
 
 // Computed resolves the used value of a geometry-relevant property. Unknown
@@ -66,17 +67,17 @@ func (m *layoutMetrics) Computed(n *dom.Node, prop string) (string, bool) {
 	switch prop {
 	case "width":
 		if hasRect && st != nil {
-			return pxStr(contentAxis(r.W, st.Padding.Left+st.Padding.Right, st.Border.Widths().Left+st.Border.Widths().Right)), true
+			return m.px(contentAxis(r.W, st.Padding.Left+st.Padding.Right, st.Border.Widths().Left+st.Border.Widths().Right)), true
 		}
 		if hasRect {
-			return pxStr(r.W), true
+			return m.px(r.W), true
 		}
 	case "height":
 		if hasRect && st != nil {
-			return pxStr(contentAxis(r.H, st.Padding.Top+st.Padding.Bottom, st.Border.Widths().Top+st.Border.Widths().Bottom)), true
+			return m.px(contentAxis(r.H, st.Padding.Top+st.Padding.Bottom, st.Border.Widths().Top+st.Border.Widths().Bottom)), true
 		}
 		if hasRect {
-			return pxStr(r.H), true
+			return m.px(r.H), true
 		}
 	}
 	if st == nil {
@@ -91,23 +92,23 @@ func (m *layoutMetrics) Computed(n *dom.Node, prop string) (string, bool) {
 	case "position":
 		return positionString(st.Position), true
 	case "margin-top":
-		return pxStr(st.Margin.Top), true
+		return m.px(st.Margin.Top), true
 	case "margin-right":
-		return pxStr(st.Margin.Right), true
+		return m.px(st.Margin.Right), true
 	case "margin-bottom":
-		return pxStr(st.Margin.Bottom), true
+		return m.px(st.Margin.Bottom), true
 	case "margin-left":
-		return pxStr(st.Margin.Left), true
+		return m.px(st.Margin.Left), true
 	case "padding-top":
-		return pxStr(st.Padding.Top), true
+		return m.px(st.Padding.Top), true
 	case "padding-right":
-		return pxStr(st.Padding.Right), true
+		return m.px(st.Padding.Right), true
 	case "padding-bottom":
-		return pxStr(st.Padding.Bottom), true
+		return m.px(st.Padding.Bottom), true
 	case "padding-left":
-		return pxStr(st.Padding.Left), true
+		return m.px(st.Padding.Left), true
 	case "font-size":
-		return pxStr(st.FontSize), true
+		return m.px(st.FontSize), true
 	case "font-weight":
 		return strconv.Itoa(st.FontWeight), true
 	case "font-style":
@@ -117,7 +118,7 @@ func (m *layoutMetrics) Computed(n *dom.Node, prop string) (string, bool) {
 		return "normal", true
 	case "line-height":
 		if lh, ok := st.LineHeight.Resolve(st.FontSize); ok {
-			return pxStr(lh), true
+			return m.px(lh), true
 		}
 		return "normal", true
 	case "color":
@@ -151,15 +152,40 @@ func (m *layoutMetrics) Computed(n *dom.Node, prop string) (string, bool) {
 			return "visible", true
 		}
 	case "top":
-		return lengthUsed(st.Top), true
+		return m.lengthUsed(st.Top), true
 	case "right":
-		return lengthUsed(st.Right), true
+		return m.lengthUsed(st.Right), true
 	case "bottom":
-		return lengthUsed(st.Bottom), true
+		return m.lengthUsed(st.Bottom), true
 	case "left":
-		return lengthUsed(st.Left), true
+		return m.lengthUsed(st.Left), true
 	}
 	return "", false
+}
+
+// scaled returns m reporting at a device scale: the layout and computed
+// lengths it reads are in device px (Engine.DeviceScale), and a script must
+// see CSS px, so every length it answers is divided by scale.
+func (m *layoutMetrics) scaled(scale float64) *layoutMetrics {
+	m.scale = scale
+	return m
+}
+
+// css converts a device-px length to CSS px.
+func (m *layoutMetrics) css(v float64) float64 {
+	if m.scale > 0 {
+		return v / m.scale
+	}
+	return v
+}
+
+func (m *layoutMetrics) px(v float64) string { return pxStr(m.css(v)) }
+
+func (m *layoutMetrics) lengthUsed(l css.Length) string {
+	if !l.Auto && !l.IsPercent {
+		l.Px = m.css(l.Px)
+	}
+	return lengthUsed(l)
 }
 
 // contentAxis subtracts padding+border from a border-box extent, clamped at 0.
@@ -270,7 +296,7 @@ func domSignature(root *dom.Node) uint64 {
 func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, initialLayout time.Duration, onStage func(stage string, rp *renderPass)) *js.Session {
 	sess := js.Begin(doc.Root, e.jsOptions(ctx, doc, vpW, vpH))
 
-	sess.SetMetrics(newLayoutMetrics(rp.box, rp.sm, vpW, vpH))
+	sess.SetMetrics(newLayoutMetrics(rp.box, rp.sm, vpW, vpH).scaled(e.devScale()))
 	// Signature of the DOM the INITIAL layout was computed from (client-js already
 	// applied), captured before the scripts run so a mutation is detectable.
 	sig := domSignature(doc.Root)
@@ -333,14 +359,14 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 			rp.sheets = e.fetchExternalSheets(ctx, doc, float64(vpW))
 			prevLinks = k
 		}
-		newSm := css.CascadeVW(doc.Root, float64(vpW), rp.sheets)
+		newSm := e.cascade(doc.Root, vpW, rp.sheets, nil)
 		start := time.Now()
-		newBox, newHeight := layout.LayoutDocumentViewport(doc.Root, newSm, float64(vpW), float64(vpH), fonts, rp.imgSize)
+		newBox, newHeight := e.layoutDoc(doc.Root, newSm, vpW, vpH, fonts, rp.imgSize)
 		// A script's DOM/class mutation can change which elements are query
 		// containers, or their sizes, so @container queries need the same
 		// bounded re-resolution here that the initial (pre-settle) layout gets
 		// in renderCoreStaged.
-		newSm, newBox, newHeight = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), float64(vpH), fonts, rp.imgSize, newSm, newBox, newHeight)
+		newSm, newBox, newHeight = e.layoutWithContainers(doc.Root, rp.sheets, vpW, vpH, fonts, rp.imgSize, newSm, newBox, newHeight)
 		layoutDur = time.Since(start)
 
 		// Never let a script pass erase an already-good render: a client-side
@@ -382,7 +408,7 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 			onStage("settle", rp)
 		}
 
-		sess.SetMetrics(newLayoutMetrics(rp.box, rp.sm, vpW, vpH))
+		sess.SetMetrics(newLayoutMetrics(rp.box, rp.sm, vpW, vpH).scaled(e.devScale()))
 		// Run any <script> injected since the last pass (a ResourceLoader chain).
 		// If none ran, a layout change alone triggers no further JS, so the state
 		// just computed is final.
@@ -398,10 +424,10 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 	// once more so the final paint matches — budget-gated so an expensive page is
 	// never pushed over its deadline.
 	if relaidOut && !overBudget() {
-		rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, vpW)
+		rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, e.deviceW(vpW))
 		rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
-		rp.box, rp.height = layout.LayoutDocumentViewport(doc.Root, rp.sm, float64(vpW), float64(vpH), fonts, rp.imgSize)
-		rp.sm, rp.box, rp.height = layoutWithContainers(doc.Root, rp.sheets, float64(vpW), float64(vpH), fonts, rp.imgSize, rp.sm, rp.box, rp.height)
+		rp.box, rp.height = e.layoutDoc(doc.Root, rp.sm, vpW, vpH, fonts, rp.imgSize)
+		rp.sm, rp.box, rp.height = e.layoutWithContainers(doc.Root, rp.sheets, vpW, vpH, fonts, rp.imgSize, rp.sm, rp.box, rp.height)
 	}
 	return sess
 }
@@ -458,14 +484,15 @@ func linkKey(root *dom.Node) uint64 {
 // jsOptions builds the Options for a Session from the engine config.
 func (e *Engine) jsOptions(ctx context.Context, doc *Document, vpW, vpH int) js.Options {
 	return js.Options{
-		PageURL:        doc.URL,
-		UserAgent:      e.UserAgent,
-		Client:         e.Client,
-		Ctx:            ctx,
-		Timeout:        e.JSTimeout,
-		ViewportWidth:  vpW,
-		ViewportHeight: vpH,
-		Log:            e.JSLog,
+		PageURL:          doc.URL,
+		UserAgent:        e.UserAgent,
+		Client:           e.Client,
+		Ctx:              ctx,
+		Timeout:          e.JSTimeout,
+		ViewportWidth:    vpW,
+		ViewportHeight:   vpH,
+		DevicePixelRatio: e.devScale(),
+		Log:              e.JSLog,
 	}
 }
 
