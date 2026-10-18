@@ -5401,21 +5401,23 @@ columns.
 - **react.dev's own hydration fails with a real React error (#418, "the initial UI does not match what was rendered on the server"), which cascades into a SECOND, internal React crash during its own unmount/remount recovery and unmounts the whole app to nothing — this engine's own empty-page guard then falls back to the pre-hydration SSR skeleton, the long-documented "reskin gap."** Found live (round 82, 2026-09-22): this is a NEW, more precisely characterised failure mode, distinct from round 71's `ChunkLoadError` theory — confirmed unrelated by fixing round 71's own flagged root cause (`setTimeout` discarding its requested delay, fixed this same round) and re-checking: the live JS log was byte-for-byte identical before and after that fix. One plausible theory (a `prefers-color-scheme` client/server mismatch via `matchMedia`) was checked and ruled out — this engine already deliberately resolves that query to match react.dev's own dark-theme strategy. Minified production React strips the hydration-mismatch diff that would name the exact divergent DOM node, so finding the actual cause needs a materially larger investigation than fits in one round; not chased further, not fixed here.
 - **goja (this engine's JS runtime) does not support ES2018 `for await (... of ...)` asynchronous-iteration syntax.** Found live on tailwindcss.com (round 77, 2026-09-21): a real Next.js chunk shipped as a plain classic script (correctly recognised as such by this engine — no type-attribute mishandling involved) fails to compile at all because its own code legitimately uses `for await` inside a real `async function`. Isolated to the exact byte via the real fetched chunk, and reproduced from scratch with a minimal, from-nothing repro containing only the `for await` construct. Confirmed as a genuine, currently-open upstream gap (dop251/goja#498, "Upgrade to latest version of ECMAScript 2021/2022") rather than a local misconfiguration — there is no JS parser in this repo to patch; forking or patching goja itself is outside this engine's own scope. Not fixed, not fixable here.
 - **`display:inline-grid`/`inline-table` — re-checked round 148 (2026-10-04): the only corpus use of `inline-grid` is tailwindcss.com's header search button and theme switcher, both DIRECT CHILDREN of a `display:flex` container, where a flex item is blockified regardless — so the missing inline half has no visible effect on any corpus page. No confirmed trigger yet; revisit if one appears.**
-- **Historical, partly fixed: `display:inline-flex` once lost its "inline" half.** `DisplayInlineFlex` now exists and `layout.go`'s `appendElementInline` lays it out as an atomic inline box with a `NestedBox` (verified round 148, 2026-10-04). The original report, kept for context: confirmed on TWO separate real pages for `inline-flex`:
+- **Historical, now CLOSED: `display:inline-flex` once lost its "inline" half.** `DisplayInlineFlex` now exists and `layout.go`'s `appendElementInline` lays it out as an atomic inline box with a `NestedBox` (verified round 148, 2026-10-04). The original report, kept for context: confirmed on TWO separate real pages for `inline-flex`:
   github.com's header "Sign in"/"Sign up" buttons (round 24) and pkg.go.dev's
   breadcrumb `<li>`s (round 26, `.go-Breadcrumb li{display:inline-flex}`),
   where each list item stacks on its own line instead of flowing in a row
   with `>` separators between them (the separators are ALSO missing — a
   second, already-documented gap: `::before`/`::after` generated content is
   not synthesised at all, rank 5 in the original Phase-0 fidelity plan).
-  This is the SAME architectural gap as the `<react-partial>`-flattens-
-  block-content one below, from the opposite direction: there, a genuinely
-  block element nested in an inline context gets wrongly flattened into
-  inline text; here, a genuinely INLINE-outer element (by explicit author
-  CSS) gets wrongly treated as block-level. A real fix needs the same
-  "atomic inline-level box with a real box/layout inside" mechanism this
-  engine has never had (already deferred in round 24, comparable in scope
-  to Shadow DOM) — not attempted.
+  This was once filed as "the SAME architectural gap as the
+  `<react-partial>`-flattens-block-content one, from the opposite
+  direction" and "not attempted" — both stale by the time this correction
+  was made (2026-10-18): round 38 (engine#118, 2026-09-05) built exactly
+  the "atomic inline-level box with a real box/layout inside" mechanism
+  this bullet said the engine "has never had," and round 148 wired
+  `inline-flex` specifically through it. Left as a historical record of
+  how long a cross-referenced gap can keep citing a dependency that
+  closed weeks earlier without anyone reconciling the citation — see the
+  `<react-partial>` entry below, now also marked CLOSED.
 - **The third-party SVG rasteriser (`github.com/srwiley/oksvg`, pinned at its
   latest available commit) mis-renders at least one real-world complex
   multi-subpath vector `<path>`.** Found live on developer.mozilla.org
@@ -5493,46 +5495,13 @@ columns.
   than the font's own em box — so a large `line-height` makes the band taller
   than a browser's.
 
-- **A block/flex/grid-level element nested under an inline-context ancestor
-  (e.g. an unstyled custom element, which defaults to `display:inline`) is
-  flattened into plain inline text instead of getting a real box.** Found
-  live on github.com/golang/go (2026-09-03, round 24, no code change): its
-  whole marketing header sits inside `<react-partial>`, a custom element
-  nothing styles — `layout.go`'s `appendElementInline` has no check for a
-  nested element's OWN display resolving to block-level, so it
-  unconditionally recurses via `appendInline`, losing box model/margins/flex
-  layout for everything inside (see the round-24 log entry above for the
-  concrete symptom: two adjacent buttons render glued together with no
-  gap). The correct fix — generating an anonymous block wrapper around such
-  a box and promoting it to a real sibling (CSS 2.1 §9.2.1.1) — is a real
-  layout feature comparable in scope to Shadow DOM slot projection, not a
-  narrow bug fix; not attempted.
-  **Confirmed a SECOND, independent real-world instance (2026-09-04, round
-  33): news.ycombinator.com's own upvote-triangle icon.** Its markup is
-  `<a href='vote?...'><div class='votearrow'></div></a>` — a plain block
-  `<div>` (styled with a `background: url("triangle.svg"), linear-
-  gradient(...) no-repeat` icon, no text) nested directly inside an inline
-  `<a>`. Root-caused with an isolated, network-independent reproduction
-  (`RenderHTML` against a minimal fixture): a background-image `url()`
-  layer on a standalone `<div id=e>{...}</div>` renders correctly (44
-  non-background pixels of the expected triangle shape), and the SAME CSS
-  wrapped in the SAME `<a>...</a>` nesting the real page uses renders
-  ZERO — confirming the div's own box (and therefore its background paint
-  step) is lost inside the inline wrapper, not a background-image/SVG-
-  decoding defect. (An earlier bisection attempt wrongly suspected the
-  background-image pipeline itself, tracing a red herring caused by the
-  test fixture's OWN construction — an inline `style="..."` HTML attribute
-  containing a `url("data:...")` value whose embedded double quotes
-  collide with the attribute's own delimiter, truncating the attribute
-  value at HTML-parse time; switching the reproduction to a `<style>`
-  block — matching how the real page's CSS actually lives, in an external
-  stylesheet — immediately showed the background-image mechanism working
-  correctly in isolation, redirecting the investigation to the real cause.)
-  This confirms the gap is real, recurring, and independent of the
-  specific site or DOM shape that first surfaced it — not a one-off. Not
-  fixed, for the same reason as before: the correct fix is the same
-  bigger, deliberately-deferred layout feature, not a narrow one-off patch
-  for this specific icon.
+- **CLOSED (round 38, 2026-09-05, engine#118) — a block/flex/grid-level element nested under an inline-context ancestor (e.g. an unstyled custom element, which defaults to `display:inline`) used to be flattened into plain inline text instead of getting a real box.** This bullet sat in "Known gaps" marked "not attempted" for six weeks after the fix actually shipped — caught 2026-10-18 while drafting a plan to implement it, only to find `InlineItem.BlockBreak`/`placeInlineSegments` (`layout/layout.go`) already there, with passing regression tests (`layout/blockinline_test.go`) confirmed live on current (v0.7.2) code. The original two confirmed triggers, kept for context:
+
+  **github.com/golang/go** (2026-09-03, round 24): its whole marketing header sat inside `<react-partial>`, a custom element nothing styles — `appendElementInline` had no check for a nested element's OWN display resolving to block-level, so it unconditionally recursed via `appendInline`, losing box model/margins/flex layout for everything inside (two adjacent buttons rendered glued together with no gap).
+
+  **news.ycombinator.com** (2026-09-04, round 33): its upvote-triangle icon, `<a href='vote?...'><div class='votearrow'></div></a>` — a plain block `<div>` (background-image icon, no text) nested directly inside an inline `<a>` — lost its box the same way, confirmed with an isolated, network-independent `RenderHTML` reproduction that ruled out the background-image pipeline itself as the cause.
+
+  Round 38 fixed both by reading WebKit's and Gecko's own source for how each models block-in-inline content first (per this project's own bibliography-first rule), then implementing a flat `BlockBreak` sentinel suited to this engine's one-shot (no persistent render tree) architecture rather than porting either reference engine's own continuation/ib-split machinery: `appendElementInline` now checks a child's own resolved `display` and, when it is block-level, emits a `BlockBreak` sentinel instead of recursing into it as inline content; `placeInlineSegments` splits the surrounding inline-item run at each sentinel, wrapping each ordinary-item segment in its own anonymous block box and placing the promoted element as a real sibling via the normal block/flex/grid/table dispatch — CSS 2.1 §9.2.1.1, firing at any nesting depth under an inline ancestor. Confirmed live at the time: news.ycombinator.com's upvote arrow now paints (SSIM 0.564→0.579) and tailwindcss.com's syntax-highlighted code demo renders one line per row instead of squashed onto one (SSIM 0.666→0.704). github.com's own original trigger markup had since changed and could not be re-verified live; covered instead by a synthetic regression test built from the originally-documented shape.
 - **No optional-ligature ("liga") or GPOS shaping (kerning, mark
   attachment) — only the mandatory "rlig" GSUB feature is applied (round
   141, engine#241).** This entry used to say this engine had no
