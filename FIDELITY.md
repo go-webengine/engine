@@ -18,6 +18,22 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-19 — the "oksvg complex-path defect" of rounds 25, 64 and 79 was three separate defects in oksvg, none of them in this engine; all three are fixed in the fleet fork `go-gfx/oksvg` (v0.2.0), which the engine now uses (patch)
+
+The octocat, the Wikipedia wordmark and tagline, and the MDN wordmark were filed as one third-party defect ("complex multi-subpath `<path>` mis-rendered", suspected to be the fill rule). Rebuilding each against Chrome headless (a standalone Go program, scratch only, pixels off by more than 40 in a channel) showed otherwise:
+
+| | srwiley/oksvg | go-gfx/oksvg v0.2.0 | cause |
+|---|---|---|---|
+| GitHub octocat (20×20 mark, 600 px) | 24.0% | 0.3% | **arc flags written without separators**: `A9.564 9.564 0 0110 4.844` is flags 0 and 1 then x = 10 (SVG 1.1 §8.3.9); oksvg read `0110` as one number and lost the rest of the path |
+| Wikipedia wordmark | 27.7% | 4.2% | **an arc command with several parameter sets** (`a10 10 0 0 1 5 5 8 8 0 0 1 3 3`): every arc was drawn with the first set's radii and flags (fixed in v0.1.0) |
+| Wikipedia tagline | 18.9% | 6.8% | the same |
+
+The 4–7% that remains on the two Wikipedia logos is edge anti-aliasing of dense text. The MDN wordmark of round 25 was not re-fetched, so it is not verified; it is a path of the same kind, so the arc fixes are the likely cause.
+
+The fill rule was NOT the cause of any of them. It was a real defect too, found by the same sweep: oksvg ignored `fill-rule`, and rasterx's scanner has one rule (nonzero) and a no-op `SetWinding`. v0.2.0 implements `evenodd` (hand-written star and donuts, with a gradient, opacity and a clip, all under 0.4% off Chrome). None of the 4009 Twemoji graphics changes with it. Also fixed in the fork, with the earlier clip work: `clipPath`/`clip-path`/`clip-rule`.
+
+Not a change to this engine's own code: `svg.go` imports `github.com/go-gfx/oksvg`; the known-gap entries below are annotated.
+
 ## 2026-10-18 (round 175) — an ordinary production page (not a crafted one) took tens of seconds to render because of a per-pixel allocation the interface boxing in `image.Image.At()` was hiding, in the `background-repeat` paint path (security audit, patch)
 
 Rounds 166–173 were all about a page's content making the engine do unboundedly MUCH work (deeper recursion, more nodes, more memory). This one is different in kind: the amount of work was bounded and ordinary — a handful of `background-repeat` sections on one real page — but each unit of that work cost far more than it needed to, because of how the pixel data was being read.
@@ -5458,6 +5474,7 @@ columns.
   requires instrumenting go-opentype's own rasteriser directly, outside this
   repo. Not fixed here: the font and its rasteriser are both a separate
   dependency, not this engine's own code.
+- **[FIXED 2026-10-19 in `go-gfx/oksvg` v0.2.0 (arc flags without separators; see the entry at the top) — the next two bullets are kept as history.]**
 - **The third-party SVG rasteriser (`github.com/srwiley/oksvg`) mis-renders a
   SECOND real-world complex `<path>`**, extending round 25's already-
   documented finding (the MDN wordmark) with a concrete new example: GitHub's
