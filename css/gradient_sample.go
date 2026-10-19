@@ -144,6 +144,45 @@ func scaleToCorner(sx, sy, dx, dy float64) (float64, float64) {
 	return sx * k, sy * k
 }
 
+// GradientStop is one colour stop of a sampler, resolved: Pos is its
+// fraction along the gradient line (linear) or ray (radial), non-decreasing
+// from one stop to the next; two stops may share a position (a hard edge).
+type GradientStop struct {
+	Pos   float64
+	Color Color
+}
+
+// GradientGeometry is a sampler's resolved shape, in the box-local pixel
+// space At is queried in: what a vector backend needs to emit the same
+// gradient as a shading instead of sampling it pixel by pixel.
+//
+// For a linear gradient (Radial false) the colour at fraction t of the stops
+// lies on the line through (X0,Y0) + t·((X1,Y1)−(X0,Y0)) perpendicular to
+// that axis, clamped to the end colours beyond it. For a radial one it lies
+// on the ellipse centred on (CX,CY) with radii t·RX and t·RY, clamped beyond
+// t = 1.
+type GradientGeometry struct {
+	Radial         bool
+	X0, Y0, X1, Y1 float64
+	CX, CY, RX, RY float64
+	Stops          []GradientStop
+}
+
+// Geometry returns the sampler's resolved shape and stops.
+func (s GradientSampler) Geometry() GradientGeometry {
+	g := GradientGeometry{Radial: s.radial, Stops: make([]GradientStop, len(s.stops))}
+	for i, st := range s.stops {
+		g.Stops[i] = GradientStop{Pos: st.pos, Color: st.color}
+	}
+	if s.radial {
+		g.CX, g.CY, g.RX, g.RY = s.cx, s.cy, s.rx, s.ry
+	} else {
+		g.X0, g.Y0 = s.sx, s.sy
+		g.X1, g.Y1 = s.sx+s.dx*s.length, s.sy+s.dy*s.length
+	}
+	return g
+}
+
 // At returns the gradient colour at box-local point (px, py).
 func (s GradientSampler) At(px, py float64) Color {
 	var t float64
