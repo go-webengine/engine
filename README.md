@@ -171,7 +171,8 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - **Containers and shadow DOM**: `@container` size queries, and declarative
   shadow DOM (`<template shadowrootmode>`) with `<slot>` distribution.
 - **Images**: `<img>` over http(s) + `data:` (PNG/JPEG) and **SVG**
-  (oksvg/rasterx) via `<img *.svg>`, `data:image/svg+xml` and **inline `<svg>`**.
+  ([go-gfx/oksvg](https://github.com/go-gfx/oksvg), a fork of srwiley/oksvg
+  with `clipPath`, over rasterx) via `<img *.svg>`, `data:image/svg+xml` and **inline `<svg>`**.
 - **JavaScript**: page scripts run via [goja](https://github.com/dop251/goja)
   against a real DOM, with `fetch()`/XHR and read-back of real laid-out geometry
   (`getBoundingClientRect`, `offsetWidth/Height`, `getComputedStyle`). A

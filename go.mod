@@ -7,13 +7,13 @@ require (
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
 	github.com/go-gfx/gfx v0.35.0
+	github.com/go-gfx/oksvg v0.1.0
 	github.com/go-images/images v0.1.0
 	github.com/go-opentype/fonts v0.12.0
 	github.com/go-opentype/opentype v0.15.0
 	github.com/go-pdfkit/pdfkit v0.15.0
 	github.com/go-webengine/esbuildsandbox v0.1.0
 	github.com/go-widgets/painter v0.16.0
-	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
 	golang.org/x/image v0.46.0
 	golang.org/x/net v0.61.0

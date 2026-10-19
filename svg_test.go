@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/srwiley/oksvg"
+	"github.com/go-gfx/oksvg"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"

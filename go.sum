@@ -22,6 +22,8 @@ github.com/go-crdt/crdt v0.57.0 h1:sNLDTVCEnSb20gm77BUuYav8dzj5krmly/z9O7eRMCo=
 github.com/go-crdt/crdt v0.57.0/go.mod h1:zdVTTDLGV5JYAoTJDqCivcAT+/B5gGebDsVd8QNZpVs=
 github.com/go-gfx/gfx v0.35.0 h1:AaXMxDMxNB1hROxzx+3EoO06KxsrQUvnw/10olmSgVo=
 github.com/go-gfx/gfx v0.35.0/go.mod h1:qIZS9u2+VnBk5CX7o4f/fQ5uD8c+mPFTtAPE85s8V90=
+github.com/go-gfx/oksvg v0.1.0 h1:gK9AJ948GoKapOPikT391sD95YVnaNLq2PcvedDGxPo=
+github.com/go-gfx/oksvg v0.1.0/go.mod h1:ap7jj7yma4qOcwiAFzPMC9/eODo7Q2nt71DkEZlHA0k=
 github.com/go-icons/iconoir v0.3.0 h1:kHG2sU5IsCvtBS1JICuXgfFo5f8UfwY1m7KYMVy97CI=
 github.com/go-icons/iconoir v0.3.0/go.mod h1:lPh5OuzVQ+rR4qDPGgAdSRUhnCbHeCAX70HDdwp8/RI=
 github.com/go-images/gif v0.2.0 h1:8Xl4Nan+PvyqH4wPre7wJUH61T2eJKOKonFKOdMdpkU=
@@ -74,8 +76,6 @@ github.com/sergeymakinen/go-bmp v1.0.0 h1:SdGTzp9WvCV0A1V0mBeaS7kQAwNLdVJbmHlqNW
 github.com/sergeymakinen/go-bmp v1.0.0/go.mod h1:/mxlAQZRLxSvJFNIEGGLBE/m40f3ZnUifpgVDlcUIEY=
 github.com/sergeymakinen/go-ico v1.0.0 h1:uL3khgvKkY6WfAetA+RqsguClBuu7HpvBB/nq/Jvr80=
 github.com/sergeymakinen/go-ico v1.0.0/go.mod h1:wQ47mTczswBO5F0NoDt7O0IXgnV4Xy3ojrroMQzyhUk=
-github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c h1:km8GpoQut05eY3GiYWEedbTT0qnSxrCjsVbb7yKY1KE=
-github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c/go.mod h1:cNQ3dwVJtS5Hmnjxy6AgTPd0Inb3pW05ftPSX7NZO7Q=
 github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef h1:Ch6Q+AZUxDBCVqdkI8FSpFyZDtCVBc2VmejdNrm5rRQ=
 github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef/go.mod h1:nXTWP6+gD5+LUJ8krVhhoeHjvHTutPxMYl5SvkcnJNE=
 github.com/tannevaled/gobig2 v0.2.0 h1:yx97/ltljALrIWDFVqHjPUIjAp3bfUUhH8Z8UROvNLc=
