@@ -88,6 +88,22 @@ be selected; `stats.Rasterized` counts them. Laying out and painting are split
 so that pages can be laid out concurrently and painted, in order, into one
 document.
 
+### Editable output (office decks)
+
+`officecanvas` is the other `paint.Canvas` consumer: it *records* a page as
+the objects an editable office slide is made of — filled shapes (rectangles,
+rounded rectangles, rings as outlines with holes), gradient shapes (a CSS
+gradient's constant-opacity pieces merged back into one gradient, transparent
+across the gaps), one text box per line of words (runs split by face, size,
+colour, link and letter-spacing, the gap between words a space), and pictures
+cropped to their clip — plus the page background and the faces used (family
+and style from the font's `name` table, embeddability from its OS/2 `fsType`;
+`SFNT` reassembles the very font file the page was laid out with). A writer
+maps the `Page` to DrawingML or ODF; go-slides does both. A slide cannot clip,
+so a picture is cropped to its clip and a gradient takes its clip's outline;
+`Shape.Render` draws a gradient as a picture for a format whose gradients are
+poorer.
+
 There is also a CLI:
 
 ```
@@ -115,6 +131,7 @@ Fetch (go-browserhttp)  →  Parse (x/net/html → dom)  →  Cascade (css: +var
 | `js` | JavaScript execution via [goja](https://github.com/dop251/goja) bound to a minimal real DOM, with `fetch()`/XHR and laid-out-geometry read-back (`getBoundingClientRect`, `offset*`, `getComputedStyle`). |
 | `paint` | Rasterises the box tree to `*image.RGBA` — AA text (real bold + italic), gradients, border-radius, box-shadow, opacity, images and SVG; also the real `Measurer` (go-opentype faces). `PaintVector` draws the same tree through a vector `Canvas`. |
 | `pdfcanvas` | A `paint.Canvas` drawing into a go-pdfkit page: vector PDF with real text. |
+| `officecanvas` | A `paint.Canvas` recording a page as editable office objects (shapes, gradients, text lines, pictures, fonts) for PPTX/ODP writers. |
 | `engine` (root) | `Fetch`, `Render`, `Screenshot`, `RenderHTML`, `RenderWithLinks`, `LayoutHTML` → `PageLayout` (paint as image or vectors), the settle-then-render loop, image + SVG loading, and the anchor hit-map. |
 | `cmd/render` | CLI: `render -url URL -out shot.png -w 1024 -h 768` (or `-file page.html`). |
 
