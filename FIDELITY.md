@@ -4944,8 +4944,10 @@ dependency (BSD-3, "build from source").
 **What oksvg does / doesn't do (documented, not faked):** it handles the drawing
 subset above plus `currentColor` (we feed the element's computed CSS `color` via
 `ReadReplacingCurrentColor`, so `fill="currentColor"` logos take their real
-colour). It does **not** implement SVG `<filter>` effects, `<mask>`/`<clipPath>`
-compositing, `<pattern>` fills, embedded raster `<image>`, `<text>`/font shaping,
+colour). (Since the engine moved to the fleet fork `github.com/go-gfx/oksvg`,
+`<clipPath>` and the `clip-path` property are implemented, with `clip-rule`,
+and arc commands with several parameter sets are drawn correctly.) It does
+**not** implement SVG `<filter>` effects, `<mask>` compositing, `<pattern>` fills, embedded raster `<image>`, `<text>`/font shaping,
 CSS `<style>` selectors inside the SVG, or animation. Such features degrade to
 "drawn without them" or empty, never a crash.
 
