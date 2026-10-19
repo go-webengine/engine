@@ -7,7 +7,7 @@ require (
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
 	github.com/go-gfx/gfx v0.35.0
-	github.com/go-gfx/oksvg v0.1.0
+	github.com/go-gfx/oksvg v0.2.0
 	github.com/go-images/images v0.1.0
 	github.com/go-opentype/fonts v0.12.0
 	github.com/go-opentype/opentype v0.15.0
