@@ -58,7 +58,37 @@ For more control use an `*engine.Engine` (from `engine.New()`): it adds
 and a `DisableJS` field to render the static, no-JavaScript document.
 
 The viewport width is fixed; the height grows to fit the whole page (at least the
-viewport height). There is also a CLI:
+viewport height).
+
+### Vector output (PDF)
+
+`LayoutHTML` / `LayoutDocument` run the same pipeline without painting and
+return a `*PageLayout`. `Paint()` gives the image `RenderHTML` would;
+`PaintVector(c)` draws the same boxes through a `paint.Canvas` instead — paths,
+shadings, images placed in their boxes and positioned glyphs of the very faces
+the layout measured with. The `pdfcanvas` package is that canvas for a
+[go-pdfkit](https://github.com/go-pdfkit/pdfkit) page: text stays text
+(subset-embedded Type0 fonts with a `/ToUnicode` map — selectable,
+searchable), edges stay sharp at any zoom, and an image used on many pages is
+embedded once.
+
+```go
+l, _ := eng.LayoutHTML(ctx, html, baseURL, image.Rect(0, 0, 1280, 720))
+doc := pdfkit.New(pdfkit.Options{Compress: true})
+page := doc.AddPage(pdfkit.NewPageSize(960, 540)) // a CSS px is 3/4 pt
+stats := l.PaintVector(pdfcanvas.New(page, 0.75, pdfcanvas.NewFonts()))
+```
+
+What has no vector form here — a subtree under `opacity` < 1, a `filter`,
+`mask-image` or `transform: rotate()`, a blurred `box-shadow`, a gradient
+whose opacity fades between two stops, a form control — is painted by the
+raster painter as a bitmap of **that element only**, placed where it was, with
+its text laid over it invisibly (text rendering mode 3) so that it can still
+be selected; `stats.Rasterized` counts them. Laying out and painting are split
+so that pages can be laid out concurrently and painted, in order, into one
+document.
+
+There is also a CLI:
 
 ```
 go run ./cmd/render -url https://example.com/ -out out.png -w 1024 -h 768
@@ -83,8 +113,9 @@ Fetch (go-browserhttp)  →  Parse (x/net/html → dom)  →  Cascade (css: +var
 | `css` | Real CSS subset: value model, stylesheet/declaration parser, tag/class/id + descendant/child/sibling combinators + `:checked`/`:not()` selectors with specificity, `var()` custom properties, `@media` width queries, modern colour (`rgb()/hsl()`), dark-mode, UA stylesheet, cascade + inheritance. |
 | `layout` | Full box model — block-and-inline flow, floats + clear, flexbox, CSS grid, tables, `position` (relative/absolute/fixed/sticky), margin collapsing, greedy word-wrap — driven by a `Measurer` interface (font-free, exactly testable). |
 | `js` | JavaScript execution via [goja](https://github.com/dop251/goja) bound to a minimal real DOM, with `fetch()`/XHR and laid-out-geometry read-back (`getBoundingClientRect`, `offset*`, `getComputedStyle`). |
-| `paint` | Rasterises the box tree to `*image.RGBA` — AA text (real bold + italic), gradients, border-radius, box-shadow, opacity, images and SVG; also the real `Measurer` (go-opentype faces). |
-| `engine` (root) | `Fetch`, `Render`, `Screenshot`, `RenderHTML`, `RenderWithLinks`, the settle-then-render loop, image + SVG loading, and the anchor hit-map. |
+| `paint` | Rasterises the box tree to `*image.RGBA` — AA text (real bold + italic), gradients, border-radius, box-shadow, opacity, images and SVG; also the real `Measurer` (go-opentype faces). `PaintVector` draws the same tree through a vector `Canvas`. |
+| `pdfcanvas` | A `paint.Canvas` drawing into a go-pdfkit page: vector PDF with real text. |
+| `engine` (root) | `Fetch`, `Render`, `Screenshot`, `RenderHTML`, `RenderWithLinks`, `LayoutHTML` → `PageLayout` (paint as image or vectors), the settle-then-render loop, image + SVG loading, and the anchor hit-map. |
 | `cmd/render` | CLI: `render -url URL -out shot.png -w 1024 -h 768` (or `-file page.html`). |
 
 Everything reused is pure-Go and BSD/MIT — see [`SURVEY.md`](SURVEY.md) for the
