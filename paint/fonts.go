@@ -58,6 +58,38 @@ type Fonts struct {
 	// first when it sits closer to that slot's canonical weight.
 	named       map[namedKey]*opentype.Font
 	namedWeight map[namedKey]int
+
+	// measureCache memoizes Measure's result per (text, family, size, weight,
+	// italic): Measure re-shapes text (Runs + per-run Face.Shape, each
+	// walking cmap coverage and GSUB lookups) from scratch on every call,
+	// with nothing between here and a fresh render caching that work. A real
+	// page's own text is full of exact repeats — the same nav-link label in
+	// a header and a footer, the same badge/button text across many list
+	// items — each previously re-shaped in full every time layout measured
+	// it (which line-breaking and intrinsic-width computation both do,
+	// often more than once for the very same run). Confirmed load-bearing
+	// live: profiling a real, text-heavy page (cia.gov) put ~25% of total
+	// CPU time in Measure, almost all of it inside Face.Shape — a single
+	// render-scoped cache (Fonts is already documented as "build one per
+	// render", so no cross-render staleness is possible) turns every repeat
+	// into a plain map lookup.
+	measureCache map[measureKey]float64
+}
+
+// measureKey identifies one Measure call's exact inputs. sizePx is a plain
+// float64 key: it comes from deterministic CSS computation (never averaged
+// or otherwise perturbed between two calls for what is conceptually "the
+// same" size), so bit-for-bit equality is the right comparison, the same way
+// faceKey/fallbackKey already key on a size (rounded to an int there, since
+// those pick a RASTER face at whole-pixel sizes — see styleFace's own doc
+// comment — whereas Measure's own size stays exact, to measure the true,
+// sub-pixel-accurate size a PDF or other true-scale consumer draws at).
+type measureKey struct {
+	text   string
+	fam    css.FontFamily
+	sizePx float64
+	weight int
+	italic bool
 }
 
 // namedKey identifies one slot of one named family.
@@ -223,6 +255,12 @@ func (f *Fonts) RegisterFont(family string, weight int, italic bool, ft *opentyp
 	}
 	f.named[k], f.namedWeight[k] = ft, weight
 	f.faces = map[faceKey]*opentype.Face{}
+	// A measurement cached before this registration may have measured with
+	// whatever font() resolved to before — the bundled fallback, or a
+	// lower-priority named face this one just displaced (see the
+	// weightDistance check above) — invalidated for the same reason the
+	// Face cache just above is.
+	f.measureCache = nil
 	return nil
 }
 
@@ -309,6 +347,20 @@ const requiredLigatureFeature = "rlig"
 // boundary, matching how a real text shaper only ever merges glyphs within
 // one already-selected face.
 func (f *Fonts) Measure(text string, fam css.FontFamily, sizePx float64, weight int, italic bool) float64 {
+	key := measureKey{text, fam, sizePx, weight, italic}
+	if w, ok := f.measureCache[key]; ok {
+		return w
+	}
+	w := f.measure(text, fam, sizePx, weight, italic)
+	if f.measureCache == nil {
+		f.measureCache = map[measureKey]float64{}
+	}
+	f.measureCache[key] = w
+	return w
+}
+
+// measure is Measure's uncached computation.
+func (f *Fonts) measure(text string, fam css.FontFamily, sizePx float64, weight int, italic bool) float64 {
 	w := 0.0
 	for _, run := range f.Runs(text, fam, weight, italic) {
 		font := f.font(styleKey{fam, weight >= 600, italic})
