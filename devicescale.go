@@ -29,9 +29,15 @@ func (e *Engine) media(vpW int) css.Media {
 	return css.Media{Width: float64(vpW), Scale: e.devScale()}
 }
 
-// cascade is css.CascadeMediaContainers at this engine's device scale.
-func (e *Engine) cascade(root *dom.Node, vpW int, sheets []string, containers map[*dom.Node]css.ContainerSize) css.StyleMap {
-	return css.CascadeMediaContainers(root, e.media(vpW), sheets, containers)
+// cascade is css.CascadeMediaContainers at this engine's device scale. m is
+// the measurer the page is laid out with: the font-relative ch unit is the
+// advance of "0" in it (CSS Values 4 §6.1.1); nil measures ch as 0.5em.
+func (e *Engine) cascade(root *dom.Node, vpW int, sheets []string, containers map[*dom.Node]css.ContainerSize, m layout.Measurer) css.StyleMap {
+	media := e.media(vpW)
+	if m != nil {
+		media.Advance = m.Measure
+	}
+	return css.CascadeMediaContainers(root, media, sheets, containers)
 }
 
 // layoutDoc lays out a cascade computed by e.cascade: its lengths are in

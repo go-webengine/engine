@@ -117,7 +117,7 @@ func (e *Engine) buildMetaFallback(ctx context.Context, doc *Document, vpW int, 
 	sd := &Document{URL: doc.URL, Root: root}
 
 	rp := &renderPass{}
-	rp.sm = e.cascade(root, vpW, nil, nil)
+	rp.sm = e.cascade(root, vpW, nil, nil, nil)
 	rp.imgSize, rp.imgs = e.loadImages(ctx, sd, rp.sm, e.deviceW(vpW))
 	rp.bgImgs = e.loadBackgroundImages(ctx, sd, rp.sm)
 	rp.box, rp.height = e.layoutDoc(root, rp.sm, vpW, 0, fonts, rp.imgSize)

@@ -32,6 +32,15 @@ Three new tests: the pre-existing `TestSVGToBitmapMaxDim` updated (it had silent
 
 **Honest limit, not claimed away**: this bounds worst-case cost, it does not eliminate it — a sufficiently expensive per-pixel SVG (more gradient layers, a costlier custom paint) can still cost meaningfully more than an ordinary icon even at the reduced resolution. No confirmed real-world case needs a tighter (or looser) budget than `maxSVGRasterPixels`'s current value yet; revisit if one turns up.
 
+## 2026-10-22 (round 179) — a column of numbers, one per line, was as wide as all its digits side by side (max-content summed through forced breaks), and the `ch` unit did not exist (feature, found by go-slides' line numbers)
+
+Bibliography first (what was opened): CSS Sizing 3 §5.1 (max-content size is the size when laid out in an infinitely sized containing block), CSS Text 3 §5 (a preserved newline under `white-space:pre`/`pre-wrap`/`pre-line`, or a `<br>`, is a forced line break) and CSS Values 4 §6.1.1 (`ch` is the used advance of the "0" glyph in the element's font; 0.5em where that is impossible or impractical to determine).
+
+- **max-content is the widest line, not the sum** (`layout/floats.go`, `preferredWidth`): the loop that totals an inline container's items skipped a `LineBreak` item on purpose (round 42 kept "a `<br>` forced break is deliberately NOT a line boundary", pinned by `TestPreferredWidthInlineWithBreak`). Laid out in an infinite containing block only forced breaks break, so the widest line decides: a break now flushes the running line, exactly as `minContentWidth` always did. Found by go-slides' gutter of line numbers (`<span style="display:block;flex:none">1\n2\n…</span>` under `white-space:pre`), whose flex item came out 5 digits wide for a 1-digit column. `TestPreferredWidthInlineWithBreak` had encoded the old sum and now asserts the widest line (20, not 40). Tests: `layout/maxcontent_forced_break_test.go` (pre, pre-wrap, pre-line, `<br>`; widest line wherever it sits; a trailing newline adds no line) and, through the real fonts, `TestGutterWidthFromLinesAndCh`.
+- **`ch`** (`css/chunit.go`, new): a length has no font when it is parsed, so the cascade rewrites each `<number>ch` of a declaration as pixels (after var() and device scaling, before calc()) against the element's own font: `Media.Advance` (the layout's `Measurer.Measure`, passed by `Engine.cascade`) measures "0" in the element's family, weight, style and font-size. Font family/weight/style are applied in a pass of their own after font-size, so a `width:3ch` sees a `font-family` declared after it. With no measurer, or a font that measures to nothing, it is the spec's 0.5em. Tests: `css/chunit_test.go` (spec definition, own font size, fallback, device scale, quoted text / `url()` / identifiers untouched) and `chunit_layout_test.go` (a box of 7ch is as wide as seven zeros in monospace, serif and sans-serif).
+- **Not done**: `ic` (the advance of the CJK water ideograph "水"): the bundled faces carry no CJK, so the measurement would be the fallback glyph's; it stays unsupported rather than wrong. `ch` in the `font` shorthand's own size, and in a `font-size` declaration, uses the inherited font (the element's own is not known yet).
+- Controls: removing the one-line `flushLine()` makes `TestMaxContentIsTheWidestLineNotTheSum` and `TestGutterWidthFromLinesAndCh` fail with the predicted widths (60 for 20; 48 for 9.6).
+
 ## 2026-10-21/22 (round 177) — `::before`/`::after` generated content, closed for the confirmed real trigger (a literal `content:"<string>"`), after six rounds (44/56/57/87) filed it as "comparable in scope to Shadow DOM's own multi-round build-out" (feature, engine#303)
 
 Found, this time, while drafting a PLAN to implement the OTHER gap this same search turned up (round 38's own block-in-inline promotion) and discovering it had already shipped — see the docs correction above. Checking the Known Gaps section against the current code the same way (round 141/78's own precedent) before trusting any of its "not attempted" claims turned up a SECOND one: generated content really was still unimplemented, but the scope every prior round had assumed ("comparable to Shadow DOM") turned out to be bigger than the actual confirmed need, once read against the one thing every citing round actually wanted — a literal separator string.
@@ -2465,7 +2474,8 @@ independently recurses into its OWN preferred width as a second candidate —
 matching how a genuine mix of text and promoted blocks actually behaves. A
 `<br>` forced break is deliberately left as NOT a line boundary for this
 estimate, preserving this function's pre-existing convention
-(`TestPreferredWidthInlineWithBreak`, unaffected).
+(`TestPreferredWidthInlineWithBreak`, unaffected). *(Reversed in round 179:
+max-content is the widest line, so a forced break does end a line.)*
 
 An earlier version of a round-40 test (`TestNonFloatedBlockBreakStillExcludedFromPreferredWidth`)
 had asserted the OLD, now-understood-to-be-wrong behaviour (a promoted block

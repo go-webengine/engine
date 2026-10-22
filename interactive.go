@@ -174,7 +174,7 @@ func (d *LiveDocument) resettle(ctx context.Context) {
 			d.rp.sheets = d.e.fetchExternalSheets(ctx, d.doc, float64(d.vpW))
 			d.prevLinks = k
 		}
-		newSm := d.e.cascade(d.doc.Root, d.vpW, d.rp.sheets, nil)
+		newSm := d.e.cascade(d.doc.Root, d.vpW, d.rp.sheets, nil, d.fonts)
 		newBox, newHeight := d.e.layoutDoc(d.doc.Root, newSm, d.vpW, d.vpH, d.fonts, d.rp.imgSize)
 		newSm, newBox, newHeight = d.e.layoutWithContainers(d.doc.Root, d.rp.sheets, d.vpW, d.vpH, d.fonts, d.rp.imgSize, newSm, newBox, newHeight)
 

@@ -27,16 +27,14 @@ func TestPreferredWidthBlockSkips(t *testing.T) {
 }
 
 func TestPreferredWidthInlineWithBreak(t *testing.T) {
-	// max-content ignores <br> (a forced break) and sums the whole run.
+	// max-content ends the line at a <br> (a forced break, CSS Text 3 §5) and
+	// is the widest line (CSS Sizing 3 §5.1): "ab" and "cd" are 20 each.
 	l := &layouter{m: fakeMeasurer{}, floats: &floatCtx{}}
 	root, _ := dom.Parse(`<html><body><span id="s">ab<br>cd</span></body></html>`)
 	l.sm = css.Cascade(root)
 	s := dom.Find(root, "span")
-	// Source "ab<br>cd" has NO whitespace around the break, so the runs join with
-	// no space (CSS collapsing): "ab"(20) + "cd"(20) = 40. (A phantom space across a
-	// spaceless boundary was the pre-fix inline-whitespace bug.)
-	if got := l.preferredWidth(s, l.sm[s]); got != 40 {
-		t.Errorf("inline preferred = %v want 40", got)
+	if got := l.preferredWidth(s, l.sm[s]); got != 20 {
+		t.Errorf("inline preferred = %v want 20", got)
 	}
 }
 

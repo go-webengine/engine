@@ -25,6 +25,10 @@ type Media struct {
 	// reports (Media Queries 4 §5.1, in dppx), and a cascade run against it
 	// computes every absolute length in device pixels (see scaleLengths).
 	Scale float64
+	// Advance, when set, measures text in the page's fonts so that the
+	// font-relative ch unit is the advance of "0" in the element's own font
+	// (see resolveCh); unset, ch is the spec's 0.5em fallback.
+	Advance Advance
 }
 
 // scale returns m.Scale, with 0 (unset) and negative values meaning 1.

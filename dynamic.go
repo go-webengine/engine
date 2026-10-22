@@ -75,7 +75,7 @@ func (e *Engine) liveMetrics(doc *Document, rp *renderPass, fonts *paint.Fonts, 
 	m.root, m.sig = doc.Root, treeSignature(doc.Root)
 	sheets, imgSize := rp.sheets, rp.imgSize
 	m.relayout = func() (*layout.Box, css.StyleMap) {
-		sm := e.cascade(doc.Root, vpW, sheets, nil)
+		sm := e.cascade(doc.Root, vpW, sheets, nil, fonts)
 		box, h := e.layoutDoc(doc.Root, sm, vpW, vpH, fonts, imgSize)
 		sm, box, _ = e.layoutWithContainers(doc.Root, sheets, vpW, vpH, fonts, imgSize, sm, box, h)
 		return box, sm
@@ -540,7 +540,7 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 			rp.sheets = e.fetchExternalSheets(ctx, doc, float64(vpW))
 			prevLinks = k
 		}
-		newSm := e.cascade(doc.Root, vpW, rp.sheets, nil)
+		newSm := e.cascade(doc.Root, vpW, rp.sheets, nil, fonts)
 		start := time.Now()
 		newBox, newHeight := e.layoutDoc(doc.Root, newSm, vpW, vpH, fonts, rp.imgSize)
 		// A script's DOM/class mutation can change which elements are query
