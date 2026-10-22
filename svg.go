@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"math"
 	"regexp"
 	"sort"
 	"strconv"
@@ -22,6 +23,36 @@ import (
 // maxSVGDim bounds a rasterised SVG's pixel dimensions on each axis (a cost
 // guard: an absurd CSS/viewBox size cannot request a multi-gigapixel buffer).
 const maxSVGDim = 4096
+
+// maxSVGRasterPixels bounds the output AREA svgToBitmap actually rasterises
+// at once — a separate, narrower budget from maxSVGDim's per-axis clamp,
+// which does nothing for a large-but-not-absurd decorative SVG (confirmed
+// live: a 1158×598 gradient-filled background pattern, found on
+// docs.docker.com, is nowhere near either axis's 4096 limit yet still took
+// 5.7s to rasterise). Cost there was confirmed proportional to output area,
+// not merely bounded by it: half the linear size (a quarter the area) took
+// 1.3s, a quarter the linear size (a sixteenth the area) took 0.3s — a clean
+// ~4x-per-quartered-area relationship, consistent with the profiled
+// bottleneck (rasterx.ColorFuncImage.At, per-pixel gradient-colour
+// sampling), at roughly 8µs/pixel for that specific document.
+//
+// Past this budget, svgToBitmap rasterises at a REDUCED resolution (same
+// aspect ratio, scaled down to fit the budget) rather than at the full
+// requested size, and returns the SAME usedW/usedH as always — only the
+// actual bitmap shrinks. This is not a new kind of mismatch: a background
+// image or <img> can already legitimately decode to a different pixel size
+// than its display box, and paint's own existing scaleTile step (already
+// exercised on every such mismatch) stretches it to the full intended size
+// at paint time. At this budget, a worst-case decorative SVG like the one
+// above costs on the order of a few hundred ms, not several seconds,
+// regardless of how large a page's own CSS/viewBox asks for it to be.
+//
+// Deliberately NOT applied to the separately exported RasterizeSVG (used by
+// pdfcanvas/officecanvas's print-quality vector export, #229): that function
+// explicitly promises the exact size asked for ("an SVG has no pixels of its
+// own, and a PDF exporter needs the same drawing at the paper's density"),
+// and an export job's own time budget is not a screen render's.
+const maxSVGRasterPixels = 250_000
 
 // looksLikeSVG reports whether the fetched image bytes are an SVG document,
 // judged by the src extension (".svg", ignoring any query/fragment) or by
@@ -105,9 +136,21 @@ func (e *Engine) svgToBitmap(data []byte, st *css.Style, attrW, attrH, viewportW
 	if h > maxSVGDim {
 		h = maxSVGDim
 	}
+	// rw,rh is what actually gets rasterised — w,h past maxSVGRasterPixels
+	// (see its own doc comment) scaled down to fit, same aspect ratio. The
+	// RETURNED usedW/usedH stay w,h unchanged either way: a smaller actual
+	// bitmap than its reported display size is exactly the shape a
+	// differently-sized background image or <img> already has, and paint's
+	// existing scaleTile step already stretches those to size at paint time.
+	rw, rh := w, h
+	if area := w * h; area > maxSVGRasterPixels {
+		scale := math.Sqrt(float64(maxSVGRasterPixels) / float64(area))
+		rw = max(1, iround(float64(w)*scale))
+		rh = max(1, iround(float64(h)*scale))
+	}
 	// The scanner samples in the viewBox coordinate system; SetTarget scales it
-	// onto the w×h output.
-	return svgRasterizer(icon, w, h, iround(vbW), iround(vbH)), w, h, true
+	// onto the rw×rh output.
+	return svgRasterizer(icon, rw, rh, iround(vbW), iround(vbH)), w, h, true
 }
 
 var (

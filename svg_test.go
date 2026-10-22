@@ -5,6 +5,7 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"image"
 	"strings"
 	"testing"
@@ -336,8 +337,125 @@ func TestSVGToBitmapMaxDim(t *testing.T) {
 	if w > maxSVGDim || h > maxSVGDim {
 		t.Errorf("dimension not clamped: %dx%d", w, h)
 	}
-	if img.Bounds().Dx() != w || img.Bounds().Dy() != h {
-		t.Errorf("bitmap bounds %v disagree with reported %dx%d", img.Bounds(), w, h)
+	// The reported display size (w,h) stays the full maxSVGDim×maxSVGDim —
+	// only the ACTUAL bitmap is additionally bounded by maxSVGRasterPixels
+	// (see its own doc comment), a separate, narrower, area-based budget.
+	// 4096x4096 is nowhere near equal to that budget, so the bitmap here
+	// must come back SMALLER than w,h, not equal to it.
+	if area := img.Bounds().Dx() * img.Bounds().Dy(); area > maxSVGRasterPixels {
+		t.Errorf("bitmap area %d exceeds maxSVGRasterPixels %d", area, maxSVGRasterPixels)
+	}
+	if img.Bounds().Dx() >= w || img.Bounds().Dy() >= h {
+		t.Errorf("bitmap bounds %v should be SMALLER than the reported %dx%d at this size", img.Bounds(), w, h)
+	}
+}
+
+// TestSVGToBitmapRasterAreaCapPreservesReportedSize is the direct regression
+// for maxSVGRasterPixels: a large, ordinary (not pathologically oversized —
+// nowhere near maxSVGDim) requested size past the area budget must still
+// report the FULL requested display size via w,h (so layout is unaffected),
+// while the actual bitmap comes back smaller, same aspect ratio, and still
+// correctly filled (not blank) — confirming this is a resolution reduction,
+// not a silent failure.
+func TestSVGToBitmapRasterAreaCapPreservesReportedSize(t *testing.T) {
+	e := New()
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">` +
+		`<rect width="1000" height="1000" fill="#123456"/></svg>`
+	img, w, h, ok := e.svgToBitmap([]byte(svg), nil, 0, 0, 0, "")
+	if !ok {
+		t.Fatal("raster failed")
+	}
+	if w != 1000 || h != 1000 {
+		t.Fatalf("reported size = %dx%d, want 1000x1000 (the area cap must not change what layout is told)", w, h)
+	}
+	b := img.Bounds()
+	if area := b.Dx() * b.Dy(); area > maxSVGRasterPixels {
+		t.Errorf("bitmap area %d exceeds maxSVGRasterPixels %d", area, maxSVGRasterPixels)
+	}
+	if b.Dx() >= w {
+		t.Errorf("bitmap width %d should be SMALLER than the reported %d (1000x1000 = 1,000,000px is well past the %d budget)", b.Dx(), w, maxSVGRasterPixels)
+	}
+	// Same aspect ratio (1:1 source), within integer rounding.
+	if d := b.Dx() - b.Dy(); d < -1 || d > 1 {
+		t.Errorf("bitmap %v lost the 1:1 aspect ratio", b)
+	}
+	// Still correctly filled, not a blank/failed raster at the reduced size.
+	r, g, bl, a := img.At(b.Dx()/2, b.Dy()/2).RGBA()
+	if a>>8 != 255 || r>>8 != 0x12 || g>>8 != 0x34 || bl>>8 != 0x56 {
+		t.Errorf("centre pixel = R%d G%d B%d A%d, want #123456 opaque", r>>8, g>>8, bl>>8, a>>8)
+	}
+}
+
+// gradientHeavySVG builds a synthetic decorative SVG with n stacked
+// radial-gradient-filled layers over the whole viewBox — calibrated to land
+// in the same per-pixel-cost ballpark FIDELITY.md's own profiling found on a
+// real page (round 168/169: rasterx.ColorFuncImage.At, i.e. per-pixel
+// gradient-colour sampling, ~84% of a real decorative SVG's render time),
+// since the exact original asset is no longer available to re-fetch (the
+// source page has since changed). A single large gradient fill alone (one
+// layer) measured too fast (tens of ms) to be a meaningful benchmark
+// baseline; stacking layers reproduces a realistic per-pixel cost without
+// needing the exact original file.
+func gradientHeavySVG(n int) string {
+	var b strings.Builder
+	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1158 598"><defs>`)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, `<radialGradient id="g%d" cx="%d%%" cy="%d%%"><stop offset="0%%" stop-color="#000"/><stop offset="100%%" stop-color="#eee"/></radialGradient>`, i, 10+i, 90-i)
+	}
+	b.WriteString(`</defs>`)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, `<rect x="0" y="0" width="1158" height="598" fill="url(#g%d)" opacity="0.3"/>`, i)
+	}
+	b.WriteString(`</svg>`)
+	return b.String()
+}
+
+// BenchmarkSVGToBitmapGradientHeavy exercises the path maxSVGRasterPixels
+// bounds: a large (1158x598, nowhere near maxSVGDim) gradient-heavy
+// decorative SVG, at its full on-page size — the shape round 168/169's own
+// profiling found taking 5.7s on a real page, confirmed proportional to
+// output area (half-linear-size 1.3s, quarter-linear-size 0.3s).
+func BenchmarkSVGToBitmapGradientHeavy(b *testing.B) {
+	svg := []byte(gradientHeavySVG(20))
+	e := New()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, _, _, ok := e.svgToBitmap(svg, nil, 1158, 598, 0, ""); !ok {
+			b.Fatal("raster failed")
+		}
+	}
+}
+
+// BenchmarkSVGToBitmapGradientHeavyUncapped is BenchmarkSVGToBitmapGradientHeavy's
+// own before/after baseline: the SAME content at the SAME full size via the
+// separately exported RasterizeSVG, which maxSVGRasterPixels deliberately
+// does NOT apply to (see that constant's own doc comment) — the uncapped
+// cost this round's fix bounds svgToBitmap away from. Keeping both
+// benchmarks committed, rather than a one-off git-stash comparison, makes
+// the fix's real effect re-checkable after any future change to either path.
+func BenchmarkSVGToBitmapGradientHeavyUncapped(b *testing.B) {
+	svg := []byte(gradientHeavySVG(20))
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, ok := RasterizeSVG(svg, 1158, 598, ""); !ok {
+			b.Fatal("raster failed")
+		}
+	}
+}
+
+// TestSVGToBitmapRasterAreaCapNoOpBelowBudget confirms the common case (an
+// ordinary icon-sized SVG) takes the EXACT same path as before this cap
+// existed: no scaling, bitmap bounds equal to the reported size.
+func TestSVGToBitmapRasterAreaCapNoOpBelowBudget(t *testing.T) {
+	e := New()
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">` +
+		`<rect width="24" height="24" fill="#123456"/></svg>`
+	img, w, h, ok := e.svgToBitmap([]byte(svg), nil, 0, 0, 0, "")
+	if !ok || w != 24 || h != 24 {
+		t.Fatalf("ok=%v w=%d h=%d, want true 24x24", ok, w, h)
+	}
+	if b := img.Bounds(); b.Dx() != 24 || b.Dy() != 24 {
+		t.Errorf("bitmap bounds %v, want exactly 24x24 (well under the area budget, must be a no-op)", b)
 	}
 }
 
