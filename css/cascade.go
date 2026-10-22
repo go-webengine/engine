@@ -473,6 +473,20 @@ func computePseudoElement(n *dom.Node, elementStyle Style, rules []Rule, idx *ru
 		// all is generated, not an empty one.
 		return Style{}, false
 	}
+	// CSS UI 4 §6.1: on ::before and ::after the used value of user-select
+	// auto is none — generated content is not the document's text — unless
+	// a rule sets text, all or contain on the pseudo-element itself.
+	st.UserSelectNone = true
+	for _, c := range cands { // in cascade order: the last one wins
+		if c.decl.Property == "user-select" || c.decl.Property == "-webkit-user-select" {
+			switch strings.ToLower(strings.TrimSpace(c.decl.Value)) {
+			case "text", "all", "contain":
+				st.UserSelectNone = false
+			case "none", "auto":
+				st.UserSelectNone = true
+			}
+		}
+	}
 	return st, true
 }
 

@@ -632,12 +632,19 @@ func (l Length) Resolve(containing float64) float64 {
 type Style struct {
 	Display    Display
 	Visibility Visibility // inherited; see the Visibility doc comment
-	Color      Color
-	Background Color
-	FontSize   float64 // px
-	FontWeight int     // 400 = normal, 700 = bold
-	FontFamily FontFamily
-	Italic     bool // font-style: italic|oblique (inherited)
+	// UserSelectNone is user-select:none (and -webkit-user-select:none): the
+	// text is drawn but is not the document's text — a vector canvas keeps
+	// it out of extraction (see paint.GlyphRun.Unselectable). CSS UI 4 makes
+	// auto on an element whose parent's used value is none compute to none,
+	// so it passes to descendants and pseudo-elements unless they set
+	// user-select to something else.
+	UserSelectNone bool
+	Color          Color
+	Background     Color
+	FontSize       float64 // px
+	FontWeight     int     // 400 = normal, 700 = bold
+	FontFamily     FontFamily
+	Italic         bool // font-style: italic|oblique (inherited)
 	// Underline is set by `text-decoration`/`text-decoration-line: underline`,
 	// cleared by any other explicit line value (including "none"). Real CSS
 	// text-decoration-line is NOT an inherited property — instead, a line set
@@ -1394,6 +1401,7 @@ func inheritFrom(parent Style) Style {
 	return Style{
 		Display:        DisplayInline, // reset (non-inherited)
 		Visibility:     parent.Visibility,
+		UserSelectNone: parent.UserSelectNone, // see its doc comment
 		Color:          parent.Color,
 		Fill:           parent.Fill,
 		FillSet:        parent.FillSet,

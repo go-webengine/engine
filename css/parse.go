@@ -576,6 +576,16 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 				s.ColorScheme = cs
 			}
 		}
+	case "user-select", "-webkit-user-select":
+		switch lv {
+		case "none":
+			s.UserSelectNone = true
+		case "text", "all", "contain":
+			s.UserSelectNone = false
+		case "auto":
+			// auto is none under a none parent (CSS UI 4), else text
+			s.UserSelectNone = parent != nil && parent.UserSelectNone
+		}
 	case "visibility":
 		switch lv {
 		case "visible":
