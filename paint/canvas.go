@@ -173,13 +173,19 @@ type GradientStop struct {
 // element PaintVector had to draw as a bitmap, laid over that bitmap so that
 // it can still be selected, searched and copied (PDF's text rendering mode
 // 3, ISO 32000-1 §9.3.6).
+//
+// An Unselectable run is text drawn but not part of the document's text: the
+// style made it user-select:none (line numbers in a gutter, a numbered disc
+// after a line of code). A canvas that writes text keeps it out of what is
+// extracted and copied; pdfcanvas wraps it in an empty ActualText.
 type GlyphRun struct {
-	Font      *opentype.Font
-	Size      float64
-	Color     css.Color
-	X, Y      float64
-	Glyphs    []Glyph
-	Invisible bool
+	Font         *opentype.Font
+	Size         float64
+	Color        css.Color
+	X, Y         float64
+	Glyphs       []Glyph
+	Invisible    bool
+	Unselectable bool
 }
 
 // Glyph is one glyph of a GlyphRun: its id in the font, its origin's offset

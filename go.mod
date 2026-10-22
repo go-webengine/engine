@@ -11,7 +11,7 @@ require (
 	github.com/go-images/images v0.1.0
 	github.com/go-opentype/fonts v0.12.0
 	github.com/go-opentype/opentype v0.15.0
-	github.com/go-pdfkit/pdfkit v0.15.0
+	github.com/go-pdfkit/pdfkit v0.17.0
 	github.com/go-webengine/esbuildsandbox v0.1.0
 	github.com/go-widgets/painter v0.16.0
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef

@@ -221,6 +221,13 @@ func (c *Canvas) Glyphs(run *paint.GlyphRun) {
 		gs[i] = pdfkit.Glyph{ID: g.ID, X: g.X * c.s, Text: g.Text}
 	}
 	show := func() {
+		if run.Unselectable {
+			// user-select:none: drawn, but not the document's text — an
+			// empty ActualText (ISO 32000-1 §14.9.4) keeps it out of what
+			// pdftotext extracts and a reader copies.
+			c.p.BeginActualText("")
+			defer c.p.EndMarkedContent()
+		}
 		c.p.SetFont(f, run.Size*c.s)
 		if err := c.p.ShowGlyphs(c.x(run.X), c.y(run.Y), gs); err != nil {
 			c.fail(err)

@@ -665,7 +665,7 @@ func (v *vpainter) text(st *css.Style, s string, x, baseline float64, col css.Co
 		gids := face.Shape(run.Text, requiredLigatureFeature)
 		runes := []rune(run.Text)
 		aligned := len(gids) == len(runes)
-		gr := &GlyphRun{Font: font, Size: st.FontSize, Color: col, X: pen, Y: baseline, Glyphs: make([]Glyph, 0, len(gids)), Invisible: invisible}
+		gr := &GlyphRun{Font: font, Size: st.FontSize, Color: col, X: pen, Y: baseline, Glyphs: make([]Glyph, 0, len(gids)), Invisible: invisible, Unselectable: st.UserSelectNone}
 		for i, gid := range gids {
 			if gid == 0 {
 				continue // .notdef: drawn and measured as nothing (see drawText)
