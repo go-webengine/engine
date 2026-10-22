@@ -18,6 +18,15 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-22 (round 180) — `user-select:none` text was extracted from the vector PDF like any other (feature, found by go-slides' code callouts)
+
+Bibliography first (what was opened): CSS UI 4 §6.1 (user-select: `auto | text | none | contain | all`, not inherited, but `auto`'s used value is `none` on `::before`/`::after` and under a parent whose used value is `none`), and Poppler's `pdftotext` 26.10, tried on a hand-written PDF: a run inside `/Span <</ActualText ()>> BDC … EMC` is drawn and not extracted.
+
+- **Cascade** (`css/parse.go`, `css/cascade.go`, `css/value.go`): `user-select` and `-webkit-user-select` set `Style.UserSelectNone`; it passes to descendants (`inheritFrom`), `text`/`all`/`contain` take it back, `auto` follows the parent; a pseudo-element is none unless its own rules say `text`, `all` or `contain`.
+- **Vector paint and PDF** (`paint/vector.go`, `paint/canvas.go`, `pdfcanvas`): such text becomes a `GlyphRun` marked `Unselectable`, which pdfcanvas wraps in an empty ActualText (go-pdfkit v0.17.0 `BeginActualText`). go-slides' line-number gutter and code-callout discs no longer come out of `pdftotext` interleaved with the code.
+- Not done: the raster paths have no text layer, and the screen has no selection, so nothing changes there; `contain`'s containment is not modelled.
+- Tests: `css/userselect_test.go`, `pdfcanvas/userselect_test.go` (the spans in the content stream; pdftotext's output when it is installed).
+
 ## 2026-10-22 (round 178) — SVG rasterisation's unbounded, area-proportional cost (rounds 168/169, deferred twice) closed by capping output resolution, per an explicit user decision (performance, engine#305)
 
 FIDELITY.md's own entry had twice declined to pick between capping resolution or capping time, since either changes rendering output, not just performance — correctly left as a decision for a human, not guessed at. Asked directly this round; told to cap resolution.
