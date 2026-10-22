@@ -57,7 +57,7 @@ func (e *Engine) layoutWithContainers(root *dom.Node, sheets []string, vw, vh in
 			break // fixpoint: another pass would recompute the identical sizes
 		}
 		prevSizes = sizes
-		sm = e.cascade(root, vw, sheets, sizes)
+		sm = e.cascade(root, vw, sheets, sizes, m)
 		box, height = e.layoutDoc(root, sm, vw, vh, m, imgSize)
 	}
 	return sm, box, height

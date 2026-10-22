@@ -381,11 +381,14 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 	}
 	for i, it := range items {
 		if it.LineBreak {
-			// A <br> forced break is deliberately NOT a line boundary for
-			// this estimate (unlike a promoted block below) — matching this
-			// function's pre-existing, unchanged convention that max-content
-			// sums straight through a <br>, only BlockBreak starts a fresh
-			// candidate line.
+			// A forced line break (<br>, or a preserved newline under
+			// white-space:pre / pre-wrap / pre-line, CSS Text 3 §5) ends the
+			// line: max-content is the WIDEST line, not the sum of all of
+			// them (CSS Sizing 3 §5.1: the size in an infinite containing
+			// block, where only forced breaks break). This used to sum
+			// straight through a break, so a column of numbers one per line
+			// was as wide as all its digits side by side.
+			flushLine()
 			continue
 		}
 		if it.BlockBreak != nil {

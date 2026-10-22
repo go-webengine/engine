@@ -410,7 +410,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	fontSheets := append(rp.sheets[:len(rp.sheets):len(rp.sheets)], css.InlineStyleText(doc.Root))
 	RegisterFontFaces(fonts, e.LoadFontFaces(ctx, doc, fontSheets, e.media(vpW)))
 	registerHostFaces(fonts, e.FontFaces)
-	rp.sm = e.cascade(doc.Root, vpW, rp.sheets, nil)
+	rp.sm = e.cascade(doc.Root, vpW, rp.sheets, nil, fonts)
 
 	// TEXT-FIRST progressive frame (progressive path ONLY): lay out and emit the
 	// fully-styled page BEFORE the slow, network-bound image fetch. Images reserve
