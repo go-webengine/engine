@@ -327,8 +327,18 @@ capped (each confirmed live against a synthetic reproduction, not assumed):
   nothing in that per-pixel loop checked it. Fixed by normalising a
   background-image tile to a concrete `*image.NRGBA` once, before it is
   stamped, instead of once per stamped pixel.
+- **SVG rasterisation cost scales with output pixel area** — a large,
+  gradient-filled decorative SVG (a background pattern, a hero
+  illustration) could previously cost several seconds regardless of how
+  modest its on-page footprint looked, with no ceiling as that area grows.
+  `svgToBitmap` (the screen-render path) now rasterises above a pixel-area
+  budget at a reduced resolution and upscales to the requested size, the
+  same way a mismatched-size background image or `<img>` already does.
+  The separately exported `RasterizeSVG` (used by the PDF/office vector
+  export, which needs the exact size asked for at print density) is
+  deliberately NOT capped.
 
-See `FIDELITY.md`'s rounds 166–175 for the full measured writeups. None of
+See `FIDELITY.md`'s rounds 166–178 for the full measured writeups. None of
 these change how a well-formed page renders — only how a pathological one
 degrades (truncated output, never a crash or unbounded allocation).
 
