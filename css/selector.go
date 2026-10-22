@@ -197,6 +197,13 @@ type compound struct {
 	// pseudo-element's declarations to the real element — e.g. a clearfix
 	// `.wrap::after{height:0;overflow:hidden}` would collapse the actual `.wrap`.
 	PseudoElement bool
+	// PseudoElementName is the pseudo-element's own bare token ("before",
+	// "after", "marker", …) when PseudoElement is set — kept alongside the
+	// bool so MatchesPseudoElement can single out specifically ::before/
+	// ::after (the two this engine synthesises a real box for) from every
+	// other pseudo-element this compound might carry, which still correctly
+	// matches nothing via the ordinary matches(n) path.
+	PseudoElementName string
 	// Attrs holds every "[attr]"/"[attr=value]"/… constraint attached to this
 	// compound. ALL must match. These used to be dropped entirely ("the
 	// constraint is not modelled, the compound reduces to its tag/class/id
@@ -323,6 +330,21 @@ func (a attrMatch) matches(n *dom.Node) bool {
 // Host compound without host context (a ":not()" argument, a plain
 // document-wide selector, querySelector) is therefore safe by construction.
 func (c compound) matches(n *dom.Node) bool {
+	// A pseudo-element targets a generated box, not this element; since the engine
+	// only synthesises a box for ::before/::after (via MatchesPseudoElement,
+	// never through this ordinary entry point), every other compound carrying
+	// one — including ::before/::after themselves, reached here rather than
+	// through MatchesPseudoElement — matches nothing.
+	if c.PseudoElement {
+		return false
+	}
+	return c.matchesBase(n)
+}
+
+// matchesBase is matches without the PseudoElement short-circuit, for
+// MatchesPseudoElement to check a ::before/::after compound's OTHER
+// constraints (tag/class/attrs/…) against the real originating element.
+func (c compound) matchesBase(n *dom.Node) bool {
 	if n.Type != dom.Element {
 		return false
 	}
@@ -331,11 +353,6 @@ func (c compound) matches(n *dom.Node) bool {
 	}
 	// A dynamic pseudo-class can never match at static render time.
 	if c.Dynamic {
-		return false
-	}
-	// A pseudo-element targets a generated box, not this element; since the engine
-	// does not synthesise pseudo-element boxes, such a compound matches nothing.
-	if c.PseudoElement {
 		return false
 	}
 	// ":root" matches only the document root element (an element with no element
@@ -596,6 +613,34 @@ func (s Selector) Specificity() int {
 // ":host" to, so a Host compound anywhere in the selector always fails.
 func (s Selector) Matches(n *dom.Node) bool {
 	return s.MatchesHost(n, nil)
+}
+
+// MatchesPseudoElement reports whether s targets a ::before/::after
+// pseudo-element generated FROM the real element n — i.e. the selector's key
+// compound carries PseudoElementName == which ("before" or "after"; ordinary
+// Matches always fails any PseudoElement compound, by design, so this is the
+// only entry point that can match one), n itself satisfies every OTHER
+// constraint on that key compound (tag/class/id/attrs/:not()/…, via
+// matchesBase), and the rest of the combinator chain is satisfied relative to
+// n exactly as Matches would require — the pseudo-element has no ancestry of
+// its own; it is generated as the originating element's own first/last
+// child, so its "position in the tree" for matching purposes IS n's.
+// host is always nil: none of this engine's confirmed ::before/::after
+// triggers combine with ::part()/:host(), and Part's own matching is tied to
+// the key compound exclusively, by construction, mutually exclusive with a
+// PseudoElementName match here.
+func (s Selector) MatchesPseudoElement(n *dom.Node, which string) bool {
+	if len(s.parts) == 0 {
+		return false
+	}
+	key := s.parts[len(s.parts)-1]
+	if !key.PseudoElement || key.PseudoElementName != which {
+		return false
+	}
+	if !key.matchesBase(n) {
+		return false
+	}
+	return s.matchLeft(len(s.parts)-2, n, nil)
 }
 
 // MatchesHost is Matches with host bound as the enclosing shadow tree's host
@@ -1420,8 +1465,11 @@ func parseSimple(s string, depth int) (compound, bool) {
 				c.Dynamic = true
 			case isPseudoElement(name):
 				// A pseudo-element styles a generated box, not the real element, so
-				// the compound must match nothing (see compound.PseudoElement).
+				// the compound must match nothing (see compound.PseudoElement) —
+				// EXCEPT ::before/::after, which MatchesPseudoElement checks for
+				// by name via PseudoElementName.
 				c.PseudoElement = true
+				c.PseudoElementName = name
 			}
 			// Any other pseudo (e.g. :nth-child, :host-context) is unmodelled and
 			// intentionally ignored — the compound degrades to matching its base.

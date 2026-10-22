@@ -778,6 +778,37 @@ type Style struct {
 	ListStyleType     ListStyleType
 	ListStylePosition ListStylePosition
 
+	// Content holds a `content: "<literal>"` declaration's string, for
+	// ::before/::after. Not inherited (a pseudo-element's own content never
+	// propagates to anything). ContentSet distinguishes "no content
+	// declared" (content's initial value, `normal` — no pseudo-element box
+	// at all for ::before/::after) from "declared, possibly to an empty
+	// string" (content:"" still generates a real, empty box — the common
+	// CSS-only-icon idiom, where the box's own background/mask-image is the
+	// whole point) the same way every other *Set field in this package
+	// already separates "absent" from "present with a falsy-looking value".
+	// Only a plain quoted-string value is understood — attr()/counter()/
+	// url()/open-quote and the rest of the content grammar are not; per
+	// spec, an unsupported value makes the WHOLE declaration invalid, which
+	// this engine's "unparseable value: drop the declaration" convention
+	// already produces for free by simply never setting ContentSet for
+	// anything else (see the `content` case in apply).
+	Content    string
+	ContentSet bool
+
+	// Before and After hold this element's own ::before/::after pseudo-
+	// element computed style, when some rule's `content` declaration
+	// generates one (see Content's own doc comment) — nil otherwise, the
+	// overwhelming common case (no stylesheet on the page targets ::before/
+	// ::after on this element at all). Computed once, alongside the real
+	// element's own style, by computePseudoElement; layout's
+	// renderedChildren synthesises a text node carrying it as a leading/
+	// trailing synthetic child, so the rest of the layout pipeline (inline
+	// collection, block promotion, …) treats generated content exactly like
+	// any other child without a parallel code path.
+	Before *Style
+	After  *Style
+
 	// BorderRadius is the corner radius applied to the border box when painting
 	// the background and border. It is a single (uniform) radius: the common real
 	// case (Tailwind `rounded-*`, pills, circles) sets all four corners equal.

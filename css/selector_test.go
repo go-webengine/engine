@@ -1286,6 +1286,27 @@ func TestPseudoElementMatchesNothing(t *testing.T) {
 	}
 }
 
+// TestMatchesPseudoElementBranches covers MatchesPseudoElement's own
+// not-otherwise-exercised branches directly: an empty selector (no real CSS
+// parse produces one, but ruleIndex.add already special-cases Selector{}
+// elsewhere in this package, so it is a reachable value, not purely
+// defensive) and a ::after/::before selector whose OWN other constraints
+// (here, a class) do not match the candidate element — content_test.go's
+// cascade-level tests only ever exercise a MATCHING key compound (or one
+// whose PseudoElementName doesn't even agree with which), never this one.
+func TestMatchesPseudoElementBranches(t *testing.T) {
+	if (Selector{}).MatchesPseudoElement(el("div", "", ""), "after") {
+		t.Error("an empty selector must not match any pseudo-element")
+	}
+	s, ok := parseComplex(".sep::after")
+	if !ok {
+		t.Fatal("parseComplex(.sep::after) should parse")
+	}
+	if s.MatchesPseudoElement(el("li", "", "other"), "after") {
+		t.Error(".sep::after must not match an <li class=other> (class constraint unmet)")
+	}
+}
+
 // TestStripTrailingSelfCombinator covers stripTrailingSelfCombinator's own
 // branches directly: the "X <comb> *" shape it recognises (across all four
 // combinator kinds, since combinatorChar's non-descendant branches otherwise

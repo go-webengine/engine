@@ -156,6 +156,8 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - **Selectors**: tag/class/id/compound, descendant + child + **sibling (`~`/`+`)
   combinators**, **`:checked`** and **`:not()`** (the checkbox-hack that collapses
   MediaWiki dropdowns), attribute selectors handled by a "reduce, don't drop" rule.
+  **`::before`/`::after`** generate a real box for a `content:"<literal>"` string
+  (the breadcrumb-separator idiom).
 - **Colour & decoration**: named/`#rgb`/`#rrggbb`, modern `rgb()`/`hsl()`,
   `background-color`, **linear & radial gradients**, `background-image: url()`,
   **border** + **border-radius**, **box-shadow**, group **opacity**.
@@ -206,8 +208,13 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   translate and rotate (`scale`, `skew`, `matrix`) are not supported.
   SVG has no `<filter>`/`<mask>`/`<pattern>`/embedded `<image>`/`<text>`, and a
   per-page image budget caps very icon-heavy pages.
-- `::before`/`::after` generated content is not synthesised, so icon-font and
-  `visually-hidden` chrome can render as text where a browser shows an icon.
+- `::before`/`::after` generated content is synthesised for a plain
+  `content:"<literal>"` string only (round 177) — the breadcrumb-separator
+  idiom real pages use. `attr()`/`counter()`/`url()` and the rest of the
+  content grammar drop the declaration, same as any other unsupported value.
+  A `background-image`/`mask-image` set on the pseudo-element is not
+  fetched, so icon-font and `visually-hidden`-icon chrome generated this way
+  can still render as text where a browser shows an icon.
 - `vertical-align` on a table cell models `top`, `middle` and `bottom`; the
   `baseline` alignment across a row is approximated as top.
 - Rate-limited image hosts (Wikimedia's CDN, measured round 154) answer some

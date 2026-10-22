@@ -15,7 +15,10 @@ import (
 // below), a <slot>'s assigned light-DOM nodes when it has any (else the
 // slot's own Children, its fallback content), or n's Children unchanged
 // otherwise — with any `display:contents` element in that list replaced by
-// ITS OWN rendered children (recursively), per flattenContents.
+// ITS OWN rendered children (recursively), per flattenContents — and, when
+// the cascade generated one, a synthetic ::before/::after element prepended/
+// appended (see pseudoElementNode), exactly the way a real leading/trailing
+// child would appear.
 //
 // This is the ONE substitution point every shadow-aware render walk goes
 // through instead of reading n.Children directly, so slot projection AND
@@ -24,16 +27,74 @@ import (
 // gridItems, table row/cell collection) without duplicating either of them: a
 // page with neither Shadow DOM nor display:contents anywhere takes the final
 // `return n.Children` on every call, byte-identical to before either existed.
+// ::before/::after piggybacks on the SAME guarantee: a page with no rule
+// setting `content` on either pseudo-element takes that same unchanged path.
 func (l *layouter) renderedChildren(n *dom.Node) []*dom.Node {
-	if n.Shadow != nil {
-		return l.flattenContents(n.Shadow.Children)
-	}
-	if n.Tag == "slot" {
+	var kids []*dom.Node
+	switch {
+	case n.Shadow != nil:
+		kids = l.flattenContents(n.Shadow.Children)
+	case n.Tag == "slot":
 		if assigned := assignedSlotNodes(n); len(assigned) > 0 {
-			return l.flattenContents(assigned)
+			kids = l.flattenContents(assigned)
+		} else {
+			kids = l.flattenContents(n.Children)
 		}
+	default:
+		kids = l.flattenContents(n.Children)
 	}
-	return l.flattenContents(n.Children)
+	st := l.sm[n]
+	if st == nil || (st.Before == nil && st.After == nil) {
+		return kids
+	}
+	// A fresh slice, never an in-place append onto kids: when neither branch
+	// above copied (the common display:contents-free, Shadow-free case),
+	// kids still aliases n.Children's own backing array, and appending to it
+	// directly would risk writing past n.Children's own length into
+	// whatever memory follows it.
+	out := make([]*dom.Node, 0, len(kids)+2)
+	if st.Before != nil {
+		out = append(out, l.pseudoElementNode(n, st.Before))
+	}
+	out = append(out, kids...)
+	if st.After != nil {
+		out = append(out, l.pseudoElementNode(n, st.After))
+	}
+	return out
+}
+
+// pseudoElementNode returns the synthetic element renderedChildren injects
+// for one of host's ::before/::after pseudo-elements (st is n's own
+// css.Style.Before or .After — see its doc comment), building it once and
+// caching it by st's own pointer identity so every later call for the same
+// host/pseudo-element pair (layout visits a node more than once) returns the
+// identical *dom.Node.
+//
+// Scope: Content is the ONLY generated-content source modelled (a literal
+// `content:"<string>"`, the confirmed real trigger — pkg.go.dev's breadcrumb
+// separators). A background-image/mask-image on a ::before/::after rule is
+// NOT fetched: engine's own pre-layout image-loading walk (images.go) reads
+// the real DOM's n.Children directly, before layout (and this synthesis)
+// ever runs, so a pseudo-element's own background-image would need that walk
+// taught about Before/After too — a real, separate follow-up (the same shape
+// Shadow DOM needed, round 55), not attempted here. The synthetic element's
+// Tag ("#pseudo") is deliberately unlike any real HTML tag so nothing
+// mistakes it for one; it carries no Attr, matching an anonymous box having
+// no attributes to look up.
+func (l *layouter) pseudoElementNode(host *dom.Node, st *css.Style) *dom.Node {
+	if n, ok := l.pseudoNodes[st]; ok {
+		return n
+	}
+	n := &dom.Node{Type: dom.Element, Tag: "#pseudo", Parent: host}
+	if st.Content != "" {
+		n.Children = []*dom.Node{{Type: dom.Text, Text: st.Content, Parent: n}}
+	}
+	l.sm[n] = st
+	if l.pseudoNodes == nil {
+		l.pseudoNodes = map[*css.Style]*dom.Node{}
+	}
+	l.pseudoNodes[st] = n
+	return n
 }
 
 // flattenContents replaces any `display:contents` element in children with
