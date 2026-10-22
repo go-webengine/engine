@@ -589,6 +589,19 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		if c, ok := parseColor(v); ok {
 			s.Color = c
 		}
+	case "content":
+		// Only a single plain quoted-string value is understood (the
+		// confirmed real need: a breadcrumb separator's literal text, or an
+		// empty string for a CSS-only icon pseudo-element). Anything else —
+		// attr()/counter()/url()/open-quote, multiple space-separated
+		// values, an unquoted keyword other than the ones below — leaves
+		// ContentSet false, the same "unparseable value, declaration
+		// dropped" outcome every other property in this file falls back to.
+		if lv == "none" || lv == "normal" {
+			s.Content, s.ContentSet = "", false
+		} else if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+			s.Content, s.ContentSet = v[1:len(v)-1], true
+		}
 	case "fill":
 		if lv == "none" {
 			s.FillNone, s.FillSet = true, false

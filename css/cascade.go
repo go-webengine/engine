@@ -145,6 +145,12 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		// or an OUTER shadow's host when n is itself shadow-tree content),
 		// an entirely different (and, for the host itself, unrelated) binding.
 		st := computeElement(n, parent, rules, idx, hostRules, &counter, containerStack, containers, host, quirks, scale)
+		if before, ok := computePseudoElement(n, st, rules, idx, &counter, "before", scale); ok {
+			st.Before = &before
+		}
+		if after, ok := computePseudoElement(n, st, rules, idx, &counter, "after", scale); ok {
+			st.After = &after
+		}
 		sm[n] = &st
 		childStack := containerStack
 		if st.ContainerType != ContainerNormal {
@@ -365,6 +371,101 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hos
 	st.CenterAsBlock = st.TextAlign == AlignCenterBlocks ||
 		(quirks && n.Tag == "table" && parent.TextAlign == AlignCenterBlocks)
 	return st
+}
+
+// computePseudoElement computes n's own ::before (which="before") or
+// ::after (which="after") pseudo-element style, generated only when some
+// matching rule's `content` declaration sets Content/ContentSet (see that
+// field's own doc comment) — the common case, no stylesheet on the page
+// targeting ::before/::after on this element at all, returns (Style{},
+// false) so the caller (cascade's own walk) never has to separately check
+// "generated, but with no real content" afterwards.
+//
+// elementStyle is n's own already-fully-computed style: the pseudo-element
+// inherits FROM IT (per spec — not from n's DOM parent), via the same
+// inheritFrom every real element uses, so font/colour/etc. default to
+// matching the real element exactly as a real nested span would.
+//
+// Deliberately narrower than computeElement: no UA declarations (none target
+// a generated box), no presentational-hint attributes or inline style=""
+// (neither can address a pseudo-element), and no @container/shadow-host
+// scoping (no confirmed real trigger combines ::before/::after with
+// either). var()/calc()/light-dark() still resolve, against elementStyle's
+// own already-resolved custom-property map, via the same
+// resolveDeclValueScheme call computeElement's own applyResolved uses.
+func computePseudoElement(n *dom.Node, elementStyle Style, rules []Rule, idx *ruleIndex, counter *int, which string, scale float64) (Style, bool) {
+	var cands []candidate
+	matchRule := func(r Rule) {
+		spec := -1
+		for _, sel := range r.Selectors {
+			if sel.MatchesPseudoElement(n, which) {
+				if s := sel.Specificity(); s > spec {
+					spec = s
+				}
+			}
+		}
+		if spec >= 0 {
+			for _, d := range r.Declarations {
+				cands = append(cands, candidate{d, precAuthor, spec, *counter})
+				*counter++
+			}
+		}
+	}
+	if idx != nil {
+		for _, i := range idx.candidates(n) {
+			matchRule(rules[i])
+		}
+	} else {
+		for _, r := range rules {
+			matchRule(r)
+		}
+	}
+	if len(cands) == 0 {
+		return Style{}, false
+	}
+
+	sort.SliceStable(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		if a.decl.Important != b.decl.Important {
+			return !a.decl.Important
+		}
+		if a.specificity != b.specificity {
+			return a.specificity < b.specificity
+		}
+		return a.order < b.order
+	})
+
+	st := inheritFrom(elementStyle)
+	applyResolved := func(d Declaration, emRef float64) {
+		v, ok := resolveDeclValueScheme(d.Value, st.CustomProps, st.ColorScheme.UsedDark())
+		if !ok {
+			return
+		}
+		d.Value = scaleLengths(d.Property, v, scale)
+		st.apply(d, emRef, &elementStyle)
+	}
+	for _, c := range cands {
+		if c.decl.Property == "color-scheme" {
+			applyResolved(c.decl, elementStyle.FontSize)
+		}
+	}
+	for _, c := range cands {
+		if c.decl.Property == "font-size" {
+			applyResolved(c.decl, elementStyle.FontSize)
+		}
+	}
+	for _, c := range cands {
+		if c.decl.Property != "font-size" && c.decl.Property != "color-scheme" && !isCustomProperty(c.decl.Property) {
+			applyResolved(c.decl, st.FontSize)
+		}
+	}
+	if !st.ContentSet {
+		// content never resolved to a real value (absent, "normal"/"none", or
+		// an unsupported form like attr()/counter()) — per spec, no box at
+		// all is generated, not an empty one.
+		return Style{}, false
+	}
+	return st, true
 }
 
 // cloneProps returns a shallow copy of a custom-property map, used for

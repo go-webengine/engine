@@ -19,6 +19,15 @@ type layouter struct {
 	m       Measurer
 	imgSize map[*dom.Node][2]float64 // intrinsic sizes for <img>, may be nil
 	floats  *floatCtx
+
+	// pseudoNodes caches the synthetic ::before/::after element renderedChildren
+	// builds for a given pseudo-element style (see pseudoElementNode), so
+	// repeated calls for the same real element — layout visits a node more
+	// than once: real placement, and intrinsic-width estimation in
+	// floats.go/mincontent.go — return the SAME *dom.Node rather than a fresh
+	// one each time. Node identity matters here exactly as it does for any
+	// other node: it is the map key the style map (l.sm) itself uses.
+	pseudoNodes map[*css.Style]*dom.Node
 	// outOfFlow collects absolutely/fixed-positioned elements encountered during
 	// the in-flow pass (and while laying out other positioned subtrees). They are
 	// placed against their containing block after the in-flow layout.
