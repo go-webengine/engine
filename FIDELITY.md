@@ -18,6 +18,11 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-23 (round 182) — in PowerPoint and OpenDocument, a line that began with a smaller run was split into two text boxes in the middle of a sentence (defect, found by go-slides' callout notes after round 181)
+
+- **officecanvas**: a text shape's baseline was its top plus its FIRST run's ascent. Once a larger word joined the line, the shape's top rose to that word's, so the computed baseline was above the text and the next word was refused, opening a second box: "2 Reads" / "the input.". The shape's ascent is now the largest of its runs' ascents (they share one baseline, and the top is the highest of theirs). Round 181 exposed it: a note's callout disc became the same line's first run once inline-blocks sat on the baseline.
+- Tests: `officecanvas/officecanvas_test.go` `TestAMixedSizeLineIsOneBox`. It fails without the fix with exactly the split above.
+
 ## 2026-10-23 (round 181) — an inline-block's baseline was always its bottom edge, raising its text above the line's by its descent and half its leading (defect, found by go-slides' line numbers)
 
 Bibliography first (what was opened): CSS 2.1 §10.8 ("The baseline of an 'inline-block' is the baseline of its last line box in the normal flow, unless it has either no in-flow line boxes or if its 'overflow' property has a computed value other than 'visible', in which case the baseline is the bottom margin edge") and §10.8.1 (A' = A + L/2 above the baseline, D' = D + L/2 below).

@@ -370,11 +370,18 @@ func (c *Canvas) Glyphs(run *paint.GlyphRun) {
 	c.out.Shapes = append(c.out.Shapes, Shape{Kind: KindText, Bounds: paint.Rect{X: run.X, Y: top, W: end - run.X, H: h}, Runs: []Run{r}})
 }
 
-// ascent is the distance from a text shape's top to its first run's
-// baseline.
+// ascent is the distance from a text shape's top to its baseline: the
+// largest of its runs' ascents, since the runs of a line share one baseline
+// and the shape's top is the highest of their tops. The first run's alone was
+// short when a smaller run began the line (a list's marker, a callout's
+// number before its note), which put the baseline above the text and refused
+// the line's next word, starting a second box in the middle of the line.
 func (s *Shape) ascent() float64 {
-	r := s.Runs[0]
-	return float64(r.Face.Font.Ascent()) * r.Size / float64(r.Face.Font.UnitsPerEm())
+	var a float64
+	for _, r := range s.Runs {
+		a = math.Max(a, float64(r.Face.Font.Ascent())*r.Size/float64(r.Face.Font.UnitsPerEm()))
+	}
+	return a
 }
 
 // Baseline is a text shape's baseline, in device pixels from the page top.

@@ -55,6 +55,35 @@ func record(t *testing.T, html string) (Page, map[*opentype.Font]*Face) {
 	return c.Page(), faces
 }
 
+// A line that begins with a smaller run, then larger words, is one text box
+// with one baseline: the second word of the larger text joins it. Before, the
+// shape's baseline was its top plus the FIRST run's ascent; once the larger
+// word raised the top, that baseline was above the text and the next word
+// started a box of its own. Found by go-slides' callout notes ("2 Reads" /
+// "the input.").
+func TestAMixedSizeLineIsOneBox(t *testing.T) {
+	pg, _ := record(t, `<html><body style="margin:0;font:20px/1.5 sans-serif"><p style="margin:10px"><span style="font-size:12px">2</span> Reads the input.</p></body></html>`)
+	var boxes []string
+	for _, s := range pg.Shapes {
+		if s.Kind != KindText {
+			continue
+		}
+		var line []string
+		for _, r := range s.Runs {
+			line = append(line, r.Text)
+		}
+		boxes = append(boxes, strings.Join(line, "|"))
+		lr := s.Runs[len(s.Runs)-1]
+		big := float64(lr.Face.Font.Ascent()) * lr.Size / float64(lr.Face.Font.UnitsPerEm())
+		if d := s.Baseline() - (s.Bounds.Y + big); d > 0.01 || d < -0.01 {
+			t.Errorf("baseline %v, want the top plus the larger text's ascent %v", s.Baseline(), s.Bounds.Y+big)
+		}
+	}
+	if got := strings.Join(boxes, " / "); got != "2 |Reads the input." {
+		t.Errorf("boxes = %q, want one box: the small run, then the line", got)
+	}
+}
+
 func TestAPageBecomesShapes(t *testing.T) {
 	html := `<html><body style="margin:0;background:#102030;color:#fff;font:20px sans-serif">
 <p style="margin:10px">Hello <b>bold</b> <a href="/x" style="color:#ff0">a link</a></p>
