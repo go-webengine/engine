@@ -56,6 +56,13 @@ func TestInlineBlockBaseline(t *testing.T) {
 		a, inner, _ := textBaseline(t, `<html><body style="margin:0;font-size:10px;line-height:2">x <span style="display:inline-block"><div>one</div><div>two</div></span></body></html>`)
 		assertF(t, "Ascent", a, inner)
 	})
+	t.Run("a float after it is not in the flow", func(t *testing.T) {
+		a, inner, h := textBaseline(t, `<html><body style="margin:0;font-size:10px;line-height:2">x <span style="display:inline-block"><div>one</div><div style="float:left;width:20px;height:50px">f</div></span></body></html>`)
+		assertF(t, "Ascent", a, inner)
+		if inner > 20 {
+			t.Errorf("baseline %v of %v: the float's line, not the first div's", inner, h)
+		}
+	})
 	t.Run("no line box", func(t *testing.T) {
 		a, _, h := textBaseline(t, `<html><body style="margin:0;font-size:10px;line-height:2">x <span style="display:inline-block;width:20px;height:20px"></span></body></html>`)
 		assertF(t, "Ascent (bottom edge)", a, h)

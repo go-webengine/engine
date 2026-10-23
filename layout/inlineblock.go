@@ -79,12 +79,11 @@ func inlineBlockAscent(box *Box, st *css.Style) float64 {
 // box's own coordinates.
 func lastLineBaseline(b *Box) (float64, bool) {
 	for i := len(b.Lines) - 1; i >= 0; i-- {
-		line := b.Lines[i]
-		for _, it := range line.Items {
-			if it.BlockBreak != nil {
-				continue
-			}
-			// placeLine put every item at top + baseline - Ascent + shift.
+		// placeLine put every item at top + baseline - Ascent + shift (a
+		// line box holds no BlockBreak sentinel: placeInlineSegments takes
+		// them out before lines are placed).
+		if items := b.Lines[i].Items; len(items) > 0 {
+			it := items[0]
 			return it.Y + it.Ascent - it.BaselineShift, true
 		}
 	}
