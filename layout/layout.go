@@ -1052,7 +1052,7 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 			sb += l.takeMargin() + es.Margin.Left
 			*items = append(*items, &InlineItem{
 				Style: es, NestedBox: box, Node: el,
-				Width: box.W, Ascent: box.H, LineHeight: box.H,
+				Width: box.W, Ascent: inlineBlockAscent(box, es), LineHeight: box.H,
 				SpaceBefore: sb, decor: l.decor,
 			})
 			l.wsEmitted, l.wsPending = true, false
