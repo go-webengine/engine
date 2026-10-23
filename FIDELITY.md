@@ -18,6 +18,14 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-23 (round 181) — an inline-block's baseline was always its bottom edge, raising its text above the line's by its descent and half its leading (defect, found by go-slides' line numbers)
+
+Bibliography first (what was opened): CSS 2.1 §10.8 ("The baseline of an 'inline-block' is the baseline of its last line box in the normal flow, unless it has either no in-flow line boxes or if its 'overflow' property has a computed value other than 'visible', in which case the baseline is the bottom margin edge") and §10.8.1 (A' = A + L/2 above the baseline, D' = D + L/2 below).
+
+- **Layout** (`layout/inlineblock.go`, `layout/layout.go`): an inline-block's `Ascent` was `box.H` in every case, the spec's fallback for a box with no line box. It is now the baseline of its last in-flow line box (looking into its last in-flow children, skipping floats and absolutely positioned boxes), and the bottom edge only without one or when `overflow` is not `visible`. go-slides' line numbers, drawn as inline-blocks in a code block at line-height 1.45, sat 4.7 px above the code at 1280×720.
+- Not done: the bottom *margin* edge (vertical margins of an inline-block are not part of its item here, as before); `display:inline-flex` keeps its own rule.
+- Tests: `layout/inlineblock_baseline_test.go`: last line box, last of several lines, a line in a block child, no line box, `overflow:hidden`. The first three fail without the fix (Ascent 20 vs 8, 60 vs 48, 40 vs 28).
+
 ## 2026-10-22 (round 180) — `user-select:none` text was extracted from the vector PDF like any other (feature, found by go-slides' code callouts)
 
 Bibliography first (what was opened): CSS UI 4 §6.1 (user-select: `auto | text | none | contain | all`, not inherited, but `auto`'s used value is `none` on `::before`/`::after` and under a parent whose used value is `none`), and Poppler's `pdftotext` 26.10, tried on a hand-written PDF: a run inside `/Span <</ActualText ()>> BDC … EMC` is drawn and not extracted.

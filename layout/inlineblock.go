@@ -51,3 +51,51 @@ func (l *layouter) layoutNestedInlineBlock(el *dom.Node, st *css.Style) *Box {
 	}
 	return l.layoutIsolated(el, &clone, w)
 }
+
+// inlineBlockAscent is how far an inline-block's baseline lies below the top
+// of its box, which is where the line it sits on aligns it (CSS 2.1 §10.8):
+// "The baseline of an 'inline-block' is the baseline of its last line box in
+// the normal flow, unless it has either no in-flow line boxes or if its
+// 'overflow' property has a computed value other than 'visible', in which
+// case the baseline is the bottom margin edge."
+//
+// The engine used the bottom edge in every case, so an inline-block holding
+// text sat with its text raised by its descent and half its leading
+// (§10.8.1: A' = A + L/2 above the baseline, D' = D + L/2 below): in a
+// code block at line-height 1.45, about a fifth of an em above the line's
+// own text.
+func inlineBlockAscent(box *Box, st *css.Style) float64 {
+	if st.OverflowX.Clips() || st.OverflowY.Clips() {
+		return box.H
+	}
+	if y, ok := lastLineBaseline(box); ok {
+		return y - box.Y
+	}
+	return box.H
+}
+
+// lastLineBaseline finds the baseline of the last in-flow line box in b,
+// looking into its last in-flow children (a block holding blocks), in the
+// box's own coordinates.
+func lastLineBaseline(b *Box) (float64, bool) {
+	for i := len(b.Lines) - 1; i >= 0; i-- {
+		line := b.Lines[i]
+		for _, it := range line.Items {
+			if it.BlockBreak != nil {
+				continue
+			}
+			// placeLine put every item at top + baseline - Ascent + shift.
+			return it.Y + it.Ascent - it.BaselineShift, true
+		}
+	}
+	for i := len(b.Children) - 1; i >= 0; i-- {
+		c := b.Children[i]
+		if c.Float != css.FloatNone || c.Position == css.PositionAbsolute || c.Position == css.PositionFixed {
+			continue
+		}
+		if y, ok := lastLineBaseline(c); ok {
+			return y, true
+		}
+	}
+	return 0, false
+}
