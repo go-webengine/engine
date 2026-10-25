@@ -5,7 +5,6 @@ package engine
 
 import (
 	"context"
-	"fmt"
 	"hash/fnv"
 	"image"
 	"io"
@@ -16,7 +15,6 @@ import (
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
-	"github.com/go-webengine/engine/js"
 	"github.com/go-webengine/engine/layout"
 	"github.com/go-webengine/engine/paint"
 )
@@ -462,155 +460,117 @@ func domSignature(root *dom.Node) uint64 {
 	return h.Sum64()
 }
 
-// settle runs the layout↔JS feedback loop: it starts a JS Session against the
-// already-laid-out DOM, feeds it the real geometry, runs the page scripts, then
-// iterates cascade→layout→inject-scripts to a bounded fixpoint, updating rp in
-// place. It is deterministic and always terminates (pass cap + time budget).
-// onStage (when non-nil, from a progressive render) is called with "settle"
-// after each pass that re-laid-out the document; the caller dedups against the
-// previous emitted frame's geometry.
-//
-// settle returns the live Session rather than closing it: a one-shot render
-// (renderCoreStaged) closes it immediately after, byte-identical to before;
-// Engine.Open keeps it alive instead, across separate later interactions, via
-// LiveDocument (interactive.go) — the only reason the return value exists.
-func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, initialLayout time.Duration, onStage func(stage string, rp *renderPass)) *js.Session {
-	sess := js.Begin(doc.Root, e.jsOptions(ctx, doc, vpW, vpH))
+// settleState is what the settle loop carries between passes: the DOM
+// signature the current layout was computed from, the stylesheet links the
+// sheets were fetched for, the deadline budget, and whether a pass re-laid
+// the document out. Scripts (settle, settle_js.go) and Engine.Adjust
+// (adjust.go) settle through it alike.
+type settleState struct {
+	sig        uint64
+	prevLinks  uint64
+	layoutDur  time.Duration
+	relaidOut  bool
+	overBudget func() bool
+}
 
-	sess.SetMetrics(e.liveMetrics(doc, rp, fonts, vpW, vpH))
-	// Signature of the DOM the INITIAL layout was computed from (client-js already
-	// applied), captured before the scripts run so a mutation is detectable.
-	sig := domSignature(doc.Root)
-	sess.RunInitialScripts()
-
-	// ES modules run after classic scripts (they are deferred). goja cannot run a
-	// module graph natively, so transpile the page's <script type="module"> graph
-	// to one classic IIFE with esbuild, inject it as a classic script, and run it
-	// through the same pass. Strictly gated: a page with no module scripts skips
-	// this entirely. Best-effort — a bundle failure leaves the page as-is.
-	//
-	// Deliberately BEFORE DispatchLifecycle below, not after: a classic script
-	// above may have just created the page's <script type="module"> element(s)
-	// itself (a hand-rolled ResourceLoader, e.g. pkg.go.dev's own loadScript()
-	// helper) whose own top-level code registers a window "load" listener —
-	// see DispatchLifecycle's own doc comment for why that listener must get a
-	// chance to register before "load" fires, not after.
-	if !e.DisableJS {
-		if bundled, mstats, ok := e.bundleModuleScripts(ctx, doc); ok {
-			e.jslog(fmt.Sprintf("modules: bundled %d entr(y/ies) -> %d modules, %d->%d bytes in %s",
-				mstats.entries, mstats.fetched, mstats.bytesIn, mstats.bytesOut, mstats.wallClock))
-			injectBundledScript(doc.Root, bundled)
-		} else if mstats.entries > 0 {
-			e.jslog(fmt.Sprintf("modules: %d module script(s) not bundled (fetched=%d, errors=%d, first=%q)",
-				mstats.entries, mstats.fetched, mstats.errors, mstats.firstErr))
-		}
-	}
-	// Unconditional, not just after a successful module bundle: a classic
-	// script above may equally well have appended a plain, non-module <script>
-	// of its own (the same hand-rolled-ResourceLoader idiom, e.g. pkg.go.dev's
-	// loadScript() also loads a plain dialog-polyfill.js this way) — it too
-	// needs to run before "load" fires, for the same reason.
-	sess.RunPending()
-	sess.DispatchLifecycle()
-
+// newSettleState captures the DOM before the scripts (or Adjust) run.
+func newSettleState(ctx context.Context, doc *Document, initialLayout time.Duration) *settleState {
+	s := &settleState{sig: domSignature(doc.Root), prevLinks: linkKey(doc.Root), layoutDur: initialLayout}
 	deadline, hasDeadline := ctx.Deadline()
-	layoutDur := initialLayout
-	overBudget := func() bool { return hasDeadline && time.Until(deadline) < 2*layoutDur }
-	prevLinks := linkKey(doc.Root)
-	relaidOut := false
+	s.overBudget = func() bool { return hasDeadline && time.Until(deadline) < 2*s.layoutDur }
+	return s
+}
 
-	for pass := 0; pass < maxSettlePasses; pass++ {
-		newSig := domSignature(doc.Root)
-		if newSig == sig {
-			break // scripts changed nothing layout-relevant: initial layout stands
-		}
-		// Bound the added cost: never start a re-layout that risks blowing a
-		// caller's deadline (a very expensive page renders its pre-settle layout
-		// rather than timing out).
-		if overBudget() {
-			e.jslog("settle: re-layout skipped to respect deadline")
-			break
-		}
-		sig = newSig
-
-		// Re-collect the cascade from the MUTATED DOM: injected <style> text is
-		// picked up by the cascade's own <style> walk; injected <link> stylesheets
-		// are refetched only when the link set actually changed (bounded network).
-		if k := linkKey(doc.Root); k != prevLinks {
-			rp.sheets = e.fetchExternalSheets(ctx, doc, float64(vpW))
-			prevLinks = k
-		}
-		newSm := e.cascade(doc.Root, vpW, rp.sheets, nil, fonts)
-		start := time.Now()
-		newBox, newHeight := e.layoutDoc(doc.Root, newSm, vpW, vpH, fonts, rp.imgSize)
-		// A script's DOM/class mutation can change which elements are query
-		// containers, or their sizes, so @container queries need the same
-		// bounded re-resolution here that the initial (pre-settle) layout gets
-		// in renderCoreStaged.
-		newSm, newBox, newHeight = e.layoutWithContainers(doc.Root, rp.sheets, vpW, vpH, fonts, rp.imgSize, newSm, newBox, newHeight)
-		layoutDur = time.Since(start)
-
-		// Never let a script pass erase an already-good render: a client-side
-		// router that fails to load its own error route (observed on react.dev)
-		// can unmount the whole app tree while still leaving the DOM "changed"
-		// (so the signature check above does not save us). If the page had real
-		// content before this pass and has essentially none after it, the pass is
-		// almost certainly a broken script re-render, not an intentional wipe —
-		// keep the last good layout and stop, rather than settling on blank.
-		if !renderedEmpty(rp.box, rp.height) && renderedEmpty(newBox, newHeight) {
-			// Keeping the prior GEOMETRY is right (see above), but discarding this
-			// pass wholesale also throws away any harmless, unrelated style-only
-			// mutation that happened in the SAME script batch as whatever emptied
-			// the render — observed live on react.dev: its dark-mode toggle script
-			// (an ordinary matchMedia('(prefers-color-scheme: dark)') + classList.
-			// add('dark') on <html>, and nothing to do with hydration) runs in the
-			// same pass as a client-side router that fails to mount and empties the
-			// tree. Both mutations land in one signature check; rejecting the pass
-			// rejected the good class-toggle style change along with the bad
-			// content wipe, so the page silently stayed in its pre-JS light theme
-			// forever even though <html class="dark"> was correctly present in the
-			// final DOM. Node identity survives a script pass (mutation is in
-			// place, not a replacement), so re-skinning the PRESERVED box tree with
-			// the freshly cascaded styles is safe: geometry (X/Y/W/H/children)
-			// stays exactly as before, only each box's Style pointer is swapped to
-			// its up-to-date computed value.
-			e.jslog("settle: script pass emptied an already-rendered page; keeping prior layout, re-skinning with its styles")
-			reskin(rp.box, newSm)
-			rp.sm = newSm
-			break
-		}
-		rp.sm, rp.box, rp.height = newSm, newBox, newHeight
-		relaidOut = true
-
-		// Progressive: emit an intermediate frame for this re-laid-out pass (the
-		// interruptible-reflow analogue). The caller dedups a pass whose geometry
-		// did not visibly change from the previous emitted frame.
-		if onStage != nil {
-			onStage("settle", rp)
-		}
-
-		sess.SetMetrics(e.liveMetrics(doc, rp, fonts, vpW, vpH))
-		// Run any <script> injected since the last pass (a ResourceLoader chain).
-		// If none ran, a layout change alone triggers no further JS, so the state
-		// just computed is final.
-		if !sess.RunPending() {
-			break
-		}
+// relayoutPass is one pass of the settle loop: when the DOM changed since
+// the last layout, re-cascade and re-lay it out into rp. It returns false
+// when the loop must stop: nothing changed, the deadline is near, or the
+// pass was rejected for emptying the page.
+func (e *Engine) relayoutPass(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, s *settleState, onStage func(stage string, rp *renderPass)) bool {
+	newSig := domSignature(doc.Root)
+	if newSig == s.sig {
+		return false // scripts changed nothing layout-relevant: initial layout stands
 	}
+	// Bound the added cost: never start a re-layout that risks blowing a
+	// caller's deadline (a very expensive page renders its pre-settle layout
+	// rather than timing out).
+	if s.overBudget() {
+		e.jslog("settle: re-layout skipped to respect deadline")
+		return false
+	}
+	s.sig = newSig
 
-	// Final resource refresh: the settled DOM/CSS can reference theme-specific
-	// <img>/background bitmaps (e.g. a dark-theme set the initial light layout
-	// never fetched) or newly-injected images. When a script actually changed the
-	// layout, reload the images/backgrounds against the settled styles and lay out
-	// once more so the final paint matches — budget-gated so an expensive page is
-	// never pushed over its deadline.
-	if relaidOut && !overBudget() {
+	// Re-collect the cascade from the MUTATED DOM: injected <style> text is
+	// picked up by the cascade's own <style> walk; injected <link> stylesheets
+	// are refetched only when the link set actually changed (bounded network).
+	if k := linkKey(doc.Root); k != s.prevLinks {
+		rp.sheets = e.fetchExternalSheets(ctx, doc, float64(vpW))
+		s.prevLinks = k
+	}
+	newSm := e.cascade(doc.Root, vpW, rp.sheets, nil, fonts)
+	start := time.Now()
+	newBox, newHeight := e.layoutDoc(doc.Root, newSm, vpW, vpH, fonts, rp.imgSize)
+	// A script's DOM/class mutation can change which elements are query
+	// containers, or their sizes, so @container queries need the same
+	// bounded re-resolution here that the initial (pre-settle) layout gets
+	// in renderCoreStaged.
+	newSm, newBox, newHeight = e.layoutWithContainers(doc.Root, rp.sheets, vpW, vpH, fonts, rp.imgSize, newSm, newBox, newHeight)
+	s.layoutDur = time.Since(start)
+
+	// Never let a script pass erase an already-good render: a client-side
+	// router that fails to load its own error route (observed on react.dev)
+	// can unmount the whole app tree while still leaving the DOM "changed"
+	// (so the signature check above does not save us). If the page had real
+	// content before this pass and has essentially none after it, the pass is
+	// almost certainly a broken script re-render, not an intentional wipe —
+	// keep the last good layout and stop, rather than settling on blank.
+	if !renderedEmpty(rp.box, rp.height) && renderedEmpty(newBox, newHeight) {
+		// Keeping the prior GEOMETRY is right (see above), but discarding this
+		// pass wholesale also throws away any harmless, unrelated style-only
+		// mutation that happened in the SAME script batch as whatever emptied
+		// the render — observed live on react.dev: its dark-mode toggle script
+		// (an ordinary matchMedia('(prefers-color-scheme: dark)') + classList.
+		// add('dark') on <html>, and nothing to do with hydration) runs in the
+		// same pass as a client-side router that fails to mount and empties the
+		// tree. Both mutations land in one signature check; rejecting the pass
+		// rejected the good class-toggle style change along with the bad
+		// content wipe, so the page silently stayed in its pre-JS light theme
+		// forever even though <html class="dark"> was correctly present in the
+		// final DOM. Node identity survives a script pass (mutation is in
+		// place, not a replacement), so re-skinning the PRESERVED box tree with
+		// the freshly cascaded styles is safe: geometry (X/Y/W/H/children)
+		// stays exactly as before, only each box's Style pointer is swapped to
+		// its up-to-date computed value.
+		e.jslog("settle: script pass emptied an already-rendered page; keeping prior layout, re-skinning with its styles")
+		reskin(rp.box, newSm)
+		rp.sm = newSm
+		return false
+	}
+	rp.sm, rp.box, rp.height = newSm, newBox, newHeight
+	s.relaidOut = true
+
+	// Progressive: emit an intermediate frame for this re-laid-out pass (the
+	// interruptible-reflow analogue). The caller dedups a pass whose geometry
+	// did not visibly change from the previous emitted frame.
+	if onStage != nil {
+		onStage("settle", rp)
+	}
+	return true
+}
+
+// finishSettle is the settle loop's final resource refresh: the settled
+// DOM/CSS can reference theme-specific <img>/background bitmaps (e.g. a
+// dark-theme set the initial light layout never fetched) or newly-injected
+// images. When a pass actually changed the layout, reload the
+// images/backgrounds against the settled styles and lay out once more so the
+// final paint matches — budget-gated so an expensive page is never pushed
+// over its deadline.
+func (e *Engine) finishSettle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, s *settleState) {
+	if s.relaidOut && !s.overBudget() {
 		rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, e.deviceW(vpW))
 		rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
 		rp.box, rp.height = e.layoutDoc(doc.Root, rp.sm, vpW, vpH, fonts, rp.imgSize)
 		rp.sm, rp.box, rp.height = e.layoutWithContainers(doc.Root, rp.sheets, vpW, vpH, fonts, rp.imgSize, rp.sm, rp.box, rp.height)
 	}
-	return sess
 }
 
 // reskin walks a PRESERVED box tree (geometry already final and not to be
@@ -660,21 +620,6 @@ func linkKey(root *dom.Node) uint64 {
 		_, _ = h.Write([]byte{0})
 	}
 	return h.Sum64()
-}
-
-// jsOptions builds the Options for a Session from the engine config.
-func (e *Engine) jsOptions(ctx context.Context, doc *Document, vpW, vpH int) js.Options {
-	return js.Options{
-		PageURL:          doc.URL,
-		UserAgent:        e.UserAgent,
-		Client:           e.Client,
-		Ctx:              ctx,
-		Timeout:          e.JSTimeout,
-		ViewportWidth:    vpW,
-		ViewportHeight:   vpH,
-		DevicePixelRatio: e.devScale(),
-		Log:              e.JSLog,
-	}
 }
 
 // jslog routes an engine diagnostic to JSLog if set.

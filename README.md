@@ -104,6 +104,28 @@ so a picture is cropped to its clip and a gradient takes its clip's outline;
 `Shape.Render` draws a gradient as a picture for a format whose gradients are
 poorer.
 
+### Native adjustments and lighter builds
+
+`Engine.Adjust` runs Go where a page's scripts run. It reads the layout through a
+`*Geometry`, which answers what a script reads through CSSOM View:
+`OffsetWidth`, `ClientWidth`, `Rect`, and getComputedStyle's `Computed`, laid out
+again after each DOM change. It may change the DOM, for example with
+`dom.Node.SetStyleProperty` as `el.style.prop = …` does. The render then settles as
+it does after scripts. `JSParseFloat` and `JSNumberString` are JavaScript's
+`parseFloat` and number-to-string, so a native port of a script computes the same
+lengths. go-slides fits Marp's headings this way: a test checks that the native
+fit and the script render the same pixels.
+
+Two build tags leave out what a host does not need:
+
+| tag | leaves out | what changes |
+|---|---|---|
+| `webengine_nojs` | goja, esbuild, `Engine.Open` / `LiveDocument` / form submission | no page script runs; `Adjust` still does |
+| `webengine_nonet` | browserhttp (Chrome TLS fingerprint), the HTTP client | an http(s) URL is refused with `ErrNoNetwork`; `data:` and `file:` (under `FileRoot`) load as usual |
+
+Together they shrink go-slides' WebAssembly export worker from 21.8 to 16.4 MiB
+gzipped, measured on 2026-10-25 with go-slides v0.8.1.
+
 There is also a CLI:
 
 ```

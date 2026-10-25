@@ -1,6 +1,8 @@
 // Copyright (c) the go-webengine/engine authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
+//go:build !webengine_nojs
+
 package engine
 
 import (
@@ -337,7 +339,7 @@ func (e *Engine) fetchModuleOnce(ctx context.Context, abs string) (body string, 
 	if e.UserAgent != "" {
 		req.Header.Set("User-Agent", e.UserAgent)
 	}
-	resp, err := e.Client.Do(req)
+	resp, err := clientDo(e.Client, req)
 	if err != nil {
 		return "", true, false, 0 // network/timeout: transient
 	}

@@ -652,7 +652,7 @@ const maxRateLimitBackoff = 5 * time.Second
 // for an ordinary non-2xx status, which the caller already handles.
 func (e *Engine) doWithRateLimitRetry(ctx context.Context, req *http.Request) (resp *http.Response, ok bool) {
 	for attempt := 0; ; attempt++ {
-		resp, err := e.Client.Do(req)
+		resp, err := clientDo(e.Client, req)
 		if err != nil {
 			return nil, false
 		}

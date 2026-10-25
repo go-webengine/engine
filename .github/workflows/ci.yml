@@ -49,6 +49,39 @@ jobs:
       - name: Coverage gate (ratchet floors on pure-logic packages)
         run: bash scripts/coverage-gate.sh
 
+  # The lighter builds a host can choose: without JavaScript
+  # (webengine_nojs), without network (webengine_nonet), and both, for
+  # js/wasm too (go-slides' export worker). The full suite needs scripts and
+  # loopback servers; under the tags the tests of what they keep run.
+  tags:
+    name: tags ${{ matrix.tags }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        tags: ["webengine_nojs", "webengine_nonet", "webengine_nojs webengine_nonet"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Build and vet
+        run: |
+          go build -tags "${{ matrix.tags }}" .
+          go vet -tags "${{ matrix.tags }}" .
+
+      - name: Build for js/wasm
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: go build -tags "${{ matrix.tags }}" .
+
+      - name: Test what the tags keep
+        run: go test -short -tags "${{ matrix.tags }}" -run 'Adjust|Geometry|JSNumbers|NoNetwork' .
+
   cross-build:
     name: cross-build ${{ matrix.goarch }}
     runs-on: ubuntu-latest

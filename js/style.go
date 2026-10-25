@@ -133,40 +133,10 @@ func (b *binder) newClassList(n *dom.Node) goja.Value {
 }
 
 // parseInlineStyle splits an inline style attribute into ordered declarations.
-func parseInlineStyle(s string) [][2]string {
-	var out [][2]string
-	for _, part := range strings.Split(s, ";") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		colon := strings.IndexByte(part, ':')
-		if colon < 0 {
-			continue
-		}
-		prop := strings.TrimSpace(part[:colon])
-		val := strings.TrimSpace(part[colon+1:])
-		if prop == "" {
-			continue
-		}
-		out = append(out, [2]string{strings.ToLower(prop), val})
-	}
-	return out
-}
+func parseInlineStyle(s string) [][2]string { return dom.ParseInlineStyle(s) }
 
 // serializeInlineStyle renders ordered declarations back to a style attribute.
-func serializeInlineStyle(decls [][2]string) string {
-	var sb strings.Builder
-	for i, d := range decls {
-		if i > 0 {
-			sb.WriteString("; ")
-		}
-		sb.WriteString(d[0])
-		sb.WriteString(": ")
-		sb.WriteString(d[1])
-	}
-	return sb.String()
-}
+func serializeInlineStyle(decls [][2]string) string { return dom.SerializeInlineStyle(decls) }
 
 // camelToKebab converts a CSS-style camelCase property (backgroundColor) to its
 // hyphenated form (background-color). Already-hyphenated names pass through.
@@ -185,51 +155,11 @@ func camelToKebab(s string) string {
 }
 
 // styleProp reads a single inline property value ("" if unset).
-func styleProp(n *dom.Node, prop string) string {
-	cur, _ := n.Attribute("style")
-	for _, d := range parseInlineStyle(cur) {
-		if d[0] == prop {
-			return d[1]
-		}
-	}
-	return ""
-}
+func styleProp(n *dom.Node, prop string) string { return n.StyleProperty(prop) }
 
 // setStyleProp sets (or, for empty val, removes) a single inline property,
 // preserving declaration order.
-func setStyleProp(n *dom.Node, prop, val string) {
-	prop = strings.ToLower(strings.TrimSpace(prop))
-	if prop == "" {
-		return
-	}
-	cur, _ := n.Attribute("style")
-	decls := parseInlineStyle(cur)
-	if val == "" {
-		out := decls[:0]
-		for _, d := range decls {
-			if d[0] != prop {
-				out = append(out, d)
-			}
-		}
-		decls = out
-	} else {
-		found := false
-		for i := range decls {
-			if decls[i][0] == prop {
-				decls[i][1] = val
-				found = true
-				break
-			}
-		}
-		if !found {
-			decls = append(decls, [2]string{prop, val})
-		}
-	}
-	if n.Attr == nil {
-		n.Attr = map[string]string{}
-	}
-	n.Attr["style"] = serializeInlineStyle(decls)
-}
+func setStyleProp(n *dom.Node, prop, val string) { n.SetStyleProperty(prop, val) }
 
 // styleDynObj implements goja.DynamicObject so that both camelCase property
 // access (el.style.display = "none") and the setProperty/cssText API mutate the
