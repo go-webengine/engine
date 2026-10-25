@@ -82,8 +82,50 @@ func TestResolveCalcPercentUnresolvable(t *testing.T) {
 	if _, ok := resolveCalc("calc(50% - 10px)"); ok {
 		t.Error("percent-mixed calc() should be unresolvable")
 	}
-	if _, ok := resolveCalc("calc(50%)"); ok {
-		t.Error("bare percent calc() should be unresolvable")
+	if _, ok := resolveCalc("calc(50% - 1em)"); ok {
+		t.Error("percent-mixed calc() should be unresolvable, in any length unit")
+	}
+	if _, ok := resolveCalc("calc(50% + 2)"); ok {
+		t.Error("a percentage plus a bare number is invalid")
+	}
+	for _, bad := range []string{"calc(5px%)", "calc(1.2.3%)"} {
+		if _, ok := resolveCalc(bad); ok {
+			t.Errorf("%s is not a number", bad)
+		}
+	}
+	if _, ok := resolveCalc("calc(50% * 50%)"); ok {
+		t.Error("percentage times percentage is invalid")
+	}
+	if _, ok := resolveCalc("calc(10 / 50%)"); ok {
+		t.Error("dividing by a percentage is invalid")
+	}
+}
+
+// A sum of percentages is a percentage (CSS Values 4 §10.1): Marpit's
+// split-background offset, calc(100% - var(--marpit-advanced-background-split)),
+// is calc(100% - 40%).
+func TestResolveCalcPercentOnly(t *testing.T) {
+	for in, want := range map[string]string{
+		"calc(100% - 40%)":                 "60%",
+		"calc(50%)":                        "50%",
+		"calc(10% + 20% + 5.5%)":           "35.5%",
+		"calc(50% * 2)":                    "100%",
+		"calc(2 * 25%)":                    "50%",
+		"calc(100% / 4)":                   "25%",
+		"calc((100% - 40%) / 2)":           "30%",
+		"margin: calc(100% - 40%) 0":       "margin: 60% 0",
+		"calc(100% - 40%) calc(10% + 10%)": "60% 20%",
+	} {
+		if got, ok := resolveCalc(in); !ok || got != want {
+			t.Errorf("resolveCalc(%q) = %q,%v want %q", in, got, ok, want)
+		}
+	}
+	// a media query's calc() is in pixels: a percentage is no breakpoint
+	if _, hasUnit, ok := evalCalcExpr("100% - 40%"); ok || hasUnit {
+		t.Errorf("evalCalcExpr takes no percentages: %v %v", hasUnit, ok)
+	}
+	if v, hasUnit, ok := evalCalcExpr("10px + 5px"); !ok || !hasUnit || v != 15 {
+		t.Errorf("evalCalcExpr(10px + 5px) = %v %v %v", v, hasUnit, ok)
 	}
 }
 
