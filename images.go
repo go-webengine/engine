@@ -9,8 +9,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"image"
-	"io"
-	"net/http"
 	"net/url"
 	"runtime"
 	"strconv"
@@ -593,21 +591,8 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 			return data, true
 		}
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, abs, nil)
-	if err != nil {
-		return nil, false
-	}
-	req.Header.Set("User-Agent", e.UserAgent)
-	resp, ok := e.doWithRateLimitRetry(ctx, req)
+	data, ok := e.fetchBytes(ctx, abs, 16<<20)
 	if !ok {
-		return nil, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, false
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
 		return nil, false
 	}
 	if e.ImageCache != nil {
@@ -639,35 +624,6 @@ const defaultRateLimitBackoff = 500 * time.Millisecond
 // what a Retry-After header requests — a defensive ceiling so a misconfigured
 // or hostile server cannot stall a render by naming an absurd delay.
 const maxRateLimitBackoff = 5 * time.Second
-
-// doWithRateLimitRetry runs req via e.Client, retrying up to
-// maxRateLimitRetries times when the response is 429 Too Many Requests —
-// honouring the server's own Retry-After (delay-seconds form) when present,
-// falling back to defaultRateLimitBackoff otherwise. Any other status (or
-// response, including a real success) is returned immediately on the first
-// attempt: only a 429 triggers a wait-and-retry. req's body is nil (every
-// caller here is a bodyless GET), so the same *http.Request is safe to reuse
-// across attempts. ok is false only for a request-level error (network
-// failure, context cancelled) or exhausting all retries still 429 — never
-// for an ordinary non-2xx status, which the caller already handles.
-func (e *Engine) doWithRateLimitRetry(ctx context.Context, req *http.Request) (resp *http.Response, ok bool) {
-	for attempt := 0; ; attempt++ {
-		resp, err := clientDo(e.Client, req)
-		if err != nil {
-			return nil, false
-		}
-		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRateLimitRetries {
-			return resp, true
-		}
-		wait := retryAfterDelay(resp.Header.Get("Retry-After"))
-		resp.Body.Close()
-		select {
-		case <-time.After(wait):
-		case <-ctx.Done():
-			return nil, false
-		}
-	}
-}
 
 // retryAfterDelay parses a Retry-After header's delay-seconds form (RFC 9110
 // §10.2.3 — a non-negative integer count of seconds; the alternative

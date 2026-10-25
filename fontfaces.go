@@ -8,8 +8,6 @@ import (
 	"container/list"
 	"context"
 	"crypto/sha256"
-	"io"
-	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -259,24 +257,7 @@ func (e *Engine) fetchFontBytes(ctx context.Context, base, src string) ([]byte, 
 	if !ok || !(strings.HasPrefix(abs, "http://") || strings.HasPrefix(abs, "https://")) {
 		return nil, false
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, abs, nil)
-	if err != nil {
-		return nil, false
-	}
-	req.Header.Set("User-Agent", e.UserAgent)
-	resp, ok := e.doWithRateLimitRetry(ctx, req)
-	if !ok {
-		return nil, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, false
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxFontBytes))
-	if err != nil {
-		return nil, false
-	}
-	return data, true
+	return e.fetchBytes(ctx, abs, maxFontBytes)
 }
 
 // decodeFontFile is the gate a fetched font file passes before anyone tries to

@@ -82,7 +82,7 @@ jobs:
 
       - name: Test what the tags keep
         run: |
-          go test -short -tags "${{ matrix.tags }}" -run 'Adjust|Geometry|JSNumbers|NoNetwork|LazyFontFace' .
+          go test -short -tags "${{ matrix.tags }}" -run 'Adjust|Geometry|JSNumbers|NoNetwork|LazyFontFace|Fetcher' .
           go test -short -tags "${{ matrix.tags }}" ./paint/...
 
   cross-build:
