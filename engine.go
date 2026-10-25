@@ -25,12 +25,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-browserhttp/browserhttp"
 	"golang.org/x/net/html/charset"
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
-	"github.com/go-webengine/engine/js"
 	"github.com/go-webengine/engine/paint"
 )
 
@@ -147,16 +145,25 @@ type Engine struct {
 	// rendering many pages in one typeface (a slide deck, page by page)
 	// otherwise pays for decoding and parsing them on each.
 	FontFaces []LoadedFontFace
+
+	// Adjust, when non-nil, runs once the document is laid out, where its
+	// scripts run (after them, when JavaScript runs): native Go doing what a
+	// host would otherwise need a JavaScript engine for — go-slides fits
+	// Marp's headings to their slide this way. It reads the layout through
+	// g, as a script reads it through CSSOM View, and may change the DOM
+	// (dom.Node.SetStyleProperty, as el.style.prop = … does); the render then
+	// settles as it does after scripts, re-laid out when the DOM changed.
+	// It runs whether or not DisableJS is set, and with the webengine_nojs
+	// build tag.
+	Adjust func(ctx context.Context, root *dom.Node, g *Geometry)
 }
 
 // New returns an Engine with a browser-like HTTP client (Chrome TLS
 // fingerprint, cookie jar, redirect following).
 func New() *Engine {
-	client := browserhttp.NewClient(30 * time.Second)
-	client.Transport = newPerHostLimitedTransport(client.Transport, maxPerHostConcurrency)
 	return &Engine{
-		Client:    client,
-		UserAgent: browserhttp.DefaultUserAgent,
+		Client:    newHTTPClient(),
+		UserAgent: defaultUserAgent,
 		MaxImages: 40,
 		// 400 comfortably covers icon-dense design systems (Material, Primer,
 		// Font Awesome pages carry well under a few hundred distinct icons in the
@@ -248,7 +255,7 @@ func doGet(ctx context.Context, client *http.Client, rawurl, userAgent string) (
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	resp, err := client.Do(req)
+	resp, err := clientDo(client, req)
 	if err != nil {
 		return nil, "", "", 0, nil, err
 	}
@@ -373,7 +380,7 @@ func (e *Engine) renderCore(ctx context.Context, doc *Document, vpW, vpH int, fo
 // stage (a no-op when DisableJS); call it at the same point the Session is
 // closed — see the doc comment on settle for why it must not be called
 // early on a Session kept alive past this function's return.
-func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, onStage func(stage string, rp *renderPass)) (*renderPass, *js.Session, func()) {
+func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, onStage func(stage string, rp *renderPass)) (*renderPass, *jsSession, func()) {
 	// A page's images are loaded once here and again after every settle pass
 	// that mutates the DOM (a script may add/swap images), each time re-fetching
 	// unconditionally — e.ImageCache is opt-in and nil by default, so without
@@ -393,7 +400,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// initial cascade so the first layout — the geometry scripts read back — is
 	// already the JS-enabled one. DisableJS leaves the no-JS fallback in place.
 	if !e.DisableJS {
-		js.MarkJSEnabled(doc.Root)
+		markJSEnabled(doc.Root)
 	}
 
 	// Initial pass: fetch <link rel="stylesheet"> sheets (the dominant fidelity
@@ -466,12 +473,17 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// it uncalled until the caller is done interacting with the page (calling it
 	// early would cancel sctx and permanently poison every later script run on
 	// this same live Session — see js ctx-cancel handling in js/js.go).
-	var sess *js.Session
+	var sess *jsSession
 	stopHeap := func() {}
 	if !e.DisableJS {
 		var sctx context.Context
 		sctx, stopHeap = e.heapGuardedContext(ctx)
 		sess = e.settle(sctx, doc, vpW, vpH, fonts, rp, initialLayout, onStage)
+	}
+	// A host's native adjustment runs where (and after) the scripts do, and
+	// settles the same way (see Adjust).
+	if e.Adjust != nil {
+		e.adjust(ctx, doc, vpW, vpH, fonts, rp, initialLayout, onStage)
 	}
 
 	// A script may have set document.title; re-derive it so RenderInfo reports the

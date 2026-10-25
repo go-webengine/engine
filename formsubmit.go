@@ -1,6 +1,8 @@
 // Copyright (c) the go-webengine/engine authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
+//go:build !webengine_nojs
+
 // This file is the fallback path for a <form> whose submission ISN'T
 // intercepted by the page's own JS: LiveDocument.Submit performs the real
 // GET/POST a browser would, exactly like clicking a plain server-rendered
@@ -205,7 +207,7 @@ func (e *Engine) postForm(ctx context.Context, target string, data url.Values) (
 	if e.UserAgent != "" {
 		req.Header.Set("User-Agent", e.UserAgent)
 	}
-	resp, err := e.Client.Do(req)
+	resp, err := clientDo(e.Client, req)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,8 @@
 // Copyright (c) the go-webengine/engine authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
+//go:build !webengine_nojs
+
 // This file is the actual "drive a login form" API: Focus/Blur/Type/Click
 // synthesize the DOM events a real keystroke or mouse click produces,
 // dispatched through the LiveDocument's persistent js.Session (so a

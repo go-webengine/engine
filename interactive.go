@@ -1,6 +1,8 @@
 // Copyright (c) the go-webengine/engine authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
+//go:build !webengine_nojs
+
 // This file adds a persistent counterpart to the one-shot Render family: a
 // LiveDocument keeps a page's JS runtime alive across separate, later calls
 // instead of tearing it down at the end of one render. It exists for a host
