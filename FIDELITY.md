@@ -18,6 +18,15 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-25 (round 184) — `calc()` over percentages was dropped, so Marp's `![bg right:40%]` drew its image on the left (defect, found by go-slides' examples gallery, go-slides/slides#53)
+
+Bibliography first (what was opened): CSS Values and Units 4 §10.1 (a calculation of percentages is a percentage) and §10.9 (a `calc()` mixing types resolves at layout, against the property's percentage basis); CSS Box 3 §5 (a margin's percentage is of the containing block's width); Marpit's `advanced-background` style sheet and go-slides' own copy of it (`theme/pack.go`).
+
+- **Cause**: Marpit offsets the background layer of a right split with `margin-left: calc(100% - var(--marpit-advanced-background-split, 50%))`, and the split is a custom property of the section (`40%`). After `var()` the value is `calc(100% - 40%)`. `css/calc.go` evaluated `calc()` at the text level and refused every percentage, so the declaration was dropped, the layer stood at the left edge, and the image of `right:40%` was drawn there, in the PNG, the vector PDF and the PPTX alike. (The HTML in a browser was right: the markup was always Marpit's.)
+- **Fix** (`css/calc.go`): the parser carries a kind with each term, a number, a length or a percentage. A sum of percentages is a percentage (`calc(100% - 40%)` is `60%`), a percentage times or over a number is one, and the value goes on to the property, which resolves it at layout like a plain `60%`. Unchanged and still dropped: a percentage mixed with a length (`calc(100% - 10px)`: layout would have to resolve it), a percentage plus a bare number, percentage times percentage, a number over a percentage. A media query's `calc()` is pixels: a percentage there is still no breakpoint.
+- Not touched, found on the way: a plain `padding-left:60%` is not resolved either (a percentage padding is the same width basis as a margin).
+- Tests: `css/calc_test.go` (the sums, the refusals), `fixtures_bgsplit_test.go` (a 100px box in a 500px container, offset by 60% in nine spellings: plain, `calc()` of percentages, with `var()` and its fallback, in a flex container, after `all:initial`, under an attribute selector; the mixed case still dropped). It fails before the fix in all but the plain spelling.
+
 ## 2026-10-25 (round 183) — the vector PDF had no logical structure: a screen reader read it as a heap of words (feature, asked by go-slides)
 
 Bibliography first (what was opened): ISO 32000-1:2008 14.7.2, 14.7.4.2-4, 14.8.2.2, 14.8.5.7 (Table 349), Table 321 and 14.9.2. veraPDF's PDF/UA-1 validation profile (ISO 14289-1 rules). Skia's `SkPDFTag.cpp` and `SkPDFDevice.cpp`, which tag Chrome's printed PDFs: a mark per element id, MCIDs per page, a parent tree, artifacts by kind.

@@ -25,6 +25,10 @@ import (
 // e.g. an `<img class="size-48">` (meant to be a 192×192px avatar) fell back
 // to its raw intrinsic pixel size, rendering many times too large.
 //
+// A calc() whose terms are all percentages (CSS Values 4 §10.1: a sum of
+// percentages is a percentage) collapses to one percentage, which layout
+// resolves against the containing block as it does a plain one.
+//
 // A calc() that mixes a percentage (or vw/vh, approximated as a percentage
 // elsewhere in this package) with an absolute length cannot be collapsed to
 // a single number here — percentages resolve only against a containing
@@ -52,11 +56,18 @@ func resolveCalc(value string) (string, bool) {
 		if !ok {
 			return "", false
 		}
-		v, hasUnit, ok := evalCalcExpr(value[open+1 : closeIdx])
-		if !ok || !hasUnit {
+		v, kind, ok := evalCalc(value[open+1 : closeIdx])
+		switch {
+		case !ok || kind == calcNum:
 			return "", false
+		case kind == calcPct:
+			// every term was a percentage (calc(100% - 40%), Marpit's
+			// split-background offset): the sum is one percentage, which
+			// the property resolves at layout like any other
+			b.WriteString(strconv.FormatFloat(v, 'f', -1, 64) + "%")
+		default:
+			b.WriteString(strconv.FormatFloat(v, 'f', -1, 64) + "px")
 		}
-		b.WriteString(strconv.FormatFloat(v, 'f', -1, 64) + "px")
 		i = closeIdx + 1
 	}
 	return b.String(), true
@@ -84,16 +95,35 @@ func findCalcFunc(s string, from int) int {
 // which is invalid as a final calc() result but valid as an intermediate
 // term — a caller wanting a length should require hasUnit).
 func evalCalcExpr(s string) (val float64, hasUnit bool, ok bool) {
+	val, kind, ok := evalCalc(s)
+	if !ok || kind == calcPct {
+		return 0, false, false // a percentage is no pixel length (media queries)
+	}
+	return val, kind == calcLen, true
+}
+
+// calcKind is what a calc() term or sum is: a bare number, a length (pixels),
+// or a percentage.
+type calcKind uint8
+
+const (
+	calcNum calcKind = iota
+	calcLen
+	calcPct
+)
+
+// evalCalc evaluates the content of one calc(...) call, with its kind.
+func evalCalc(s string) (val float64, kind calcKind, ok bool) {
 	p := &calcParser{s: s}
-	val, hasUnit, ok = p.expr()
+	val, kind, ok = p.expr()
 	if !ok {
-		return 0, false, false
+		return 0, calcNum, false
 	}
 	p.skipSpace()
 	if p.i != len(p.s) {
-		return 0, false, false
+		return 0, calcNum, false
 	}
-	return val, hasUnit, true
+	return val, kind, true
 }
 
 // calcParser is a small recursive-descent parser for the arithmetic grammar
@@ -126,10 +156,10 @@ func (p *calcParser) skipSpace() {
 	}
 }
 
-func (p *calcParser) expr() (float64, bool, bool) {
+func (p *calcParser) expr() (float64, calcKind, bool) {
 	v, u, ok := p.term()
 	if !ok {
-		return 0, false, false
+		return 0, calcNum, false
 	}
 	for {
 		p.skipSpace()
@@ -141,13 +171,14 @@ func (p *calcParser) expr() (float64, bool, bool) {
 		p.skipSpace()
 		v2, u2, ok := p.term()
 		if !ok {
-			return 0, false, false
+			return 0, calcNum, false
 		}
-		// + and - require both sides to be the same kind (both lengths or
-		// both bare numbers) — CSS calc() does not let a length and a
-		// dimensionless number be added.
+		// + and - require both sides to be the same kind (all lengths, all
+		// percentages or all bare numbers) — CSS calc() does not let a length
+		// and a dimensionless number be added, and a length and a percentage
+		// are only summed at layout, which this stage cannot do.
 		if u != u2 {
-			return 0, false, false
+			return 0, calcNum, false
 		}
 		if op == '+' {
 			v += v2
@@ -158,10 +189,10 @@ func (p *calcParser) expr() (float64, bool, bool) {
 	return v, u, true
 }
 
-func (p *calcParser) term() (float64, bool, bool) {
+func (p *calcParser) term() (float64, calcKind, bool) {
 	v, u, ok := p.factor()
 	if !ok {
-		return 0, false, false
+		return 0, calcNum, false
 	}
 	for {
 		p.skipSpace()
@@ -173,21 +204,24 @@ func (p *calcParser) term() (float64, bool, bool) {
 		p.skipSpace()
 		v2, u2, ok := p.factor()
 		if !ok {
-			return 0, false, false
+			return 0, calcNum, false
 		}
 		if op == '*' {
 			// length * length has no meaning; a plain number multiplies a
-			// length (or another plain number) in either order.
-			if u && u2 {
-				return 0, false, false
+			// length or a percentage (or another plain number) in either
+			// order.
+			if u != calcNum && u2 != calcNum {
+				return 0, calcNum, false
 			}
 			v *= v2
-			u = u || u2
+			if u == calcNum {
+				u = u2
+			}
 		} else {
 			// Dividing BY a length has no meaning; the divisor must be a
 			// plain number.
-			if u2 || v2 == 0 {
-				return 0, false, false
+			if u2 != calcNum || v2 == 0 {
+				return 0, calcNum, false
 			}
 			v /= v2
 		}
@@ -195,25 +229,25 @@ func (p *calcParser) term() (float64, bool, bool) {
 	return v, u, true
 }
 
-func (p *calcParser) factor() (float64, bool, bool) {
+func (p *calcParser) factor() (float64, calcKind, bool) {
 	p.skipSpace()
 	if p.i < len(p.s) && p.s[p.i] == '(' {
 		if p.depth >= maxCalcDepth {
 			// Past the cap, treat this calc() as unparseable — the same
 			// failure this parser already returns for any other malformed
 			// input — rather than recursing further into expr.
-			return 0, false, false
+			return 0, calcNum, false
 		}
 		p.depth++
 		defer func() { p.depth-- }()
 		p.i++
 		v, u, ok := p.expr()
 		if !ok {
-			return 0, false, false
+			return 0, calcNum, false
 		}
 		p.skipSpace()
 		if p.i >= len(p.s) || p.s[p.i] != ')' {
-			return 0, false, false
+			return 0, calcNum, false
 		}
 		p.i++
 		return v, u, true
@@ -227,7 +261,7 @@ func (p *calcParser) factor() (float64, bool, bool) {
 		p.i++
 	}
 	if p.i == digitsStart {
-		return 0, false, false
+		return 0, calcNum, false
 	}
 	numStr := p.s[start:p.i]
 	unitStart := p.i
@@ -236,16 +270,25 @@ func (p *calcParser) factor() (float64, bool, bool) {
 	}
 	if p.i < len(p.s) && p.s[p.i] == '%' {
 		// A percentage cannot be resolved to a fixed number at this
-		// text-level stage (see the doc comment on resolveCalc).
-		return 0, false, false
+		// text-level stage (see the doc comment on resolveCalc), but a sum
+		// of percentages is a percentage: it is carried as one.
+		if p.i != unitStart {
+			return 0, calcNum, false
+		}
+		p.i++
+		n, err := strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, calcNum, false
+		}
+		return n, calcPct, true
 	}
 	unit := p.s[unitStart:p.i]
 	n, err := strconv.ParseFloat(numStr, 64)
 	if err != nil {
-		return 0, false, false
+		return 0, calcNum, false
 	}
 	if unit == "" {
-		return n, false, true
+		return n, calcNum, true
 	}
 	// emRef only matters for an "em" term, which real-world calc() usage
 	// (a var()-driven spacing scale, a two-length subtraction) essentially
@@ -253,9 +296,9 @@ func (p *calcParser) factor() (float64, bool, bool) {
 	// Phase-0 root size" treatment of rem elsewhere in parseLength.
 	l, ok := parseLength(numStr+unit, 16)
 	if !ok || l.IsPercent {
-		return 0, false, false
+		return 0, calcNum, false
 	}
-	return l.Px, true, true
+	return l.Px, calcLen, true
 }
 
 func isCalcDigit(c byte) bool { return c >= '0' && c <= '9' }
