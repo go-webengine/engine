@@ -18,6 +18,37 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-25 (round 186) — percentage padding, and percentage margin-top/-bottom, were kept as 0; a fixed-height block lost its margin-top (defect, found by go-slides' `bg right` work)
+
+Bibliography opened first: CSS Box 3 §5 and CSS 2.1 §8.3-8.4. Padding and margin
+percentages, on all four sides (top and bottom included), refer to the WIDTH of the
+containing block's content box. Before this, `padding-left:60%` and every other
+percentage padding parsed to 0, and only `margin-left`/`margin-right` percentages
+were resolved.
+
+Fix: the cascade keeps a percentage side as a fraction (`css.Pct4`,
+`Style.PaddingPct`, `Style.MarginVPct`; a later length or a shorthand reset clears
+it) and `layout.resolvePercentEdges` turns it into pixels in `place` and `placeFloat`,
+where the containing block's width is known, so nesting, `calc(100% - 40%)` and
+`box-sizing:border-box` (the padding comes out of the width) all follow. The
+shorthands, `padding-inline/-block` and `margin-block` are covered.
+
+A second defect surfaced while testing `margin-top:20%`: a block with an explicit
+`height` and no top border or padding dropped its own `margin-top` (px too), because
+its content top was taken from before the collapsed margin was committed. It is
+committed now (an empty box) or read from the first content edge.
+
+Known limits, still 0: a percentage padding on a flex or grid item, an inline-block
+(their layout is isolated from the containing block) and on `display:inline` boxes.
+
+Follow-up (open): resolve those too. `layoutIsolated` would take the containing
+block's width and resolve `PaddingPct`/`MarginVPct` there instead of clearing them;
+inline boxes take their padding in the inline layout, not in `place`.
+
+Tests: `fixtures_percent_edges_test.go` (four sides, shorthands, logical
+properties, calc, overrides, border-box, margins, float, nested containing blocks,
+isolated layouts).
+
 ## 2026-10-25 (round 185) — a word that filled its shrink-to-fit box exactly was broken inside it: gaia's inline `code` wrapped as "chapte" and "r" (defect, found by go-slides' examples gallery, go-slides/slides#53 follow-up)
 
 Bibliography first (what was opened): CSS Sizing 3 §5 (max-content size, shrink-to-fit: `min(max(min-content, available), max-content)`); CSS Text 3 §8.2 (letter-spacing is added after each typographic character unit, so a text's width grows by that per unit: the layout already adds it to every measure of a run, `letterSpacingWidth`) and §5.5 (`overflow-wrap:break-word` breaks a word only when it does not fit its line); Chrome's LayoutUnit (1/64 px), which is why a browser never sees two sums of one text differ.

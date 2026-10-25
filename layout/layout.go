@@ -289,6 +289,9 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 		// computed just above) rather than recursing into contents.
 		return &Box{Node: node, Style: st}
 	}
+	// A percentage padding, margin-top or margin-bottom is of the containing
+	// block's width (CSS Box 3 §5): cw, for a box placed in it.
+	st = resolvePercentEdges(st, cw)
 	box := &Box{Node: node, Style: st}
 
 	bw := st.Border.Widths()
@@ -342,6 +345,19 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 			// the alignment is safe, and an overflowing subject stays at the
 			// start edge — hence no shift when there is no free space.
 			alignShift = math.Max(h-(contentBottom-contentTopY), 0) * alignFactor
+		}
+		// Without a top separator contentTopY is still the provisional position
+		// from before the collapsed margin: a box with nothing inside commits
+		// that margin now (it cannot collapse through a box that has a height),
+		// else the content's first edge is where the margin ended. Taking
+		// contentTopY + h from the provisional one lost the margin-top of every
+		// first, fixed-height block.
+		if !sep {
+			if len(box.Children) == 0 && len(box.Lines) == 0 {
+				contentTopY = b.commit()
+			} else {
+				contentTopY = firstContentTop(box, contentTopY)
+			}
 		}
 		// An explicit height fixes the content box height; taller content
 		// overflows (overflow:visible) rather than growing the box.
@@ -732,6 +748,34 @@ func (l *layouter) placeInlineSegments(box *Box, items []*InlineItem, st *css.St
 	}
 	flushRun()
 	return b.y
+}
+
+// resolvePercentEdges returns st with its percentage paddings and its percentage
+// margin-top and margin-bottom turned into pixels against the width of the
+// containing block, cw (CSS Box 3 §5, CSS 2.1 §8.3 and §8.4: "the percentage is
+// calculated with respect to the width of the generated box's containing block",
+// for all four sides, whatever the writing mode's axis is not). A style with none
+// is returned as it is, with no copy; a percentage of an unsized block is 0.
+// Percentages count as 0 in the intrinsic widths (CSS Sizing 3 §5.2.1), which is
+// what the preferred-width paths already read.
+func resolvePercentEdges(st *css.Style, cw float64) *css.Style {
+	if !st.PaddingPct.Any() && !st.MarginVPct.Any() {
+		return st
+	}
+	if cw < 0 {
+		cw = 0
+	}
+	c := *st
+	for i := 0; i < 4; i++ {
+		if c.PaddingPct.Set[i] {
+			*c.Padding.Side(i) = c.PaddingPct.V[i] * cw
+		}
+		if c.MarginVPct.Set[i] {
+			*c.Margin.Side(i) = c.MarginVPct.V[i] * cw
+		}
+	}
+	c.PaddingPct, c.MarginVPct = css.Pct4{}, css.Pct4{}
+	return &c
 }
 
 // resolveWidths computes the used content width and left/right margins of a

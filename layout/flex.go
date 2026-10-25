@@ -619,6 +619,10 @@ func (l *layouter) layoutIsolated(node *dom.Node, st *css.Style, contentW float6
 	clone.Float = css.FloatNone
 	clone.Margin = css.Edges{}
 	clone.MarginLeftAuto, clone.MarginRightAuto = false, false
+	// A percentage here would be of the box's own width, not of its containing
+	// block's, which this isolated layout does not know: they stay 0 (the box's
+	// margins are not its own either).
+	clone.PaddingPct, clone.MarginVPct = css.Pct4{}, css.Pct4{}
 	fb := &bfc{}
 	box := l.place(node, &clone, 0, contentW, fb)
 	fb.commit()

@@ -149,6 +149,7 @@ func (f *floatCtx) findSlot(side css.Float, yTop, outerW, outerH, regionLeft, re
 // placeFloat lays out a floated element out of normal flow, positions it against
 // existing floats, records it in the float context and appends it to parent.
 func (l *layouter) placeFloat(parent *Box, node *dom.Node, st *css.Style, cx, cw float64, b *bfc) {
+	st = resolvePercentEdges(st, cw) // of the containing block's width, before the float's own
 	bw := st.Border.Widths()
 	hExtra := bw.Left + bw.Right + st.Padding.Left + st.Padding.Right
 
