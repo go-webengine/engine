@@ -1,6 +1,8 @@
 // Copyright (c) the go-webengine/engine authors.
 // SPDX-License-Identifier: BSD-3-Clause
 
+//go:build !webengine_nonet
+
 package engine
 
 import (

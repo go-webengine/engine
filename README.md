@@ -130,6 +130,10 @@ it does after scripts. `JSParseFloat` and `JSNumberString` are JavaScript's
 lengths. go-slides fits Marp's headings this way: a test checks that the native
 fit and the script render the same pixels.
 
+`Engine.Fetcher` replaces the HTTP client for every http(s) URL a render
+needs: the page, its style sheets, images and fonts. It suits a host whose
+platform fetches for it, such as a browser's `fetch` in WebAssembly.
+
 Fonts are loaded on demand. Each bundled face (Inter, Lora, Go Mono, and DejaVu
 Sans for the characters they lack) is parsed the first time a render draws it,
 not all at once. A host's installed face can be lazy too:
@@ -141,7 +145,7 @@ Three build tags leave out what a host does not need:
 | tag | leaves out | what changes |
 |---|---|---|
 | `webengine_nojs` | goja, esbuild, `Engine.Open` / `LiveDocument` / form submission | no page script runs; `Adjust` still does |
-| `webengine_nonet` | browserhttp (Chrome TLS fingerprint), the HTTP client | an http(s) URL is refused with `ErrNoNetwork`; `data:` and `file:` (under `FileRoot`) load as usual |
+| `webengine_nonet` | browserhttp (Chrome TLS fingerprint), the HTTP client; with `webengine_nojs` too, all of net/http | an http(s) URL goes to the host's `Engine.Fetcher`, or is refused with `ErrNoNetwork`; `data:` and `file:` (under `FileRoot`) load as usual |
 | `webengine_fontsext` | the 13 bundled font files (6 MiB) | the host serves `paint.BundledFontNames()` (the bytes are `paint/bundledfonts`) and calls `paint.SetFontSource` before the first render |
 
 `webengine_nojs` takes go-slides' WebAssembly export worker from 20.9 to 16.5
