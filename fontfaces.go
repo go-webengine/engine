@@ -41,6 +41,26 @@ type LoadedFontFace struct {
 	// font is Data parsed, when LoadFontFaces parsed it, so that
 	// RegisterFontFaces does not parse it again.
 	font *opentype.Font
+
+	// lazy, for a face made by LazyFontFace, fetches and parses the file
+	// when a render first draws the face (once).
+	lazy func() (*opentype.Font, error)
+}
+
+// LazyFontFace is a face for Engine.FontFaces whose file is fetched only
+// when a render first draws it: load is called then, at most once per
+// process, and its bytes parsed. A face whose load fails is passed over, as
+// one that did not parse. A host offering many installed faces of which a
+// document draws few (a slide deck's theme fonts, in a browser that fetches
+// them) loads only those.
+func LazyFontFace(family string, weight int, italic bool, load func() ([]byte, error)) LoadedFontFace {
+	return LoadedFontFace{Family: family, Weight: weight, Italic: italic, lazy: sync.OnceValues(func() (*opentype.Font, error) {
+		b, err := load()
+		if err != nil {
+			return nil, err
+		}
+		return parsedFonts.parse(b)
+	})}
 }
 
 // LoadFontFaces fetches the files the document's own @font-face rules name and
@@ -280,6 +300,12 @@ func decodeFontFile(data []byte) ([]byte, bool) {
 func RegisterFontFaces(fonts *paint.Fonts, faces []LoadedFontFace) int {
 	n := 0
 	for _, f := range faces {
+		if f.lazy != nil {
+			if fonts.RegisterLazy(f.Family, f.Weight, f.Italic, f.lazy) == nil {
+				n++
+			}
+			continue
+		}
 		ft := f.font
 		if ft == nil {
 			var err error

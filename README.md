@@ -130,15 +130,23 @@ it does after scripts. `JSParseFloat` and `JSNumberString` are JavaScript's
 lengths. go-slides fits Marp's headings this way: a test checks that the native
 fit and the script render the same pixels.
 
-Two build tags leave out what a host does not need:
+Fonts are loaded on demand. Each bundled face (Inter, Lora, Go Mono, and DejaVu
+Sans for the characters they lack) is parsed the first time a render draws it,
+not all at once. A host's installed face can be lazy too:
+`LazyFontFace(family, weight, italic, load)` fetches its file when its family is
+first drawn, and passes it over if the fetch fails.
+
+Three build tags leave out what a host does not need:
 
 | tag | leaves out | what changes |
 |---|---|---|
 | `webengine_nojs` | goja, esbuild, `Engine.Open` / `LiveDocument` / form submission | no page script runs; `Adjust` still does |
 | `webengine_nonet` | browserhttp (Chrome TLS fingerprint), the HTTP client | an http(s) URL is refused with `ErrNoNetwork`; `data:` and `file:` (under `FileRoot`) load as usual |
+| `webengine_fontsext` | the 13 bundled font files (6 MiB) | the host serves `paint.BundledFontNames()` (the bytes are `paint/bundledfonts`) and calls `paint.SetFontSource` before the first render |
 
-Together they shrink go-slides' WebAssembly export worker from 21.8 to 16.4 MiB
-gzipped, measured on 2026-10-25 with go-slides v0.8.1.
+`webengine_nojs` takes go-slides' WebAssembly export worker from 20.9 to 16.5
+MiB gzipped (measured 2026-10-25). With `webengine_fontsext`, a deck that draws
+only Inter Regular and Go Mono downloads those two files, not the other 11.
 
 There is also a CLI:
 

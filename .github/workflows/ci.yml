@@ -50,16 +50,17 @@ jobs:
         run: bash scripts/coverage-gate.sh
 
   # The lighter builds a host can choose: without JavaScript
-  # (webengine_nojs), without network (webengine_nonet), and both, for
-  # js/wasm too (go-slides' export worker). The full suite needs scripts and
-  # loopback servers; under the tags the tests of what they keep run.
+  # (webengine_nojs), without network (webengine_nonet), without embedded
+  # fonts (webengine_fontsext), and all three, for js/wasm too (go-slides'
+  # export worker). The full suite needs scripts and loopback servers; under
+  # the tags the tests of what they keep run.
   tags:
     name: tags ${{ matrix.tags }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        tags: ["webengine_nojs", "webengine_nonet", "webengine_nojs webengine_nonet"]
+        tags: ["webengine_nojs", "webengine_nonet", "webengine_fontsext", "webengine_nojs webengine_nonet webengine_fontsext"]
     steps:
       - uses: actions/checkout@v7
 
@@ -70,8 +71,8 @@ jobs:
 
       - name: Build and vet
         run: |
-          go build -tags "${{ matrix.tags }}" .
-          go vet -tags "${{ matrix.tags }}" .
+          go build -tags "${{ matrix.tags }}" . ./paint/...
+          go vet -tags "${{ matrix.tags }}" . ./paint/...
 
       - name: Build for js/wasm
         env:
@@ -80,7 +81,9 @@ jobs:
         run: go build -tags "${{ matrix.tags }}" .
 
       - name: Test what the tags keep
-        run: go test -short -tags "${{ matrix.tags }}" -run 'Adjust|Geometry|JSNumbers|NoNetwork' .
+        run: |
+          go test -short -tags "${{ matrix.tags }}" -run 'Adjust|Geometry|JSNumbers|NoNetwork|LazyFontFace' .
+          go test -short -tags "${{ matrix.tags }}" ./paint/...
 
   cross-build:
     name: cross-build ${{ matrix.goarch }}
