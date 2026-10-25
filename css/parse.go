@@ -1659,12 +1659,6 @@ func parseTextWrap(lv string) (nowrap, balance, ok bool) {
 	return nowrap, balance, ok
 }
 
-func applyEdge(dst *float64, v string, emRef float64) {
-	if l, ok := parseLength(v, emRef); ok && !l.Auto && !l.IsPercent {
-		*dst = l.Px
-	}
-}
-
 // applyMarginBlockShorthand parses the 1-or-2-value margin-block shorthand
 // (<start> [<end>]) onto the top/bottom physical edges. This engine has no
 // bidi/vertical writing-mode support anywhere, so block-start/end always map
