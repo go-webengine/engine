@@ -651,12 +651,3 @@ func TestPaintSubPixelBorderNotDrawn(t *testing.T) {
 		t.Errorf("sub-pixel border drew: %+v", c)
 	}
 }
-
-func TestMustParseFontPanics(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("mustParseFont should panic on invalid font bytes")
-		}
-	}()
-	mustParseFont([]byte("not a font"))
-}

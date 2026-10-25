@@ -14,10 +14,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/go-opentype/fonts/dejavusans"
-	"github.com/go-opentype/fonts/gomono"
-	"github.com/go-opentype/fonts/inter"
-	"github.com/go-opentype/fonts/lora"
 	"github.com/go-opentype/opentype"
 	"github.com/go-webengine/engine/css"
 )
@@ -36,7 +32,7 @@ type styleKey struct {
 // a per-size Face cache. It is not safe for concurrent use (Faces cache
 // glyphs); build one per render.
 type Fonts struct {
-	fonts map[styleKey]*opentype.Font
+	fonts map[styleKey]*lazyFont
 	faces map[faceKey]*opentype.Face
 
 	// fallback is the last-resort family — DejaVu Sans, for its coverage
@@ -46,7 +42,7 @@ type Fonts struct {
 	// per character to the system's fonts; a self-contained engine bundles
 	// its equivalent. CJK is beyond it: a character neither face covers
 	// stays with the family and draws as nothing, as before.
-	fallback      map[faceStyle]*opentype.Font
+	fallback      map[faceStyle]*lazyFont
 	fallbackFaces map[fallbackKey]*opentype.Face
 
 	// named holds the faces a document's own @font-face rules brought, keyed
@@ -56,7 +52,7 @@ type Fonts struct {
 	// heuristic picked for it. namedWeight remembers the weight each stored
 	// face carries, so a second rule for the same slot only displaces the
 	// first when it sits closer to that slot's canonical weight.
-	named       map[namedKey]*opentype.Font
+	named       map[namedKey]*lazyFont
 	namedWeight map[namedKey]int
 
 	// measureCache memoizes Measure's result per (text, family, size, weight,
@@ -122,50 +118,46 @@ type faceKey struct {
 // by every Fonts: an *opentype.Font is read-only once parsed (a Face, which
 // caches glyphs, is what is per-registry). Parsing them per registry — once
 // per render — was most of the time and allocation of rendering a small page.
+// Each face is parsed the first time a render asks for it, not all at once,
+// so a build whose fonts are fetched (webengine_fontsext, SetFontSource)
+// fetches only the faces it draws.
 func NewFonts() *Fonts {
 	b := bundled()
-	f := &Fonts{fonts: make(map[styleKey]*opentype.Font, len(b.fonts)), faces: map[faceKey]*opentype.Face{},
-		fallback: make(map[faceStyle]*opentype.Font, len(b.fallback)), fallbackFaces: map[fallbackKey]*opentype.Face{},
-		named: map[namedKey]*opentype.Font{}, namedWeight: map[namedKey]int{}}
+	f := &Fonts{fonts: make(map[styleKey]*lazyFont, len(b.fonts)), faces: map[faceKey]*opentype.Face{},
+		fallback: make(map[faceStyle]*lazyFont, len(b.fallback)), fallbackFaces: map[fallbackKey]*opentype.Face{},
+		named: map[namedKey]*lazyFont{}, namedWeight: map[namedKey]int{}}
 	maps.Copy(f.fonts, b.fonts)
 	maps.Copy(f.fallback, b.fallback)
 	return f
 }
 
-// bundledFonts are the parsed bundled families, shared read-only.
+// bundledFonts are the bundled families, parsed on first use and shared
+// read-only.
 type bundledFonts struct {
-	fonts    map[styleKey]*opentype.Font
-	fallback map[faceStyle]*opentype.Font
+	fonts    map[styleKey]*lazyFont
+	fallback map[faceStyle]*lazyFont
 }
 
-var bundled = sync.OnceValue(func() bundledFonts {
-	b := bundledFonts{fonts: map[styleKey]*opentype.Font{}, fallback: map[faceStyle]*opentype.Font{}}
-	b.fallback[faceStyle{false, false}] = mustParseFont(dejavusans.TTF)
-	b.fallback[faceStyle{true, false}] = mustParseFont(dejavusans.BoldTTF)
-	b.fallback[faceStyle{false, true}] = mustParseFont(dejavusans.ItalicTTF)
-	b.fallback[faceStyle{true, true}] = mustParseFont(dejavusans.BoldItalicTTF)
-	set := func(fam css.FontFamily, reg, bold, italic, boldItalic []byte) {
-		b.fonts[styleKey{fam, false, false}] = mustParseFont(reg)
-		b.fonts[styleKey{fam, true, false}] = mustParseFont(bold)
-		b.fonts[styleKey{fam, false, true}] = mustParseFont(italic)
-		b.fonts[styleKey{fam, true, true}] = mustParseFont(boldItalic)
+var bundled = sync.OnceValue(bundled0)
+
+func bundled0() bundledFonts {
+	b := bundledFonts{fonts: map[styleKey]*lazyFont{}, fallback: map[faceStyle]*lazyFont{}}
+	b.fallback[faceStyle{false, false}] = bundledFace(fileDejaVu)
+	b.fallback[faceStyle{true, false}] = bundledFace(fileDejaVuBold)
+	b.fallback[faceStyle{false, true}] = bundledFace(fileDejaVuItalic)
+	b.fallback[faceStyle{true, true}] = bundledFace(fileDejaVuBoldIt)
+	set := func(fam css.FontFamily, reg, bold, italic, boldItalic string) {
+		b.fonts[styleKey{fam, false, false}] = bundledFace(reg)
+		b.fonts[styleKey{fam, true, false}] = bundledFace(bold)
+		b.fonts[styleKey{fam, false, true}] = bundledFace(italic)
+		b.fonts[styleKey{fam, true, true}] = bundledFace(boldItalic)
 	}
-	set(css.Sans, inter.TTF, inter.BoldTTF, inter.ItalicTTF, inter.BoldItalicTTF)
-	set(css.Serif, lora.TTF, lora.BoldTTF, lora.ItalicTTF, lora.BoldItalicTTF)
+	set(css.Sans, fileInter, fileInterBold, fileInterItalic, fileInterBoldItalic)
+	set(css.Serif, fileLora, fileLoraBold, fileLoraItalic, fileLoraBoldItalic)
 	// Go Mono ships a single upright regular; its bold/italic requests fall back
 	// to it through font() (the family ships no other styles).
-	b.fonts[styleKey{css.Mono, false, false}] = mustParseFont(gomono.TTF)
+	b.fonts[styleKey{css.Mono, false, false}] = bundledFace(fileGoMono)
 	return b
-})
-
-// mustParseFont parses a bundled font, panicking on failure — which would be a
-// build-time defect in the fonts module, not a runtime condition.
-func mustParseFont(b []byte) *opentype.Font {
-	f, err := opentype.Parse(b)
-	if err != nil {
-		panic("paint: bundled font failed to parse: " + err.Error())
-	}
-	return f
 }
 
 // font resolves the parsed font for a (family, bold, italic) request, falling
@@ -179,26 +171,26 @@ func (f *Fonts) font(k styleKey) *opentype.Font {
 	// typeface — the upright of the right face is closer than the italic of
 	// the wrong one, which is already how the bundled Go Mono behaves.
 	for _, name := range k.fam.NamedFamilies() {
-		if ft := f.named[namedKey{name, faceStyle{k.bold, k.italic}}]; ft != nil {
+		if ft := f.named[namedKey{name, faceStyle{k.bold, k.italic}}].get(); ft != nil {
 			return ft
 		}
-		if ft := f.named[namedKey{name, faceStyle{false, false}}]; ft != nil {
+		if ft := f.named[namedKey{name, faceStyle{false, false}}].get(); ft != nil {
 			return ft
 		}
 	}
-	if ft := f.fonts[k]; ft != nil {
+	if ft := f.fonts[k].get(); ft != nil {
 		return ft
 	}
-	if ft := f.fonts[styleKey{k.fam, false, false}]; ft != nil {
+	if ft := f.fonts[styleKey{k.fam, false, false}].get(); ft != nil {
 		return ft
 	}
 	// The generic bucket, which every FontFamily carries: a key built with a
 	// named family that nothing registered still resolves to Inter/Lora/Go
 	// Mono as it did before named families existed.
-	if ft := f.fonts[styleKey{FontFamilyOf(k.fam.Generic), false, false}]; ft != nil {
+	if ft := f.fonts[styleKey{FontFamilyOf(k.fam.Generic), false, false}].get(); ft != nil {
 		return ft
 	}
-	return f.fonts[styleKey{css.Sans, false, false}]
+	return f.fonts[styleKey{css.Sans, false, false}].get()
 }
 
 // FontFamilyOf is the bare generic bucket as a FontFamily — the key the
@@ -239,6 +231,26 @@ func (f *Fonts) RegisterFont(family string, weight int, italic bool, ft *opentyp
 	if ft == nil {
 		return fmt.Errorf("paint: RegisterFont %q: no font", family)
 	}
+	return f.register(family, weight, italic, parsedLazy(ft))
+}
+
+// RegisterLazy is RegisterFont for a face parsed only when a render first
+// asks for it: load is called then, at most once, and a face whose load
+// fails is passed over as if it were not registered. A host that offers many
+// installed faces (a slide deck's theme fonts) and draws few of them
+// fetches and parses only those.
+func (f *Fonts) RegisterLazy(family string, weight int, italic bool, load func() (*opentype.Font, error)) error {
+	family = strings.ToLower(strings.TrimSpace(family))
+	if family == "" {
+		return errors.New("paint: RegisterLazy: no family name")
+	}
+	if load == nil {
+		return fmt.Errorf("paint: RegisterLazy %q: no loader", family)
+	}
+	return f.register(family, weight, italic, &lazyFont{load: load})
+}
+
+func (f *Fonts) register(family string, weight int, italic bool, ft *lazyFont) error {
 	if weight <= 0 {
 		weight = 400
 	}
@@ -405,7 +417,10 @@ type Run struct {
 // from the faces the layout measured with.
 func (f *Fonts) Runs(s string, fam css.FontFamily, weight int, italic bool) []Run {
 	prim := f.font(styleKey{fam, weight >= 600, italic})
-	fb := f.fallbackFont(weight >= 600, italic)
+	// the fallback is asked for only when the family lacks a glyph: a text
+	// its family covers never loads it
+	var fb *opentype.Font
+	fbAsked := false
 	var runs []Run
 	var b strings.Builder
 	cur := -1 // 0 family, 1 fallback, -1 none yet
@@ -425,6 +440,9 @@ func (f *Fonts) Runs(s string, fam css.FontFamily, weight int, italic bool) []Ru
 			}
 		default:
 			if _, ok := prim.GlyphIndex(r); !ok {
+				if !fbAsked {
+					fb, fbAsked = f.fallbackFont(weight >= 600, italic), true
+				}
 				if _, ok := fb.GlyphIndex(r); ok {
 					use = 1
 				}
@@ -442,7 +460,7 @@ func (f *Fonts) Runs(s string, fam css.FontFamily, weight int, italic bool) []Ru
 
 // fallbackFont returns the last-resort font for a weight/slant.
 func (f *Fonts) fallbackFont(bold, italic bool) *opentype.Font {
-	return f.fallback[faceStyle{bold, italic}]
+	return f.fallback[faceStyle{bold, italic}].get()
 }
 
 // fallbackFace returns the last-resort face at sizePx, cached.
