@@ -1392,29 +1392,27 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 	case "margin":
 		applyMarginShorthand(s, v, emRef)
 	case "margin-top":
-		applyEdge(&s.Margin.Top, v, emRef)
+		applyMarginVSide(s, 0, v, emRef)
 	case "margin-right":
 		applyMarginSide(&s.Margin.Right, &s.MarginRightAuto, &s.MarginRightIsPercent, &s.MarginRightPercent, v, emRef)
 	case "margin-bottom":
-		applyEdge(&s.Margin.Bottom, v, emRef)
+		applyMarginVSide(s, 2, v, emRef)
 	case "margin-left":
 		applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, &s.MarginLeftIsPercent, &s.MarginLeftPercent, v, emRef)
 	case "padding":
-		if e, ok := parseEdges(v, emRef); ok {
-			s.Padding = e
-		}
+		applyPaddingShorthand(s, v, emRef)
 	case "padding-top":
-		applyEdge(&s.Padding.Top, v, emRef)
+		applyPaddingSide(s, 0, v, emRef)
 	case "padding-right":
-		applyEdge(&s.Padding.Right, v, emRef)
+		applyPaddingSide(s, 1, v, emRef)
 	case "padding-bottom":
-		applyEdge(&s.Padding.Bottom, v, emRef)
+		applyPaddingSide(s, 2, v, emRef)
 	case "padding-left":
-		applyEdge(&s.Padding.Left, v, emRef)
+		applyPaddingSide(s, 3, v, emRef)
 	case "margin-block-start":
-		applyEdge(&s.Margin.Top, v, emRef)
+		applyMarginVSide(s, 0, v, emRef)
 	case "margin-block-end":
-		applyEdge(&s.Margin.Bottom, v, emRef)
+		applyMarginVSide(s, 2, v, emRef)
 	case "margin-inline-start":
 		applyMarginSide(&s.Margin.Left, &s.MarginLeftAuto, &s.MarginLeftIsPercent, &s.MarginLeftPercent, v, emRef)
 	case "margin-inline-end":
@@ -1424,13 +1422,13 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 	case "margin-inline":
 		applyMarginInlineShorthand(s, v, emRef)
 	case "padding-block-start":
-		applyEdge(&s.Padding.Top, v, emRef)
+		applyPaddingSide(s, 0, v, emRef)
 	case "padding-block-end":
-		applyEdge(&s.Padding.Bottom, v, emRef)
+		applyPaddingSide(s, 2, v, emRef)
 	case "padding-inline-start":
-		applyEdge(&s.Padding.Left, v, emRef)
+		applyPaddingSide(s, 3, v, emRef)
 	case "padding-inline-end":
-		applyEdge(&s.Padding.Right, v, emRef)
+		applyPaddingSide(s, 1, v, emRef)
 	case "padding-block":
 		applyPaddingBlockShorthand(s, v, emRef)
 	case "padding-inline":
@@ -1676,8 +1674,8 @@ func applyMarginBlockShorthand(s *Style, v string, emRef float64) {
 	if len(fields) == 0 || len(fields) > 2 {
 		return
 	}
-	applyEdge(&s.Margin.Top, fields[0], emRef)
-	applyEdge(&s.Margin.Bottom, fields[len(fields)-1], emRef)
+	applyMarginVSide(s, 0, fields[0], emRef)
+	applyMarginVSide(s, 2, fields[len(fields)-1], emRef)
 }
 
 // applyMarginInlineShorthand parses the 1-or-2-value margin-inline shorthand
@@ -1699,8 +1697,8 @@ func applyPaddingBlockShorthand(s *Style, v string, emRef float64) {
 	if len(fields) == 0 || len(fields) > 2 {
 		return
 	}
-	applyEdge(&s.Padding.Top, fields[0], emRef)
-	applyEdge(&s.Padding.Bottom, fields[len(fields)-1], emRef)
+	applyPaddingSide(s, 0, fields[0], emRef)
+	applyPaddingSide(s, 2, fields[len(fields)-1], emRef)
 }
 
 // applyPaddingInlineShorthand parses the 1-or-2-value padding-inline
@@ -1710,8 +1708,49 @@ func applyPaddingInlineShorthand(s *Style, v string, emRef float64) {
 	if len(fields) == 0 || len(fields) > 2 {
 		return
 	}
-	applyEdge(&s.Padding.Left, fields[0], emRef)
-	applyEdge(&s.Padding.Right, fields[len(fields)-1], emRef)
+	applyPaddingSide(s, 3, fields[0], emRef)
+	applyPaddingSide(s, 1, fields[len(fields)-1], emRef)
+}
+
+// applyPaddingSide sets side i of the padding (0 top, 1 right, 2 bottom, 3 left):
+// a length is pixels, a percentage is kept as a fraction of the containing block's
+// width for the layout (see Pct4). A value that does not parse changes nothing.
+func applyPaddingSide(s *Style, i int, v string, emRef float64) {
+	if l, ok := parseLength(v, emRef); ok && !l.Auto {
+		s.PaddingPct.setSide(&s.Padding, i, l)
+	}
+}
+
+// applyMarginVSide is applyPaddingSide for margin-top (0) and margin-bottom (2);
+// `auto` there is 0 and changes nothing, as before.
+func applyMarginVSide(s *Style, i int, v string, emRef float64) {
+	if l, ok := parseLength(v, emRef); ok && !l.Auto {
+		s.MarginVPct.setSide(&s.Margin, i, l)
+	}
+}
+
+// applyPaddingShorthand parses the 1-to-4 value padding shorthand, percentages
+// included; auto is 0. A list that does not parse changes nothing.
+func applyPaddingShorthand(s *Style, v string, emRef float64) {
+	fields := strings.Fields(v)
+	ls := make([]Length, 0, len(fields))
+	for _, f := range fields {
+		l, ok := parseLength(f, emRef)
+		if !ok {
+			return
+		}
+		if l.Auto {
+			l = Length{}
+		}
+		ls = append(ls, l)
+	}
+	t, r, b, l, ok := fourValues(ls)
+	if !ok {
+		return
+	}
+	for i, side := range [4]Length{t, r, b, l} {
+		s.PaddingPct.setSide(&s.Padding, i, side)
+	}
 }
 
 // parseEdges parses the 1-to-4 value shorthand for margin/padding. Percentages

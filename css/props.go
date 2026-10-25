@@ -500,7 +500,8 @@ func applyMarginShorthand(s *Style, v string, emRef float64) {
 	}
 	// top/bottom auto and top/bottom percentages both collapse to 0 in block
 	// flow — see Style.MarginLeftIsPercent's doc comment for the latter.
-	s.Margin.Top, s.Margin.Bottom = t.px, bo.px
+	s.MarginVPct.setSide(&s.Margin, 0, Length{Px: t.px, IsPercent: t.isPercent, Percent: t.percent})
+	s.MarginVPct.setSide(&s.Margin, 2, Length{Px: bo.px, IsPercent: bo.isPercent, Percent: bo.percent})
 	s.Margin.Left, s.MarginLeftAuto = l.px, l.auto
 	s.MarginLeftIsPercent, s.MarginLeftPercent = l.isPercent, l.percent
 	s.Margin.Right, s.MarginRightAuto = r.px, r.auto

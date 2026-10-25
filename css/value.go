@@ -611,6 +611,45 @@ const (
 // Edges holds the four sides of a margin or padding box, in pixels.
 type Edges struct{ Top, Right, Bottom, Left float64 }
 
+// Side is the pointer to side i of e: 0 top, 1 right, 2 bottom, 3 left.
+func (e *Edges) Side(i int) *float64 {
+	switch i {
+	case 0:
+		return &e.Top
+	case 1:
+		return &e.Right
+	case 2:
+		return &e.Bottom
+	}
+	return &e.Left
+}
+
+// Pct4 records the sides of a box edge set to a percentage, as fractions (0.6 for
+// 60%) of the containing block's WIDTH: CSS Box 3 §5 and CSS 2.1 §8.4 give
+// padding and margin percentages that basis on all four sides, top and bottom
+// included. The layout turns them into pixels once the containing block is known
+// (layout.resolvePercentEdges); the pixel value of a side that is set here is 0.
+// Index: 0 top, 1 right, 2 bottom, 3 left.
+type Pct4 struct {
+	Set [4]bool
+	V   [4]float64
+}
+
+// Any reports whether a side is a percentage.
+func (p Pct4) Any() bool { return p.Set[0] || p.Set[1] || p.Set[2] || p.Set[3] }
+
+// setSide records side i as the length l: a percentage is kept as a fraction and
+// the pixels are zeroed, any other length is the pixels and clears the percentage.
+func (p *Pct4) setSide(e *Edges, i int, l Length) {
+	if l.IsPercent {
+		p.Set[i], p.V[i] = true, l.Percent
+		*e.Side(i) = 0
+		return
+	}
+	p.Set[i], p.V[i] = false, 0
+	*e.Side(i) = l.Px
+}
+
 // Length is a resolved CSS length. Percentages are kept separately so the
 // layout can resolve them against the containing block's width.
 type Length struct {
@@ -691,15 +730,21 @@ type Style struct {
 	StrokeSet  bool
 	StrokeNone bool
 
-	Margin    Edges
-	Padding   Edges
-	Border    Borders
-	Width     Length // Auto by default
-	MinWidth  Length // Auto (== none) by default
-	MaxWidth  Length // Auto (== none) by default
-	Height    Length // Auto by default
-	MinHeight Length // Auto (== none) by default
-	MaxHeight Length // Auto (== none) by default
+	Margin  Edges
+	Padding Edges
+	// PaddingPct are the padding sides given as percentages, and MarginVPct the
+	// margin-top and margin-bottom given as percentages (left and right have
+	// MarginLeftPercent and MarginRightPercent): see Pct4. They are resolved
+	// against the containing block's width at layout.
+	PaddingPct Pct4
+	MarginVPct Pct4
+	Border     Borders
+	Width      Length // Auto by default
+	MinWidth   Length // Auto (== none) by default
+	MaxWidth   Length // Auto (== none) by default
+	Height     Length // Auto by default
+	MinHeight  Length // Auto (== none) by default
+	MaxHeight  Length // Auto (== none) by default
 	// AspectRatio is the preferred width/height ratio from `aspect-ratio:
 	// <W>/<H>` (0 means "auto", i.e. unset — no ratio constrains sizing).
 	// Confirmed load-bearing live (round 86): Next.js's own auto-generated
