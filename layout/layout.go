@@ -1870,6 +1870,17 @@ func (l *layouter) layoutInline(items []*InlineItem, st *css.Style, cx, cw, y fl
 	return lines, cursor
 }
 
+// fitEpsilon is how far past its line a run of text may reach and still count as
+// fitting: a sixty-fourth of a pixel, the precision of the layout units (LayoutUnit)
+// a browser measures in. A box sized to its content (an inline-block, a float, a
+// table cell: shrink-to-fit, CSS Sizing 3 §5) is given the max-content width of
+// its text, which is a sum of glyph advances plus the box's edges taken off again;
+// the line then measures the same text a second time, and the two sums differ by
+// the last bit of a float64. Without a tolerance a word that fills its box exactly
+// does not fit it, and is broken inside (overflow-wrap, as gaia's `chapter` in
+// `code{display:inline-block}`: "chapte" and "r") or sent to a line of its own.
+const fitEpsilon = 1.0 / 64
+
 // wrapOneLine greedily fills one line from items within maxW, stopping at a
 // forced break. Returns the line and how many items it consumed (incl. a
 // consumed LineBreak). A leading item — or an unbreakable glued run (see
@@ -1896,10 +1907,10 @@ func wrapOneLine(items []*InlineItem, maxW float64) (line *LineBox, consumed int
 		if len(line.Items) > 0 {
 			add += it.SpaceBefore
 		}
-		if len(line.Items) > 0 && w+add > maxW {
+		if len(line.Items) > 0 && w+add > maxW+fitEpsilon {
 			return line, i
 		}
-		if len(line.Items) == 0 && runW > maxW {
+		if len(line.Items) == 0 && runW > maxW+fitEpsilon {
 			return line, i
 		}
 		line.Items = append(line.Items, items[i:j]...)
@@ -1979,7 +1990,7 @@ func (l *layouter) splitOverlongWord(items []*InlineItem, maxW float64) (head, t
 		return l.m.Measure(s, st.FontFamily, st.FontSize, st.FontWeight, st.Italic) + letterSpacingWidth(s, st)
 	}
 	n := len(runes)
-	for n > 1 && measure(string(runes[:n])) > maxW {
+	for n > 1 && measure(string(runes[:n])) > maxW+fitEpsilon {
 		n--
 	}
 	headText, tailText := string(runes[:n]), string(runes[n:])
