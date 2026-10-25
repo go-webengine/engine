@@ -26,6 +26,10 @@ import (
 type Link struct {
 	Rect image.Rectangle
 	Href string
+	// Node is the <a> element, by which a tagged PDF puts the link's
+	// annotation under the link's structure element
+	// (pdfcanvas.Canvas.Element).
+	Node *dom.Node
 }
 
 // LinksFromBox walks a laid-out box tree and returns, in document order, one
@@ -84,7 +88,7 @@ func LinksFromBox(root *layout.Box, baseURL string) []Link {
 		if !ok {
 			continue
 		}
-		out = append(out, Link{Rect: rects[a], Href: href})
+		out = append(out, Link{Rect: rects[a], Href: href, Node: a})
 	}
 	return out
 }
