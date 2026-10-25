@@ -79,6 +79,20 @@ page := doc.AddPage(pdfkit.NewPageSize(960, 540)) // a CSS px is 3/4 pt
 stats := l.PaintVector(pdfcanvas.New(page, 0.75, pdfcanvas.NewFonts()))
 ```
 
+**Tagged PDF** (after v0.13.2): `c.Tag(doc.Structure())` before
+`PaintVector`, then `c.Finish()`, writes a tagged PDF that a screen reader can
+read. `PaintVector` tells a `paint.StructuredCanvas` which DOM node each
+drawing belongs to (`paint.Mark`). `pdfcanvas` builds the structure from the
+DOM as a browser's accessibility tree does:
+- headings, paragraphs, lists (`L`/`LI`/`Lbl`/`LBody`), tables (with each
+  `TH`'s `Scope`), links, images and formulas, with their `alt`,
+  `aria-label` and `lang`, in reading order;
+- backgrounds, borders, generated text (`::before`/`::after`), `user-select:
+  none` and `aria-hidden` content as artifacts.
+
+`c.Element(link.Node)` ties a link annotation to its `Link` element. Pages
+built this way pass veraPDF's PDF/UA-1 profile.
+
 What has no vector form here — a subtree under `opacity` < 1, a `filter`,
 `mask-image` or `transform: rotate()`, a blurred `box-shadow`, a gradient
 whose opacity fades between two stops, a form control — is painted by the

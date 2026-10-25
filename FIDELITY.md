@@ -18,6 +18,24 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-25 (round 183) — the vector PDF had no logical structure: a screen reader read it as a heap of words (feature, asked by go-slides)
+
+Bibliography first (what was opened): ISO 32000-1:2008 14.7.2, 14.7.4.2-4, 14.8.2.2, 14.8.5.7 (Table 349), Table 321 and 14.9.2. veraPDF's PDF/UA-1 validation profile (ISO 14289-1 rules). Skia's `SkPDFTag.cpp` and `SkPDFDevice.cpp`, which tag Chrome's printed PDFs: a mark per element id, MCIDs per page, a parent tree, artifacts by kind.
+
+- **paint**: `Mark` and `StructuredCanvas`. `PaintVector` says, before each drawing, which DOM node it belongs to.
+  - Artifacts: box decoration (shadows, backgrounds, borders, inline fragments), generated content (`#pseudo`), `aria-hidden` subtrees, `user-select:none` text, and the bitmap of an element drawn as one (its text is drawn again over it as content).
+  - A list marker is its item's label, decimal or drawn.
+- **pdfcanvas**: `Tag`, `Mark`, `Finish`, `Element`, `TextOf`. Elements come from the DOM: ARIA role first, then the tag (HTML-AAM's mappings, ISO 32000-1's standard types).
+  - Plain containers are transparent. `thead`/`tbody`/`tfoot` are too: a THead left without a TBody, when the body is clipped, fails PDF/UA.
+  - A `TH` gets its `Scope`. An `<img alt="">` or an unlabelled `<svg>` is decoration.
+  - An element is made at its first drawn content, after its ancestors, so the structure is in drawing order: the reading order for normal flow.
+  - Marks open lazily at the next drawing, so no empty sequence is written, and anything drawn before the first mark is an artifact.
+- **Link** gains `Node`.
+- **go-pdfkit** v0.18.0/v0.19.0: structure tree, artifacts, tagged links, `Attributes`.
+- Found while doing it: a decimal list marker went through `item`, which re-marked it as content of no node. `marker` now draws it under its caller's mark.
+- Measured: veraPDF 1.30.3 `--flavour ua1` passes this round's test page and 12 of go-slides' 13 oracle decks. The 13th skips a heading level in its own source (H1 then H3), which PDF/UA forbids and which the author has to fix. Chrome's PDF of the same deck (marp-cli 4.5.1) fails 7 rules.
+- Tests: `paint/mark_test.go` (every kind of mark), `pdfcanvas/tags_test.go` (the structure read back with go-pdfkit/reader; an untagged canvas marks nothing; veraPDF when installed).
+
 ## 2026-10-23 (round 182) — in PowerPoint and OpenDocument, a line that began with a smaller run was split into two text boxes in the middle of a sentence (defect, found by go-slides' callout notes after round 181)
 
 - **officecanvas**: a text shape's baseline was its top plus its FIRST run's ascent. Once a larger word joined the line, the shape's top rose to that word's, so the computed baseline was above the text and the next word was refused, opening a second box: "2 Reads" / "the input.". The shape's ascent is now the largest of its runs' ascents (they share one baseline, and the top is the highest of theirs). Round 181 exposed it: a note's callout disc became the same line's first run once inline-blocks sat on the baseline.

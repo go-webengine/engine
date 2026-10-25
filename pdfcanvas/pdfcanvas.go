@@ -24,6 +24,7 @@ import (
 	"github.com/go-opentype/opentype"
 	"github.com/go-pdfkit/pdfkit"
 	"github.com/go-webengine/engine/css"
+	"github.com/go-webengine/engine/dom"
 	"github.com/go-webengine/engine/paint"
 )
 
@@ -60,6 +61,17 @@ type Canvas struct {
 	// a shading it refuses); the call that met it drew nothing, the others
 	// went on.
 	Err error
+
+	// The structure, with Tag (tags.go): the root element, the elements
+	// made for DOM nodes, the list items' Lbl and LBody, the pending mark
+	// and the open sequence's.
+	root        *pdfkit.StructElem
+	elems       map[*dom.Node]*pdfkit.StructElem
+	lists       map[*dom.Node]*listItem
+	next, cur   paint.Mark
+	open        bool
+	curElem     *pdfkit.StructElem
+	curArtifact bool
 }
 
 var _ paint.Canvas = (*Canvas)(nil)
@@ -148,9 +160,10 @@ func (c *Canvas) withAlpha(a uint8, draw func()) {
 
 // Fill implements paint.Canvas.
 func (c *Canvas) Fill(p *paint.Path, col css.Color, evenOdd bool) {
-	if p == nil || len(p.Ops) == 0 {
+	if p == nil || len(p.Ops) == 0 || col.A == 0 {
 		return
 	}
+	c.begin()
 	c.withAlpha(col.A, func() {
 		c.p.SetFillColor(rgb(col))
 		c.path(p)
@@ -174,6 +187,7 @@ func (c *Canvas) Shade(s paint.Shading) {
 		stops[i] = pdfkit.Stop{Offset: st.Pos, Color: rgb(st.Color)}
 	}
 	sh := pdfkit.Shading{Stops: stops, ExtendStart: s.ExtendStart, ExtendEnd: s.ExtendEnd}
+	c.begin()
 	c.withAlpha(s.Stops[0].Color.A, func() {
 		if s.Radial {
 			if s.RX <= 0 || s.RY <= 0 || s.R1 <= 0 {
@@ -202,6 +216,7 @@ func (c *Canvas) Image(img image.Image, dst paint.Rect) {
 	if img == nil || dst.W <= 0 || dst.H <= 0 || img.Bounds().Empty() {
 		return
 	}
+	c.begin()
 	c.p.DrawImage(img, pdfkit.Rect{X: c.x(dst.X), Y: c.y(dst.Y + dst.H), Width: dst.W * c.s, Height: dst.H * c.s})
 }
 
@@ -220,6 +235,7 @@ func (c *Canvas) Glyphs(run *paint.GlyphRun) {
 	for i, g := range run.Glyphs {
 		gs[i] = pdfkit.Glyph{ID: g.ID, X: g.X * c.s, Text: g.Text}
 	}
+	c.begin()
 	show := func() {
 		if run.Unselectable {
 			// user-select:none: drawn, but not the document's text — an

@@ -60,12 +60,14 @@ const maxVectorScratchPixels = 64 << 20
 // for PaintFull.
 func PaintVector(c Canvas, box *layout.Box, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, page image.Rectangle) VectorStats {
 	v := &vpainter{c: c, f: f, imgs: imgs, bgImgs: bgImgs, page: page}
+	v.sc, _ = c.(StructuredCanvas)
 	v.box(box, page)
 	return v.stats
 }
 
 type vpainter struct {
 	c      Canvas
+	sc     StructuredCanvas // c, when it keeps the structure (mark.go)
 	f      *Fonts
 	imgs   map[*dom.Node]image.Image
 	bgImgs map[string]image.Image
@@ -131,6 +133,8 @@ func (v *vpainter) content(box *layout.Box, clip image.Rectangle) {
 		rad = radiusOf(st, box.W, box.H)
 	}
 	visible := drawable && overlaps(own, clip)
+	// The box's own painting, shadows to borders, is decoration.
+	v.mark(artifactMark)
 	// 1. Outset box shadows, behind the box.
 	if visible {
 		for i := len(st.BoxShadows) - 1; i >= 0; i-- {
@@ -170,8 +174,9 @@ func (v *vpainter) content(box *layout.Box, clip image.Rectangle) {
 		defer v.c.Restore()
 		v.clipRect(inner)
 	}
-	// 5.5 List marker.
+	// 5.5 List marker: the item's label.
 	if !hidden && box.Marker != nil {
+		v.mark(Mark{Node: box.Node, Label: true})
 		v.marker(box.Marker, inner)
 	}
 	// 6. Inline content: decorations, then words and atoms.
@@ -502,7 +507,10 @@ func (v *vpainter) edges(bd css.Borders, r Rect, rad float64, left, right bool) 
 // circle a one-pixel ring, a square a filled square.
 func (v *vpainter) marker(m *layout.Marker, clip image.Rectangle) {
 	if m.Type == css.ListDecimal {
-		v.item(&layout.InlineItem{Text: m.Text, Style: m.Style, X: m.X, Y: m.Y, Ascent: m.Ascent}, clip)
+		// as item draws a word, keeping the caller's mark (the item's label)
+		if m.Text != "" && m.Style != nil && m.Style.Visibility == css.VisibilityVisible {
+			v.text(m.Style, m.Text, m.X, m.Y+m.Ascent, m.Style.Color, false)
+		}
 		return
 	}
 	r := Rect{X: m.X, Y: m.Y, W: m.W, H: m.H}
@@ -532,6 +540,7 @@ func (v *vpainter) fragment(fr *layout.InlineFragment) {
 	if st == nil || fr.W <= 0 || fr.H <= 0 {
 		return
 	}
+	v.mark(artifactMark) // an inline element's background and borders
 	r := Rect{X: fr.X, Y: fr.Y, W: fr.W, H: fr.H}
 	rad := radiusOf(st, fr.W, fr.H)
 	if st.Background.A > 0 {
@@ -554,6 +563,7 @@ func (v *vpainter) item(it *layout.InlineItem, clip image.Rectangle) {
 		return
 	}
 	if it.Image != nil {
+		v.mark(contentMark(it.Image, it.Style))
 		v.image(it, clip)
 		return
 	}
@@ -566,6 +576,7 @@ func (v *vpainter) item(it *layout.InlineItem, clip image.Rectangle) {
 	if it.Text == "" || it.Style == nil {
 		return
 	}
+	v.mark(contentMark(it.Node, it.Style))
 	v.text(it.Style, it.Text, it.X, it.Y+it.Ascent, it.Style.Color, false)
 }
 
@@ -587,6 +598,7 @@ func (v *vpainter) ghostText(box *layout.Box, clip image.Rectangle) {
 	inner := descendantClip(clip, box)
 	if st.Visibility == css.VisibilityVisible {
 		if m := box.Marker; m != nil && m.Type == css.ListDecimal && m.Style != nil {
+			v.mark(Mark{Node: box.Node, Label: true})
 			v.text(m.Style, m.Text, m.X, m.Y+m.Ascent, m.Style.Color, true)
 		}
 	}
@@ -597,6 +609,7 @@ func (v *vpainter) ghostText(box *layout.Box, clip image.Rectangle) {
 				v.ghostText(it.NestedBox, inner)
 			case it.Text != "" && it.Style != nil && it.Style.Visibility == css.VisibilityVisible && it.Image == nil && it.FormControl == nil:
 				if overlaps(Rect{X: it.X, Y: it.Y, W: math.Max(it.Width, 1), H: math.Max(it.LineHeight, 1)}, inner) {
+					v.mark(contentMark(it.Node, it.Style))
 					v.text(it.Style, it.Text, it.X, it.Y+it.Ascent, it.Style.Color, true)
 				}
 			}
@@ -719,6 +732,8 @@ func (v *vpainter) raster(clip image.Rectangle, paint func(dst *image.RGBA, pp *
 	ink := inkBounds(v.scratch, v.scratch.Rect)
 	keep := ink.Intersect(clip)
 	if !keep.Empty() {
+		// the element's look; its text is drawn again over it, as content
+		v.mark(artifactMark)
 		out := image.NewNRGBA(image.Rect(0, 0, keep.Dx(), keep.Dy()))
 		for y := keep.Min.Y; y < keep.Max.Y; y++ {
 			copy(out.Pix[(y-keep.Min.Y)*out.Stride:], v.scratch.Pix[v.scratch.PixOffset(keep.Min.X, y):v.scratch.PixOffset(keep.Max.X, y)])
