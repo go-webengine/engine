@@ -41,6 +41,10 @@ committed now (an empty box) or read from the first content edge.
 Known limits, still 0: a percentage padding on a flex or grid item, an inline-block
 (their layout is isolated from the containing block) and on `display:inline` boxes.
 
+Follow-up (open): resolve those too. `layoutIsolated` would take the containing
+block's width and resolve `PaddingPct`/`MarginVPct` there instead of clearing them;
+inline boxes take their padding in the inline layout, not in `place`.
+
 Tests: `fixtures_percent_edges_test.go` (four sides, shorthands, logical
 properties, calc, overrides, border-box, margins, float, nested containing blocks,
 isolated layouts).
