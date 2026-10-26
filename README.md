@@ -209,6 +209,7 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   `mask-image` (the icon-only separator idiom, e.g. MDN's breadcrumb chevron) —
   not yet on a form control, which is still laid out as an atomic box.
 - **Colour & decoration**: named/`#rgb`/`#rrggbb`, modern `rgb()`/`hsl()`,
+  **`oklab()`/`oklch()`**, `color-mix()` (srgb/srgb-linear/oklab/oklch/hsl),
   `background-color`, **linear & radial gradients**, `background-image: url()`,
   **border** + **border-radius**, **box-shadow**, group **opacity**.
 - **Transforms and effects**: `translate` and `rotate` (the function and the
@@ -252,6 +253,11 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 
 **Honest limits (not overclaimed)**
 
+- `lab()`/`lch()` (CIE Lab, not Oklab) are not recognised — a different
+  conversion from `oklab()`/`oklch()`, which this engine does support (round
+  182). Neither supports the `none` component keyword (CSS Color 4 §4.4);
+  such a value drops the whole declaration, same as any other unsupported
+  value here.
 - `conic-gradient` is recognised but not painted. `filter` and `mask-image` are
   modelled narrowly (see above): a mask is a single `url()` stretched over the
   box, with no `mask-size`/`mask-position`/`mask-repeat`. Transforms other than
