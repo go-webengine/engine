@@ -437,10 +437,13 @@ func TestParseColorOKLabOKLCH(t *testing.T) {
 		}
 	}
 	for _, bad := range []string{
-		"oklab(50% 0)",       // too few components
-		"oklch(x% 0 0)",      // non-numeric L
+		"oklab(50% 0)",        // too few components
+		"oklch(x% 0 0)",       // non-numeric L
+		"oklch(50% x 0)",      // non-numeric C
+		"oklch(50% 0 xdeg)",   // non-numeric H
+		"oklab(50% 0 x)",      // non-numeric b
 		"oklch(50% 0 0 / xx)", // bad alpha
-		"oklab(50% 0 0",      // no closing paren
+		"oklab(50% 0 0",       // no closing paren
 	} {
 		if c, ok := parseColor(bad); ok {
 			t.Errorf("parseColor(%q) unexpectedly ok: %+v", bad, c)
