@@ -195,3 +195,79 @@ func TestPlainElementHasNilShadowFields(t *testing.T) {
 		t.Errorf("plain element has shadow fields set: Shadow=%v ShadowHost=%v", p.Shadow, p.ShadowHost)
 	}
 }
+
+// TestShadowRootAppendChildPlainNode covers the imperative counterpart to
+// declarative shadow DOM (round 183, engine#319): a plain node appended to
+// an empty ShadowRoot ends up in Children with a nil Parent and the right
+// ShadowHost, exactly as attachDeclarativeShadowRoots's own construction
+// leaves its content.
+func TestShadowRootAppendChildPlainNode(t *testing.T) {
+	host := NewElement("my-widget")
+	sr := &ShadowRoot{Host: host}
+	child := NewElement("span")
+	sr.AppendChild(child)
+	if len(sr.Children) != 1 || sr.Children[0] != child {
+		t.Fatalf("Children = %v, want [child]", sr.Children)
+	}
+	if child.Parent != nil {
+		t.Errorf("child.Parent = %v, want nil", child.Parent)
+	}
+	if child.ShadowHost != host {
+		t.Errorf("child.ShadowHost = %v, want %v", child.ShadowHost, host)
+	}
+}
+
+// TestShadowRootAppendChildDetachesFromExistingParent covers that moving an
+// already-attached node into a shadow tree removes it from its old parent's
+// light-DOM Children first — the same "move, not copy" semantics the
+// light-DOM AppendChild already has.
+func TestShadowRootAppendChildDetachesFromExistingParent(t *testing.T) {
+	oldParent := NewElement("div")
+	child := NewElement("span")
+	AppendChild(oldParent, child)
+	host := NewElement("my-widget")
+	sr := &ShadowRoot{Host: host}
+	sr.AppendChild(child)
+	if len(oldParent.Children) != 0 {
+		t.Errorf("child not removed from its old parent: %v", oldParent.Children)
+	}
+	if len(sr.Children) != 1 || sr.Children[0] != child {
+		t.Fatalf("Children = %v, want [child]", sr.Children)
+	}
+}
+
+// TestShadowRootAppendChildUnwrapsFragment covers the actual confirmed real
+// trigger this round closes: `<template>.content.cloneNode(true)` returns a
+// fresh #fragment wrapping the real clone (cloneNode's own documented
+// template-content handling), and appending it must unwrap it into
+// Children directly — exactly as the light-DOM AppendChild already does for
+// a DocumentFragment — or the real content ends up one level too deep for
+// cascade/layout's renderedChildren to ever reach.
+func TestShadowRootAppendChildUnwrapsFragment(t *testing.T) {
+	host := NewElement("my-widget")
+	sr := &ShadowRoot{Host: host}
+	frag := &Node{Type: Element, Tag: "#fragment", Attr: map[string]string{}}
+	a := NewElement("span")
+	b := NewElement("em")
+	AppendChild(frag, a)
+	AppendChild(frag, b)
+	sr.AppendChild(frag)
+	if len(sr.Children) != 2 || sr.Children[0] != a || sr.Children[1] != b {
+		t.Fatalf("Children = %v, want [a, b] (the fragment unwrapped, not itself appended)", sr.Children)
+	}
+	if a.Parent != nil || b.Parent != nil {
+		t.Errorf("unwrapped children still have a Parent: a=%v b=%v", a.Parent, b.Parent)
+	}
+	if a.ShadowHost != host || b.ShadowHost != host {
+		t.Errorf("unwrapped children missing ShadowHost: a=%v b=%v want %v", a.ShadowHost, b.ShadowHost, host)
+	}
+}
+
+// TestShadowRootAppendChildNilIsNoOp covers the nil guard.
+func TestShadowRootAppendChildNilIsNoOp(t *testing.T) {
+	sr := &ShadowRoot{Host: NewElement("my-widget")}
+	sr.AppendChild(nil)
+	if len(sr.Children) != 0 {
+		t.Errorf("Children = %v, want empty", sr.Children)
+	}
+}

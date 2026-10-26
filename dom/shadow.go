@@ -5,12 +5,13 @@ package dom
 
 // ShadowRoot is a shadow tree attached to a host element: a separate node
 // list, distinct from the host's own (light-DOM) Children, that cascade and
-// layout render in the host's place. It models declarative Shadow DOM only
-// (a <template shadowrootmode="open"|"closed"> consumed at parse time — see
-// attachDeclarativeShadowRoots); there is no imperative attachShadow()/
-// customElements.define() path. "open" and "closed" are treated identically
-// for rendering (the distinction only affects JS .shadowRoot introspection,
-// out of scope here), so the mode itself is not recorded.
+// layout render in the host's place. It is built either declaratively (a
+// <template shadowrootmode="open"|"closed"> consumed at parse time — see
+// attachDeclarativeShadowRoots) or imperatively (JS calling attachShadow(),
+// then appendChild() on the result — see js/customelements.go, round 183).
+// "open" and "closed" are treated identically for rendering (the distinction
+// only affects JS .shadowRoot introspection, out of scope here), so the mode
+// itself is not recorded.
 type ShadowRoot struct {
 	// Host is the element this shadow root is attached to.
 	Host *Node
@@ -20,6 +21,40 @@ type ShadowRoot struct {
 	// pointers are nil (they are the root of a separate tree); descendants
 	// further down keep the ordinary Parent chain within the shadow tree.
 	Children []*Node
+}
+
+// AppendChild appends child to sr's own top-level child list, detaching it
+// from wherever it currently lives first — the imperative counterpart to
+// attachDeclarativeShadowRoots's construction of a <template shadowrootmode>
+// shadow root at parse time, used by the JS binding's attachShadow()/
+// ShadowRoot.appendChild() (see js/customelements.go). Matches that
+// construction exactly: each appended node's Parent is cleared (a shadow
+// tree's own top-level nodes are not reached through the ordinary Parent
+// chain, see this type's own doc comment above) and the subtree is
+// (re)marked with sr.Host via markShadowHost.
+//
+// A DocumentFragment child is unwrapped per spec, same as the light-DOM
+// dom.AppendChild's own identical case (see its doc comment) — the
+// confirmed real trigger here is exactly that shape: a <template>'s
+// .content.cloneNode(true) returns a fresh #fragment wrapping the real
+// clone, and appending it directly (without unwrapping) would leave that
+// synthetic #fragment node itself as the one and only shadow child, with
+// the actual cloned content buried one level too deep for cascade/layout's
+// renderedChildren to ever reach.
+func (sr *ShadowRoot) AppendChild(child *Node) {
+	if child == nil {
+		return
+	}
+	if isFragment(child) {
+		for _, gc := range append([]*Node{}, child.Children...) {
+			sr.AppendChild(gc)
+		}
+		return
+	}
+	RemoveChild(child.Parent, child)
+	child.Parent = nil
+	sr.Children = append(sr.Children, child)
+	markShadowHost(child, sr.Host)
 }
 
 // firstElementChild returns n's first Element-type child, or nil. Unlike

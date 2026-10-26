@@ -280,8 +280,17 @@ func (b *binder) ctorOf(g *goja.Object, name string) *goja.Object {
 
 // newInterfaceCtor builds the goja constructable for one interface. Structural
 // interfaces return call.This unchanged (so `class C extends X {}` and direct
-// `new X()` both yield an instance with the correct prototype); DOMException and
-// the Event family populate the instance with their real fields.
+// `new X()` both yield an instance with the correct prototype) — UNLESS a
+// custom-element upgrade is in progress (b.pendingUpgrade, set by
+// upgradeElement in customelements.go), in which case the real element's own
+// wrapper is returned instead, discarding the fresh object goja's own
+// [[Construct]] already allocated for call.This. This is the same trick the
+// HTML spec's own "upgrade an element" algorithm uses (a per-realm
+// construction stack the base HTMLElement constructor consults): it is what
+// makes `super()`, inside a `class X extends HTMLElement` constructor invoked
+// during an upgrade, end up mutating the REAL element rather than an
+// orphaned object with no connection to the DOM. DOMException and the Event
+// family populate the instance with their real fields.
 func (b *binder) newInterfaceCtor(name string, proto *goja.Object) *goja.Object {
 	var fn func(goja.ConstructorCall) *goja.Object
 	switch {
@@ -299,8 +308,14 @@ func (b *binder) newInterfaceCtor(name string, proto *goja.Object) *goja.Object 
 			return o
 		}
 	default:
-		// Structural interface: honour the (possibly subclassed) call.This.
-		fn = func(call goja.ConstructorCall) *goja.Object { return nil }
+		// Structural interface: honour the (possibly subclassed) call.This,
+		// unless an upgrade is pending — see the doc comment above.
+		fn = func(call goja.ConstructorCall) *goja.Object {
+			if b.pendingUpgrade != nil {
+				return b.pendingUpgrade
+			}
+			return nil
+		}
 	}
 	return b.vm.ToValue(fn).(*goja.Object)
 }

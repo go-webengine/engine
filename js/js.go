@@ -145,6 +145,24 @@ type binder struct {
 	// currentTime/play/pause's own doc comment in dom.go.
 	mediaTime   map[*dom.Node]float64
 	mediaPaused map[*dom.Node]bool
+
+	// customElements holds every live customElements.define(name, ctor) —
+	// see newCustomElementRegistry (window.go) and upgradeExisting
+	// (customelements.go).
+	customElements map[string]goja.Value
+	// pendingUpgrade is set for the duration of upgradeElement's call into a
+	// custom element constructor: the real element's own wrapper, which
+	// newInterfaceCtor's structural-interface branch returns in place of the
+	// fresh object goja's own [[Construct]] would otherwise allocate for
+	// call.This, so `super()` ends up mutating the REAL element. Nil the rest
+	// of the time (ordinary `new SomeClass extends HTMLElement` outside an
+	// upgrade is unaffected).
+	pendingUpgrade *goja.Object
+	// shadowCache caches each ShadowRoot's own JS wrapper by pointer, the
+	// same identity-preserving role b.cache plays for *dom.Node (el.shadowRoot
+	// read twice, or compared against attachShadow()'s own return value, must
+	// be the same object).
+	shadowCache map[*dom.ShadowRoot]*goja.Object
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled
