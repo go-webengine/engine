@@ -1544,6 +1544,9 @@ func parseColor(s string) (Color, bool) {
 	if strings.HasPrefix(s, "color-mix(") {
 		return parseColorMix(s)
 	}
+	if strings.HasPrefix(s, "oklab(") || strings.HasPrefix(s, "oklch(") {
+		return parseOKColor(s)
+	}
 	return Color{}, false
 }
 
@@ -1688,6 +1691,93 @@ func parseAlpha(p string) (uint8, bool) {
 		return 0, false
 	}
 	return clampByte(f * 255), true
+}
+
+// parseOKColor parses oklab()/oklch() (CSS Color 4 §9.2/§9.4) as a plain
+// colour value — not only inside color-mix(), which already had the
+// conversion math (colormix.go's toMix/fromMix, built for `color-mix(in
+// oklch, ...)`) but never reached it from a bare oklab()/oklch() value.
+// Confirmed live: w3.org's own CSS Color 4 spec page uses both directly in
+// inline `style` attributes (`oklch(65% 0.15 270)`, `lab(57.9% 11.4 -53.7)`
+// gradient stops). Each function takes three whitespace-separated components
+// (a <number> or <percentage>, per the function's own reference range below)
+// and an optional "/ alpha" (reusing parseAlpha, the same number-or-percentage
+// rule rgb()/hsl() already use). The `none` keyword (CSS Color 4 §4.4) is not
+// supported — no confirmed real-world trigger uses it, so it is dropped like
+// any other unsupported value in this codebase. `lab()`/`lch()` (CIE Lab, a
+// different conversion from OKLab) are a separate gap, not attempted here.
+func parseOKColor(s string) (Color, bool) {
+	isLCH := strings.HasPrefix(s, "oklch")
+	open := strings.IndexByte(s, '(')
+	close := strings.LastIndexByte(s, ')')
+	if open < 0 || close < open {
+		return Color{}, false
+	}
+	inside := s[open+1 : close]
+	alphaStr := ""
+	haveAlpha := false
+	if i := strings.IndexByte(inside, '/'); i >= 0 {
+		alphaStr = strings.TrimSpace(inside[i+1:])
+		inside = inside[:i]
+		haveAlpha = true
+	}
+	fields := strings.Fields(inside)
+	if len(fields) != 3 {
+		return Color{}, false
+	}
+	a := uint8(255)
+	if haveAlpha {
+		av, ok := parseAlpha(alphaStr)
+		if !ok {
+			return Color{}, false
+		}
+		a = av
+	}
+	// L: 0% = 0.0, 100% = 1.0 for both functions.
+	l, ok := parseOKComponent(fields[0], 1.0)
+	if !ok {
+		return Color{}, false
+	}
+	var rf, gf, bf float64
+	if isLCH {
+		// C: 0% = 0.0, 100% = 0.4. H is a <hue>: a bare number is degrees,
+		// matching this file's existing hsl() convention (parseHSLChannels)
+		// of accepting a bare number or an explicit "deg" suffix only.
+		c, ok1 := parseOKComponent(fields[1], 0.4)
+		h, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(fields[2], "deg")), 64)
+		if !ok1 || err != nil {
+			return Color{}, false
+		}
+		rf, gf, bf = gfxcolor.OKLCHToSRGB(gfxcolor.OKLCH{L: l, C: c, H: h})
+	} else {
+		// a, b: -100% = -0.4, 100% = 0.4.
+		ca, ok1 := parseOKComponent(fields[1], 0.4)
+		cb, ok2 := parseOKComponent(fields[2], 0.4)
+		if !ok1 || !ok2 {
+			return Color{}, false
+		}
+		rf, gf, bf = gfxcolor.OKLabToSRGB(gfxcolor.OKLab{L: l, A: ca, B: cb})
+	}
+	return Color{clampByte(rf * 255), clampByte(gf * 255), clampByte(bf * 255), a}, true
+}
+
+// parseOKComponent parses one oklab()/oklch() numeric component: a bare
+// <number>, taken as-is, or a <percentage>, scaled by full — the value its
+// own 100% maps to (1.0 for L, 0.4 for a/b/C, CSS Color 4 §9.2/§9.4).
+func parseOKComponent(p string, full float64) (float64, bool) {
+	p = strings.TrimSpace(p)
+	if strings.HasSuffix(p, "%") {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p[:len(p)-1]), 64)
+		if err != nil {
+			return 0, false
+		}
+		return f / 100 * full, true
+	}
+	f, err := strconv.ParseFloat(p, 64)
+	if err != nil {
+		return 0, false
+	}
+	return f, true
 }
 
 // parseHSLChannels converts hue/saturation/lightness (h in degrees, s and l as

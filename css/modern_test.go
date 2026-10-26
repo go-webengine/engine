@@ -405,6 +405,74 @@ func TestHSLHueSectors(t *testing.T) {
 	}
 }
 
+// TestParseColorOKLabOKLCH covers oklab()/oklch() (CSS Color 4 §9.2/§9.4) as
+// a plain colour value, not only inside color-mix() — the confirmed real
+// trigger is w3.org's own CSS Color 4 spec page, which uses both directly in
+// inline `style` attributes. The grey/white/black cases reuse the exact
+// numbers TestParseColorMix already established for color-mix(in oklab/
+// oklch, ...) at the SAME lightness, since oklab()/oklch() alone go through
+// the identical OKLab/OKLCH→sRGB conversion (colormix.go's fromMix) with no
+// interpolation involved — a passing color-mix() case and a failing bare
+// oklch() case would mean this dispatch, not the underlying math, is wrong.
+func TestParseColorOKLabOKLCH(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want Color
+	}{
+		{"oklab(50% 0 0)", Color{99, 99, 99, 255}},  // matches color-mix(in oklab, white, black)
+		{"oklch(50% 0 0)", Color{99, 99, 99, 255}},  // matches color-mix(in oklch, white, black)
+		{"oklab(100% 0 0)", Color{255, 255, 255, 255}},
+		{"oklab(0% 0 0)", Color{0, 0, 0, 255}},
+		{"oklch(100% 0 0)", Color{255, 255, 255, 255}},
+		{"oklch(0% 0 0)", Color{0, 0, 0, 255}},
+		{"oklab(0.5 0 0)", Color{99, 99, 99, 255}},  // bare number: same scale as the percentage
+		{"oklch(0.5 0 0)", Color{99, 99, 99, 255}},
+		{"oklch(50% 0 0 / 0.5)", Color{99, 99, 99, 128}}, // slash alpha
+		{"oklch(50% 0 0 / 50%)", Color{99, 99, 99, 128}}, // percentage alpha
+		{"oklch(50% 0 90deg)", Color{99, 99, 99, 255}},   // achromatic: hue is powerless regardless of unit
+	} {
+		got, ok := parseColor(tc.in)
+		if !ok || !near(got.R, tc.want.R) || !near(got.G, tc.want.G) || !near(got.B, tc.want.B) || !near(got.A, tc.want.A) {
+			t.Errorf("parseColor(%q) = %v,%v want %v", tc.in, got, ok, tc.want)
+		}
+	}
+	for _, bad := range []string{
+		"oklab(50% 0)",        // too few components
+		"oklch(x% 0 0)",       // non-numeric L
+		"oklch(50% x 0)",      // non-numeric C
+		"oklch(50% 0 xdeg)",   // non-numeric H
+		"oklab(50% 0 x)",      // non-numeric b
+		"oklch(50% 0 0 / xx)", // bad alpha
+		"oklab(50% 0 0",       // no closing paren
+	} {
+		if c, ok := parseColor(bad); ok {
+			t.Errorf("parseColor(%q) unexpectedly ok: %+v", bad, c)
+		}
+	}
+}
+
+// TestParseColorOKLabOKLCHCascade proves oklch()/oklab() resolve through the
+// real cascade, not just parseColor in isolation — color, background-color
+// and a gradient stop (the confirmed trigger's own linear-gradient() usage).
+func TestParseColorOKLabOKLCHCascade(t *testing.T) {
+	html := `<html><head><style>
+	.a{color:oklch(50% 0 0)}
+	.b{background-color:oklab(100% 0 0)}
+	.c{background-image:linear-gradient(to right, oklch(0% 0 0), oklch(100% 0 0))}
+	</style></head><body><p class="a">a</p><p class="b">b</p><div class="c">c</div></body></html>`
+	sm := cascadeHTML(t, html)
+	if got := findStyle(t, sm, "a").Color; !colorNear(got, Color{99, 99, 99, 255}, 1) {
+		t.Errorf(".a color = %+v want ~{99 99 99 255}", got)
+	}
+	if got := findStyle(t, sm, "b").Background; got != (Color{255, 255, 255, 255}) {
+		t.Errorf(".b background = %+v want white", got)
+	}
+	c := findStyle(t, sm, "c")
+	if len(c.BackgroundImages) != 1 || c.BackgroundImages[0].Kind != BgGradient {
+		t.Fatalf(".c should have one gradient background-image, got %+v", c.BackgroundImages)
+	}
+}
+
 func TestRGBChannelAndAlphaPercentErrors(t *testing.T) {
 	// Percentage-form channel / alpha with a non-numeric body must fail cleanly.
 	for _, in := range []string{"rgb(x% 0% 0%)", "rgb(1 2 3 / x%)"} {
