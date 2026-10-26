@@ -199,6 +199,22 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		b.accessor(o, "content", func() goja.Value { return b.wrap(n.Content) }, nil)
 	}
 
+	// shadowRoot/attachShadow (round 183, engine#319): dom.ShadowRoot is now
+	// built imperatively too, not only by attachDeclarativeShadowRoots at
+	// parse time — see that type's own doc comment. attachShadow() ignores
+	// its options argument (mode is not recorded, matching the existing
+	// declarative-shadow-DOM policy) and, called again on an already-attached
+	// host, returns the existing root rather than throwing — this codebase's
+	// established "present-but-inert beats absent-and-throwing" convention
+	// for a case with no confirmed real caller.
+	b.accessor(o, "shadowRoot", func() goja.Value { return b.wrapShadowRoot(n.Shadow) }, nil)
+	o.Set("attachShadow", func(call goja.FunctionCall) goja.Value {
+		if n.Shadow == nil {
+			n.Shadow = &dom.ShadowRoot{Host: n}
+		}
+		return b.wrapShadowRoot(n.Shadow)
+	})
+
 	b.accessor(o, "children", func() goja.Value { return b.wrapList(elementChildren(n)) }, nil)
 	b.accessor(o, "childNodes", func() goja.Value { return b.wrapList(n.Children) }, nil)
 	b.accessor(o, "childElementCount", func() goja.Value { return b.vm.ToValue(len(elementChildren(n))) }, nil)

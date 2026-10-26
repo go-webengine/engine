@@ -915,18 +915,19 @@ func TestCustomElementsRegistry(t *testing.T) {
 	// and, with nothing stopping the throw, never reaches the REST of that
 	// same script file, including an unrelated `classList.remove("no-js")`
 	// call that several nav links and controls depend on being CSS-unhidden
-	// (engine#130). define/get/upgrade are harmless no-ops (this engine has
-	// no custom-element upgrade machinery — a real, already-documented gap,
-	// not attempted here) and whenDefined resolves immediately, since nothing
-	// is ever "defined" to legitimately keep it pending on.
+	// (engine#130). define() now does real work (round 183, engine#319:
+	// customelements_test.go covers the upgrade+attachShadow mechanism
+	// itself) — get()/whenDefined() reflect what it recorded, but there is
+	// no 'x-foo' element anywhere in this page, so no construction happens
+	// (upgrade() stays a no-op regardless).
 	_, logs, _ := runJS(t, page(`
 		console.log('type='+(typeof customElements));
 		console.log('define='+customElements.define('x-foo', function(){}));
-		console.log('get='+customElements.get('x-foo'));
+		console.log('get='+(typeof customElements.get('x-foo')));
 		console.log('upgrade='+customElements.upgrade(document.body));
 		customElements.whenDefined('x-foo').then(function(v){ console.log('whenDefined='+v); });
 	`))
-	mustHave(t, logs, "type=object", "define=undefined", "get=undefined",
+	mustHave(t, logs, "type=object", "define=undefined", "get=function",
 		"upgrade=undefined", "whenDefined=undefined")
 }
 

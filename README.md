@@ -238,8 +238,12 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   attribute), and a row's own CSS `height` as its minimum.
 - **Form controls**: inputs and buttons with UA chrome, and checkboxes/radios
   honouring `appearance: none` (custom toggle switches).
-- **Containers and shadow DOM**: `@container` size queries, and declarative
-  shadow DOM (`<template shadowrootmode>`) with `<slot>` distribution.
+- **Containers and shadow DOM**: `@container` size queries, declarative
+  shadow DOM (`<template shadowrootmode>`) with `<slot>` distribution, and
+  (round 183) imperative `attachShadow()`/`customElements.define()` —
+  upgrading an already-parsed element whose constructor attaches a shadow
+  tree, the custom-element polyfill idiom confirmed live on
+  developer.apple.com.
 - **Images**: `<img>` over http(s) + `data:` (PNG/JPEG) and **SVG**
   ([go-gfx/oksvg](https://github.com/go-gfx/oksvg), a fork of srwiley/oksvg
   with `clipPath`, over rasterx) via `<img *.svg>`, `data:image/svg+xml` and **inline `<svg>`**.
@@ -253,6 +257,14 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 
 **Honest limits (not overclaimed)**
 
+- `customElements.define()` only upgrades elements ALREADY in the document
+  at the time it's called — a later `document.createElement(name)` or a
+  node inserted afterward is not upgraded. There is no
+  `observedAttributes`/`attributeChangedCallback`/`connectedCallback`/
+  `disconnectedCallback`, and a constructor that itself calls
+  `customElements.define()` reentrantly is not handled. None of this is
+  needed by the confirmed trigger (round 183); it is the HTML spec's own
+  materially larger construction-stack/reaction-queue machinery.
 - `lab()`/`lch()` (CIE Lab, not Oklab) are not recognised — a different
   conversion from `oklab()`/`oklch()`, which this engine does support (round
   182). Neither supports the `none` component keyword (CSS Color 4 §4.4);

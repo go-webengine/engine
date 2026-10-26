@@ -99,6 +99,17 @@ Bibliography first (what was opened): CSS 2.1 §10.8 ("The baseline of an 'inlin
 - Not done: the bottom *margin* edge (vertical margins of an inline-block are not part of its item here, as before); `display:inline-flex` keeps its own rule.
 - Tests: `layout/inlineblock_baseline_test.go`: last line box, last of several lines, a line in a block child, no line box, `overflow:hidden`. The first three fail without the fix (Ascent 20 vs 8, 60 vs 48, 40 vs 28).
 
+## 2026-10-26 (round 183) — imperative `attachShadow()`/`customElements.define()`, closed for the confirmed real trigger: an already-parsed element upgraded to attach a shadow tree cloned from a `<template>` (feature, engine#319)
+
+Bibliography first: the HTML Standard's own "upgrade an element" algorithm (whatwg.org/multipage/custom-elements.html#upgrades) — specifically its per-realm construction-stack trick, which is what makes a custom element's `super()` call end up mutating an element that already exists rather than creating a new one. Confirmed the real trigger live (a fork survey): developer.apple.com's own vendor bundle defines a declarative-shadow-DOM polyfill custom element, AFTER the matching tag is already parsed into the static HTML, whose constructor calls `attachShadow()` then clones a `<template>`'s content into it.
+
+- **`js/interfaces.go`**: `newInterfaceCtor`'s structural-interface branch (HTMLElement/Element/Node/…) now checks a new `b.pendingUpgrade` — when set, it returns that (the real element's own wrapper) instead of the fresh object goja's `[[Construct]]` already allocated for `call.This`, exactly mirroring the HTML spec's construction-stack trick: it makes `super()` inside a `class X extends HTMLElement` constructor, invoked during an upgrade, bind to the REAL element.
+- **`js/customelements.go`** (new): `upgradeExisting`/`upgradeElement` — `customElements.define(name, ctor)` (`js/window.go`) now walks the document (light DOM and shadow trees) for elements already matching `name` and constructs each one with `b.pendingUpgrade` set to its wrapper, via `goja.AssertConstructor` so the real `[[Construct]]` semantics (and `super()`) run. A throwing/panicking constructor is contained (`recover` + `logf`), the same best-effort convention `callSafely` already uses for event callbacks — one bad custom element must not abort the rest of the script.
+- **`js/dom.go`**: `attachShadow()`/`shadowRoot` added to every element wrapper. `attachShadow()` ignores its `mode` option (not recorded, matching the existing declarative-shadow-DOM policy) and is idempotent (a second call returns the same root rather than throwing or replacing it — no confirmed trigger needs the spec's `InvalidStateError`).
+- **`dom/shadow.go`**: `(*ShadowRoot).AppendChild` — the imperative counterpart to `attachDeclarativeShadowRoots`'s own construction, used by the JS `ShadowRoot` wrapper's `appendChild`. Unwraps a `DocumentFragment` child per spec, same as the light-DOM `AppendChild`'s existing case — the confirmed trigger's own `<template>.content.cloneNode(true)` returns exactly that shape (a synthetic `#fragment` wrapping the real clone), and appending it without unwrapping left the fragment itself as the one shadow child, with the actual content one level too deep for `layout.renderedChildren` to ever reach (caught by the round's own first test run, not assumed).
+- **Deliberately narrower than the full spec, because no confirmed trigger needs more**: only an element ALREADY in the document at `define()` time is upgraded — a later `document.createElement(name)` or a node inserted afterward is not; `observedAttributes`/`attributeChangedCallback`/`connectedCallback`/`disconnectedCallback` are not implemented; a constructor that itself calls `customElements.define()` reentrantly is not handled (this engine never upgrades two elements at once, so `pendingUpgrade` is a single slot, not the spec's own stack).
+- Tests: `js/customelements_test.go` (the confirmed trigger shape end-to-end, checked against the real Go `dom.Node` tree — not just JS-side `console.log`s — plus a not-upgraded-without-a-match case, a throwing-constructor case, and attachShadow idempotency); `dom/shadow_test.go` (four new `ShadowRoot.AppendChild` cases, including the fragment-unwrap one that would have shipped silently broken without it — the FIRST test run caught the un-unwrapped case exactly as cloneNode's own `.content` handling predicted). `js/js_test.go`'s existing `TestCustomElementsRegistry` updated: `get()` now reflects what `define()` recorded, where it used to be an unconditional no-op.
+
 ## 2026-10-26 (round 182) — `oklab()`/`oklch()` were recognised only inside `color-mix()`, never as a plain colour value (feature, engine#318)
 
 Bibliography first: CSS Color 4 §9.2/§9.4 (`w3.org/TR/css-color-4/#specifying-oklab-oklch`) for the exact grammar and percentage reference ranges (L: 0%=0.0/100%=1.0 for both; a/b: ±100%=±0.4; C: 0%=0.0/100%=0.4; H a `<hue>`, a bare number read as degrees) before writing any parsing code.
@@ -5752,11 +5763,14 @@ Restated against what was actually verified that day:
   named, including correct non-rendering of unmatched/unslotted light
   content), and `:host`/`:host()` CSS scoping all ship and are verified
   against developer.mozilla.org's real markup (which uses exactly this
-  mechanism — confirmed via raw fetch, 23 declarative shadow roots). Two
-  real, narrower gaps remain: no imperative `attachShadow()`/
-  `customElements.define()` JS API (neither confirmed real site needed it),
-  and no `display:contents` (a shadow host that sets `:host{display:contents}`
-  still generates its own wrapping box rather than being layout-transparent).
+  mechanism — confirmed via raw fetch, 23 declarative shadow roots).
+  **Imperative `attachShadow()`/`customElements.define()` CLOSED for the
+  confirmed real trigger (round 183, 2026-10-26, engine#319)** — see the
+  dedicated log entry; the "neither confirmed real site needed it" premise
+  here is what the fork survey that found developer.apple.com's own vendor
+  bundle corrected. One real, narrower gap remains: no `display:contents`
+  (a shadow host that sets `:host{display:contents}` still generates its own
+  wrapping box rather than being layout-transparent).
   `::slotted()` and `:host-context()` are parsed as unmodelled and safely
   dropped rather than guessed at.
   **Correction to the 2026-08-30 diagnosis above, and now CLOSED (2026-09-01,
