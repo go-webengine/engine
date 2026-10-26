@@ -205,7 +205,9 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   combinators**, **`:checked`** and **`:not()`** (the checkbox-hack that collapses
   MediaWiki dropdowns), attribute selectors handled by a "reduce, don't drop" rule.
   **`::before`/`::after`** generate a real box for a `content:"<literal>"` string
-  (the breadcrumb-separator idiom).
+  (the breadcrumb-separator idiom), including their own `background-image`/
+  `mask-image` (the icon-only separator idiom, e.g. MDN's breadcrumb chevron) —
+  not yet on a form control, which is still laid out as an atomic box.
 - **Colour & decoration**: named/`#rgb`/`#rrggbb`, modern `rgb()`/`hsl()`,
   `background-color`, **linear & radial gradients**, `background-image: url()`,
   **border** + **border-radius**, **box-shadow**, group **opacity**.
@@ -260,9 +262,12 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   `content:"<literal>"` string only (round 177) — the breadcrumb-separator
   idiom real pages use. `attr()`/`counter()`/`url()` and the rest of the
   content grammar drop the declaration, same as any other unsupported value.
-  A `background-image`/`mask-image` set on the pseudo-element is not
-  fetched, so icon-font and `visually-hidden`-icon chrome generated this way
-  can still render as text where a browser shows an icon.
+  A `background-image`/`mask-image` set on the pseudo-element is now fetched
+  too (round 181), so an icon-only separator (e.g. MDN's breadcrumb chevron,
+  a plain `<li>::after{content:"";mask-image:url(...)}`) renders — but only
+  on an ordinary element: a form control's own `::before`/`::after` is still
+  invisible, since a `<button>`/`<input>` is laid out as an atomic box
+  regardless of what its generated content would be (rounds 55-56).
 - `vertical-align` on a table cell models `top`, `middle` and `bottom`; the
   `baseline` alignment across a row is approximated as top.
 - Rate-limited image hosts (Wikimedia's CDN, measured round 154) answer some

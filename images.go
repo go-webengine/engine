@@ -395,16 +395,33 @@ func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css
 			urls = append(urls, u)
 		}
 	}
+	collect := func(st *css.Style) {
+		if st == nil {
+			return
+		}
+		for _, layer := range st.BackgroundImages {
+			if layer.Kind == css.BgURL {
+				add(layer.URL)
+			}
+		}
+		add(st.MaskImage)
+	}
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
 		if n.Type == dom.Element {
+			// A ::before/::after's own background-image/mask-image is collected
+			// here too: layout's pseudo-element synthesis (renderedChildren,
+			// layout/shadow.go) only runs once layout starts, so this pre-layout
+			// walk would otherwise never see it — the same shape Shadow DOM's
+			// own background-image gap had (round 55), closing the follow-up
+			// round 177 (engine#303) left open. Confirmed live: developer.mozilla.org's
+			// breadcrumb separator chevron is a plain `<li>:after{content:"";
+			// mask-image:url(chevron-right.svg)}` — content alone (already
+			// closed) renders an empty box; the icon itself needed this.
 			if st := sm[n]; st != nil {
-				for _, layer := range st.BackgroundImages {
-					if layer.Kind == css.BgURL {
-						add(layer.URL)
-					}
-				}
-				add(st.MaskImage)
+				collect(st)
+				collect(st.Before)
+				collect(st.After)
 			}
 		}
 		for _, c := range n.Children {

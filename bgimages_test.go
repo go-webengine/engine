@@ -198,6 +198,75 @@ func TestLoadBackgroundImagesDedup(t *testing.T) {
 	}
 }
 
+// TestLoadBackgroundImagesPseudoElementMaskImage covers a real regression:
+// a `::before`/`::after` rule's own `background-image`/`mask-image` was never
+// fetched at all, because this walk read the real DOM's n.Children directly
+// and ran before layout's pseudo-element synthesis (renderedChildren,
+// layout/shadow.go) ever existed. Confirmed live on developer.mozilla.org:
+// its breadcrumb separator is a plain `<li>:not(:last-child):after{content:"";
+// mask-image:url(chevron-right.svg)}` — round 177 (engine#303) closed the
+// literal-content half (an empty box now renders), but the chevron icon
+// itself stayed invisible until this fix.
+func TestLoadBackgroundImagesPseudoElementMaskImage(t *testing.T) {
+	uri := pngDataURI(t, 4, 4, color.RGBA{11, 22, 33, 255})
+	html := `<html><body>
+		<style>li:not(:last-child):after{content:"";mask-image:url('` + uri + `')}</style>
+		<ul><li>a</li><li>b</li></ul>
+	</body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &Document{URL: "https://example.com/", Root: root}
+	sm := css.CascadeVW(root, 1024, nil)
+	got := New().loadBackgroundImages(context.Background(), doc, sm)
+	if _, ok := got[uri]; !ok {
+		t.Fatalf("no entry for the ::after mask-image url; keys=%v", keys(got))
+	}
+}
+
+// TestLoadBackgroundImagesPseudoElementBackgroundImageDedup covers that a
+// ::before's background-image shares the same URL-keyed cache as an ordinary
+// element's — no separate bookkeeping for pseudo-elements.
+func TestLoadBackgroundImagesPseudoElementBackgroundImageDedup(t *testing.T) {
+	uri := pngDataURI(t, 2, 2, color.RGBA{44, 55, 66, 255})
+	html := `<html><body>
+		<style>
+			#real{background-image:url('` + uri + `')}
+			#ghost::before{content:"";background-image:url('` + uri + `')}
+		</style>
+		<div id="real">a</div><div id="ghost">b</div>
+	</body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &Document{URL: "https://example.com/", Root: root}
+	sm := css.CascadeVW(root, 1024, nil)
+	got := New().loadBackgroundImages(context.Background(), doc, sm)
+	if len(got) != 1 {
+		t.Errorf("dedup across element/pseudo-element failed: %d entries, keys=%v", len(got), keys(got))
+	}
+}
+
+// TestLoadBackgroundImagesNoPseudoElementUnchanged covers that a page with
+// no ::before/::after rule at all takes the exact same path as before this
+// fix — st.Before/.After are both nil, so collect is a no-op for them.
+func TestLoadBackgroundImagesNoPseudoElementUnchanged(t *testing.T) {
+	uri := pngDataURI(t, 3, 3, color.RGBA{1, 1, 1, 255})
+	html := `<html><body><div style="background-image: url('` + uri + `')">x</div></body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := &Document{URL: "https://example.com/", Root: root}
+	sm := css.CascadeVW(root, 1024, nil)
+	got := New().loadBackgroundImages(context.Background(), doc, sm)
+	if len(got) != 1 {
+		t.Errorf("expected exactly one entry, got %d, keys=%v", len(got), keys(got))
+	}
+}
+
 func keys(m map[string]image.Image) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
