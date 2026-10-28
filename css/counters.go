@@ -42,6 +42,12 @@ const (
 	maxReversedScan = 100000
 	// maxCounterOps bounds the counter names one declaration may list.
 	maxCounterOps = 64
+	// maxGeneratedText bounds the text a content with counter()/counters()
+	// resolves to on one element: unlike a literal, shared by every element
+	// it applies to, that text is built per element, and counters() with a
+	// long separator over many nested counters multiplies the stylesheet's
+	// size by the page's.
+	maxGeneratedText = 4096
 )
 
 // CounterOp is one `<counter-name> <integer>?` entry of counter-reset,

@@ -342,6 +342,9 @@ func (w *counterWalker) reversedInitial(n *dom.Node, name string) int32 {
 func (w *counterWalker) contentText(items []ContentItem, set counterSet, self *dom.Node) (string, counterSet) {
 	var b strings.Builder
 	for _, it := range items {
+		if b.Len() >= maxGeneratedText {
+			break
+		}
 		switch it.Kind {
 		case ContentString:
 			b.WriteString(it.Text)
@@ -362,6 +365,9 @@ func (w *counterWalker) contentText(items []ContentItem, set counterSet, self *d
 				if c.name != it.Name {
 					continue
 				}
+				if b.Len() >= maxGeneratedText {
+					break
+				}
 				if sep {
 					b.WriteString(it.Text)
 				}
@@ -370,7 +376,11 @@ func (w *counterWalker) contentText(items []ContentItem, set counterSet, self *d
 			}
 		}
 	}
-	return b.String(), set
+	s := b.String()
+	if len(s) > maxGeneratedText {
+		s = strings.ToValidUTF8(s[:maxGeneratedText], "")
+	}
+	return s, set
 }
 
 // marker resolves a list item's ::marker (§3): its content when a ::marker

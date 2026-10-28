@@ -391,7 +391,7 @@ func FuzzCounters(f *testing.F) {
 		sm := Cascade(root)
 		for _, st := range sm {
 			for _, ps := range []*Style{st.Before, st.After} {
-				if ps != nil && len(ps.Content) > 64*maxCounters*maxCounterOps {
+				if ps != nil && ps.ContentItems != nil && len(ps.Content) > maxGeneratedText {
 					t.Fatalf("content of %d bytes", len(ps.Content))
 				}
 			}

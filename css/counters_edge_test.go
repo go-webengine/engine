@@ -7,6 +7,7 @@ import (
 	"math"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // Deep nesting: past maxCounters counters on one element, a reset of a new
@@ -55,6 +56,26 @@ ol { list-style: none }
 		[]string{"2", "1", "1", "2", "6", "3",
 			// clamped to MaxInt32, then each -2147483647 that fits
 			"0", "-2147483647", "-2147483647"})
+}
+
+// Generated text is built per element, so it is bounded: a long counters()
+// separator over nested counters stops at maxGeneratedText, cut on a rune
+// boundary.
+func TestGeneratedTextBound(t *testing.T) {
+	sep := strings.Repeat("é", 150) // 300 bytes, 2-byte runes
+	src := `<style>div { counter-reset: n } p::before { content: counters(n, "` + sep + `") "tail" }</style>` +
+		strings.Repeat("<div>", 20) + `<p></p>` + strings.Repeat("</div>", 20)
+	got := generated(t, src, "")
+	if len(got) != 1 {
+		t.Fatalf("generated %d", len(got))
+	}
+	s := got[0]
+	if len(s) > maxGeneratedText || len(s) < maxGeneratedText-300 {
+		t.Errorf("generated %d bytes, want just under %d", len(s), maxGeneratedText)
+	}
+	if !utf8.ValidString(s) || strings.Contains(s, "tail") {
+		t.Errorf("cut badly: valid=%v tail=%v", utf8.ValidString(s), strings.Contains(s, "tail"))
+	}
 }
 
 // A reversed counter counting up past the 32-bit floor is clamped too.

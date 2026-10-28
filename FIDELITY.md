@@ -51,7 +51,11 @@ rendering §15.3.7 (lists); and eight WPT css-lists tests, ported as Go tests:
 - **Bounds**: 32-bit counter values (an overflowing increment is not applied,
   as WPT expects — the spec text says clamp, noted), at most 128 counters per
   element, a reversed-counter scope scan capped at 100,000 elements, at most 64
-  names per counter declaration; escapes read at most six hex digits. Two
+  names per counter declaration, and 4 KiB of counter-generated text per
+  element (a literal is shared by every element it applies to; text built from
+  `counters()` is per element, and a long separator over nested counters would
+  otherwise multiply the stylesheet's size by the page's); escapes read at
+  most six hex digits. Two
   fuzzers (`FuzzNormalizeEscapes`, `FuzzCounters`); the first found a NUL
   escape that was not a fixed point (now U+FFFD, as preprocessing makes it).
 - **Not done**: `@counter-style`, the other predefined styles (greek, armenian,
