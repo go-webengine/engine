@@ -217,9 +217,10 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   **`oklab()`/`oklch()`**, `color-mix()` (srgb/srgb-linear/oklab/oklch/hsl),
   `background-color`, **linear & radial gradients**, `background-image: url()`,
   **border** + **border-radius**, **box-shadow**, group **opacity**.
-- **Transforms and effects**: `translate` and `rotate` (the function and the
-  standalone property), CSS `filter` (blur and colour-matrix functions),
-  `backdrop-filter`, `mask-image` (a single `url()` mask), group `opacity`.
+- **Transforms and effects**: `translate`, `rotate` and `scale` (each the
+  function and the standalone property, one at a time — no mixing), CSS
+  `filter` (blur and colour-matrix functions), `backdrop-filter`,
+  `mask-image` (a single `url()` mask), group `opacity`.
 - **Lists and columns**: `ul`/`ol` markers generated in layout as a
   `::marker` box, so every backend gets them as text (the raster canvas, the
   vector PDF, and a caller walking the layout tree such as go-pdfkit/html2pdf):
@@ -284,7 +285,10 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - `conic-gradient` is recognised but not painted. `filter` and `mask-image` are
   modelled narrowly (see above): a mask is a single `url()` stretched over the
   box, with no `mask-size`/`mask-position`/`mask-repeat`. Transforms other than
-  translate and rotate (`scale`, `skew`, `matrix`) are not supported.
+  translate, rotate and scale (`skew`, `matrix`, any 3D function) are not
+  supported, and the three supported ones never mix with each other, with
+  filter/opacity/mask-image on the same element, or (for scale) with a
+  negative, axis-flipping factor.
   SVG has no `<filter>`/`<mask>`/`<pattern>`/embedded `<image>`/`<text>`, and a
   per-page image budget caps very icon-heavy pages.
 - `::before`/`::after` generated content is synthesised for strings,

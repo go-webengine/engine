@@ -1204,18 +1204,18 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		}
 	case "transform":
 		// This engine has no general CSS transform support (see FIDELITY.md's
-		// Known gaps) — but `translate`/`translateX`/`translateY` and
-		// `rotate`/`rotateZ`, EACH ONLY on its own, are the two subsets
-		// pulled out (see TranslateX and RotateDeg's own doc comments for
-		// why, and their real confirmed triggers). A value naming any OTHER
-		// function, or mixing more than one of these two, is left
-		// unsupported entirely rather than applying a partial, wrong
-		// composition.
+		// Known gaps) — but `translate`/`translateX`/`translateY`,
+		// `rotate`/`rotateZ` and `scale`/`scaleX`/`scaleY`, EACH ONLY on its
+		// own, are the three subsets pulled out (see TranslateX, RotateDeg
+		// and HasScale's own doc comments for why, and their real confirmed
+		// triggers). A value naming any OTHER function, or mixing more than
+		// one of these three, is left unsupported entirely rather than
+		// applying a partial, wrong composition.
 		//
-		// A VALID value of either kind replaces the WHOLE previous computed
+		// A VALID value of any kind replaces the WHOLE previous computed
 		// value — CSS's own cascade semantics, not just whichever field this
 		// one rule happens to set — so each branch below clears the OTHER
-		// kind's fields alongside setting its own. An INVALID/mixed value,
+		// kinds' fields alongside setting its own. An INVALID/mixed value,
 		// though, must leave every field UNTOUCHED, not reset to zero: an
 		// invalid declaration is dropped by the cascade entirely, so a
 		// valid `transform` from an earlier, lower-priority rule in the
@@ -1223,8 +1223,13 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		// a later rule's own typo or unsupported function.
 		if tx, ty, ok := parseTransformTranslate(v, emRef); ok {
 			s.TranslateX, s.TranslateY, s.RotateDeg = tx, ty, 0
+			s.HasScale, s.ScaleX, s.ScaleY = false, 0, 0
 		} else if deg, ok := parseTransformRotate(v); ok {
 			s.TranslateX, s.TranslateY, s.RotateDeg = Length{}, Length{}, deg
+			s.HasScale, s.ScaleX, s.ScaleY = false, 0, 0
+		} else if sx, sy, ok := parseTransformScale(v); ok {
+			s.TranslateX, s.TranslateY, s.RotateDeg = Length{}, Length{}, 0
+			s.HasScale, s.ScaleX, s.ScaleY = true, sx, sy
 		}
 	case "rotate":
 		// The standalone CSS Transforms Level 2 property — a bare angle,
@@ -1240,6 +1245,20 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		default:
 			if deg, ok := parseAngle(lv); ok {
 				s.RotateDeg = deg
+			}
+		}
+	case "scale":
+		// The standalone CSS Transforms Level 2 property — a bare
+		// `<number>{1,2}`, NOT a function call — the same two-spellings-one-
+		// field shape `rotate`'s own standalone property has; see
+		// css.Style.HasScale's own doc comment for why both are implemented
+		// once one is evidenced.
+		switch lv {
+		case "none", "initial", "unset":
+			s.HasScale, s.ScaleX, s.ScaleY = false, 0, 0
+		default:
+			if sx, sy, ok := parseScaleNumbers(strings.Fields(v)); ok {
+				s.HasScale, s.ScaleX, s.ScaleY = true, sx, sy
 			}
 		}
 	case "appearance", "-webkit-appearance":
@@ -1575,6 +1594,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.ColumnCount, s.ColumnWidth = parent.ColumnCount, parent.ColumnWidth
 	case "rotate":
 		s.RotateDeg = parent.RotateDeg
+	case "scale":
+		s.HasScale, s.ScaleX, s.ScaleY = parent.HasScale, parent.ScaleX, parent.ScaleY
 	case "appearance", "-webkit-appearance":
 		s.AppearanceNone = parent.AppearanceNone
 	}
@@ -1997,6 +2018,87 @@ func parseTransformRotate(v string) (deg float64, ok bool) {
 		return 0, false // a second function chained after rotate: mixing not supported
 	}
 	return parseAngle(strings.TrimSpace(v[i+1 : closeIdx]))
+}
+
+// parseTransformScale parses a `transform` value that is ONLY a single
+// `scale()`/`scaleX()`/`scaleY()` function — see css.Style.HasScale's own
+// doc comment for why this engine models only this one function on its own,
+// the same "no mixing" scope translate and rotate already have.
+func parseTransformScale(v string) (sx, sy float64, ok bool) {
+	v = strings.TrimSpace(v)
+	if strings.EqualFold(v, "none") || v == "" {
+		return 1, 1, true
+	}
+	i := 0
+	for i < len(v) && isCSSSpace(v[i]) {
+		i++
+	}
+	nameStart := i
+	for i < len(v) && v[i] != '(' {
+		i++
+	}
+	if i >= len(v) {
+		return 0, 0, false // a function name with no '('
+	}
+	name := strings.ToLower(strings.TrimSpace(v[nameStart:i]))
+	closeIdx, matched := matchParen(v, i)
+	if !matched {
+		return 0, 0, false
+	}
+	if rest := strings.TrimSpace(v[closeIdx+1:]); rest != "" {
+		return 0, 0, false // a second function chained after scale: mixing not supported
+	}
+	args := strings.Split(v[i+1:closeIdx], ",")
+	for j := range args {
+		args[j] = strings.TrimSpace(args[j])
+	}
+	switch name {
+	case "scale":
+		return parseScaleNumbers(args)
+	case "scalex":
+		if len(args) != 1 {
+			return 0, 0, false
+		}
+		x, err := strconv.ParseFloat(args[0], 64)
+		if err != nil || x < 0 {
+			return 0, 0, false
+		}
+		return x, 1, true
+	case "scaley":
+		if len(args) != 1 {
+			return 0, 0, false
+		}
+		y, err := strconv.ParseFloat(args[0], 64)
+		if err != nil || y < 0 {
+			return 0, 0, false
+		}
+		return 1, y, true
+	}
+	return 0, 0, false
+}
+
+// parseScaleNumbers parses one or two <number> arguments (scale()'s comma-
+// separated form, or the standalone `scale` property's space-separated
+// form): one value scales both axes uniformly (sy defaults to sx), per CSS
+// Transforms Level 1/2's own "missing sy" rule. A negative factor (CSS's own
+// way to flip an axis) is rejected — see css.Style.HasScale's own doc
+// comment for why.
+func parseScaleNumbers(fields []string) (sx, sy float64, ok bool) {
+	if len(fields) == 0 || len(fields) > 2 {
+		return 0, 0, false
+	}
+	x, err := strconv.ParseFloat(fields[0], 64)
+	if err != nil || x < 0 {
+		return 0, 0, false
+	}
+	if len(fields) == 1 {
+		return x, x, true
+	}
+	y, err := strconv.ParseFloat(fields[1], 64)
+	if err != nil || y < 0 {
+		return 0, 0, false
+	}
+	return x, y, true
 }
 
 // isCSSSpace reports whether c is CSS whitespace, for scanning a
