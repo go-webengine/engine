@@ -18,6 +18,16 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-28 (round 188) — `transform: scale()`/`scaleX()`/`scaleY()` and the standalone `scale` property, the third transform subset this engine understands (feature, engine#324)
+
+Bibliography first: CSS Transforms Module Level 1's own formal grammar for `scale()` (`<number>, <number>?` — a single argument scales both axes uniformly, `sy` defaulting to `sx`; percentages appear informally in some references but not in the Level 1 grammar, so not attempted without a confirmed trigger needing them). Confirmed the real trigger live (a fork survey): vuejs.org's own compiled stylesheet sets a plain, static `transform:scale(.8)` on its light/dark theme-toggle switch — not inside `:hover` or an animation, so it is the element's ordinary computed style any static render must honour.
+
+- **`css/value.go`**: `HasScale`/`ScaleX`/`ScaleY` — a `HasScale` bool disambiguates the Go zero value from a real `scale(0)` (CSS's own valid "collapse to a point", not a safe default), the same role `HasOpacity` already plays for `Opacity`.
+- **`css/parse.go`**: `parseTransformScale` (mirrors `parseTransformRotate`'s single-function, no-mixing scope exactly) plus the standalone CSS Transforms Level 2 `scale` property (`case "scale"`, a bare `<number>{1,2}`) — the same two-spellings-one-field shape `rotate`'s own standalone property already has, once one spelling is evidenced the other is not a distinct speculative addition. `transform`'s three branches (translate/rotate/scale) now each reset the OTHER two's fields, keeping the existing "a valid transform replaces the whole computed value" rule exact. A negative factor (CSS's own axis-flip) is rejected at parse time — no confirmed trigger needs a flip, and `paintScaled` only resizes pixels, it does not mirror them.
+- **`paint/paint.go`**: `paintScaled`, the scale sibling of `paintRotated` — identical offscreen-buffer shape (render the box's own border-box rectangle, transform the PIXELS, composite back centred on the box's original centre), swapping go-images' `Rotate` for its `Resize` (bilinear, matching Rotate's own choice in the same dependency). Scoped to scale ALONE, the same reason rotate is: no confirmed real trigger combines it with filter/opacity/mask-image, or with rotate itself (mutually exclusive by construction, since both write through the same `transform` property parsing).
+- **Caught by the coverage gate, not assumed fine**: the first `Resize` error-check branch (`w,h` already clamped to ≥1 before the call, so the only error condition it guards is provably unreachable) left `paint` at 99.9%, one statement under its 100.0% floor — removed the dead branch (discarding the error, matching `paintRotated`'s own sibling call to `Rotate`, which has no error to check at all) rather than writing a test to force unreachable code.
+- Tests: `css/props_test.go` (`TestApplyTransformScale`, `TestApplyStandaloneScaleProperty` — including the `inherit` keyword, which needed its own explicit case in `inheritProperty`, the same as `rotate`'s); `paint/scale_test.go` (shrink/grow/non-uniform-axes/zero-collapse/opacity-exclusion/outside-clip, all green on the first run except one test's own channel-comparison bug, caught and fixed before trusting a false pass). Live end-to-end pixel check (scratch repro, not committed) against the real trigger shape: a scaled box's centre stays covered while its former corners reveal the background, confirming real pixel-level resizing, not a no-op.
+
 ## 2026-10-28 (round 187) — list markers missing from html2pdf, CSS string escapes painted literally, `counter()` unsupported (defects, found by rendering a report through go-pdfkit/html2pdf)
 
 Bibliography opened first: CSS Syntax 3 §4.3.5 (consume a string token), §4.3.7
@@ -5843,26 +5853,30 @@ Restated against what was actually verified that day:
   condition slightly differently than Chrome.
 - **No CSS `transform`** (2D or 3D) and no `conic-gradient`, EXCEPT
   `translate`/`translateX`/`translateY` (added 2026-09-02, engine#87, for
-  pkg.go.dev's off-canvas nav drawer — see FIDELITY.md's log entry above) and
+  pkg.go.dev's off-canvas nav drawer — see FIDELITY.md's log entry above),
   `rotate`/`rotateZ` — INCLUDING the newer, independent CSS Transforms Level
   2 `rotate` property, not just the `transform: rotate()` function (added
   round 145, 2026-09-28, engine#245, for tailwindcss.com's own diagonal
   "P3 colors" swatch-name labels — the real trigger uses the standalone
   property, which modern Tailwind compiles its `rotate-*` utilities to, not
-  the function). A pure 2D translate needs no real coordinate-transform
-  machinery in paint at all; rotate does, but reuses this engine's existing
-  filter/opacity/mask-image "render to an offscreen buffer, transform it,
-  composite back" machinery rather than a general transform-matrix pipeline
-  — see `paint.paintRotated` and `css.Style.RotateDeg`'s own doc comments
-  for the exact, narrow scope (rotate never combines with filter/opacity/
-  mask-image on the same element; transform-origin is always the default
-  centre; a single lone rotate/translate, never mixed with each other or
-  with scale/skew/matrix). `scale`, `skew`, `matrix`, any 3D function, and
-  any `transform` value MIXING more than one of translate/rotate together
-  are all still entirely unsupported — a carousel positioned via
-  `transform: translateX(...) rotate(...)` renders at its untransformed
-  in-flow position, same as before either carve-out. Also means a
-  `transform`/
+  the function) — and (round 188, 2026-10-28, engine#324) `scale`/
+  `scaleX`/`scaleY`, INCLUDING the standalone `scale` property, for
+  vuejs.org's own compiled stylesheet, which sets a plain, static
+  `transform:scale(.8)` on its theme-toggle switch. A pure 2D translate
+  needs no real coordinate-transform machinery in paint at all; rotate and
+  scale do, but reuse this engine's existing filter/opacity/mask-image
+  "render to an offscreen buffer, transform it, composite back" machinery
+  rather than a general transform-matrix pipeline — see `paint.paintRotated`/
+  `paint.paintScaled` and `css.Style.RotateDeg`/`HasScale`'s own doc comments
+  for the exact, narrow scope (neither ever combines with filter/opacity/
+  mask-image on the same element, or with each other; transform-origin is
+  always the default centre; a NEGATIVE scale factor, CSS's own axis-flip,
+  is rejected at parse time — no confirmed trigger needs a flip). `skew`,
+  `matrix`, any 3D function, and any `transform` value MIXING more than one
+  of translate/rotate/scale together are all still entirely unsupported — a
+  carousel positioned via `transform: translateX(...) rotate(...)` renders
+  at its untransformed in-flow position, same as before any of the three
+  carve-outs. Also means a `transform`/
   `perspective` on an ancestor never establishes a new containing block for an
   absolutely-positioned descendant the way the spec says it should — that
   descendant's containing block resolution climbs straight past it to the

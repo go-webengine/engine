@@ -49,6 +49,7 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	hasFilter := false
 	hasMask := false
 	hasRotate := false
+	hasScale := false
 	if box.Style != nil {
 		if box.Style.HasOpacity {
 			op = box.Style.Opacity
@@ -59,6 +60,7 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 		hasFilter = len(box.Style.Filters) > 0
 		hasMask = box.Style.MaskImage != "" && bgImgs[box.Style.MaskImage] != nil
 		hasRotate = box.Style.RotateDeg != 0
+		hasScale = box.Style.HasScale && (box.Style.ScaleX != 1 || box.Style.ScaleY != 1)
 		if len(box.Style.BackdropFilters) > 0 {
 			// Must run BEFORE any of this box's own content reaches dst (whether
 			// painted directly below, or into the offscreen group buffer the
@@ -80,6 +82,17 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	// mechanisms being unified for zero confirmed real need.
 	if hasRotate && !hasFilter && !hasMask && op >= 1 {
 		paintRotated(dst, box, f, imgs, bgImgs, clip)
+		return
+	}
+	// `transform:scale()`/the standalone `scale` property (see
+	// css.Style.HasScale's own doc comment) takes the identical separate
+	// offscreen-buffer shape as rotate, for the identical reasons — scoped
+	// to scale ALONE, same caveat. hasRotate and hasScale can never both be
+	// true: parse.go's `case "transform"` already makes the two mutually
+	// exclusive (whichever wins resets the other), so there is no ordering
+	// question between this branch and the one above.
+	if hasScale && !hasFilter && !hasMask && op >= 1 {
+		paintScaled(dst, box, f, imgs, bgImgs, clip)
 		return
 	}
 	// A group pass (render to an offscreen buffer, then composite) is needed when
@@ -1743,6 +1756,50 @@ func paintRotated(dst *image.RGBA, box *layout.Box, f *Fonts, imgs map[*dom.Node
 	ox := int(math.Round(cx - float64(rotated.Rect.Dx())/2))
 	oy := int(math.Round(cy - float64(rotated.Rect.Dy())/2))
 	blitImage(dst, rotated, ox, oy, clip)
+}
+
+// paintScaled renders box's own border-box rectangle to an offscreen buffer,
+// resizes the PIXELS by ScaleX/ScaleY about the box's own centre — the
+// default, and only modelled, transform-origin, the same as paintRotated —
+// with go-images' Resize (bilinear, matching Rotate's own choice in the same
+// dependency), and composites the result back centred on the box's original
+// centre point via blitImage. See css.Style.HasScale's own doc comment for
+// why this never runs alongside filter/opacity/mask-image, rotate, or a
+// negative (flipping) factor.
+//
+// Content outside the box's own border-box rectangle is not captured or
+// scaled with it, the same border-box-only scope paintRotated's own doc
+// comment already discloses; no confirmed real trigger needs more.
+func paintScaled(dst *image.RGBA, box *layout.Box, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, clip image.Rectangle) {
+	bx := rectOf(box).Intersect(dst.Rect)
+	if bx.Empty() {
+		return
+	}
+	// See paintRotated's own doc comment for why tmp must cover the box's
+	// full subtree extent, not just its own border box.
+	tmpH := subtreeExtent(box).Intersect(dst.Rect).Max.Y
+	tmp := image.NewRGBA(image.Rect(0, 0, dst.Rect.Dx(), tmpH))
+	tpp := painter.NewPixelPainter(tmp.Pix, tmp.Rect.Dx(), tmp.Rect.Dy())
+	paintBoxContent(tmp, tpp, box, f, imgs, bgImgs, clip)
+	src := image.NewRGBA(image.Rect(0, 0, bx.Dx(), bx.Dy()))
+	draw.Draw(src, src.Bounds(), tmp, bx.Min, draw.Src)
+	w := int(math.Round(float64(bx.Dx()) * box.Style.ScaleX))
+	h := int(math.Round(float64(bx.Dy()) * box.Style.ScaleY))
+	if w < 1 {
+		w = 1
+	}
+	if h < 1 {
+		h = 1
+	}
+	// w,h are already clamped to >=1 and images.Bilinear is a valid mode
+	// constant, so Resize's only error condition (non-positive dimensions)
+	// cannot occur here — matching images.Rotate, paintRotated's own sibling
+	// call, which has no error to check at all.
+	scaled, _ := images.Resize(src, w, h, images.Bilinear)
+	cx, cy := box.X+box.W/2, box.Y+box.H/2
+	ox := int(math.Round(cx - float64(scaled.Rect.Dx())/2))
+	oy := int(math.Round(cy - float64(scaled.Rect.Dy())/2))
+	blitImage(dst, scaled, ox, oy, clip)
 }
 
 func toPainter(c css.Color) painter.RGBA {

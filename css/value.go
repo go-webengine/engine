@@ -977,13 +977,14 @@ type Style struct {
 	ZIndex     int
 	ZIndexAuto bool // true == "auto" (the initial value)
 
-	// TranslateX/TranslateY and RotateDeg are the TWO subsets of the
-	// `transform` property this engine understands, EACH ONLY on its own —
-	// a value naming any other function (scale, skew, matrix, 3D), or
-	// mixing more than one of these two together (`translate(...)
-	// rotate(...)` on the same element), is unsupported and leaves every
-	// transform field at zero, same as before either was understood at all
-	// — see FIDELITY.md's Known gaps. Translate (see parseTransformTranslate
+	// TranslateX/TranslateY, RotateDeg and HasScale/ScaleX/ScaleY are the
+	// THREE subsets of the `transform` property this engine understands,
+	// EACH ONLY on its own — a value naming any other function (skew,
+	// matrix, 3D), or mixing more than one of these three together
+	// (`translate(...) rotate(...)` on the same element), is unsupported and
+	// leaves every transform field at its reset value, same as before any of
+	// them was understood at all — see FIDELITY.md's Known gaps. Translate
+	// (see parseTransformTranslate
 	// in parse.go) is a paint-time offset applied like a relative position
 	// shift, not a layout input; the initial/reset value (Length's Go zero
 	// value) is exactly "no translation", so unlike most other reset-not-
@@ -1039,6 +1040,45 @@ type Style struct {
 	TranslateX Length
 	TranslateY Length
 	RotateDeg  float64
+
+	// HasScale/ScaleX/ScaleY (round 188) are the THIRD transform subset this
+	// engine understands, on its own, the same "no mixing" scope translate
+	// and rotate already have — see the doc comment above. A plain float
+	// pair cannot represent "no scale" with the Go zero value the way
+	// TranslateX/Y's Length and RotateDeg's degrees do (0,0 would mean
+	// "collapse the element to a point", itself a real, valid `scale(0)`,
+	// not a safe default) — HasScale disambiguates, the same role HasOpacity
+	// already plays for Opacity.
+	//
+	// Confirmed live: vuejs.org's own compiled stylesheet sets a plain,
+	// static `transform:scale(.8)` on its light/dark theme-toggle switch
+	// (`.vt-switch`) — not inside `:hover` or an animation, so it is the
+	// element's ordinary computed style any static render must honour.
+	// Parsed by parseTransformScale (`scale()`/`scaleX()`/`scaleY()`, CSS
+	// Transforms Level 1's own formal grammar: `<number>` arguments only —
+	// percentages are listed informally by some references but not in the
+	// Level 1 grammar itself, and this is a plain-number trigger, so they
+	// are not attempted here) and by the standalone CSS Transforms Level 2
+	// `scale` property (`case "scale"` — a bare `<number>{1,2}` or `none`,
+	// no function-call syntax), the same two-spellings-one-field shape
+	// RotateDeg already has for the identical reason: once the capability
+	// is evidenced under one spelling, the other is not a distinct
+	// speculative addition.
+	//
+	// Painted by paint.paintScaled, the same offscreen-buffer shape as
+	// paintRotated: render the box's own border-box rectangle, resize the
+	// PIXELS (go-images' Resize, bilinear — matching Rotate's own choice in
+	// the same dependency), and composite back centred on the box's
+	// original centre (the default, and only modelled, transform-origin).
+	// Scoped to scale ALONE, the same reason rotate is: no confirmed real
+	// trigger combines it with filter/opacity/mask-image on the same
+	// element. A NEGATIVE scale factor (CSS's own way to flip an axis) is
+	// rejected at parse time as unsupported — no confirmed trigger needs a
+	// flip, and it would need paintScaled to mirror pixels, not just resize
+	// them.
+	HasScale bool
+	ScaleX   float64
+	ScaleY   float64
 
 	// AppearanceNone is `appearance: none` (or `-webkit-appearance: none`),
 	// which suppresses a form control's native OS chrome so the author's own

@@ -644,13 +644,14 @@ func TestApplyTransformTranslate(t *testing.T) {
 	}
 
 	// Any OTHER function, alone or MIXED with translate — including
-	// rotate() now that it is its own recognised, but still separately-only,
-	// function (see TestApplyTransformRotate below) — is unsupported: this
-	// engine has no general transform support, so it must not apply a
-	// partial, wrong composition. The fields are left as they were.
+	// rotate()/scale() now that they are their own recognised, but still
+	// separately-only, functions (see TestApplyTransformRotate/Scale below)
+	// — is unsupported: this engine has no general transform support, so it
+	// must not apply a partial, wrong composition. The fields are left as
+	// they were.
 	cases := []string{
-		"scale(2)",
 		"translateX(5px) rotate(10deg)",
+		"translateX(5px) scale(2)",
 		"matrix(1,0,0,1,0,0)",
 		"translateZ(5px)",
 		"translate(",            // malformed: unterminated
@@ -807,6 +808,115 @@ func TestApplyStandaloneRotateProperty(t *testing.T) {
 	s.apply(Declaration{Property: "rotate", Value: "inherit"}, 16, &parent)
 	if s.RotateDeg != 30 {
 		t.Errorf("rotate:inherit => RotateDeg=%v, want parent's 30", s.RotateDeg)
+	}
+}
+
+// TestApplyTransformScale covers the round-188 companion to
+// TestApplyTransformTranslate/Rotate: `scale()`/`scaleX()`/`scaleY()`, the
+// third (and still separately-only) transform function this engine
+// understands — confirmed live on vuejs.org's own compiled stylesheet, a
+// plain static `transform:scale(.8)` on its theme-toggle switch.
+func TestApplyTransformScale(t *testing.T) {
+	s := &Style{}
+	applyOn(s, "transform", "scale(0.8)", 16)
+	if !s.HasScale || s.ScaleX != 0.8 || s.ScaleY != 0.8 {
+		t.Errorf("scale(0.8) => HasScale=%v x=%v y=%v, want true/0.8/0.8", s.HasScale, s.ScaleX, s.ScaleY)
+	}
+
+	// Two arguments scale each axis independently.
+	s = &Style{}
+	applyOn(s, "transform", "scale(2, 0.5)", 16)
+	if !s.HasScale || s.ScaleX != 2 || s.ScaleY != 0.5 {
+		t.Errorf("scale(2,0.5) => x=%v y=%v, want 2/0.5", s.ScaleX, s.ScaleY)
+	}
+
+	// scaleX/scaleY longhand-style functions.
+	s = &Style{}
+	applyOn(s, "transform", "scaleX(3)", 16)
+	if !s.HasScale || s.ScaleX != 3 || s.ScaleY != 1 {
+		t.Errorf("scaleX(3) => x=%v y=%v, want 3/1", s.ScaleX, s.ScaleY)
+	}
+	s = &Style{}
+	applyOn(s, "transform", "scaleY(4)", 16)
+	if !s.HasScale || s.ScaleX != 1 || s.ScaleY != 4 {
+		t.Errorf("scaleY(4) => x=%v y=%v, want 1/4", s.ScaleX, s.ScaleY)
+	}
+
+	// A valid scale() clears any earlier translate/rotate, per CSS's own
+	// "a new transform value replaces the whole property" cascade rule.
+	s = &Style{TranslateX: Length{Px: 10}, RotateDeg: 45}
+	applyOn(s, "transform", "scale(2)", 16)
+	if !s.HasScale || s.ScaleX != 2 || s.TranslateX != (Length{}) || s.RotateDeg != 0 {
+		t.Errorf("scale(2) after translate+rotate => HasScale=%v x=%v TranslateX=%+v RotateDeg=%v, want true/2/0/0", s.HasScale, s.ScaleX, s.TranslateX, s.RotateDeg)
+	}
+
+	// A valid scale() then a LATER, valid rotate() fully replaces it in
+	// turn — the same cascade rule, the other direction.
+	s = &Style{}
+	applyOn(s, "transform", "scale(2)", 16)
+	applyOn(s, "transform", "rotate(45deg)", 16)
+	if s.HasScale || s.RotateDeg != 45 {
+		t.Errorf("rotate() after scale() => HasScale=%v RotateDeg=%v, want false/45", s.HasScale, s.RotateDeg)
+	}
+
+	// none / empty resets scale, same as translate/rotate.
+	s = &Style{HasScale: true, ScaleX: 2, ScaleY: 2}
+	applyOn(s, "transform", "none", 16)
+	if s.HasScale || s.ScaleX != 0 || s.ScaleY != 0 {
+		t.Errorf("transform:none => HasScale=%v x=%v y=%v, want false/0/0", s.HasScale, s.ScaleX, s.ScaleY)
+	}
+
+	// A NEGATIVE factor (CSS's own axis-flip) is rejected — see
+	// css.Style.HasScale's own doc comment — same as any other unsupported
+	// value: a pre-existing valid value is left untouched.
+	for _, c := range []string{"scale(-1)", "scale(2, -1)", "scaleX(-1)", "scaleY(-1)", "scale(bogus)", "scale(", "scale(1,2,3)", "scale(1) scale(2)"} {
+		s = &Style{HasScale: true, ScaleX: 42, ScaleY: 42}
+		applyOn(s, "transform", c, 16)
+		if !s.HasScale || s.ScaleX != 42 || s.ScaleY != 42 {
+			t.Errorf("transform:%q should be a no-op, got HasScale=%v x=%v y=%v", c, s.HasScale, s.ScaleX, s.ScaleY)
+		}
+	}
+}
+
+// TestApplyStandaloneScaleProperty covers the CSS Transforms Level 2
+// standalone `scale` property — a bare number, not a function call — the
+// same two-spellings-one-field shape `rotate`'s own standalone property has
+// (TestApplyStandaloneRotateProperty above).
+func TestApplyStandaloneScaleProperty(t *testing.T) {
+	s := &Style{}
+	applyOn(s, "scale", "0.8", 16)
+	if !s.HasScale || s.ScaleX != 0.8 || s.ScaleY != 0.8 {
+		t.Errorf("scale:0.8 => HasScale=%v x=%v y=%v, want true/0.8/0.8", s.HasScale, s.ScaleX, s.ScaleY)
+	}
+	s = &Style{}
+	applyOn(s, "scale", "2 0.5", 16)
+	if !s.HasScale || s.ScaleX != 2 || s.ScaleY != 0.5 {
+		t.Errorf("scale:'2 0.5' => x=%v y=%v, want 2/0.5", s.ScaleX, s.ScaleY)
+	}
+
+	// none/initial/unset all reset — this property is not inherited.
+	for _, v := range []string{"none", "initial", "unset"} {
+		s = &Style{HasScale: true, ScaleX: 2, ScaleY: 2}
+		applyOn(s, "scale", v, 16)
+		if s.HasScale || s.ScaleX != 0 || s.ScaleY != 0 {
+			t.Errorf("scale:%s => HasScale=%v x=%v y=%v, want false/0/0", v, s.HasScale, s.ScaleX, s.ScaleY)
+		}
+	}
+
+	// An invalid value leaves a pre-existing value untouched.
+	s = &Style{HasScale: true, ScaleX: 42, ScaleY: 42}
+	applyOn(s, "scale", "bogus", 16)
+	if !s.HasScale || s.ScaleX != 42 || s.ScaleY != 42 {
+		t.Errorf("scale:bogus (invalid) => HasScale=%v x=%v y=%v, want unchanged true/42/42", s.HasScale, s.ScaleX, s.ScaleY)
+	}
+
+	// Not inherited by default, but the explicit inherit keyword still
+	// copies the parent's computed value.
+	parent := Style{HasScale: true, ScaleX: 0.3, ScaleY: 0.3}
+	s = &Style{}
+	s.apply(Declaration{Property: "scale", Value: "inherit"}, 16, &parent)
+	if !s.HasScale || s.ScaleX != 0.3 {
+		t.Errorf("scale:inherit => HasScale=%v x=%v, want parent's true/0.3", s.HasScale, s.ScaleX)
 	}
 }
 
