@@ -506,7 +506,7 @@ func (v *vpainter) edges(bd css.Borders, r Rect, rad float64, left, right bool) 
 // marker is paintMarker: an ordinal is text, a disc a filled circle, a
 // circle a one-pixel ring, a square a filled square.
 func (v *vpainter) marker(m *layout.Marker, clip image.Rectangle) {
-	if m.Type == css.ListDecimal {
+	if !m.IsGlyph() {
 		// as item draws a word, keeping the caller's mark (the item's label)
 		if m.Text != "" && m.Style != nil && m.Style.Visibility == css.VisibilityVisible {
 			v.text(m.Style, m.Text, m.X, m.Y+m.Ascent, m.Style.Color, false)
@@ -597,7 +597,7 @@ func (v *vpainter) ghostText(box *layout.Box, clip image.Rectangle) {
 	}
 	inner := descendantClip(clip, box)
 	if st.Visibility == css.VisibilityVisible {
-		if m := box.Marker; m != nil && m.Type == css.ListDecimal && m.Style != nil {
+		if m := box.Marker; m != nil && !m.IsGlyph() && m.Style != nil {
 			v.mark(Mark{Node: box.Node, Label: true})
 			v.text(m.Style, m.Text, m.X, m.Y+m.Ascent, m.Style.Color, true)
 		}

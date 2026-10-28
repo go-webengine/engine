@@ -44,7 +44,8 @@ func (l *layouter) renderedChildren(n *dom.Node) []*dom.Node {
 		kids = l.flattenContents(n.Children)
 	}
 	st := l.sm[n]
-	if st == nil || (st.Before == nil && st.After == nil) {
+	inside := st != nil && st.ListItem && st.Marker != nil && st.Marker.Inside && st.Marker.Style != nil
+	if st == nil || (st.Before == nil && st.After == nil && !inside) {
 		return kids
 	}
 	// A fresh slice, never an in-place append onto kids: when neither branch
@@ -52,7 +53,12 @@ func (l *layouter) renderedChildren(n *dom.Node) []*dom.Node {
 	// kids still aliases n.Children's own backing array, and appending to it
 	// directly would risk writing past n.Children's own length into
 	// whatever memory follows it.
-	out := make([]*dom.Node, 0, len(kids)+2)
+	out := make([]*dom.Node, 0, len(kids)+3)
+	if inside {
+		// An inside ::marker is an inline box at the very start of the
+		// item's content, before ::before (CSS Lists 3 §3.5).
+		out = append(out, l.pseudoElementNode(n, st.Marker.Style))
+	}
 	if st.Before != nil {
 		out = append(out, l.pseudoElementNode(n, st.Before))
 	}

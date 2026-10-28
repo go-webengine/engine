@@ -151,6 +151,13 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		if after, ok := computePseudoElement(n, st, rules, idx, &counter, "after", scale, m.Advance); ok {
 			st.After = &after
 		}
+		// A list item's ::marker rules (colour, font, content), if any;
+		// the counters pass (resolveCounters) turns them into its marker.
+		if st.ListItem {
+			if mk, ok := computePseudoElement(n, st, rules, idx, &counter, "marker", scale, m.Advance); ok {
+				st.Marker = &MarkerInfo{Style: &mk}
+			}
+		}
 		sm[n] = &st
 		childStack := containerStack
 		if st.ContainerType != ContainerNormal {
@@ -187,6 +194,9 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 	init := initialStyle()
 	init.FontSize *= scale
 	walk(root, init, nil, docRules, docIdx, nil, 0)
+	// Counters need the whole tree styled (display:none, a sibling's
+	// counter-reset, a list item's position among its siblings).
+	resolveCounters(root, sm)
 	return sm
 }
 
@@ -467,10 +477,15 @@ func computePseudoElement(n *dom.Node, elementStyle Style, rules []Rule, idx *ru
 			applyResolved(c.decl, st.FontSize)
 		}
 	}
+	if which == "marker" {
+		// ::marker exists whenever its list item does: a rule matching it
+		// styles it even without `content` (CSS Lists 3 §3.1).
+		return st, true
+	}
 	if !st.ContentSet {
 		// content never resolved to a real value (absent, "normal"/"none", or
-		// an unsupported form like attr()/counter()) — per spec, no box at
-		// all is generated, not an empty one.
+		// an unsupported form like attr()) — per spec, no box at all is
+		// generated, not an empty one.
 		return Style{}, false
 	}
 	// CSS UI 4 §6.1: on ::before and ::after the used value of user-select

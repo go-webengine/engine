@@ -27,6 +27,40 @@ func presentationalHints(n *dom.Node) []Declaration {
 		return strings.TrimSpace(v), ok
 	}
 
+	// The list-item counter's HTML hints (CSS Lists 3 Appendix A):
+	// ol[start] resets it to start-1 (start+1 when reversed, which counts
+	// down), ol[reversed] alone to reversed(list-item), whose initial value
+	// the counters pass derives from the items; li[value] sets it. The HTML
+	// type attribute (1, a, A, i, I) maps to list-style-type.
+	if tag == "ul" || tag == "ol" || tag == "li" {
+		if t, ok := attr("type"); ok {
+			if lt := htmlListType(t); lt != "" {
+				d = append(d, Declaration{Property: "list-style-type", Value: lt})
+			}
+		}
+	}
+	switch tag {
+	case "ol":
+		start, hasStart := attr("start")
+		n, okStart := parseCounterInt(start)
+		hasStart = hasStart && okStart
+		if _, rev := attr("reversed"); rev {
+			v := "reversed(list-item)"
+			if hasStart {
+				v += " " + strconvItoa(int64(n)+1)
+			}
+			d = append(d, Declaration{Property: "counter-reset", Value: v})
+		} else if hasStart {
+			d = append(d, Declaration{Property: "counter-reset", Value: "list-item " + strconvItoa(int64(n)-1)})
+		}
+	case "li":
+		if v, ok := attr("value"); ok {
+			if n, ok := parseCounterInt(v); ok {
+				d = append(d, Declaration{Property: "counter-set", Value: "list-item " + strconvItoa(int64(n))})
+			}
+		}
+	}
+
 	// width/height on the elements where the HTML attribute is a length hint.
 	switch tag {
 	case "table", "td", "th", "img", "col", "colgroup", "hr", "canvas",
