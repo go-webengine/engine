@@ -801,12 +801,16 @@ func uniformBorder(b css.Borders) bool {
 
 func iround(f float64) int { return int(f + 0.5) }
 
-// paintMarker draws a list-item marker. A decimal marker reuses the inline text
-// painter (the ordinal string in the item's own face and colour); the bullet
-// types map to painter primitives — a disc is a full-radius filled round rect, a
-// hollow circle a stroked round rect, and a square a plain filled rect.
+// paintMarker draws a list-item marker. A text marker (an ordinal, a roman or
+// alphabetic numeral, a <string> type, ::marker content) reuses the inline
+// text painter in the marker's own face and colour; the bullet glyphs map to
+// painter primitives — a disc is a full-radius filled round rect, a hollow
+// circle a stroked round rect, and a square a plain filled rect.
 func paintMarker(dst *image.RGBA, pp *painter.PixelPainter, m *layout.Marker, f *Fonts, clip image.Rectangle) {
-	if m.Type == css.ListDecimal {
+	if m.Style == nil {
+		return
+	}
+	if !m.IsGlyph() {
 		paintItem(dst, pp, &layout.InlineItem{Text: m.Text, Style: m.Style, X: m.X, Y: m.Y, Ascent: m.Ascent}, f, nil, nil, clip)
 		return
 	}

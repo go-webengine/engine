@@ -18,6 +18,46 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-10-28 (round 187) — list markers missing from html2pdf, CSS string escapes painted literally, `counter()` unsupported (defects, found by rendering a report through go-pdfkit/html2pdf)
+
+Bibliography opened first: CSS Syntax 3 §4.3.5 (consume a string token), §4.3.7
+(consume an escaped code point) and §4.3.8; CSS Lists and Counters 3 (editor's
+draft: §3 markers, §4 counters, §4.4.2's reversed-counter algorithm, §4.6 the
+implicit `list-item` counter, Appendix A); CSS Counter Styles 3 §6; HTML's
+rendering §15.3.7 (lists); and eight WPT css-lists tests, ported as Go tests:
+`counter-001`, `counters-scope-001`, `counter-set-001`,
+`counter-reset-increment-set-display-none`,
+`counter-reset-increment-overflow-underflow`, `li-value-counter-reset-001`,
+`counter-list-item` (ordinary, `start`, `value`, `reversed` and `ul` lists).
+
+- **Markers**: the cascade now resolves each list item's `::marker` (its text
+  from the `list-item` counter in `list-style-type`'s counter style plus its
+  suffix, or `::marker` `content`) in a counters pass over the styled tree. An
+  outside marker carries its text in `layout.Marker` — a bullet too ("•"), with
+  `TextX`/`TextY`/`Ascent` — so a backend that only draws text gets it; an
+  inside marker is an inline box at the start of the item's first line. The
+  raster and vector painters still draw a disc, circle or square as a shape.
+  go-pdfkit/html2pdf never read `Box.Marker`; it now draws `Marker.Text`.
+- **Escapes**: decoded once where text enters the parser: every declaration
+  value (`normalizeEscapes`, a canonical form that is a fixed point) and every
+  selector prelude (`.\31 0` is the class `10`; its trailing space is not a
+  combinator). `content` strings, `font-family`, counter names and quoted
+  attribute values are read with the spec's string-token algorithm. A `}` or
+  `;` inside a string no longer ends a block or a declaration.
+- **Counters**: `counter-reset` (with `reversed()`), `counter-increment`,
+  `counter-set`, inheritance from the parent and the preceding sibling, values
+  from the preceding element in tree order, `display:none` ignored,
+  `counter()`/`counters()`.
+- **Bounds**: 32-bit counter values (an overflowing increment is not applied,
+  as WPT expects — the spec text says clamp, noted), at most 128 counters per
+  element, a reversed-counter scope scan capped at 100,000 elements, at most 64
+  names per counter declaration; escapes read at most six hex digits. Two
+  fuzzers (`FuzzNormalizeEscapes`, `FuzzCounters`); the first found a NUL
+  escape that was not a fixed point (now U+FFFD, as preprocessing makes it).
+- **Not done**: `@counter-style`, the other predefined styles (greek, armenian,
+  CJK…), `list-style-image`, `attr()`/quotes in `content`, a `::marker`'s own
+  counter properties, markers on list items that are flex or grid items.
+
 ## 2026-10-25 (round 186) — percentage padding, and percentage margin-top/-bottom, were kept as 0; a fixed-height block lost its margin-top (defect, found by go-slides' `bg right` work)
 
 Bibliography opened first: CSS Box 3 §5 and CSS 2.1 §8.3-8.4. Padding and margin

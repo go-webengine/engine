@@ -46,6 +46,16 @@ func parseListStyleType(lv string) (ListStyleType, bool) {
 		return ListDecimal, true
 	case "none":
 		return ListNone, true
+	case "lower-alpha", "lower-latin":
+		return ListLowerAlpha, true
+	case "upper-alpha", "upper-latin":
+		return ListUpperAlpha, true
+	case "lower-roman":
+		return ListLowerRoman, true
+	case "upper-roman":
+		return ListUpperRoman, true
+	case "decimal-leading-zero":
+		return ListDecimalLeadingZero, true
 	}
 	return 0, false
 }
@@ -59,12 +69,26 @@ func parseListStyleType(lv string) (ListStyleType, bool) {
 // Cascade 4 §3), so `list-style: square` after `list-style-position: inside`
 // is an outside square. A url() image is accepted and ignored; any other
 // unknown token makes the value invalid, and it changes nothing.
-func applyListStyle(s *Style, lv string) {
-	typ, pos := ListDisc, ListOutside
+//
+// v is the original-case value: a <string> type (`list-style: "- " inside`)
+// is taken from it as a CSS string token, escapes decoded.
+func applyListStyle(s *Style, v string) {
+	typ, pos, str := ListDisc, ListOutside, ""
+	hasString := false
+	if q := strings.IndexAny(v, "\"'"); q >= 0 {
+		sv, end, ok := ParseString(v[q:])
+		if !ok {
+			return
+		}
+		str, hasString = sv, true
+		v = v[:q] + " " + v[q+end:]
+	}
+	lv := strings.ToLower(v)
 	toks := splitTopLevel(lv)
-	if len(toks) == 0 {
+	if len(toks) == 0 && !hasString {
 		return
 	}
+	typed := false
 	for _, tok := range toks {
 		switch {
 		case tok == "inside":
@@ -77,10 +101,16 @@ func applyListStyle(s *Style, lv string) {
 			if !ok {
 				return
 			}
-			typ = t
+			typ, typed = t, true
 		}
 	}
-	s.ListStyleType, s.ListStylePosition = typ, pos
+	if hasString {
+		if typed && typ != ListNone {
+			return // two types
+		}
+		typ = ListString // `none` there was list-style-image's
+	}
+	s.ListStyleType, s.ListStylePosition, s.ListStyleString = typ, pos, str
 }
 
 // trimOverflowPosition strips a leading <overflow-position> keyword (`safe` or

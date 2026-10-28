@@ -204,10 +204,15 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - **Selectors**: tag/class/id/compound, descendant + child + **sibling (`~`/`+`)
   combinators**, **`:checked`** and **`:not()`** (the checkbox-hack that collapses
   MediaWiki dropdowns), attribute selectors handled by a "reduce, don't drop" rule.
-  **`::before`/`::after`** generate a real box for a `content:"<literal>"` string
-  (the breadcrumb-separator idiom), including their own `background-image`/
-  `mask-image` (the icon-only separator idiom, e.g. MDN's breadcrumb chevron) —
-  not yet on a form control, which is still laid out as an atomic box.
+  **`::before`/`::after`** generate a real box for a `content` made of strings,
+  `counter()` and `counters()` (the breadcrumb separator, the numbered heading),
+  including their own `background-image`/`mask-image` (the icon-only separator
+  idiom, e.g. MDN's breadcrumb chevron) — not yet on a form control, which is
+  still laid out as an atomic box. CSS escapes (`"\2022\00a0"`, `.\31 0`) are
+  decoded per CSS Syntax 3 in every string and identifier, selectors included.
+- **Counters**: `counter-reset` (with `reversed()`), `counter-increment`,
+  `counter-set`, their scoping and inheritance (CSS Lists 3 §4), and the
+  implicit `list-item` counter shared with list markers.
 - **Colour & decoration**: named/`#rgb`/`#rrggbb`, modern `rgb()`/`hsl()`,
   **`oklab()`/`oklch()`**, `color-mix()` (srgb/srgb-linear/oklab/oklch/hsl),
   `background-color`, **linear & radial gradients**, `background-image: url()`,
@@ -215,9 +220,15 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - **Transforms and effects**: `translate` and `rotate` (the function and the
   standalone property), CSS `filter` (blur and colour-matrix functions),
   `backdrop-filter`, `mask-image` (a single `url()` mask), group `opacity`.
-- **Lists and columns**: `ul`/`ol` markers (`list-style` discs, circles and
-  squares, `start`/`value`), and multi-column layout for `columns`,
-  `column-count` and `column-width`.
+- **Lists and columns**: `ul`/`ol` markers generated in layout as a
+  `::marker` box, so every backend gets them as text (the raster canvas, the
+  vector PDF, and a caller walking the layout tree such as go-pdfkit/html2pdf):
+  `list-style-type` `disc`, `circle`, `square`, `decimal`,
+  `decimal-leading-zero`, `lower-`/`upper-alpha` (`-latin`),
+  `lower-`/`upper-roman` (decimal outside 1–3999), a `<string>` and `none`;
+  `list-style-position` `outside` and `inside`; `::marker` colour, font and
+  `content`; HTML `start`, `reversed`, `value` and `type`. Multi-column
+  layout for `columns`, `column-count` and `column-width`.
 - **Text**: anti-aliased proportional text (go-opentype) with **real bold and
   italic faces** (no faux-bold), serif / sans / mono, complex scripts (Cyrillic,
   Vietnamese, …); `white-space: pre` and `nowrap`; `text-transform`
@@ -276,10 +287,14 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   translate and rotate (`scale`, `skew`, `matrix`) are not supported.
   SVG has no `<filter>`/`<mask>`/`<pattern>`/embedded `<image>`/`<text>`, and a
   per-page image budget caps very icon-heavy pages.
-- `::before`/`::after` generated content is synthesised for a plain
-  `content:"<literal>"` string only (round 177) — the breadcrumb-separator
-  idiom real pages use. `attr()`/`counter()`/`url()` and the rest of the
-  content grammar drop the declaration, same as any other unsupported value.
+- `::before`/`::after` generated content is synthesised for strings,
+  `counter()` and `counters()` (rounds 177, 187). `attr()`, `url()`, the quote
+  keywords and the rest of the content grammar drop the declaration, same as
+  any other unsupported value. `@counter-style` is not supported: an unknown
+  counter-style name is decimal, and an unknown `list-style-type` keyword
+  leaves the declaration unapplied. Counter values are 32-bit; an increment
+  that would overflow is not applied (WPT's expectation; the spec text says
+  clamp).
   A `background-image`/`mask-image` set on the pseudo-element is now fetched
   too (round 181), so an icon-only separator (e.g. MDN's breadcrumb chevron,
   a plain `<li>::after{content:"";mask-image:url(...)}`) renders — but only

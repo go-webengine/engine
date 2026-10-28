@@ -990,7 +990,9 @@ func parseHasSelectorList(arg string, depth int) []hasRelative {
 // (`:is(.dark .dark\:bg-wash-dark)`).
 func ParseSelectorList(s string) []Selector {
 	var out []Selector
-	for _, part := range splitSelectorCommas(s) {
+	// Hex escapes (`.\31 0`) are decoded once here, before anything splits
+	// on whitespace — see normalizeSelectorEscapes.
+	for _, part := range splitSelectorCommas(normalizeSelectorEscapes(s)) {
 		for _, expanded := range expandFunctionalPseudos(part) {
 			if sel, ok := parseComplex(expanded); ok {
 				out = append(out, sel)
@@ -1721,13 +1723,19 @@ func parseAttrSelector(body string) (attrMatch, bool) {
 }
 
 // unquoteAttrValue strips one layer of matching single or double quotes.
+// A quoted value is a CSS string (its escapes decoded per CSS Syntax 3
+// §4.3.5); an unquoted one is an identifier whose hex escapes
+// normalizeSelectorEscapes already rewrote as simple ones.
 func unquoteAttrValue(v string) string {
 	if len(v) >= 2 {
 		if (v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'') {
+			if s, end, ok := ParseString(v); ok && end == len(v) {
+				return s
+			}
 			return v[1 : len(v)-1]
 		}
 	}
-	return v
+	return unescapeSimple(v)
 }
 
 type compoundPart struct {

@@ -115,6 +115,10 @@ func TestListStyleTypeParsing(t *testing.T) {
 	cases := map[string]ListStyleType{
 		"disc": ListDisc, "circle": ListCircle, "square": ListSquare,
 		"decimal": ListDecimal, "none": ListNone,
+		"lower-alpha": ListLowerAlpha, "lower-latin": ListLowerAlpha,
+		"upper-alpha": ListUpperAlpha, "upper-latin": ListUpperAlpha,
+		"lower-roman": ListLowerRoman, "upper-roman": ListUpperRoman,
+		"decimal-leading-zero": ListDecimalLeadingZero,
 	}
 	for kw, want := range cases {
 		st := styleOf(t, `<html><body><ul style="list-style-type:`+kw+`"><li>x</li></ul></body></html>`, "ul")
@@ -123,7 +127,7 @@ func TestListStyleTypeParsing(t *testing.T) {
 		}
 	}
 	// An unrecognised keyword leaves the UA default (disc) unchanged.
-	st := styleOf(t, `<html><body><ul style="list-style-type:lower-roman"><li>x</li></ul></body></html>`, "ul")
+	st := styleOf(t, `<html><body><ul style="list-style-type:lower-klingon"><li>x</li></ul></body></html>`, "ul")
 	if st.ListStyleType != ListDisc {
 		t.Errorf("unknown list-style-type changed value to %v", st.ListStyleType)
 	}

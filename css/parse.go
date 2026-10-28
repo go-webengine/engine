@@ -390,11 +390,28 @@ func flipCmp(op string) string {
 	return op
 }
 
-// matchBrace returns the index of the '}' matching the '{' at open.
+// matchBrace returns the index of the '}' matching the '{' at open. A brace
+// inside a string (`content: "}"`) or escaped (`\}`) is not a block delimiter
+// (CSS Syntax 3 §4.3.5, §4.3.8); a string ends at its quote or, unclosed, at
+// the end of its line.
 func matchBrace(s string, open int) (int, bool) {
 	depth := 0
+	var quote byte
 	for i := open; i < len(s); i++ {
-		switch s[i] {
+		c := s[i]
+		if c == '\\' {
+			i++
+			continue
+		}
+		if quote != 0 {
+			if c == quote || c == '\n' {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
 		case '{':
 			depth++
 		case '}':
@@ -426,7 +443,9 @@ func ParseDeclarations(body string) []Declaration {
 		if !isCustomProperty(prop) {
 			prop = strings.ToLower(prop)
 		}
-		val := strings.TrimSpace(chunk[colon+1:])
+		// Escapes are decoded here, once, for every property — strings and
+		// identifiers alike (CSS Syntax 3 §4.3.7; see normalizeEscapes).
+		val := strings.TrimSpace(normalizeEscapes(chunk[colon+1:]))
 		// A trailing !important is not part of the value — strip it here, once,
 		// so no property parser downstream ever has to know about it.
 		important := false
@@ -482,9 +501,11 @@ func splitDeclChunks(body string) []string {
 	for i := 0; i < len(body); i++ {
 		c := body[i]
 		switch {
+		case c == '\\':
+			i++ // an escaped quote or ';' neither ends a string nor a declaration
 		case quote != 0:
-			if c == quote {
-				quote = 0
+			if c == quote || c == '\n' {
+				quote = 0 // a newline ends a (bad) string, CSS Syntax 3 §4.3.5
 			}
 		case c == '"' || c == '\'':
 			quote = c
@@ -607,10 +628,31 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 		// values, an unquoted keyword other than the ones below — leaves
 		// ContentSet false, the same "unparseable value, declaration
 		// dropped" outcome every other property in this file falls back to.
-		if lv == "none" || lv == "normal" {
-			s.Content, s.ContentSet = "", false
-		} else if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
-			s.Content, s.ContentSet = v[1:len(v)-1], true
+		//
+		// Strings are CSS string tokens, escapes decoded (`"\2022\00a0"`
+		// is "• "); counter() and counters() are kept as ContentItems
+		// for the counters pass (resolveCounters) to turn into text.
+		switch lv {
+		case "normal":
+			s.Content, s.ContentSet, s.ContentItems, s.ContentNone = "", false, nil, false
+		case "none":
+			s.Content, s.ContentSet, s.ContentItems, s.ContentNone = "", false, nil, true
+		default:
+			if lit, items, ok := parseContent(v); ok {
+				s.Content, s.ContentSet, s.ContentItems, s.ContentNone = lit, true, items, false
+			}
+		}
+	case "counter-reset":
+		if ops, ok := parseCounterOps(v, 0, true); ok {
+			s.CounterReset = ops
+		}
+	case "counter-increment":
+		if ops, ok := parseCounterOps(v, 1, false); ok {
+			s.CounterIncrement = ops
+		}
+	case "counter-set":
+		if ops, ok := parseCounterOps(v, 0, false); ok {
+			s.CounterSet = ops
 		}
 	case "fill":
 		if lv == "none" {
@@ -841,7 +883,9 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.ImageRendering = IRAuto
 		}
 	case "list-style-type":
-		if t, ok := parseListStyleType(lv); ok {
+		if str, end, ok := ParseString(v); ok && end == len(v) {
+			s.ListStyleType, s.ListStyleString = ListString, str
+		} else if t, ok := parseListStyleType(lv); ok {
 			s.ListStyleType = t
 		}
 	case "list-style-position":
@@ -852,7 +896,7 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.ListStylePosition = ListInside
 		}
 	case "list-style":
-		applyListStyle(s, lv)
+		applyListStyle(s, v)
 	case "width":
 		if l, ok := parseLength(v, emRef); ok {
 			s.Width = l
@@ -1493,7 +1537,7 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 	case "border-spacing":
 		s.BorderSpacingH, s.BorderSpacingV = parent.BorderSpacingH, parent.BorderSpacingV
 	case "list-style-type":
-		s.ListStyleType = parent.ListStyleType
+		s.ListStyleType, s.ListStyleString = parent.ListStyleType, parent.ListStyleString
 	case "list-style-position":
 		s.ListStylePosition = parent.ListStylePosition
 	case "orphans":
@@ -1972,7 +2016,15 @@ func parseFontFamily(lv string) FontFamily {
 	var names []string
 	generic, found := GenericSans, false
 	for _, fam := range splitTopLevelCommas(strings.ToLower(lv)) {
-		fam = strings.TrimSpace(strings.Trim(strings.TrimSpace(fam), `"'`))
+		fam = strings.TrimSpace(fam)
+		// A quoted family is a CSS string, an unquoted one identifiers:
+		// either way its escapes are decoded (CSS Syntax 3 §4.3.5, §4.3.7).
+		if s, end, ok := ParseString(fam); ok && end == len(fam) {
+			fam = s
+		} else {
+			fam = unescapeIdent(strings.Trim(fam, `"'`))
+		}
+		fam = strings.TrimSpace(fam)
 		if fam == "" {
 			continue
 		}

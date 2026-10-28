@@ -56,17 +56,36 @@ type Box struct {
 	Marker *Marker
 }
 
-// Marker is a laid-out list-item marker. For a bullet type (disc/circle/square)
-// X,Y,W,H is the glyph's square bounding box. For the decimal type, Text is the
-// ordinal string ("1.", "2.", …), X is its pen origin, Y the top of its line box
-// and Ascent the baseline offset; W is the text advance (H unused). Style
-// supplies the marker's colour and, for decimal, its font face.
+// Marker is a laid-out outside list-item marker (an inside one is an inline
+// box at the start of the item's first line, laid out like any text).
+//
+// Every marker has Text — the marker string without its trailing suffix
+// space, which the gap to the content edge stands in for ("1.", "iv.", "•")
+// — set at TextX (pen origin), TextY (top of the first line box) and Ascent
+// (baseline offset), so a backend that only draws text gets every marker as
+// real text. A Glyph marker (a disc, circle or square from list-style-type)
+// additionally has X,Y,W,H, the bullet's square bounding box, which a
+// painter may draw as a shape instead; for a text marker X,Y equal
+// TextX,TextY and W is the text advance (H unused). Style supplies the
+// marker's colour and font: the item's style plus any ::marker rule.
 type Marker struct {
 	Type       css.ListStyleType
 	Style      *css.Style
 	X, Y, W, H float64
 	Ascent     float64
 	Text       string
+	TextX      float64
+	TextY      float64
+	// Glyph says X,Y,W,H is a bullet shape a painter may draw instead of
+	// Text.
+	Glyph bool
+}
+
+// IsGlyph reports whether a painter should draw the marker as a bullet
+// shape. A Marker built without the Glyph field set — as older callers do —
+// falls back to its Type.
+func (m *Marker) IsGlyph() bool {
+	return m.Glyph || (m.Type.Glyph() && m.Text == "")
 }
 
 // InlineItem is one atom of inline content: a word, an image, or a forced line

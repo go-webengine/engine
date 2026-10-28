@@ -417,7 +417,7 @@ func TestVectorMarkers(t *testing.T) {
 	ms := &css.Style{Color: rgb(0, 0, 0), FontSize: 16, FontWeight: 400, FontFamily: css.Sans}
 	for _, typ := range []css.ListStyleType{css.ListDisc, css.ListCircle, css.ListSquare, css.ListDecimal} {
 		box := &layout.Box{Node: div(), X: 0, Y: 0, W: 60, H: 30, Style: &css.Style{},
-			Marker: &layout.Marker{Type: typ, Style: ms, Text: "1.", X: 10, Y: 10, W: 8, H: 8, Ascent: 14}}
+			Marker: &layout.Marker{Type: typ, Style: ms, Text: "1.", X: 10, Y: 10, W: 8, H: 8, Ascent: 14, Glyph: typ.Glyph()}}
 		parity(t, box, 60, 30, nil, nil, 0.03)
 	}
 	// A marker outside the clip, or with no style, draws nothing; a tiny

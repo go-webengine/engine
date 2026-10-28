@@ -576,7 +576,26 @@ const (
 	ListDecimal
 	// ListNone paints no marker.
 	ListNone
+	// ListLowerAlpha is a, b, …, z, aa, ab, … (lower-alpha / lower-latin).
+	ListLowerAlpha
+	// ListUpperAlpha is A, B, …, Z, AA, … (upper-alpha / upper-latin).
+	ListUpperAlpha
+	// ListLowerRoman is i, ii, iii, … — decimal outside 1..3999.
+	ListLowerRoman
+	// ListUpperRoman is I, II, III, … — decimal outside 1..3999.
+	ListUpperRoman
+	// ListDecimalLeadingZero is 01, 02, …, 10, ….
+	ListDecimalLeadingZero
+	// ListString is a <string> list-style-type: Style.ListStyleString is the
+	// whole marker, with no suffix.
+	ListString
 )
+
+// Glyph reports whether the type is one of the three bullet symbols a
+// painter may draw as a shape (disc, circle, square) rather than as text.
+func (t ListStyleType) Glyph() bool {
+	return t == ListDisc || t == ListCircle || t == ListSquare
+}
 
 // ListStylePosition is where the marker sits relative to the item's content. It
 // inherits.
@@ -829,6 +848,29 @@ type Style struct {
 	ListItem          bool
 	ListStyleType     ListStyleType
 	ListStylePosition ListStylePosition
+	// ListStyleString is the marker text of a ListString list-style-type.
+	// Inherited along with ListStyleType.
+	ListStyleString string
+
+	// CounterReset, CounterIncrement and CounterSet are the three counter
+	// properties (CSS Lists 3 §4), not inherited. A nil slice is the
+	// initial value `none`. Only a list-item entry in CounterIncrement
+	// replaces a list item's implicit `list-item 1` (§4.6).
+	CounterReset     []CounterOp
+	CounterIncrement []CounterOp
+	CounterSet       []CounterOp
+
+	// ContentItems is a `content` value that needs the counters pass to
+	// become text — it holds counter()/counters() — or nil when Content
+	// alone is the whole value. ContentNone records `content: none`, which
+	// on ::marker suppresses the marker (normal keeps list-style-type).
+	ContentItems []ContentItem
+	ContentNone  bool
+
+	// Marker is a list item's resolved ::marker, filled by the counters pass
+	// once the whole tree is styled (see resolveCounters): nil when the item
+	// has no marker (list-style-type: none, content: none, an empty string).
+	Marker *MarkerInfo
 
 	// Content holds a `content: "<literal>"` declaration's string, for
 	// ::before/::after. Not inherited (a pseudo-element's own content never
@@ -1479,6 +1521,7 @@ func inheritFrom(parent Style) Style {
 		// list-style-type / list-style-position inherit; list-item does not.
 		ListStyleType:     parent.ListStyleType,
 		ListStylePosition: parent.ListStylePosition,
+		ListStyleString:   parent.ListStyleString,
 		CustomProps:       parent.CustomProps, // inherited (shared until copy-on-write)
 		ColorScheme:       parent.ColorScheme, // inherited
 

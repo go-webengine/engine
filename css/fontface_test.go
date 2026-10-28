@@ -177,7 +177,9 @@ func TestParseFontFacesMalformedForms(t *testing.T) {
 	if faces := ParseFontFaces(`@font-face { font-family: C; src: url(a.ttf; }`, Media{}); len(faces) != 0 {
 		t.Errorf("an unterminated url() must not make a face: %+v", faces)
 	}
-	faces := ParseFontFaces(`@font-face { font-family: C; src: url(a.ttf) format('truetype; }`, Media{})
+	// The unclosed quote is a string that runs to the end of its line (CSS
+	// Syntax 3 §4.3.5), so the closing brace is on the next one.
+	faces := ParseFontFaces("@font-face { font-family: C; src: url(a.ttf) format('truetype;\n }", Media{})
 	if len(faces) != 1 || faces[0].Srcs[0].Format != "" {
 		t.Errorf("an unterminated format() must leave the hint empty: %+v", faces)
 	}

@@ -142,12 +142,15 @@ func uaDeclarations(tag string, quirks bool) []Declaration {
 		return []Declaration{{Property: "display", Value: "block"}, {Property: "font-size", Value: "13px"}, {Property: "font-weight", Value: "bold"}, {Property: "margin", Value: "22px 0"}}
 	case "h6":
 		return []Declaration{{Property: "display", Value: "block"}, {Property: "font-size", Value: "11px"}, {Property: "font-weight", Value: "bold"}, {Property: "margin", Value: "24px 0"}}
+	// ol and ul reset the implicit list-item counter (CSS Lists 3 Appendix
+	// A); <ol start>, <ol reversed> and <li value> are presentational hints
+	// (presentationalHints), which an author counter-reset/-set overrides.
 	case "ul":
 		return []Declaration{{Property: "display", Value: "block"}, {Property: "margin", Value: "16px 0"}, {Property: "padding-left", Value: "40px"},
-			{Property: "list-style-type", Value: "disc"}}
+			{Property: "list-style-type", Value: "disc"}, {Property: "counter-reset", Value: "list-item"}}
 	case "ol":
 		return []Declaration{{Property: "display", Value: "block"}, {Property: "margin", Value: "16px 0"}, {Property: "padding-left", Value: "40px"},
-			{Property: "list-style-type", Value: "decimal"}}
+			{Property: "list-style-type", Value: "decimal"}, {Property: "counter-reset", Value: "list-item"}}
 	case "li":
 		return []Declaration{{Property: "display", Value: "list-item"}}
 	case "a":
