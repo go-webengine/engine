@@ -133,6 +133,7 @@ func (b *binder) installStubs(g *goja.Object) {
 	// installed by installNet (see net.go).
 	g.Set("customElements", b.newCustomElementRegistry())
 	b.installClasslessStorageAPIs(g)
+	g.Set("WebAssembly", b.newWebAssembly())
 }
 
 // newCustomElementRegistry builds window.customElements (a CustomElementRegistry

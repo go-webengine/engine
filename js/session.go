@@ -290,7 +290,8 @@ func (s *Session) Eval(code string) (v interface{}, err error) {
 	return val.Export(), nil
 }
 
-// Close stops the watchdog. It is idempotent.
+// Close stops the watchdog and releases the WebAssembly runtime, if a page
+// actually created one (see wasmRT in wasm.go). It is idempotent.
 func (s *Session) Close() {
 	if s.done {
 		return
@@ -298,6 +299,9 @@ func (s *Session) Close() {
 	s.done = true
 	if s.stop != nil {
 		s.stop()
+	}
+	if s.b.wasmRuntime != nil {
+		_ = s.b.wasmRuntime.Close(context.Background())
 	}
 }
 

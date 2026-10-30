@@ -16,6 +16,7 @@ require (
 	github.com/go-webengine/esbuildsandbox v0.1.0
 	github.com/go-widgets/painter v0.16.0
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
+	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/image v0.47.0
 	golang.org/x/net v0.61.0
 	rsc.io/pdf v0.1.1

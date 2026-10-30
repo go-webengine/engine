@@ -176,7 +176,7 @@ Fetch (go-browserhttp)  →  Parse (x/net/html → dom)  →  Cascade (css: +var
 | `dom` | Owned DOM node tree built from `golang.org/x/net/html`. |
 | `css` | Real CSS subset: value model, stylesheet/declaration parser, tag/class/id + descendant/child/sibling combinators + `:checked`/`:not()` selectors with specificity, `var()` custom properties, `@media` width queries, modern colour (`rgb()/hsl()`), dark-mode, UA stylesheet, cascade + inheritance. |
 | `layout` | Full box model — block-and-inline flow, floats + clear, flexbox, CSS grid, tables, `position` (relative/absolute/fixed/sticky), margin collapsing, greedy word-wrap — driven by a `Measurer` interface (font-free, exactly testable). |
-| `js` | JavaScript execution via [goja](https://github.com/dop251/goja) bound to a minimal real DOM, with `fetch()`/XHR and laid-out-geometry read-back (`getBoundingClientRect`, `offset*`, `getComputedStyle`). |
+| `js` | JavaScript execution via [goja](https://github.com/dop251/goja) bound to a minimal real DOM, with `fetch()`/XHR and laid-out-geometry read-back (`getBoundingClientRect`, `offset*`, `getComputedStyle`), plus WebAssembly via [wazero](https://github.com/tetratelabs/wazero). |
 | `paint` | Rasterises the box tree to `*image.RGBA` — AA text (real bold + italic), gradients, border-radius, box-shadow, opacity, images and SVG; also the real `Measurer` (go-opentype faces). `PaintVector` draws the same tree through a vector `Canvas`. |
 | `pdfcanvas` | A `paint.Canvas` drawing into a go-pdfkit page: vector PDF with real text. |
 | `officecanvas` | A `paint.Canvas` recording a page as editable office objects (shapes, gradients, text lines, pictures, fonts) for PPTX/ODP writers. |
@@ -266,9 +266,26 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   DOM (incl. dynamically injected `<script>`/`<style>`/`<link>`), to a bounded
   fixpoint — so `mw.loader`-style runtime chrome is reflected in the output. The
   same JS-settled DOM drives the click hit-map.
+- **WebAssembly** (round 189): a page's own `WebAssembly.compile`/`instantiate`
+  runs real `.wasm` modules via [wazero](https://github.com/tetratelabs/wazero)
+  (pure Go, no CGO — its Interpreter engine covers every architecture this
+  project cross-builds for; its Compiler engine speeds up amd64/arm64 where
+  available). A module's own exported functions and linear memory
+  (`instance.exports.memory.buffer`, a real zero-copy `ArrayBuffer`) are
+  modelled, with function imports wired to real JS callbacks. Bounded like
+  every other resource this engine budgets: a module-size cap, a
+  memory-growth cap, and the same wall-clock deadline JS execution is already
+  held to.
 
 **Honest limits (not overclaimed)**
 
+- `WebAssembly`: no WASI (`wasi_snapshot_preview1` — stdio, filesystem,
+  clocks) is wired, so a module assuming a WASI host fails to instantiate
+  with a LinkError naming the missing import. The synchronous
+  `new WebAssembly.Module(...)`/`new WebAssembly.Instance(...)` constructor
+  forms, Table and Global imports/exports, standalone `Memory`/`Table`
+  objects (not tied to a module), and `compileStreaming`/`instantiateStreaming`
+  are not implemented — no confirmed container needs any of them yet.
 - `customElements.define()` only upgrades elements ALREADY in the document
   at the time it's called — a later `document.createElement(name)` or a
   node inserted afterward is not upgraded. There is no
@@ -427,6 +444,14 @@ capped (each confirmed live against a synthetic reproduction, not assumed):
   The separately exported `RasterizeSVG` (used by the PDF/office vector
   export, which needs the exact size asked for at print density) is
   deliberately NOT capped.
+- **WebAssembly** (round 189) is arbitrary bytecode execution from an
+  untrusted page, audited as its own category: a module-size cap bounds
+  `compile()`'s input, a memory-growth cap bounds a hostile module's own
+  `memory.grow` loop, and every call is deadlined to the SAME wall-clock
+  budget JS execution is already held to — a runaway module cannot outrun
+  the page's own time budget any more than an infinite JS loop can. No WASI
+  is wired, so a module cannot reach the filesystem, the network, or a
+  clock through it.
 
 See `FIDELITY.md`'s rounds 166–178 for the full measured writeups. None of
 these change how a well-formed page renders — only how a pathological one

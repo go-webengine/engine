@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
+	"github.com/tetratelabs/wazero"
 
 	"github.com/go-webengine/engine/dom"
 )
@@ -163,6 +164,14 @@ type binder struct {
 	// read twice, or compared against attachShadow()'s own return value, must
 	// be the same object).
 	shadowCache map[*dom.ShadowRoot]*goja.Object
+
+	// wasmRuntime is created lazily (see wasmRT) on the first WebAssembly
+	// call a page actually makes, so a page that never touches WebAssembly
+	// pays nothing for it — see wasm.go.
+	wasmRuntime wazero.Runtime
+	// wasmModules caches each WebAssembly.Module JS wrapper's underlying
+	// compiled form by object identity — see wrapWasmModule in wasm.go.
+	wasmModules map[*goja.Object]wazero.CompiledModule
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled
