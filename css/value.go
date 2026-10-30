@@ -1992,6 +1992,91 @@ func parseLength(s string, emRef float64) (Length, bool) {
 	return Length{Px: f * scale}, true
 }
 
+// resolveFontSizeLength resolves a font-size value to a definite px number —
+// the "eager" resolution font-size has always needed (there is no later
+// layout pass to resolve it against, unlike width/margin/padding's own
+// Length.IsPercent, deferred to Length.Resolve against a containing block).
+//
+// `vw` gets its OWN branch here rather than going through parseLength: that
+// function folds vw into the SAME Length.Percent representation a genuine
+// `%` uses (see its own doc comment — "approximated as a percentage of the
+// containing block"), which is the right call for width-like properties but
+// WRONG for font-size specifically, where a percentage resolves against the
+// PARENT's font-size (CSS Fonts 4 §5.4) and `vw` resolves against the
+// VIEWPORT — two unrelated bases this engine's Length type cannot tell
+// apart once collapsed into one IsPercent flag. Confirmed this was a real,
+// live bug, not a hypothetical: a bare `font-size:13vw` was ALREADY silently
+// wrong before this round (round 190, engine#326) — resolved as "13% of the
+// parent's font-size" instead of "13% of the viewport width" — found while
+// investigating carbondesignsystem.com's own confirmed `clamp()` trigger,
+// which needed the SAME correct `vw` basis for its middle (preferred) term.
+func resolveFontSizeLength(v string, vw, emRef float64) (float64, bool) {
+	v = strings.TrimSpace(v)
+	lv := strings.ToLower(v)
+	if strings.HasSuffix(lv, "vw") {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v[:len(v)-2]), 64)
+		if err != nil {
+			return 0, false
+		}
+		return f / 100 * vw, true
+	}
+	l, ok := parseLength(v, emRef)
+	if !ok || l.Auto {
+		return 0, false
+	}
+	if l.IsPercent {
+		return l.Percent * emRef, true
+	}
+	return l.Px, true
+}
+
+// parseClampFontSize parses `font-size: clamp(<min>, <preferred>, <max>)`
+// (CSS Values 4 §10.4) — the real confirmed trigger (round 190, engine#326):
+// carbondesignsystem.com's own compiled stylesheet sets
+// `font-size:clamp(4rem,13vw,12rem)` for fluid heading sizes, with NO
+// percentage mixed in (only `rem` and `vw`), which is exactly what this
+// engine can resolve eagerly: each term goes through resolveFontSizeLength
+// (its own `vw` vs `%` distinction applies identically to a term inside
+// clamp()), and the three results combine via clamp()'s own definition,
+// `max(MIN, min(PREFERRED, MAX))`. `min()`/`max()` standalone (not inside
+// `clamp()`) remain declined, per the existing documented reasoning: most of
+// their real corpus usage mixes a genuine percentage with a viewport unit,
+// which this function's own `vw`-or-percent-but-not-both-at-once resolution
+// does not attempt to disentangle within a single term — not needed by this
+// confirmed trigger, which uses `vw` and `rem` only.
+func parseClampFontSize(v string, vw, emRef float64) (float64, bool) {
+	v = strings.TrimSpace(v)
+	if !strings.HasPrefix(strings.ToLower(v), "clamp(") {
+		return 0, false
+	}
+	closeIdx, ok := matchParen(v, len("clamp"))
+	if !ok || closeIdx != len(v)-1 {
+		return 0, false
+	}
+	args := splitTopLevelComma(v[len("clamp")+1 : closeIdx])
+	if len(args) != 3 {
+		return 0, false
+	}
+	minV, ok1 := resolveFontSizeLength(args[0], vw, emRef)
+	prefV, ok2 := resolveFontSizeLength(args[1], vw, emRef)
+	maxV, ok3 := resolveFontSizeLength(args[2], vw, emRef)
+	if !ok1 || !ok2 || !ok3 {
+		return 0, false
+	}
+	// CSS Values 4 §10.4's own formula, applied in its own order
+	// (max(MIN, min(PREFERRED, MAX))) rather than a sequential clamp — the
+	// two differ when an author gives MIN > MAX (undefined/degenerate
+	// per spec either way, but matching the formula exactly costs nothing).
+	result := prefV
+	if result > maxV {
+		result = maxV
+	}
+	if result < minV {
+		result = minV
+	}
+	return result, true
+}
+
 // parseAspectRatio parses an `aspect-ratio` value's <ratio> grammar: a bare
 // number ("1.333") or "<W>/<H>" ("16/9"). The real, mixed "auto <ratio>" /
 // "<ratio> auto" forms (letting content size override the ratio) and the
