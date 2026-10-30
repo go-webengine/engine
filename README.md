@@ -199,8 +199,11 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   flow, floats + clear, **flexbox**, **CSS grid**, **tables**, **`position`**
   (relative/absolute/fixed/sticky), margin collapsing, greedy word-wrap.
 - **CSS cascade** with specificity (inline > id > class > tag) and inheritance;
-  `var()` custom properties; `@media` width queries; **dark-mode**
+  `var()` custom properties; `calc()`; `@media` width queries; **dark-mode**
   (`prefers-color-scheme`); external `<link>` stylesheet fetch; UA defaults.
+  **`font-size: clamp()`** (round 190) for fluid typography — `rem`/`vw`/`px`/
+  `em`/`%` terms, resolved eagerly at cascade time (`min()`/`max()`, and
+  `clamp()` on any other property, remain unimplemented — see below).
 - **Selectors**: tag/class/id/compound, descendant + child + **sibling (`~`/`+`)
   combinators**, **`:checked`** and **`:not()`** (the checkbox-hack that collapses
   MediaWiki dropdowns), attribute selectors handled by a "reduce, don't drop" rule.
@@ -286,6 +289,13 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   forms, Table and Global imports/exports, standalone `Memory`/`Table`
   objects (not tied to a module), and `compileStreaming`/`instantiateStreaming`
   are not implemented — no confirmed container needs any of them yet.
+- `clamp()` is only resolved for `font-size`, which resolves `%`/`vw` EAGERLY
+  at cascade time — a width-like property's own percentage still depends on
+  a containing block only known at layout time, the same wall `min()`/`max()`
+  (unimplemented anywhere) and `calc()` mixing a percentage with an absolute
+  length already disclose above. A `clamp()` term mixing a real percentage
+  with `vw`/`rem` in the SAME term is not attempted — no confirmed trigger
+  uses it.
 - `customElements.define()` only upgrades elements ALREADY in the document
   at the time it's called — a later `document.createElement(name)` or a
   node inserted afterward is not upgraded. There is no

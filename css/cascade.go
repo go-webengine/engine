@@ -144,17 +144,17 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 		// AMBIENT scope n is being cascaded in (nil outside any shadow tree,
 		// or an OUTER shadow's host when n is itself shadow-tree content),
 		// an entirely different (and, for the host itself, unrelated) binding.
-		st := computeElement(n, parent, rules, idx, hostRules, &counter, containerStack, containers, host, quirks, scale, m.Advance)
-		if before, ok := computePseudoElement(n, st, rules, idx, &counter, "before", scale, m.Advance); ok {
+		st := computeElement(n, parent, rules, idx, hostRules, &counter, containerStack, containers, host, quirks, scale, m.Advance, m.Width)
+		if before, ok := computePseudoElement(n, st, rules, idx, &counter, "before", scale, m.Advance, m.Width); ok {
 			st.Before = &before
 		}
-		if after, ok := computePseudoElement(n, st, rules, idx, &counter, "after", scale, m.Advance); ok {
+		if after, ok := computePseudoElement(n, st, rules, idx, &counter, "after", scale, m.Advance, m.Width); ok {
 			st.After = &after
 		}
 		// A list item's ::marker rules (colour, font, content), if any;
 		// the counters pass (resolveCounters) turns them into its marker.
 		if st.ListItem {
-			if mk, ok := computePseudoElement(n, st, rules, idx, &counter, "marker", scale, m.Advance); ok {
+			if mk, ok := computePseudoElement(n, st, rules, idx, &counter, "marker", scale, m.Advance, m.Width); ok {
 				st.Marker = &MarkerInfo{Style: &mk}
 			}
 		}
@@ -213,7 +213,7 @@ func CascadeMediaContainers(root *dom.Node, m Media, externalSheets []string, co
 // element is never a member of the shadow tree it hosts). quirks is the
 // document's quirks-mode flag (see dom.Node.Quirks), consulted by
 // uaDeclarations for the handful of UA defaults that differ in quirks mode.
-func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node, quirks bool, scale float64, adv Advance) Style {
+func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hostRules []Rule, counter *int, containerStack []containerFrame, containers map[*dom.Node]ContainerSize, host *dom.Node, quirks bool, scale float64, adv Advance, vw float64) Style {
 	st := inheritFrom(parent)
 	// ownProps tracks whether st.CustomProps is this element's own (already
 	// cloned) map versus the parent's shared one, so we clone at most once.
@@ -350,7 +350,7 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hos
 		// After var()/calc()/light-dark() resolution, so a length reaching
 		// this declaration through a custom property is scaled exactly once.
 		d.Value = resolveCh(scaleLengths(d.Property, v, scale), adv, &st)
-		st.apply(d, emRef, &parent)
+		st.apply(d, emRef, &parent, vw)
 	}
 
 	// Pass 1: resolve color-scheme and font-size first: every light-dark() in
@@ -411,7 +411,7 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hos
 // either). var()/calc()/light-dark() still resolve, against elementStyle's
 // own already-resolved custom-property map, via the same
 // resolveDeclValueScheme call computeElement's own applyResolved uses.
-func computePseudoElement(n *dom.Node, elementStyle Style, rules []Rule, idx *ruleIndex, counter *int, which string, scale float64, adv Advance) (Style, bool) {
+func computePseudoElement(n *dom.Node, elementStyle Style, rules []Rule, idx *ruleIndex, counter *int, which string, scale float64, adv Advance, vw float64) (Style, bool) {
 	var cands []candidate
 	matchRule := func(r Rule) {
 		spec := -1
@@ -460,7 +460,7 @@ func computePseudoElement(n *dom.Node, elementStyle Style, rules []Rule, idx *ru
 			return
 		}
 		d.Value = resolveCh(scaleLengths(d.Property, v, scale), adv, &st)
-		st.apply(d, emRef, &elementStyle)
+		st.apply(d, emRef, &elementStyle, vw)
 	}
 	for _, c := range cands {
 		if c.decl.Property == "color-scheme" {

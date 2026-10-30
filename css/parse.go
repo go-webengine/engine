@@ -530,7 +530,19 @@ func splitDeclChunks(body string) []string {
 // already-computed parent style, needed only for the CSS-wide `inherit`
 // keyword (see inheritProperty) — every other declaration value is
 // self-contained.
-func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
+//
+// vw is the viewport width in CSS px, needed only by font-size's own
+// clamp()/vw resolution (see parseClampFontSize) — an OPTIONAL trailing
+// argument (variadic, defaulting to 0) rather than a required one, so this
+// signature extension (round 190, engine#326) did not force updating the
+// 60+ existing test call sites that have no reason to care about a
+// viewport width at all; every PRODUCTION call site (cascade.go's
+// computeElement/computePseudoElement) passes the real one.
+func (s *Style) apply(d Declaration, emRef float64, parent *Style, vw ...float64) {
+	var vwPx float64
+	if len(vw) > 0 {
+		vwPx = vw[0]
+	}
 	v := strings.TrimSpace(d.Value)
 	lv := strings.ToLower(v)
 	if lv == "inherit" {
@@ -801,12 +813,16 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style) {
 			s.BackdropFilters = fs
 		}
 	case "font-size":
-		if l, ok := parseLength(v, emRef); ok && !l.Auto {
-			if l.IsPercent {
-				s.FontSize = l.Percent * emRef
-			} else {
-				s.FontSize = l.Px
-			}
+		// clamp() tried first (parseClampFontSize fails fast — a prefix
+		// check — for the overwhelmingly common non-clamp() case), then a
+		// plain length — see parseClampFontSize's own doc comment for why
+		// `vw` needs its own branch here rather than going through the
+		// generic parseLength/Length.IsPercent path every other length-
+		// typed property uses.
+		if px, ok := parseClampFontSize(v, vwPx, emRef); ok {
+			s.FontSize = px
+		} else if px, ok := resolveFontSizeLength(v, vwPx, emRef); ok {
+			s.FontSize = px
 		}
 	case "font-weight":
 		switch lv {
