@@ -772,6 +772,21 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style, vw ...float64
 				s.MaskImage = u
 			}
 		}
+	case "clip-path":
+		// Validated by actually running the real resolver (ResolveClipPathPolygon)
+		// against a dummy 0x0 box: only its `ok` return matters here — a
+		// percentage/calc() term resolves to 0 either way, but a
+		// syntactically invalid value (wrong shape function, unbalanced
+		// parens, a pair with other than 2 coordinates) reports false here
+		// exactly as it will again at paint time, so this cascade-time
+		// accept/drop decision and paint's own resolution can never
+		// disagree. See Style.ClipPath's own doc comment for what is and
+		// isn't recognised.
+		if lv == "none" {
+			s.ClipPath = ""
+		} else if _, _, ok := ResolveClipPathPolygon(v, 0, 0); ok {
+			s.ClipPath = strings.TrimSpace(v)
+		}
 	case "background-size":
 		if sz, ok := parseBackgroundSizeList(v, emRef); ok {
 			s.BackgroundSize = sz

@@ -227,7 +227,10 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - **Transforms and effects**: `translate`, `rotate` and `scale` (each the
   function and the standalone property, one at a time — no mixing), CSS
   `filter` (blur and colour-matrix functions), `backdrop-filter`,
-  `mask-image` (a single `url()` mask), group `opacity`.
+  `mask-image` (a single `url()` mask), **`clip-path: polygon()`** (round
+  194) — including a `calc()` term mixing a percentage with an absolute
+  length, resolved at paint time against the element's own border-box size —
+  group `opacity`.
 - **Lists and columns**: `ul`/`ol` markers generated in layout as a
   `::marker` box, so every backend gets them as text (the raster canvas, the
   vector PDF, and a caller walking the layout tree such as go-pdfkit/html2pdf):
@@ -307,6 +310,14 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   predates round 193's unit-parsing fix and round 193 deliberately left it
   as is (`calcParser.factor()` already rejects any percentage-kind term
   outside its own dedicated `%` branch).
+- `clip-path` only recognises `polygon()` (with an optional leading
+  `nonzero`/`evenodd` fill-rule), resolved against the border box — the
+  spec's default reference box. A `<geometry-box>` keyword,
+  `circle()`/`ellipse()`/`inset()`/`path()`, `round <length>` vertex
+  rounding, and a `url()` reference to an SVG `<clipPath>` element (a
+  different mechanism — see the SVG rasteriser's own clip handling) are not
+  recognised and drop the whole declaration. Not extended to `::before`/
+  `::after`. The polygon's edge has no antialiasing.
 - `form.requestSubmit()` fires the "submit" event only — no per-control
   constraint validation, and (like `window.location.assign()`/`.reload()`)
   no actual network submission or page navigation when the event is not

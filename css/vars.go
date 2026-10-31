@@ -67,6 +67,28 @@ func resolveDeclValueScheme(value string, props map[string]string, dark bool) (s
 	return resolveLightDark(v, dark)
 }
 
+// resolveClipPathValue is resolveDeclValueScheme for `clip-path` specifically:
+// identical var()/light-dark() handling, but WITHOUT resolveCalc. A
+// clip-path polygon's coordinates resolve against the element's own
+// border-box width/height (CSS Shapes 1 §2.2), known only at PAINT time —
+// this cascade-time, text-level pass has no box to resolve a percentage
+// against, so a calc() mixing one with an absolute length (confirmed live:
+// vercel.com's own `clip-path:polygon(0 0, 100% 0, 100%
+// calc(100% - 112.00px), calc(100% - 112.00px) 100%, 0 100%)`) must survive
+// as literal text for css.ResolveClipPathPolygon to resolve later, instead
+// of being eagerly rejected the way every other property's mixed calc() is
+// (see resolveCalc's own doc comment).
+func resolveClipPathValue(value string, props map[string]string, dark bool) (string, bool) {
+	if findVarFunc(value, 0) >= 0 {
+		v, ok := substituteVars(value, props, 0)
+		if !ok {
+			return "", false
+		}
+		value = v
+	}
+	return resolveLightDark(value, dark)
+}
+
 // substituteVars replaces every var() function in value with the referenced
 // custom property's value (recursively resolving nested var() in both the
 // substituted value and in fallbacks). depth guards against reference cycles.

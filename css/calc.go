@@ -146,6 +146,19 @@ type calcParser struct {
 	// past anything a real calc() expression ever nests (a handful of
 	// levels, in practice).
 	depth int
+
+	// basis/hasBasis let a caller with a KNOWN resolution basis (clip-path's
+	// own border-box width/height — see evalCalcWithBasis) have a `%` term
+	// convert straight to a pixel calcLen instead of the calcPct this
+	// parser's zero-value behaviour carries unresolved (see resolveCalc's
+	// own doc comment on why: this text-level pass ordinarily has no box to
+	// resolve a percentage against). Converting eagerly is what lets a `%`
+	// and an absolute length combine in the same +/- sum — expr/term's own
+	// "both sides must be the same kind" rule would otherwise reject it,
+	// which is exactly the failure a plain evalCalc gives for
+	// `calc(100% - 112px)` (confirmed live: vercel.com's own clip-path).
+	basis    float64
+	hasBasis bool
 }
 
 const maxCalcDepth = 256
@@ -280,6 +293,9 @@ func (p *calcParser) factor() (float64, calcKind, bool) {
 		if err != nil {
 			return 0, calcNum, false
 		}
+		if p.hasBasis {
+			return n / 100 * p.basis, calcLen, true
+		}
 		return n, calcPct, true
 	}
 	unit := p.s[unitStart:p.i]
@@ -302,3 +318,26 @@ func (p *calcParser) factor() (float64, calcKind, bool) {
 }
 
 func isCalcDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// evalCalcWithBasis evaluates one calc(...) call's inner expression (the
+// text between its outer parens) against a KNOWN resolution basis, letting
+// a percentage term combine with an absolute length in the same sum —
+// unlike evalCalc/resolveCalc, which must defer any percentage because they
+// run at cascade time, before any box exists to resolve one against. Used
+// by clip-path's polygon() vertices, resolved at PAINT time against the
+// element's own border-box width (for an x coordinate) or height (for a y
+// coordinate) — see css.ResolveClipPathPolygon. Not used by anything else:
+// every other property's percentage is still deferred to Length.Resolve at
+// layout time, unaffected by this.
+func evalCalcWithBasis(s string, basisPx float64) (float64, bool) {
+	p := &calcParser{s: s, basis: basisPx, hasBasis: true}
+	v, kind, ok := p.expr()
+	if !ok || kind == calcNum {
+		return 0, false
+	}
+	p.skipSpace()
+	if p.i != len(p.s) {
+		return 0, false
+	}
+	return v, true
+}

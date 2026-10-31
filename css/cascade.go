@@ -376,9 +376,29 @@ func computeElement(n *dom.Node, parent Style, rules []Rule, idx *ruleIndex, hos
 	}
 	// Pass 2: everything else, with em relative to the element's own size.
 	for _, c := range cands {
-		if c.decl.Property != "font-size" && c.decl.Property != "color-scheme" && !isCustomProperty(c.decl.Property) {
-			applyResolved(c.decl, st.FontSize)
+		if c.decl.Property == "font-size" || c.decl.Property == "color-scheme" || isCustomProperty(c.decl.Property) {
+			continue
 		}
+		// clip-path takes its own resolution path — see
+		// resolveClipPathValue's doc comment — which must skip resolveCalc
+		// (applyResolved's own generic path) so a calc() mixing a
+		// percentage with an absolute length survives as literal text for
+		// paint time to resolve against the element's own border-box size,
+		// instead of being dropped here before paint ever sees it. Not
+		// extended to ::before/::after (computePseudoElement never calls
+		// this branch): no confirmed trigger puts clip-path on a
+		// pseudo-element.
+		if c.decl.Property == "clip-path" {
+			v, ok := resolveClipPathValue(c.decl.Value, st.CustomProps, st.ColorScheme.UsedDark())
+			if !ok {
+				continue
+			}
+			d := c.decl
+			d.Value = resolveCh(scaleLengths(d.Property, v, scale), adv, &st)
+			st.apply(d, st.FontSize, &parent, vw)
+			continue
+		}
+		applyResolved(c.decl, st.FontSize)
 	}
 	// See CenterAsBlock's doc comment: every element uses its own final
 	// TextAlign, except a quirks-mode <table> also inherits its PARENT's
