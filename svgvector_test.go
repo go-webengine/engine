@@ -123,6 +123,34 @@ func TestSVGIsDrawnAsVectors(t *testing.T) {
 	}
 }
 
+// An open subpath is closed in the vector form, as a fill closes it: a
+// Twemoji face is an open path, which LibreOffice leaves unfilled as an
+// open ODF draw:path.
+func TestSVGOpenSubpathsAreClosed(t *testing.T) {
+	svg := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 36"><path fill="#fc4" d="M36 18c0 9.941-8.059 18-18 18S0 27.941 0 18 8.059 0 18 0s18 8.059 18 18"/><path fill="#000" d="M10 10 L14 10 L12 14 M20 10 L24 10 L22 14 Z"/></svg>`
+	l := vectorLayout(t, `<img width="72" height="72" src="`+svgURI(svg)+`">`)
+	for _, src := range l.rp.vecs {
+		v := src.Image()
+		if v == nil || len(v.Shapes) != 2 {
+			t.Fatalf("%+v", v)
+		}
+		for i, sh := range v.Shapes {
+			moves, closes := 0, 0
+			for _, op := range sh.Path.Ops {
+				switch op.Kind {
+				case paint.PathMoveTo:
+					moves++
+				case paint.PathClose:
+					closes++
+				}
+			}
+			if moves != closes || sh.Path.Ops[len(sh.Path.Ops)-1].Kind != paint.PathClose {
+				t.Errorf("shape %d: %d subpaths, %d closed", i, moves, closes)
+			}
+		}
+	}
+}
+
 // What has no exact vector form, or is filtered, is placed as its bitmap.
 func TestSVGFallsBackToItsBitmap(t *testing.T) {
 	for name, body := range map[string]string{

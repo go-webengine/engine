@@ -63,14 +63,23 @@ func svgVectorSource(icon *oksvg.SvgIcon) *paint.VectorSource {
 
 // vectorPath converts oksvg's path, raising its quadratic curves to cubic
 // ones (the same curve: controls two thirds of the way to the quadratic's).
+// Every subpath is closed: every shape is a fill, which closes an open
+// subpath (SVG 1.1 §11.3: it "fills open subpaths by performing the fill
+// operation as if an additional "closepath" command were added"), and a
+// writer may not (LibreOffice leaves an open ODF draw:path unfilled; a
+// Twemoji face is an open path).
 func vectorPath(ops []oksvg.PathOp) paint.Path {
-	p := paint.Path{Ops: make([]paint.PathOp, 0, len(ops))}
+	p := paint.Path{Ops: make([]paint.PathOp, 0, len(ops)+1)}
 	var cur, start [2]float64
+	open := false
 	for _, op := range ops {
 		switch op.Op {
 		case 'M':
+			if open {
+				p.Close()
+			}
 			p.MoveTo(op.Pts[0][0], op.Pts[0][1])
-			cur, start = op.Pts[0], op.Pts[0]
+			cur, start, open = op.Pts[0], op.Pts[0], true
 		case 'L':
 			p.LineTo(op.Pts[0][0], op.Pts[0][1])
 			cur = op.Pts[0]
@@ -84,8 +93,11 @@ func vectorPath(ops []oksvg.PathOp) paint.Path {
 			cur = op.Pts[2]
 		case 'Z':
 			p.Close()
-			cur = start
+			cur, open = start, false
 		}
+	}
+	if open {
+		p.Close()
 	}
 	return p
 }
