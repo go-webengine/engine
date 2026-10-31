@@ -35,13 +35,10 @@ func applyClipPathMask(group *image.RGBA, box *layout.Box, yOffset int) {
 		clearAlpha(group)
 		return
 	}
-	points, evenOdd, ok := css.ResolveClipPathPolygon(box.Style.ClipPath, float64(bw), float64(bh))
-	if !ok {
-		// parse.go's `case "clip-path"` already ran this exact resolver to
-		// decide whether to accept the declaration, so this cannot fail for
-		// a value that reached here — fail safe (no clip) rather than guess.
-		return
-	}
+	// parse.go's `case "clip-path"` already ran this exact resolver to
+	// decide whether to accept the declaration — a value that reached
+	// Style.ClipPath is guaranteed resolvable, so ok is not checked here.
+	points, evenOdd, _ := css.ResolveClipPathPolygon(box.Style.ClipPath, float64(bw), float64(bh))
 	for y := group.Rect.Min.Y; y < group.Rect.Max.Y; y++ {
 		canvasY := y + yOffset
 		inRow := canvasY >= bx.Min.Y && canvasY < bx.Max.Y

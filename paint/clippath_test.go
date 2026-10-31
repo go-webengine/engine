@@ -90,7 +90,11 @@ func TestPaintClipPathOutsideBorderBoxFullyMasked(t *testing.T) {
 }
 
 // TestPaintClipPathZeroSizedBox covers applyClipPathMask's degenerate-box
-// guard, mirroring TestPaintMaskImageZeroSizedBox.
+// guard, mirroring TestPaintMaskImageZeroSizedBox. A 0×0 box with no
+// children never even gets a group buffer (paintBox's own ink-bounds
+// early-out fires first), so this alone cannot reach
+// applyClipPathMask's bw<=0 branch — see
+// TestPaintClipPathZeroWidthBoxWithOverflowingChild below for that.
 func TestPaintClipPathZeroSizedBox(t *testing.T) {
 	dst := white(10, 10)
 	box := &layout.Box{
@@ -101,6 +105,48 @@ func TestPaintClipPathZeroSizedBox(t *testing.T) {
 	PaintFull(dst, box, NewFonts(), nil, nil)
 	if c := dst.RGBAAt(2, 2); c.R != 255 || c.G != 255 || c.B != 255 {
 		t.Errorf("zero-sized clipped box should paint nothing, got %+v", c)
+	}
+}
+
+// TestPaintClipPathZeroWidthBoxWithOverflowingChild mirrors
+// TestPaintMaskImageZeroWidthBoxWithOverflowingChild: the only way to
+// actually reach applyClipPathMask's own clearAlpha path is a zero-WIDTH
+// box whose child still overflows it and paints something, so the group
+// buffer is non-empty even though the clipped box itself has no border box
+// to resolve the polygon against.
+func TestPaintClipPathZeroWidthBoxWithOverflowingChild(t *testing.T) {
+	dst := white(10, 10)
+	parent := &layout.Box{
+		Node:  &dom.Node{Type: dom.Element, Tag: "span"},
+		Style: clipPathStyle(css.Color{A: 0}, "polygon(0 0, 100% 0, 0 100%)"),
+		X:     5, Y: 0, W: 0, H: 10,
+		Children: []*layout.Box{{
+			Node:  &dom.Node{Type: dom.Element, Tag: "div"},
+			Style: &css.Style{Background: css.Color{R: 255, A: 255}},
+			X:     2, Y: 2, W: 6, H: 6,
+		}},
+	}
+	PaintFull(dst, parent, NewFonts(), nil, nil)
+	if c := dst.RGBAAt(5, 5); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("a clip-path with no border box to resolve against should mask out the whole element, got %+v", c)
+	}
+}
+
+// TestPointInPolygonBothWindingDirections covers pointInPolygon's winding
+// count going negative (a polygon whose vertices are listed clockwise, the
+// mirror image of the counter-clockwise listing every other test here
+// uses) — the nonzero fill rule must still treat the same geometric region
+// as inside regardless of which way the vertex list winds.
+func TestPointInPolygonBothWindingDirections(t *testing.T) {
+	ccw := []css.ClipPathPoint{{X: 0, Y: 0}, {X: 20, Y: 0}, {X: 0, Y: 20}}
+	cw := []css.ClipPathPoint{{X: 0, Y: 0}, {X: 0, Y: 20}, {X: 20, Y: 0}}
+	for _, pts := range [][]css.ClipPathPoint{ccw, cw} {
+		if !pointInPolygon(pts, false, 2, 2) {
+			t.Errorf("pointInPolygon(%v, nonzero, 2,2) = false, want true (inside regardless of winding direction)", pts)
+		}
+		if pointInPolygon(pts, false, 17, 17) {
+			t.Errorf("pointInPolygon(%v, nonzero, 17,17) = true, want false (outside)", pts)
+		}
 	}
 }
 
