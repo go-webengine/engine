@@ -1,6 +1,6 @@
 module github.com/go-webengine/engine
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9
@@ -18,7 +18,7 @@ require (
 	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
 	github.com/tetratelabs/wazero v1.12.0
 	golang.org/x/image v0.47.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	rsc.io/pdf v0.1.1
 )
 

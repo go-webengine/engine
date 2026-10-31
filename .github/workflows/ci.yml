@@ -21,7 +21,13 @@ permissions:
 
 env:
   CGO_ENABLED: "0"
-  GO_VERSION: "1.27.2"
+  # ⛔ KEEP THIS EQUAL TO go.mod's `go` DIRECTIVE. It is the toolchain the
+  # artefacts are built with, and the standard library is judged by it: on
+  # 2026-10-31 this said 1.27.2 while GO-2026-6809 (crypto/x509
+  # Certificate.Verify, reachable from cmd/render) was unfixed, fixed in
+  # go1.27.3. Raising go.mod alone would leave this lane building the
+  # vulnerable toolchain.
+  GO_VERSION: "1.27.3"
 
 jobs:
   test:
@@ -84,6 +90,33 @@ jobs:
         run: |
           go test -short -tags "${{ matrix.tags }}" -run 'Adjust|Geometry|JSNumbers|NoNetwork|LazyFontFace|Fetcher' .
           go test -short -tags "${{ matrix.tags }}" ./paint/...
+
+  # The nested bench module (chromedp-based, kept out of the main module's
+  # CGO=0/6-arch build and coverage gate — see bench/go.mod's own comment)
+  # had no lane of its own at all. Found 2026-10-31 by a vulnerability sweep
+  # that could only read HALF of this repository's dependency graph because
+  # bench/go.mod had drifted stale against the parent module's `replace`
+  # target (Renovate updates the parent module and has no reason to touch a
+  # nested one it does not itself declare). `go vet`, not `go test`: bench's
+  # own benchmarks are a `main`, and running them measures whatever shared
+  # runner CI happens to land on, not this repository's code — the question
+  # this job asks is only "does it still compile against the current
+  # parent." No `-mod=mod`: that flag lets the command WRITE the go.mod it
+  # needs, which would hide the very staleness this job exists to catch.
+  bench:
+    name: bench module compiles against current engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Vet (go.mod must already be tidy — no -mod=mod)
+        working-directory: bench
+        run: go vet ./...
 
   cross-build:
     name: cross-build ${{ matrix.goarch }}

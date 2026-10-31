@@ -1,0 +1,90 @@
+name: vuln
+
+# ⛔ THIS REPOSITORY HAD NO VULNERABILITY LANE AT ALL. Measured 2026-10-31 by
+# a sweep of the 58 Go repositories across go-webengine, go-compressions,
+# go-filesystems and go-images -- the first anyone had run over them:
+#
+#   GO-2026-6860 (golang.org/x/net, fixed in v0.62.0) was REACHABLE here,
+#   through two call paths:
+#     dom/dom.go:165:25      dom.Parse calls html.Parse
+#     dom/mutate.go:257:35   dom.ParseFragment calls html.ParseFragment
+#
+#   and GO-2026-6809 (crypto/x509 Certificate.Verify, fixed in go1.26.10 and
+#   go1.27.3) was reachable from cmd/render, because go.mod declared
+#   `go 1.27.2` and the standard library is judged by the version the module
+#   claims.
+#
+# x/net is a DIRECT requirement of this module (no `// indirect` in go.mod),
+# so Renovate could in principle have proposed the bump -- but had not, and
+# a gate that only fires on a push has the coverage of the repository's
+# activity regardless: the same advisory sat green for days in two go-pkgx
+# repositories three days earlier and was found there by pull requests that
+# touched nothing related.
+#
+# AND A GATE THAT ONLY FIRES ON A PUSH HAS THE COVERAGE OF THE REPOSITORY'S
+# ACTIVITY, which is why this is a workflow of its own with a daily schedule
+# rather than a job in ci.yml: a schedule there would run the full
+# build/vet/test/coverage matrix and the cross-build/tags lanes every night
+# to ask a question about dependencies. Daily rather than weekly because the
+# vulnerability database is updated on business days.
+#
+# THE CRON TIME IS A REQUEST, NOT AN APPOINTMENT -- GitHub runs scheduled
+# workflows late -- and a DISABLED cron reports nothing rather than failing,
+# because GitHub switches scheduled workflows off after 60 days without
+# repository activity. Hence workflow_dispatch, and hence this comment:
+# silence on this lane is not green.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '47 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vuln:
+    name: govulncheck, judged by vulngate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # FROM go.mod, NOT FROM ci.yml's GO_VERSION. The declared floor is what
+      # a consumer running `go install` with GOTOOLCHAIN=local actually
+      # honours, so it is the version this question is about -- and reading
+      # it here keeps one source of truth instead of a second copy that rots
+      # out of step.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # SAY WHICH TOOLCHAIN RAN. The standard library is judged by ONE
+      # version, so a lane that silently resolved another answers a
+      # different question -- and here the toolchain IS half the verdict:
+      # the same source reports GO-2026-6809 under 1.27.2 and nothing under
+      # 1.27.3.
+      - run: go version
+
+      # NO `set -o pipefail`, deliberately. govulncheck exits non-zero over
+      # findings it has decided this module does not call, and ZERO over
+      # some it has -- which is the whole reason vulngate exists. An unread
+      # scan is caught instead by the emptiness check below and by vulngate,
+      # which believes a run only when it carried a config AND an SBOM.
+      #
+      # @latest FOR THE JUDGE, NOT A PIN, and the reason is measured: a pin
+      # inside a `run:` block is read by no dependency manager, so it rots in
+      # silence. For a judge whose whole value is knowing today's rules, and
+      # which already refuses an advisory database older than 21 days,
+      # newest is the correct answer and not a convenience.
+      - name: govulncheck, judged by vulngate
+        run: |
+          set -eu
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install github.com/go-fleettools/fleettools/cmd/vulngate@latest
+          BIN="$(go env GOPATH)/bin"
+          "$BIN/govulncheck" -format json ./... > /tmp/vuln.json || true
+          test -s /tmp/vuln.json || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
+          "$BIN/vulngate" -go "$(go env GOVERSION)" /tmp/vuln.json

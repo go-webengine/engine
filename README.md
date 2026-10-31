@@ -3,11 +3,12 @@
 # go-webengine / engine
 
 [![CI](https://github.com/go-webengine/engine/actions/workflows/ci.yml/badge.svg)](https://github.com/go-webengine/engine/actions/workflows/ci.yml)
+[![vuln](https://github.com/go-webengine/engine/actions/workflows/vuln.yml/badge.svg)](https://github.com/go-webengine/engine/actions/workflows/vuln.yml)
 ![coverage gate](https://img.shields.io/badge/coverage%20gate-css%2099.5%20%C2%B7%20layout%2Fpaint%2Fpaginate%20100%20%C2%B7%20dom%2097.4-brightgreen)
 [![Go Reference](https://pkg.go.dev/badge/github.com/go-webengine/engine.svg)](https://pkg.go.dev/github.com/go-webengine/engine)
 [![Docs](https://img.shields.io/badge/docs-mkdocs--material-0079A8)](https://go-webengine.github.io/docs/)
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](LICENSE)
-[![Go 1.27.2+](https://img.shields.io/badge/Go-1.27.2%2B-00ADD8?logo=go)](https://go.dev/dl/)
+[![Go 1.27.3+](https://img.shields.io/badge/Go-1.27.3%2B-00ADD8?logo=go)](https://go.dev/dl/)
 
 A pure-Go, **`CGO_ENABLED=0`** headless web engine: it fetches a URL, parses the
 HTML into a DOM, applies a real CSS subset (cascade + inheritance + `var()` +
