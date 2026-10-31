@@ -610,6 +610,18 @@ func TestSVGGolden(t *testing.T) {
 	// currentColor stroke of the circle (centre viewBox(25,37)->pixel(50,74),
 	// r8->16px; left stroke around x=34px) is the div's teal #0a7ea4.
 	near(34, 74, 0x0a, 0x7e, 0xa4, 40, "currentColor stroke teal")
+	// The stroke is 3 user units wide under the viewBox's 2x: 6 pixels, as a
+	// browser draws it (SVG 1.1 §7.6: lengths are in the transformed user
+	// space; oksvg before v0.3.0 stroked at 3).
+	teal := 0
+	for x := 26; x < 42; x++ {
+		if c := img.RGBAAt(x, 74); d(c.R, 0x0a) < 24 && d(c.G, 0x7e) < 24 && d(c.B, 0xa4) < 24 {
+			teal++
+		}
+	}
+	if teal < 5 || teal > 7 {
+		t.Errorf("the circle's stroke is %d pixels wide on row 74, want 6", teal)
+	}
 
 	checkGolden(t, img, "svg_golden.png")
 }

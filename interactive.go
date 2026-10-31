@@ -203,8 +203,7 @@ func (d *LiveDocument) resettle(ctx context.Context) {
 	d.doc.Title = dom.Title(d.doc.Root)
 
 	if relaidOut {
-		d.rp.imgSize, d.rp.imgs = d.e.loadImages(ctx, d.doc, d.rp.sm, d.e.deviceW(d.vpW))
-		d.rp.bgImgs = d.e.loadBackgroundImages(ctx, d.doc, d.rp.sm)
+		d.e.loadAllImages(ctx, d.doc, d.rp, d.e.deviceW(d.vpW))
 		d.rp.box, d.rp.height = d.e.layoutDoc(d.doc.Root, d.rp.sm, d.vpW, d.vpH, d.fonts, d.rp.imgSize)
 		d.rp.sm, d.rp.box, d.rp.height = d.e.layoutWithContainers(d.doc.Root, d.rp.sheets, d.vpW, d.vpH, d.fonts, d.rp.imgSize, d.rp.sm, d.rp.box, d.rp.height)
 	}

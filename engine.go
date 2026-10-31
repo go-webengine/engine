@@ -396,8 +396,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 	// with the real intrinsic sizes. This is the geometry the page's scripts see
 	// through getBoundingClientRect / offset* / getComputedStyle, so it runs
 	// BEFORE the JS settle loop in both paths.
-	rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, e.deviceW(vpW))
-	rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
+	e.loadAllImages(ctx, doc, rp, e.deviceW(vpW))
 
 	start := time.Now()
 	rp.box, rp.height = e.layoutDoc(doc.Root, rp.sm, vpW, vpH, fonts, rp.imgSize)

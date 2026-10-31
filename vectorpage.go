@@ -98,5 +98,5 @@ func (l *PageLayout) PaintVector(c paint.Canvas) paint.VectorStats {
 	var p paint.Path
 	p.RoundRect(paint.Rect{W: float64(page.Dx()), H: float64(page.Dy())}, 0)
 	c.Fill(&p, base, false)
-	return paint.PaintVector(c, l.rp.box, l.fonts, l.rp.imgs, l.rp.bgImgs, page)
+	return paint.PaintVectorWith(c, l.rp.box, l.fonts, l.rp.imgs, l.rp.bgImgs, l.rp.vecs, page)
 }

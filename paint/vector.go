@@ -31,6 +31,9 @@ type VectorStats struct {
 	// Images counts the bitmaps placed (<img>, background tiles), Glyphs the
 	// glyphs drawn as text.
 	Images, Glyphs int
+	// Vectors counts the SVG drawings placed as vector shapes instead of
+	// their bitmaps (PaintVectorWith).
+	Vectors int
 }
 
 // maxVectorTiles bounds how many times one background image is placed as a
@@ -59,10 +62,7 @@ const maxVectorScratchPixels = 64 << 20
 // The page background (the canvas colour) is the caller's to paint first, as
 // for PaintFull.
 func PaintVector(c Canvas, box *layout.Box, f *Fonts, imgs map[*dom.Node]image.Image, bgImgs map[string]image.Image, page image.Rectangle) VectorStats {
-	v := &vpainter{c: c, f: f, imgs: imgs, bgImgs: bgImgs, page: page}
-	v.sc, _ = c.(StructuredCanvas)
-	v.box(box, page)
-	return v.stats
+	return PaintVectorWith(c, box, f, imgs, bgImgs, nil, page)
 }
 
 type vpainter struct {
@@ -73,6 +73,11 @@ type vpainter struct {
 	bgImgs map[string]image.Image
 	page   image.Rectangle
 	stats  VectorStats
+
+	// vecs are the SVG bitmaps' vector forms, support what the canvas draws
+	// of them (svgvector.go).
+	vecs    VectorImages
+	support VectorSupport
 
 	// scratch is the raster fallback's page-sized buffer, allocated on first
 	// use and cleared back to transparent after each use (only where it was
@@ -396,6 +401,12 @@ func (v *vpainter) bgBitmap(st *css.Style, own Rect, rad float64, src image.Imag
 			if !overlaps(r, clip) || r.X >= own.X+own.W || r.Y >= own.Y+own.H || r.X+r.W <= own.X || r.Y+r.H <= own.Y {
 				continue
 			}
+			// a tile the box's outline cuts needs a canvas that clips
+			cut := rad > 0 || r.X < own.X || r.Y < own.Y || r.X+r.W > own.X+own.W || r.Y+r.H > own.Y+own.H
+			if vec := v.vector(src, cut); vec != nil {
+				v.vectorImage(vec, r)
+				continue
+			}
 			v.c.Image(src, r)
 			v.stats.Images++
 		}
@@ -639,12 +650,24 @@ func (v *vpainter) image(it *layout.InlineItem, clip image.Rectangle) {
 	if !overlaps(box, clip) {
 		return
 	}
-	if it.Style != nil && len(it.Style.Filters) > 0 {
+	filtered := it.Style != nil && len(it.Style.Filters) > 0
+	if filtered {
+		// the filter is applied to the bitmap: no vector form of the result
 		src = applyFilters(toRGBA(src), it.Style.Filters, it.Style.Color)
 	}
 	fit := css.ObjectFitFill
 	if it.Style != nil {
 		fit = it.Style.ObjectFit
+	}
+	place := func(r Rect, cut bool) {
+		if !filtered {
+			if vec := v.vector(src, cut); vec != nil {
+				v.vectorImage(vec, r)
+				return
+			}
+		}
+		v.c.Image(src, r)
+		v.stats.Images++
 	}
 	if fit != css.ObjectFitFill && it.Width > 0 && it.LineHeight > 0 {
 		tw, th := coverContain(float64(sb.Dx()), float64(sb.Dy()), w, h, fit == css.ObjectFitCover)
@@ -653,12 +676,10 @@ func (v *vpainter) image(it *layout.InlineItem, clip image.Rectangle) {
 		var p Path
 		p.RoundRect(box, 0)
 		v.c.Clip(&p, false)
-		v.c.Image(src, Rect{X: it.X + (w-tw)/2, Y: it.Y + (h-th)/2, W: tw, H: th})
-		v.stats.Images++
+		place(Rect{X: it.X + (w-tw)/2, Y: it.Y + (h-th)/2, W: tw, H: th}, tw > w || th > h)
 		return
 	}
-	v.c.Image(src, box)
-	v.stats.Images++
+	place(box, false)
 }
 
 // text is drawText with glyphs instead of masks: the runs Fonts.Runs splits

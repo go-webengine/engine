@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
+	"github.com/go-webengine/engine/paint"
 )
 
 // maxSVGDim bounds a rasterised SVG's pixel dimensions on each axis (a cost
@@ -90,9 +91,16 @@ func srcLooksLikeSVG(src string) bool {
 // intrinsic size, so a broken SVG renders as empty space rather than crashing
 // the page.
 func (e *Engine) svgToBitmap(data []byte, st *css.Style, attrW, attrH, viewportW int, currentColor string) (img image.Image, usedW, usedH int, ok bool) {
+	img, _, usedW, usedH, ok = e.svgToBitmapVec(data, st, attrW, attrH, viewportW, currentColor)
+	return img, usedW, usedH, ok
+}
+
+// svgToBitmapVec is svgToBitmap that also returns the drawing's vector form,
+// made from the same parsed document when first asked for (svgvector.go).
+func (e *Engine) svgToBitmapVec(data []byte, st *css.Style, attrW, attrH, viewportW int, currentColor string) (img image.Image, vec *paint.VectorSource, usedW, usedH int, ok bool) {
 	defer func() {
 		if recover() != nil {
-			img, usedW, usedH, ok = nil, 0, 0, false
+			img, vec, usedW, usedH, ok = nil, nil, 0, 0, false
 		}
 	}()
 	// oksvg parses the root <svg> width/height with strconv and errors out on any
@@ -111,7 +119,7 @@ func (e *Engine) svgToBitmap(data []byte, st *css.Style, attrW, attrH, viewportW
 		icon, err = oksvg.ReadIconStream(bytes.NewReader(data), oksvg.IgnoreErrorMode)
 	}
 	if err != nil || icon == nil || icon.ViewBox.W <= 0 || icon.ViewBox.H <= 0 {
-		return nil, 0, 0, false
+		return nil, nil, 0, 0, false
 	}
 	// The SVG document's own root width/height (in px) are its intrinsic display
 	// size (as a browser uses them); the viewBox is only the coordinate system.
@@ -150,7 +158,7 @@ func (e *Engine) svgToBitmap(data []byte, st *css.Style, attrW, attrH, viewportW
 	}
 	// The scanner samples in the viewBox coordinate system; SetTarget scales it
 	// onto the rw×rh output.
-	return svgRasterizer(icon, rw, rh, iround(vbW), iround(vbH)), w, h, true
+	return svgRasterizer(icon, rw, rh, iround(vbW), iround(vbH)), svgVectorSource(icon), w, h, true
 }
 
 var (

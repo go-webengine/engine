@@ -38,6 +38,7 @@ const (
 	KindGradient             // Path filled with Gradient
 	KindText                 // a line of Runs in Bounds
 	KindImage                // Image stretched over Bounds, after Crop
+	KindGroup                // the shapes of Group, one drawing (an SVG)
 )
 
 // Shape is one recorded object. Bounds is its box in device pixels.
@@ -61,6 +62,11 @@ type Shape struct {
 	// Crop is what to remove from the picture's left, top, right and
 	// bottom, as fractions, before it is stretched over Bounds.
 	Crop [4]float64
+
+	// Group is a KindGroup's shapes, in page coordinates like any shape,
+	// drawn in order: an SVG drawing as vector shapes, which a slide keeps
+	// together (a p:grpSp, a draw:g). Bounds is their union.
+	Group []Shape
 }
 
 // Run is a stretch of a text line in one face, size and colour. Size is in
@@ -133,6 +139,9 @@ type Canvas struct {
 
 	// gradOwner is the clip a run of shadings is being merged under.
 	gradOwner *paint.Path
+
+	// groups are the indices in out.Shapes where the open groups start.
+	groups []int
 }
 
 type clip struct {
@@ -184,7 +193,7 @@ func (c *Canvas) Fill(p *paint.Path, col css.Color, evenOdd bool) {
 		return
 	}
 	rect := isRect(p, b)
-	if rect && len(c.out.Shapes) == 0 && covers(b, c.page) {
+	if rect && len(c.out.Shapes) == 0 && len(c.groups) == 0 && covers(b, c.page) {
 		bg := col
 		bg.A = 255
 		c.out.Background = &bg
@@ -296,6 +305,51 @@ func (c *Canvas) Image(img image.Image, dst paint.Rect) {
 		}
 	}
 	c.out.Shapes = append(c.out.Shapes, sh)
+}
+
+var (
+	_ paint.GroupCanvas     = (*Canvas)(nil)
+	_ paint.VectorSupporter = (*Canvas)(nil)
+)
+
+// VectorSupport implements paint.VectorSupporter. A slide's shape cannot be
+// clipped, and an office radial gradient runs from its centre to the box's
+// corners, not to a radius: a vector image that needs either is placed as
+// its picture.
+func (c *Canvas) VectorSupport() paint.VectorSupport { return paint.VectorSupport{} }
+
+// BeginGroup implements paint.GroupCanvas: the shapes drawn until EndGroup
+// are one drawing.
+func (c *Canvas) BeginGroup() {
+	c.groups = append(c.groups, len(c.out.Shapes))
+	c.gradOwner = nil
+}
+
+// EndGroup implements paint.GroupCanvas: the shapes since BeginGroup become
+// one KindGroup, or stay as they are when there is only one.
+func (c *Canvas) EndGroup() {
+	if len(c.groups) == 0 {
+		return
+	}
+	start := c.groups[len(c.groups)-1]
+	c.groups = c.groups[:len(c.groups)-1]
+	c.gradOwner = nil
+	members := c.out.Shapes[start:]
+	if len(members) < 2 {
+		return
+	}
+	b := members[0].Bounds
+	for _, m := range members[1:] {
+		b = union(b, m.Bounds)
+	}
+	g := Shape{Kind: KindGroup, Bounds: b, Group: append([]Shape(nil), members...)}
+	c.out.Shapes = append(c.out.Shapes[:start], g)
+}
+
+func union(a, b paint.Rect) paint.Rect {
+	x0, y0 := math.Min(a.X, b.X), math.Min(a.Y, b.Y)
+	x1, y1 := math.Max(a.X+a.W, b.X+b.W), math.Max(a.Y+a.H, b.Y+b.H)
+	return paint.Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
 }
 
 // Glyphs implements paint.Canvas: the run becomes text, joined to the line

@@ -33,6 +33,9 @@ import (
 // set of fonts is bounded); it is not safe for concurrent use.
 type Fonts struct {
 	m map[*opentype.Font]*pdfkit.Font
+	// forms are the vector images drawn as forms, once per document
+	// (vector.go).
+	forms map[formKey]*pdfkit.Form
 }
 
 // NewFonts returns an empty font map.
