@@ -48,6 +48,7 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	op := 1.0
 	hasFilter := false
 	hasMask := false
+	hasClipPath := false
 	hasRotate := false
 	hasScale := false
 	if box.Style != nil {
@@ -59,6 +60,7 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 		}
 		hasFilter = len(box.Style.Filters) > 0
 		hasMask = box.Style.MaskImage != "" && bgImgs[box.Style.MaskImage] != nil
+		hasClipPath = box.Style.ClipPath != ""
 		hasRotate = box.Style.RotateDeg != 0
 		hasScale = box.Style.HasScale && (box.Style.ScaleX != 1 || box.Style.ScaleY != 1)
 		if len(box.Style.BackdropFilters) > 0 {
@@ -80,7 +82,7 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	// is only taken when none of those apply; an element needing both would
 	// silently keep its rotation unapplied rather than the two offscreen
 	// mechanisms being unified for zero confirmed real need.
-	if hasRotate && !hasFilter && !hasMask && op >= 1 {
+	if hasRotate && !hasFilter && !hasMask && !hasClipPath && op >= 1 {
 		paintRotated(dst, box, f, imgs, bgImgs, clip)
 		return
 	}
@@ -91,18 +93,19 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 	// true: parse.go's `case "transform"` already makes the two mutually
 	// exclusive (whichever wins resets the other), so there is no ordering
 	// question between this branch and the one above.
-	if hasScale && !hasFilter && !hasMask && op >= 1 {
+	if hasScale && !hasFilter && !hasMask && !hasClipPath && op >= 1 {
 		paintScaled(dst, box, f, imgs, bgImgs, clip)
 		return
 	}
 	// A group pass (render to an offscreen buffer, then composite) is needed when
-	// the box has a `filter` chain, a fractional opacity, and/or a `mask-image`.
-	// Filters are applied to the group's rendered output before it is
-	// composited, so blur/drop-shadow spread and colour transforms see the
-	// whole subtree at once; a mask is applied the same way (see applyMask) so
-	// it stencils everything the box paints — background, borders, text,
-	// children — not just its own background layer.
-	if hasFilter || op < 1 || hasMask {
+	// the box has a `filter` chain, a fractional opacity, a `mask-image`,
+	// and/or a `clip-path`. Filters are applied to the group's rendered
+	// output before it is composited, so blur/drop-shadow spread and colour
+	// transforms see the whole subtree at once; a mask or a clip-path is
+	// applied the same way (see applyMask/applyClipPathMask) so it stencils
+	// everything the box paints — background, borders, text, children — not
+	// just its own background layer.
+	if hasFilter || op < 1 || hasMask || hasClipPath {
 		// The group buffer only needs to cover the rows this box's subtree can
 		// actually paint into (its ink bounds, expanded for any blur/drop-shadow
 		// spread), not the whole page: a page has a fixed, modest width but can be
@@ -130,6 +133,9 @@ func paintBox(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box, f *Fon
 		}
 		if hasMask {
 			applyMask(group, box, bgImgs[box.Style.MaskImage], y0)
+		}
+		if hasClipPath {
+			applyClipPathMask(group, box, y0)
 		}
 		compositeGroupAt(dst, group, op, y0)
 		return

@@ -1176,6 +1176,27 @@ type Style struct {
 	// non-url() mask value is not modelled and leaves this empty.
 	MaskImage string
 
+	// ClipPath is the raw text of a `clip-path: polygon(...)` declaration
+	// (optionally prefixed by its fill-rule, "nonzero"/"evenodd"), after
+	// var()/light-dark() substitution but BEFORE calc() resolution — see
+	// resolveClipPathValue's own doc comment in cascade.go for why calc()
+	// must survive this far as literal text. Empty means no clip-path (the
+	// common case). Resolved into concrete pixel vertices only at PAINT
+	// time, against the element's own border-box width/height — the spec's
+	// default reference box when no <geometry-box> keyword is given (CSS
+	// Masking 1 §8) and the only form this engine models: a <geometry-box>
+	// keyword, circle()/ellipse()/inset()/path(), and a url() reference to
+	// an SVG <clipPath> element (a completely different code path — see
+	// svg.go's own clipPath handling for embedded SVG images) are not
+	// recognised and drop the whole declaration, same as any other
+	// unsupported value in parse.go's switch. Confirmed load-bearing live:
+	// vercel.com's own homepage sets a decorative "paper-peel" corner cut —
+	// `clip-path:polygon(0 0, 100% 0, 100% calc(100% - 112.00px),
+	// calc(100% - 112.00px) 100%, 0 100%)` — directly in its server-rendered
+	// static markup, on an always-present background <div> (round 194,
+	// engine#330).
+	ClipPath string
+
 	// BoxShadows are the element's box-shadow layers (first-listed paints on top).
 	BoxShadows []BoxShadow
 
