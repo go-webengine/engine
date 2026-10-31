@@ -20,6 +20,23 @@ func TestResolveFontSizeLengthVW(t *testing.T) {
 	}
 }
 
+// TestResolveFontSizeLengthDVW is round 193's own reopening of round 190's
+// bug for the three-character viewport-width variants (dvw/svw/lvw): this
+// function's vw branch runs BEFORE ever reaching parseLength's own fix, so
+// it needed the identical ordering correction independently. No confirmed
+// trigger uses a viewport unit on font-size specifically yet (the confirmed
+// trigger, chakra-ui.com's `body{min-height:100dvh}`, is a different
+// property) — fixed proactively since it is the exact same failure mode in
+// the sibling function, not a speculative new capability.
+func TestResolveFontSizeLengthDVW(t *testing.T) {
+	for _, u := range []string{"dvw", "svw", "lvw"} {
+		px, ok := resolveFontSizeLength("13"+u, 1024, 20)
+		if !ok || px != 133.12 {
+			t.Errorf("resolveFontSizeLength(13%s, vw=1024, emRef=20) = %v,%v want 133.12,true", u, px, ok)
+		}
+	}
+}
+
 // TestResolveFontSizeLengthPercentStillUsesEmRef is the regression guard for
 // the case that was ALREADY correct: a genuine `%` on font-size resolves
 // against the parent's font-size (CSS Fonts 4 §5.4), not the viewport —

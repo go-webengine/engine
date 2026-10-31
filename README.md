@@ -203,7 +203,11 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   (`prefers-color-scheme`); external `<link>` stylesheet fetch; UA defaults.
   **`font-size: clamp()`** (round 190) for fluid typography — `rem`/`vw`/`px`/
   `em`/`%` terms, resolved eagerly at cascade time (`min()`/`max()`, and
-  `clamp()` on any other property, remain unimplemented — see below).
+  `clamp()` on any other property, remain unimplemented — see below). The
+  small/large/dynamic viewport-percentage units `svh`/`lvh`/`dvh` and
+  `svw`/`lvw`/`dvw` (round 193) are accepted everywhere a plain `vh`/`vw` is,
+  collapsing to the same value — this engine has no scrolling/mobile-chrome
+  concept for the three variants to diverge over.
 - **Selectors**: tag/class/id/compound, descendant + child + **sibling (`~`/`+`)
   combinators**, **`:checked`** and **`:not()`** (the checkbox-hack that collapses
   MediaWiki dropdowns), attribute selectors handled by a "reduce, don't drop" rule.
@@ -298,6 +302,11 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   length already disclose above. A `clamp()` term mixing a real percentage
   with `vw`/`rem` in the SAME term is not attempted — no confirmed trigger
   uses it.
+- `calc()` mixing any viewport unit — `vh`/`vw` or the `svh`/`lvh`/`dvh`/
+  `svw`/`lvw`/`dvw` variants alike — with another term is not resolved; this
+  predates round 193's unit-parsing fix and round 193 deliberately left it
+  as is (`calcParser.factor()` already rejects any percentage-kind term
+  outside its own dedicated `%` branch).
 - `form.requestSubmit()` fires the "submit" event only — no per-control
   constraint validation, and (like `window.location.assign()`/`.reload()`)
   no actual network submission or page navigation when the event is not

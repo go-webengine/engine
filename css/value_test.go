@@ -53,6 +53,21 @@ func TestParseLength(t *testing.T) {
 		{"xpx", 16, Length{}, false},
 		{"xem", 16, Length{}, false},
 		{"x%", 16, Length{}, false},
+		{"50vw", 16, Length{Percent: 0.5, IsPercent: true}, true},
+		{"25vh", 16, Length{Percent: 0.25, IsPercent: true}, true},
+		// The small/large/dynamic viewport-percentage units (round 193,
+		// engine#329) collapse to plain vw/vh — see parseLength's own doc
+		// comment for why. Confirmed real trigger: chakra-ui.com's own
+		// compiled stylesheet sets `body{min-height:100dvh}` directly.
+		// Before this round, "100dvh" matched the bare "vh" HasSuffix
+		// check, got sliced to "100d", and failed to parse at all.
+		{"100dvh", 16, Length{Percent: 1, IsPercent: true}, true},
+		{"50svh", 16, Length{Percent: 0.5, IsPercent: true}, true},
+		{"50lvh", 16, Length{Percent: 0.5, IsPercent: true}, true},
+		{"50dvw", 16, Length{Percent: 0.5, IsPercent: true}, true},
+		{"50svw", 16, Length{Percent: 0.5, IsPercent: true}, true},
+		{"50lvw", 16, Length{Percent: 0.5, IsPercent: true}, true},
+		{"xdvh", 16, Length{}, false},
 	}
 	for _, c := range cases {
 		got, ok := parseLength(c.in, c.emRef)
