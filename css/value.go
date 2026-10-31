@@ -1968,6 +1968,26 @@ func parseLength(s string, emRef float64) (Length, bool) {
 			return Length{}, false
 		}
 		return Length{Percent: f / 100, IsPercent: true}, true
+	case strings.HasSuffix(s, "dvh"), strings.HasSuffix(s, "svh"), strings.HasSuffix(s, "lvh"),
+		strings.HasSuffix(s, "dvw"), strings.HasSuffix(s, "svw"), strings.HasSuffix(s, "lvw"):
+		// The small/large/dynamic viewport-percentage units (CSS Values 4
+		// §6.5.1) collapse to the plain vw/vh case below: this engine has
+		// no scrolling or mobile-browser-chrome show/hide to distinguish
+		// "dynamic" (chrome may be hidden) from "small"/"large" (a fixed
+		// worst/best case) — a single static render has exactly one
+		// viewport size, so all three variants resolve identically to it.
+		// Checked BEFORE the bare "vw"/"vh" case below, which a 3-letter
+		// suffix like "dvh" would ALSO match via HasSuffix — without this
+		// case ordering, "100dvh" silently became "100d" sliced to 2
+		// characters, failed ParseFloat, and dropped the whole declaration
+		// (confirmed live: chakra-ui.com's own compiled stylesheet sets
+		// `body{min-height:100dvh}` directly, unconditionally on page load —
+		// round 193, engine#329).
+		f, err := strconv.ParseFloat(strings.TrimSpace(s[:len(s)-3]), 64)
+		if err != nil {
+			return Length{}, false
+		}
+		return Length{Percent: f / 100, IsPercent: true}, true
 	case strings.HasSuffix(s, "vw"), strings.HasSuffix(s, "vh"):
 		// Viewport units are approximated as a percentage of the containing
 		// block width. For the root/body (whose containing block is the viewport)
@@ -2013,6 +2033,20 @@ func parseLength(s string, emRef float64) (Length, bool) {
 func resolveFontSizeLength(v string, vw, emRef float64) (float64, bool) {
 	v = strings.TrimSpace(v)
 	lv := strings.ToLower(v)
+	// dvw/svw/lvw checked BEFORE the bare "vw" suffix below, which a
+	// 3-letter suffix would ALSO match via HasSuffix — the exact same
+	// ordering bug round 190 fixed for plain vw, reopened here for the
+	// 3-char viewport-width variants specifically (parseLength's own fix,
+	// above, does not help here: this function's vw branch runs BEFORE
+	// ever reaching parseLength). All three collapse to plain vw, the same
+	// reasoning parseLength's own dvh/svh/lvh case gives.
+	if strings.HasSuffix(lv, "dvw") || strings.HasSuffix(lv, "svw") || strings.HasSuffix(lv, "lvw") {
+		f, err := strconv.ParseFloat(strings.TrimSpace(v[:len(v)-3]), 64)
+		if err != nil {
+			return 0, false
+		}
+		return f / 100 * vw, true
+	}
 	if strings.HasSuffix(lv, "vw") {
 		f, err := strconv.ParseFloat(strings.TrimSpace(v[:len(v)-2]), 64)
 		if err != nil {
