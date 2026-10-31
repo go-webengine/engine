@@ -822,6 +822,90 @@ func TestOnclickOnsubmitHandlers(t *testing.T) {
 	mustHave(t, logs, "clicks=2", "which=b", "submitted=true defaultPrevented=true")
 }
 
+// TestFormRequestSubmitFiresCancelableSubmitEvent covers the confirmed real
+// trigger (round 192, engine#328): linear.app's own fetched bundle calls
+// `form.requestSubmit()` directly — previously "requestSubmit is not a
+// function", a TypeError that aborted the whole script it appeared in (the
+// same shape round 50's missing `customElements` global had). Checks the
+// three things a real SPA's onsubmit handler depends on: the handler runs
+// at all, the event is a real, bubbling, cancelable Event (not a bare
+// signal), and e.target names the form.
+func TestFormRequestSubmitFiresCancelableSubmitEvent(t *testing.T) {
+	html := `<html><body>
+		<form id="f"><input name="q"></form>
+		<script>
+			var form = document.getElementById('f');
+			var ran = false, bubbles, cancelable, target;
+			form.addEventListener('submit', function(e) {
+				ran = true;
+				bubbles = e.bubbles;
+				cancelable = e.cancelable;
+				target = (e.target === form);
+				e.preventDefault();
+			});
+			form.requestSubmit();
+			console.log('ran=' + ran + ' bubbles=' + bubbles + ' cancelable=' + cancelable + ' target=' + target);
+		</script>
+	</body></html>`
+	_, logs, _ := runJS(t, html)
+	mustHave(t, logs, "ran=true bubbles=true cancelable=true target=true")
+}
+
+// TestFormRequestSubmitPassesSubmitter covers the optional submitter
+// argument (HTML Standard §4.10.21.3's own `requestSubmit(submitter)`
+// signature) — cheap to carry through once the event itself exists, even
+// though no confirmed trigger specifically reads `event.submitter` yet.
+func TestFormRequestSubmitPassesSubmitter(t *testing.T) {
+	html := `<html><body>
+		<form id="f"></form>
+		<button id="b" type="submit">Go</button>
+		<script>
+			var seen;
+			document.getElementById('f').addEventListener('submit', function(e) { seen = e.submitter; });
+			document.getElementById('f').requestSubmit(document.getElementById('b'));
+			console.log('seenIsButton=' + (seen === document.getElementById('b')));
+		</script>
+	</body></html>`
+	_, logs, _ := runJS(t, html)
+	mustHave(t, logs, "seenIsButton=true")
+}
+
+// TestFormSubmitFiresNoEvent covers the legacy submit() method's own,
+// different spec behaviour: unlike requestSubmit(), it fires no event at
+// all — a page relying on it to trigger an onsubmit handler would see
+// nothing happen, matching a real browser exactly (not a gap this engine
+// introduces).
+func TestFormSubmitFiresNoEvent(t *testing.T) {
+	html := `<html><body>
+		<form id="f"></form>
+		<script>
+			var ran = false;
+			document.getElementById('f').addEventListener('submit', function() { ran = true; });
+			document.getElementById('f').submit();
+			console.log('ran=' + ran);
+		</script>
+	</body></html>`
+	_, logs, _ := runJS(t, html)
+	mustHave(t, logs, "ran=false")
+}
+
+// TestRequestSubmitOnlyOnForm confirms requestSubmit/submit are form-
+// specific, not generic element methods — calling requestSubmit on a plain
+// element must throw the same TypeError a real browser gives, not silently
+// become a no-op (this engine's own "present but inert" convention is for a
+// MISSING global, not for calling a real method on the wrong element type).
+func TestRequestSubmitOnlyOnForm(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		try {
+			document.getElementById('d').requestSubmit();
+			console.log('no-throw');
+		} catch (e) {
+			console.log('threw=' + (e instanceof TypeError));
+		}
+	`))
+	mustHave(t, logs, "threw=true")
+}
+
 // TestDocumentCurrentScriptIdentifiesTheRightScriptAndClearsAfterwards covers
 // document.currentScript beyond "is it non-null": it must identify THIS
 // specific <script> among several (not just any script on the page), and

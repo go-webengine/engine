@@ -199,6 +199,45 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		b.accessor(o, "content", func() goja.Value { return b.wrap(n.Content) }, nil)
 	}
 
+	// requestSubmit()/submit() (HTML Standard §4.10.21.3, round 192,
+	// engine#328) were entirely missing — a page calling
+	// `form.requestSubmit()` got "requestSubmit is not a function", the
+	// same whole-script-abort shape round 50's missing `customElements`
+	// global had. Confirmed live: linear.app's own fetched bundle calls
+	// `form.requestSubmit()` directly.
+	//
+	// Scoped to what every real caller actually needs: requestSubmit()
+	// fires a real, cancelable, bubbling "submit" Event (the ordinary
+	// dispatch machinery every other DOM event already uses) so a page's
+	// own onsubmit handler — the near-universal reason a modern SPA calls
+	// requestSubmit() at all, since it almost always calls
+	// preventDefault() itself and submits via fetch() — actually runs.
+	// Per-control constraint validation (checking every form control and
+	// firing "invalid" on each one that fails, which requestSubmit() is
+	// specified to run first) is NOT implemented: no confirmed trigger
+	// needs it, and the per-ELEMENT checkValidity/setCustomValidity above
+	// does not generalise to "check every control in this form" without a
+	// form-level pass this engine has not built. Neither method performs
+	// an actual network submission/page navigation when the event is not
+	// cancelled — the same disclosed limitation window.location.assign()/
+	// reload() already have (this engine's single-document settle has no
+	// later page to navigate TO), not a new one introduced here. submit()
+	// (the legacy method) fires no event at all, per spec — correspondingly
+	// an even more complete no-op here than requestSubmit().
+	if n.Tag == "form" {
+		o.Set("requestSubmit", func(call goja.FunctionCall) goja.Value {
+			ev := b.newEvent("submit")
+			ev.Set("bubbles", true)
+			ev.Set("cancelable", true)
+			ev.Set("submitter", call.Argument(0))
+			b.dispatch(n, "submit", ev)
+			return goja.Undefined()
+		})
+		o.Set("submit", func(call goja.FunctionCall) goja.Value {
+			return goja.Undefined()
+		})
+	}
+
 	// shadowRoot/attachShadow (round 183, engine#319): dom.ShadowRoot is now
 	// built imperatively too, not only by attachDeclarativeShadowRoots at
 	// parse time — see that type's own doc comment. attachShadow() ignores
