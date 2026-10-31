@@ -268,7 +268,9 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   **settle-then-render loop** re-cascades and re-lays-out after scripts mutate the
   DOM (incl. dynamically injected `<script>`/`<style>`/`<link>`), to a bounded
   fixpoint — so `mw.loader`-style runtime chrome is reflected in the output. The
-  same JS-settled DOM drives the click hit-map.
+  same JS-settled DOM drives the click hit-map. `form.requestSubmit()`
+  (round 192) fires a real, cancelable `submit` event so a page's own
+  `onsubmit`-driven `fetch()` submission runs.
 - **WebAssembly** (round 189): a page's own `WebAssembly.compile`/`instantiate`
   runs real `.wasm` modules via [wazero](https://github.com/tetratelabs/wazero)
   (pure Go, no CGO — its Interpreter engine covers every architecture this
@@ -296,6 +298,11 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   length already disclose above. A `clamp()` term mixing a real percentage
   with `vw`/`rem` in the SAME term is not attempted — no confirmed trigger
   uses it.
+- `form.requestSubmit()` fires the "submit" event only — no per-control
+  constraint validation, and (like `window.location.assign()`/`.reload()`)
+  no actual network submission or page navigation when the event is not
+  cancelled, since this engine's single-document settle has no later page
+  to navigate to. `form.submit()` fires no event at all, matching spec.
 - `customElements.define()` only upgrades elements ALREADY in the document
   at the time it's called — a later `document.createElement(name)` or a
   node inserted afterward is not upgraded. There is no
