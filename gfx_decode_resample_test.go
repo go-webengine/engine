@@ -227,16 +227,16 @@ func TestLoadOneBackgroundGuards(t *testing.T) {
 	doc := &Document{URL: "https://x.test/"}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if img := e.loadOneBackground(cancelled, doc, "u.png"); img != nil {
+	if img, _ := e.loadOneBackground(cancelled, doc, "u.png"); img != nil {
 		t.Error("cancelled context should yield nil background")
 	}
 	// A non-http, non-data src fails fetchImageBytes.
-	if img := e.loadOneBackground(context.Background(), doc, "ftp://x/i.png"); img != nil {
+	if img, _ := e.loadOneBackground(context.Background(), doc, "ftp://x/i.png"); img != nil {
 		t.Error("unfetchable src should yield nil background")
 	}
 	// A data: URI carrying an undecodable payload reaches codec.Decode and errors.
 	bad := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("nope"))
-	if img := e.loadOneBackground(context.Background(), doc, bad); img != nil {
+	if img, _ := e.loadOneBackground(context.Background(), doc, bad); img != nil {
 		t.Error("undecodable background payload should yield nil")
 	}
 	// A valid data: URI decodes to a bitmap (the success path + ToNRGBA).
@@ -245,7 +245,7 @@ func TestLoadOneBackgroundGuards(t *testing.T) {
 		src.Pix[i] = 255
 	}
 	good := "data:image/png;base64," + base64.StdEncoding.EncodeToString(encodeFormat(t, "png", src))
-	if img := e.loadOneBackground(context.Background(), doc, good); img == nil {
+	if img, _ := e.loadOneBackground(context.Background(), doc, good); img == nil {
 		t.Error("valid background payload should decode")
 	}
 }

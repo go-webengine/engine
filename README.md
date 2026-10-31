@@ -103,6 +103,47 @@ be selected; `stats.Rasterized` counts them. Laying out and painting are split
 so that pages can be laid out concurrently and painted, in order, into one
 document.
 
+**SVG stays vector** (v0.22.0). An inline `<svg>`, an `<img src="x.svg">` or a
+`data:image/svg+xml`, and an SVG background are drawn by `PaintVector` as the
+shapes they paint, not as their bitmap. This covers a go-tex formula, an emoji
+and a logo. The shapes come from go-gfx/oksvg's `Shapes`, which follows what its
+rasteriser draws:
+
+- fills keep their curves and fill rule;
+- strokes become their outlines, with width, caps, joins and dashes;
+- linear and radial gradients become shadings;
+- clip paths become clips;
+- opacities go into the alpha.
+
+`stats.Vectors` counts them. The outputs differ:
+
+- **pdfcanvas** draws each distinct drawing once per document as a form XObject
+  and paints it with one `Do` at each use, inside its Figure's or Formula's
+  marked content. A formula's glyphs are outlines (go-tex/math draws them as
+  paths), so its drawing also carries its TeX as `/ActualText`, which is what a
+  reader copies and a search finds.
+- **officecanvas** records the shapes as one `KindGroup`, which go-slides writes
+  as a `p:grpSp` or `draw:g` of custom shapes. A slide's shape cannot be clipped,
+  and an office radial gradient does not end at a radius. So an SVG that needs a
+  clip, a box that cuts it (a background tile), or a radial gradient is placed as
+  its picture there.
+- **The bitmap render** does not change, and never computes the vector form: it
+  is made the first time a vector canvas asks for it.
+
+An SVG is still placed as its bitmap in these cases:
+
+- `Shapes` has no exact form for it: a gradient whose stops change opacity, a
+  reflected or repeated one, a focal radial one, or a clipPath of clipped
+  pieces;
+- a `filter` applies to the image;
+- it is past `paint.MaxVectorOps` (200 000 path operations);
+- it has a stroke of more than 65 536 dashes.
+
+The library side of this is `paint.PaintVectorWith` with `paint.VectorImages`.
+A canvas opts in to `paint.VectorCanvas` (it places the image itself),
+`paint.GroupCanvas` (it keeps the shapes together) and `paint.VectorSupporter`
+(it says what it can draw).
+
 ### Editable output (office decks)
 
 `officecanvas` is the other `paint.Canvas` consumer: it *records* a page as

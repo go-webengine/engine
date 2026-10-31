@@ -22,6 +22,7 @@ import (
 
 	"github.com/go-webengine/engine/css"
 	"github.com/go-webengine/engine/dom"
+	"github.com/go-webengine/engine/paint"
 )
 
 // resampleMode maps a computed style's image-rendering to a go-gfx resampling
@@ -140,6 +141,9 @@ type LoadedImage struct {
 	// viewport resize; Bitmap still has exactly the source's pixels iff its
 	// bounds are this size, which is when Data can stand in for it.
 	SourceW, SourceH int
+	// Vector, for an SVG, makes its drawing as vector shapes (nil when it
+	// has no exact one): what PaintVector draws in place of Bitmap.
+	Vector *paint.VectorSource
 }
 
 // LoadImageSet is LoadImages keeping each image's source alongside its
@@ -179,14 +183,22 @@ func sniffImageFormat(data []byte) (format string, lossy bool) {
 // returning intrinsic sizes for layout and decoded bitmaps for paint. Images
 // wider than the viewport are scaled down proportionally. Failures are skipped.
 func (e *Engine) loadImages(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int) (map[*dom.Node][2]float64, map[*dom.Node]image.Image) {
+	sizes, bitmaps, _ := e.loadImagesVec(ctx, doc, sm, viewportW)
+	return sizes, bitmaps
+}
+
+// loadImagesVec is loadImages with the vector forms of the SVG bitmaps.
+func (e *Engine) loadImagesVec(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int) (map[*dom.Node][2]float64, map[*dom.Node]image.Image, paint.VectorImages) {
 	set := e.loadImageSet(ctx, doc, sm, viewportW)
 	sizes := make(map[*dom.Node][2]float64, len(set))
 	bitmaps := make(map[*dom.Node]image.Image, len(set))
+	vecs := paint.VectorImages{}
 	for n, li := range set {
 		sizes[n] = li.Size
 		bitmaps[n] = li.Bitmap
+		addVector(vecs, li.Bitmap, li.Vector)
 	}
-	return sizes, bitmaps
+	return sizes, bitmaps, vecs
 }
 
 // loadImageSet is the loader proper: the accepted set is decided in document
@@ -291,7 +303,7 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 	// Inline <svg>: serialise the subtree and rasterise it.
 	if n.Tag == "svg" {
 		data := []byte(serializeSVG(n, sm))
-		b, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
+		b, vec, w, h, ok := e.svgToBitmapVec(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
 		if !ok {
 			return nil
 		}
@@ -301,7 +313,7 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 		// that asked: a CSS-pixel raster is a hard 96 dpi ceiling on paper,
 		// and every label inside an inline <svg> reaches the file as pixels
 		// rather than as text (#229).
-		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Data: data, Format: "svg", SourceW: w, SourceH: h}
+		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Data: data, Format: "svg", SourceW: w, SourceH: h, Vector: vec}
 	}
 	src, _ := n.Attribute("src") // presence was checked in the gate
 	data, ok := e.fetchImageBytes(ctx, doc.URL, src)
@@ -310,11 +322,11 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 	}
 	// <img src="*.svg"> and data:image/svg+xml: rasterise via the SVG path.
 	if looksLikeSVG(data, src) {
-		b, w, h, ok := e.svgToBitmap(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
+		b, vec, w, h, ok := e.svgToBitmapVec(data, sm[n], attrDim(n, "width"), attrDim(n, "height"), viewportW, colorHex(sm[n]))
 		if !ok {
 			return nil
 		}
-		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Data: data, Format: "svg", SourceW: w, SourceH: h}
+		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Data: data, Format: "svg", SourceW: w, SourceH: h, Vector: vec}
 	}
 	src0, err := decodeRaster(data)
 	if err != nil {
@@ -386,6 +398,12 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 // kind of resource (a bitmap or SVG named by a url() token) with no reason to
 // duplicate the fetch/decode/budget machinery for it.
 func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css.StyleMap) map[string]image.Image {
+	return e.loadBackgroundImagesVec(ctx, doc, sm, nil)
+}
+
+// loadBackgroundImagesVec is loadBackgroundImages that also records the
+// vector forms of the SVG backgrounds in vecs, when not nil.
+func (e *Engine) loadBackgroundImagesVec(ctx context.Context, doc *Document, sm css.StyleMap, vecs paint.VectorImages) map[string]image.Image {
 	// Collect distinct raw url() tokens in document order.
 	seen := map[string]bool{}
 	var urls []string
@@ -460,13 +478,17 @@ func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css
 	// result slot and the map is filled single-threaded in document order, so the
 	// output is byte-identical to the sequential version.
 	results := make([]image.Image, len(accepted))
+	forms := make([]*paint.VectorSource, len(accepted))
 	parallelDo(len(accepted), func(i int) {
-		results[i] = e.loadOneBackground(ctx, doc, accepted[i])
+		results[i], forms[i] = e.loadOneBackground(ctx, doc, accepted[i])
 	})
 	out := map[string]image.Image{}
 	for i, raw := range accepted {
 		if results[i] != nil {
 			out[raw] = results[i]
+			if vecs != nil {
+				addVector(vecs, results[i], forms[i])
+			}
 		}
 	}
 	if len(out) == 0 {
@@ -479,13 +501,13 @@ func (e *Engine) loadBackgroundImages(ctx context.Context, doc *Document, sm css
 // mask-image, which shares this cache — see loadBackgroundImages) url,
 // returning nil on a cancelled context, a failed fetch, or an undecodable /
 // zero-size payload. Safe to run concurrently for distinct urls.
-func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw string) image.Image {
+func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw string) (image.Image, *paint.VectorSource) {
 	if ctx.Err() != nil {
-		return nil
+		return nil, nil
 	}
 	data, ok := e.fetchImageBytes(ctx, doc.URL, raw)
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	// An SVG source (by URL extension or, since a `mask-image`/background-image
 	// icon service commonly serves SVG from an extensionless query-string URL —
@@ -498,18 +520,18 @@ func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw strin
 	// viewBox/root size — paint's scaleTile resamples to whatever the actual
 	// consumer draws it at.
 	if looksLikeSVG(data, raw) {
-		b, w, h, ok := e.svgToBitmap(data, nil, 0, 0, 0, "")
+		b, vec, w, h, ok := e.svgToBitmapVec(data, nil, 0, 0, 0, "")
 		if !ok || w <= 0 || h <= 0 {
-			return nil
+			return nil, nil
 		}
-		return b
+		return b, vec
 	}
 	img, err := decodeRaster(data)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	if img.W <= 0 || img.H <= 0 {
-		return nil
+		return nil, nil
 	}
 	// Natural size = intrinsic size in CSS px; paint sizes an `auto`
 	// background from the bitmap, so at a device scale it must be in device
@@ -517,7 +539,7 @@ func (e *Engine) loadOneBackground(ctx context.Context, doc *Document, raw strin
 	if s := e.devScale(); s != 1 {
 		img = resizeRaster(img, iround(float64(img.W)*s), iround(float64(img.H)*s), resample.Bicubic)
 	}
-	return img.ToNRGBA()
+	return img.ToNRGBA(), nil
 }
 
 // cssImageSize resolves the used pixel dimensions of an image given its style

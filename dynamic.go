@@ -35,6 +35,16 @@ type renderPass struct {
 	imgSize map[*dom.Node][2]float64
 	imgs    map[*dom.Node]image.Image
 	bgImgs  map[string]image.Image
+	// vecs are the vector forms of the SVG bitmaps in imgs and bgImgs, for
+	// PaintVector.
+	vecs paint.VectorImages
+}
+
+// loadAllImages fills the pass's image maps: the replaced elements', the
+// backgrounds', and the vector forms of the SVGs among them.
+func (e *Engine) loadAllImages(ctx context.Context, doc *Document, rp *renderPass, viewportW int) {
+	rp.imgSize, rp.imgs, rp.vecs = e.loadImagesVec(ctx, doc, rp.sm, viewportW)
+	rp.bgImgs = e.loadBackgroundImagesVec(ctx, doc, rp.sm, rp.vecs)
 }
 
 // layoutMetrics implements js.Metrics: it answers getBoundingClientRect /
@@ -566,8 +576,7 @@ func (e *Engine) relayoutPass(ctx context.Context, doc *Document, vpW, vpH int, 
 // over its deadline.
 func (e *Engine) finishSettle(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, s *settleState) {
 	if s.relaidOut && !s.overBudget() {
-		rp.imgSize, rp.imgs = e.loadImages(ctx, doc, rp.sm, e.deviceW(vpW))
-		rp.bgImgs = e.loadBackgroundImages(ctx, doc, rp.sm)
+		e.loadAllImages(ctx, doc, rp, e.deviceW(vpW))
 		rp.box, rp.height = e.layoutDoc(doc.Root, rp.sm, vpW, vpH, fonts, rp.imgSize)
 		rp.sm, rp.box, rp.height = e.layoutWithContainers(doc.Root, rp.sheets, vpW, vpH, fonts, rp.imgSize, rp.sm, rp.box, rp.height)
 	}
