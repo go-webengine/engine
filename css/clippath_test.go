@@ -3,7 +3,10 @@
 
 package css
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestResolveClipPathPolygonBareCoords covers the plain, no-calc() case:
 // percentages and bare lengths resolved against a known border box.
@@ -169,6 +172,44 @@ func TestApplyClipPathUnsupportedShapeLeavesUnchanged(t *testing.T) {
 	if s.ClipPath != "" {
 		t.Errorf("clip-path:none via apply() = %q, want cleared to empty", s.ClipPath)
 	}
+}
+
+// FuzzResolveClipPathPolygon is the security pass this new parser (round
+// 194) had not yet had: ResolveClipPathPolygon is reached directly from
+// untrusted page content (an author's own `style="clip-path:..."`), runs a
+// recursive-descent calc() evaluator over it (evalCalcWithBasis, sharing
+// calcParser's own maxCalcDepth bound), and must never panic — only ever
+// return ok=false for malformed/pathological input, never crash or hang.
+func FuzzResolveClipPathPolygon(f *testing.F) {
+	for _, s := range []string{
+		"polygon(0 0, 100% 0, 100% calc(100% - 112.00px), calc(100% - 112.00px) 100%, 0 100%)",
+		"evenodd polygon(0 0, 10px 0, 10px 10px)",
+		"nonzero polygon(0 0, 10px 0, 10px 10px)",
+		"polygon(" + strings.Repeat("(", 300) + ")",
+		"polygon(calc(" + strings.Repeat("(1+", 2000) + "1" + strings.Repeat(")", 2000) + ") 0, 1px 1px, 1px 0)",
+		"circle(50%)",
+		"polygon(0 0, 100% 0)",
+		"polygon(,,,,,)",
+		"",
+		"polygon(",
+		"POLYGON(0 0, 1PX 1PX, 1px 0)",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		points, _, ok := ResolveClipPathPolygon(s, 1024, 768)
+		if !ok {
+			return
+		}
+		// A valid result's point count cannot exceed the input's own comma
+		// count (each vertex needs its own separating comma, bar the
+		// first) — bounding it to the input size, not merely "didn't
+		// crash", the same shape FuzzCounters' own content-length check
+		// gives counters().
+		if n := strings.Count(s, ",") + 1; len(points) > n {
+			t.Fatalf("ResolveClipPathPolygon(%q) returned %d points from only %d commas", s, len(points), n)
+		}
+	})
 }
 
 // TestResolveCalcStillRejectsMixedKinds is the regression guard: the

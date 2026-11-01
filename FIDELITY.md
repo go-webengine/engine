@@ -18,6 +18,14 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-11-01 (round 196) — chaos pass on round 194/195's new parsers, after three empty feature surveys in a row (security, no engine# — fuzz coverage only, no behaviour change)
+
+Three independent survey strategies this round — cold-searching fresh marketing sites, re-mining 190+ rounds' own proven corpus against a site→feature→round table, and a deliberately different site population (a live Discourse forum, VitePress/Sphinx docs, a news site) — all failed to find a confirmed, reachable, small feature gap. Rather than a fourth cold search, this round pivoted to the standing security/chaos mandate: round 194's `ResolveClipPathPolygon` and round 195's `firstSrcsetCandidate` are both parsers reached directly from untrusted page content (an author's own `style="clip-path:..."`, a `srcset` attribute) that had shipped with zero fuzz coverage.
+
+- **`FuzzResolveClipPathPolygon`** (`css/clippath_test.go`): seeded with the real vercel.com trigger, both fill-rule keywords, a 300-deep unbalanced-paren string, a 2000-deep nested `calc((((...1...))))` (well past `calcParser`'s own `maxCalcDepth` bound, reused unchanged by `evalCalcWithBasis`), and assorted malformed input. Checks the invariant `len(points) <= strings.Count(s, ",")+1` — a valid result can never manufacture more vertices than the input had commas to separate them. 16.6M executions in 60s, 0 crashes, 0 invariant violations.
+- **`FuzzFirstSrcsetCandidate`** (`picture_test.go`): checks its result is always either empty or a literal substring of the input — this function only ever selects a slice of its own input, never synthesises bytes. 1.36M executions in 30s, 0 crashes.
+- Both clean. No code behaviour changed — this round is test-only (new `_test.go` fuzz functions), so no `engine#` issue number and no version bump beyond the fuzz-corpus addition itself.
+
 ## 2026-11-01 (round 195) — `<picture>`/`<source>`/`srcset`, entirely unimplemented until now (feature, engine#334)
 
 Bibliography first: HTML Standard §4.8.2 (the `<picture>` element itself renders nothing; its `<source>` children offer candidates, its `<img>` child supplies the fallback) and §4.8.5.1 (source selection: a `<source>` whose `media` doesn't match is skipped; the first one that does wins). Confirmed real trigger: en.wikipedia.org's own footer — present, unconditionally, in every article's static server-rendered markup — `<picture><source media="(min-width: 500px)" srcset="/static/images/footer/wikimedia-button.svg" width="84" height="29"><img src="/static/images/footer/wikimedia.svg" width="25" height="25" alt="Wikimedia Foundation" lang="en" loading="lazy"></picture>` (and an identical second one for the MediaWiki logo).
