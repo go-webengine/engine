@@ -125,6 +125,26 @@ func TestFirstSrcsetCandidate(t *testing.T) {
 	}
 }
 
+// FuzzFirstSrcsetCandidate is the security pass this new parser (round 195)
+// had not yet had: it is reached directly from an untrusted page's own
+// srcset attribute and must never panic, for any input.
+func FuzzFirstSrcsetCandidate(f *testing.F) {
+	for _, s := range []string{
+		"/wide.png", "/wide.png 2x", "/a.png 1x, /b.png 2x", "", "   ", ",", ",,,,", "a,b,c 1x,d 2x 3x",
+	} {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		got := firstSrcsetCandidate(s)
+		// The result is always either empty or a substring the input
+		// literally contains — this function only ever selects a slice of
+		// its own input, never synthesises or mangles bytes.
+		if got != "" && !bytes.Contains([]byte(s), []byte(got)) {
+			t.Fatalf("firstSrcsetCandidate(%q) = %q, not a substring of the input", s, got)
+		}
+	})
+}
+
 // findTag returns the first element with the given tag in document order, or
 // nil if none exists.
 func findTag(n *dom.Node, tag string) *dom.Node {
