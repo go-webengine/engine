@@ -326,6 +326,8 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   `onsubmit`-driven `fetch()` submission runs. `document.location` (round
   199) is the SAME object `window.location` returns, not a separate one —
   reading or navigating through either accessor stays consistent.
+  `document.referrer` (round 200) is always `""` — honest, since this
+  engine's single-URL fetch has no referring-page history to report.
 - **WebAssembly** (round 189): a page's own `WebAssembly.compile`/`instantiate`
   runs real `.wasm` modules via [wazero](https://github.com/tetratelabs/wazero)
   (pure Go, no CGO — its Interpreter engine covers every architecture this
@@ -339,6 +341,9 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 
 **Honest limits (not overclaimed)**
 
+- `<canvas>.getContext(...)` is not implemented — a call throws (`Object
+  has no member 'getContext'`, confirmed live on stripe.com's own bundle).
+  No `CanvasRenderingContext2D`/WebGL surface at all, even an inert one.
 - `<picture>`/`srcset`: a `<source>`'s `type` attribute (skip one whose
   declared MIME type can't be decoded) and width/density descriptors
   (picking the best of several `srcset` candidates) are not evaluated —

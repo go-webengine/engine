@@ -1304,6 +1304,21 @@ func TestDocumentLocationIsWindowLocation(t *testing.T) {
 		"afterAssign=https://ex.com/a/x")
 }
 
+// TestDocumentReferrerIsEmptyString covers the real regression (round
+// 200): document.referrer did not exist at all — confirmed live via
+// Fathom Analytics' own widely-served script.js, whose trackPageview()
+// calls `document.referrer.indexOf(hostname)` unconditionally, throwing a
+// TypeError reading .indexOf off undefined. HTML Standard §7.8.1: empty
+// string when there is no referring document, which this engine's
+// single-URL fetch model always is. The .indexOf() call itself is the
+// real trigger's own exact shape, not just a property-exists check.
+func TestDocumentReferrerIsEmptyString(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		console.log('referrer='+JSON.stringify(document.referrer)+' idx='+document.referrer.indexOf('x'));
+	`))
+	mustHave(t, logs, `referrer="" idx=-1`)
+}
+
 func TestEmptyLocation(t *testing.T) {
 	// PageURL "" exercises withColon/withPrefix/pathOr/origin empty branches.
 	root, _ := dom.Parse(page(`
