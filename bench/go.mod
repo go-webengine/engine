@@ -7,9 +7,9 @@ go 1.27.3
 replace github.com/go-webengine/engine => ..
 
 require (
-	github.com/chromedp/cdproto v0.0.0-20260922220944-a19bff23514f
-	github.com/chromedp/chromedp v0.16.0
-	github.com/go-images/images v0.1.1-0.20261026203936-4ac989d310a1
+	github.com/chromedp/cdproto v0.159.0
+	github.com/chromedp/chromedp v0.21.0
+	github.com/go-images/images v0.2.0
 	github.com/go-webengine/engine v0.0.0-00010101000000-000000000000
 	golang.org/x/image v0.47.0
 )
@@ -17,7 +17,6 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
-	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
@@ -36,9 +35,6 @@ require (
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/go-webengine/esbuildsandbox v0.1.0 // indirect
 	github.com/go-widgets/painter v0.16.0 // indirect
-	github.com/gobwas/httphead v0.1.0 // indirect
-	github.com/gobwas/pool v0.2.1 // indirect
-	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
 	github.com/klauspost/compress v1.18.7 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
