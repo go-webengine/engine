@@ -40,7 +40,21 @@ func (b *binder) install() {
 	g.Set("pageXOffset", 0)
 	g.Set("pageYOffset", 0)
 
-	g.Set("location", b.newLocation())
+	// window.location and document.location must be the SAME object (HTML
+	// Standard — Document.location returns the browsing context's Location),
+	// not two independently-constructed ones: newLocation()'s own assign()/
+	// replace() closures mutate only the one object instance they were built
+	// around, so calling it twice would let window.location.href silently
+	// go stale after a script's document.location.assign(...) (or the
+	// reverse) — confirmed live: Cloudflare's own web-analytics beacon
+	// (served on an enormous share of real sites, found via
+	// lab.ishadeed.com's own third-party script, round 198) reads
+	// `document.location.href` directly and threw a TypeError reading
+	// `.href` off `undefined`, since `document` never had a `location` at
+	// all before this.
+	loc := b.newLocation()
+	g.Set("location", loc)
+	doc.Set("location", loc)
 	g.Set("navigator", b.newNavigator())
 	g.Set("console", b.newConsole())
 	g.Set("history", b.newHistory())

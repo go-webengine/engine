@@ -1284,6 +1284,26 @@ func TestLocationFields(t *testing.T) {
 		"href=https://ex.com/a/y str=https://ex.com/a/y")
 }
 
+// TestDocumentLocationIsWindowLocation covers the real regression (round
+// 198): document.location did not exist at all, only window.location —
+// confirmed live via Cloudflare's own web-analytics beacon script (served
+// on an enormous share of real sites, found reproducing lab.ishadeed.com's
+// third-party scripts through this engine's own pipeline), which reads
+// `document.location.href` directly and threw a TypeError reading `.href`
+// off `undefined`. The two must be the SAME object (HTML Standard), not
+// two independently-built ones: this test proves identity, and that a
+// mutation through either accessor is visible through the other.
+func TestDocumentLocationIsWindowLocation(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		console.log('same='+(document.location===window.location)+' href='+document.location.href);
+		document.location.assign('x');
+		console.log('afterAssign='+window.location.href);
+	`))
+	mustHave(t, logs,
+		"same=true href=https://ex.com/a/b?x=1&y=2#frag",
+		"afterAssign=https://ex.com/a/x")
+}
+
 func TestEmptyLocation(t *testing.T) {
 	// PageURL "" exercises withColon/withPrefix/pathOr/origin empty branches.
 	root, _ := dom.Parse(page(`

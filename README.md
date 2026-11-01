@@ -323,7 +323,9 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   fixpoint — so `mw.loader`-style runtime chrome is reflected in the output. The
   same JS-settled DOM drives the click hit-map. `form.requestSubmit()`
   (round 192) fires a real, cancelable `submit` event so a page's own
-  `onsubmit`-driven `fetch()` submission runs.
+  `onsubmit`-driven `fetch()` submission runs. `document.location` (round
+  199) is the SAME object `window.location` returns, not a separate one —
+  reading or navigating through either accessor stays consistent.
 - **WebAssembly** (round 189): a page's own `WebAssembly.compile`/`instantiate`
   runs real `.wasm` modules via [wazero](https://github.com/tetratelabs/wazero)
   (pure Go, no CGO — its Interpreter engine covers every architecture this
@@ -369,6 +371,14 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   different mechanism — see the SVG rasteriser's own clip handling) are not
   recognised and drop the whole declaration. Not extended to `::before`/
   `::after`. The polygon's edge has no antialiasing.
+- A **dynamic `import(...)`, in ANY script** (not only `<script
+  type="module">`, which this engine's own `esbuild` bundling pass already
+  resolves statically) **is rejected by goja's parser outright** — confirmed
+  directly against the pinned version. A runtime-computed import target
+  (Astro's own universal client-hydration bootstrap, and likely other
+  frameworks' lazy-loading patterns) can't be bundled away the way a static
+  import can, since deferring resolution past build time is the whole
+  point. No JS parser lives in this repo to patch.
 - `form.requestSubmit()` fires the "submit" event only — no per-control
   constraint validation, and (like `window.location.assign()`/`.reload()`)
   no actual network submission or page navigation when the event is not
