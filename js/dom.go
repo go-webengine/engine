@@ -1305,6 +1305,16 @@ func (b *binder) installDocument() *goja.Object {
 	b.accessor(d, "URL", func() goja.Value { return b.vm.ToValue(b.opt.PageURL) }, nil)
 	b.accessor(d, "documentURI", func() goja.Value { return b.vm.ToValue(b.opt.PageURL) }, nil)
 	b.accessor(d, "hidden", func() goja.Value { return b.vm.ToValue(false) }, nil)
+	// document.referrer did not exist at all — confirmed live (round 200)
+	// via Fathom Analytics' own widely-served script.js, whose
+	// trackPageview() reads `document.referrer.indexOf(hostname)`
+	// unconditionally: a TypeError reading .indexOf off undefined, on
+	// EVERY site using it (vuejs.org and astro.build both hit it in this
+	// round's sweep). HTML Standard §7.8.1: empty string when there is no
+	// referring document — the honest value here, since this engine's
+	// single-URL fetch model has no notion of a referring page at all (no
+	// navigation history to have arrived FROM).
+	b.accessor(d, "referrer", func() goja.Value { return b.vm.ToValue("") }, nil)
 	b.accessor(d, "visibilityState", func() goja.Value { return b.vm.ToValue("visible") }, nil)
 	b.accessor(d, "title",
 		func() goja.Value { return b.vm.ToValue(dom.Title(b.root)) },
