@@ -307,32 +307,32 @@ func TestParseStylesheetSupportsLightDark(t *testing.T) {
 }
 
 func TestMediaMatches(t *testing.T) {
-	if mediaMatches("print", 1024) {
+	if MediaMatches("print", 1024) {
 		t.Error("print should not match")
 	}
-	if !mediaMatches("screen and (min-width: 640px)", 1024) {
+	if !MediaMatches("screen and (min-width: 640px)", 1024) {
 		t.Error("min-width 640 should match at 1024")
 	}
-	if mediaMatches("(min-width: 1200px)", 1024) {
+	if MediaMatches("(min-width: 1200px)", 1024) {
 		t.Error("min-width 1200 should not match at 1024")
 	}
-	if !mediaMatches("(max-width: 1200px)", 1024) {
+	if !MediaMatches("(max-width: 1200px)", 1024) {
 		t.Error("max-width 1200 should match at 1024")
 	}
-	if mediaMatches("(max-width: 800px)", 1024) {
+	if MediaMatches("(max-width: 800px)", 1024) {
 		t.Error("max-width 800 should not match at 1024")
 	}
-	if !mediaMatches("all", 1024) {
+	if !MediaMatches("all", 1024) {
 		t.Error("all should match")
 	}
-	if !mediaMatches("(min-width: abc)", 1024) {
+	if !MediaMatches("(min-width: abc)", 1024) {
 		t.Error("unparseable width feature is ignored (matches)")
 	}
 	// mediaWidthRe's [0-9.]+ character class accepts a value with more than
 	// one '.' (e.g. multiple decimal points), which strconv.ParseFloat then
 	// rejects — must not panic, just skip this feature like any other
 	// unparseable one.
-	if !mediaMatches("(min-width: 1.2.3px)", 1024) {
+	if !MediaMatches("(min-width: 1.2.3px)", 1024) {
 		t.Error("a malformed numeric width (multiple dots) should be skipped, matching")
 	}
 }
@@ -347,24 +347,24 @@ func TestMediaMatches(t *testing.T) {
 // parseLength's own rem conversion.
 func TestMediaMatchesRemUnits(t *testing.T) {
 	// 1024px viewport == 64rem: exactly the Tailwind "lg" breakpoint.
-	if !mediaMatches("(min-width:64rem)", 1024) {
+	if !MediaMatches("(min-width:64rem)", 1024) {
 		t.Error("min-width:64rem (1024px) should match at exactly 1024px")
 	}
-	if mediaMatches("(min-width:80rem)", 1024) {
+	if MediaMatches("(min-width:80rem)", 1024) {
 		t.Error("min-width:80rem (1280px) should NOT match at 1024px")
 	}
-	if !mediaMatches("(max-width:80rem)", 1024) {
+	if !MediaMatches("(max-width:80rem)", 1024) {
 		t.Error("max-width:80rem (1280px) should match at 1024px")
 	}
-	if mediaMatches("(max-width:40rem)", 1024) {
+	if MediaMatches("(max-width:40rem)", 1024) {
 		t.Error("max-width:40rem (640px) should NOT match at 1024px")
 	}
 	// A narrower viewport sits below "lg" (64rem = 1024px) but at/above "sm"
 	// (40rem = 640px).
-	if mediaMatches("(min-width:64rem)", 800) {
+	if MediaMatches("(min-width:64rem)", 800) {
 		t.Error("min-width:64rem (1024px) should not match at 800px")
 	}
-	if !mediaMatches("(min-width:40rem)", 800) {
+	if !MediaMatches("(min-width:40rem)", 800) {
 		t.Error("min-width:40rem (640px) should match at 800px")
 	}
 }
@@ -376,52 +376,52 @@ func TestMediaMatchesRemUnits(t *testing.T) {
 // the missing "rem" unit was, for the same reason (falls through to "unknown
 // feature, assume it matches").
 func TestMediaMatchesRangeComparisonSyntax(t *testing.T) {
-	if !mediaMatches("(width<=1024px)", 1024) {
+	if !MediaMatches("(width<=1024px)", 1024) {
 		t.Error("width<=1024px should match at exactly 1024px")
 	}
-	if mediaMatches("(width<=1024px)", 1025) {
+	if MediaMatches("(width<=1024px)", 1025) {
 		t.Error("width<=1024px should NOT match at 1025px")
 	}
-	if !mediaMatches("(width>=1024px)", 1024) {
+	if !MediaMatches("(width>=1024px)", 1024) {
 		t.Error("width>=1024px should match at exactly 1024px")
 	}
-	if mediaMatches("(width>=1024px)", 1023) {
+	if MediaMatches("(width>=1024px)", 1023) {
 		t.Error("width>=1024px should NOT match at 1023px")
 	}
-	if mediaMatches("(width<800px)", 1024) {
+	if MediaMatches("(width<800px)", 1024) {
 		t.Error("width<800px should not match at 1024px")
 	}
-	if !mediaMatches("(width>800px)", 1024) {
+	if !MediaMatches("(width>800px)", 1024) {
 		t.Error("width>800px should match at 1024px")
 	}
 	// GitHub's actual breakpoints, in rem.
-	if mediaMatches("(width>=48rem)", 700) {
+	if MediaMatches("(width>=48rem)", 700) {
 		t.Error("width>=48rem (768px) should not match at 700px")
 	}
-	if !mediaMatches("(width>=48rem)", 1024) {
+	if !MediaMatches("(width>=48rem)", 1024) {
 		t.Error("width>=48rem (768px) should match at 1024px")
 	}
 	// Value-first order says the same thing as width-first, for every operator
 	// (each exercises a different flipCmp branch).
-	if !mediaMatches("(48rem<=width)", 1024) {
+	if !MediaMatches("(48rem<=width)", 1024) {
 		t.Error("48rem<=width should mean the same as width>=48rem")
 	}
-	if mediaMatches("(48rem<=width)", 700) {
+	if MediaMatches("(48rem<=width)", 700) {
 		t.Error("48rem<=width should not match at 700px")
 	}
-	if !mediaMatches("(1024px>=width)", 1024) {
+	if !MediaMatches("(1024px>=width)", 1024) {
 		t.Error("1024px>=width should mean the same as width<=1024px")
 	}
-	if mediaMatches("(1024px>=width)", 1025) {
+	if MediaMatches("(1024px>=width)", 1025) {
 		t.Error("1024px>=width should not match at 1025px")
 	}
-	if mediaMatches("(1024px<width)", 1024) {
+	if MediaMatches("(1024px<width)", 1024) {
 		t.Error("1024px<width should mean the same as width>1024px: not at 1024px")
 	}
-	if !mediaMatches("(1024px<width)", 1025) {
+	if !MediaMatches("(1024px<width)", 1025) {
 		t.Error("1024px<width should match at 1025px")
 	}
-	if !mediaMatches("(1024px>width)", 1023) {
+	if !MediaMatches("(1024px>width)", 1023) {
 		t.Error("1024px>width should mean the same as width<1024px: matches at 1023px")
 	}
 }
@@ -441,22 +441,22 @@ func TestMediaMatchesRangeComparisonSyntax(t *testing.T) {
 // rule means.
 func TestMediaMatchesNotAllAnd(t *testing.T) {
 	// max-sm: real compiled form — matches only BELOW 40rem (640px).
-	if !mediaMatches(" not all and (min-width:40rem)", 639) {
+	if !MediaMatches(" not all and (min-width:40rem)", 639) {
 		t.Error("not all and (min-width:40rem) should match at 639px (below the breakpoint)")
 	}
-	if mediaMatches(" not all and (min-width:40rem)", 640) {
+	if MediaMatches(" not all and (min-width:40rem)", 640) {
 		t.Error("not all and (min-width:40rem) should NOT match at 640px (at/above the breakpoint)")
 	}
-	if mediaMatches(" not all and (min-width:40rem)", 1024) {
+	if MediaMatches(" not all and (min-width:40rem)", 1024) {
 		t.Error("not all and (min-width:40rem) should NOT match at 1024px — the exact bug this covers")
 	}
 	// The case-insensitive, no-leading-space form (a bare @import/<link media>
 	// query, which is not pre-lowercased or spaced the way an @media
 	// prelude's own text always is).
-	if mediaMatches("NOT ALL AND (min-width:1024px)", 1024) {
+	if MediaMatches("NOT ALL AND (min-width:1024px)", 1024) {
 		t.Error("NOT ALL AND (case-insensitive, no leading space) should NOT match at 1024px")
 	}
-	if !mediaMatches("NOT ALL AND (min-width:1024px)", 1023) {
+	if !MediaMatches("NOT ALL AND (min-width:1024px)", 1023) {
 		t.Error("NOT ALL AND (min-width:1024px) should match at 1023px")
 	}
 	// "not" negates the whole query, whatever follows it (media.go) — so
@@ -465,7 +465,7 @@ func TestMediaMatchesNotAllAnd(t *testing.T) {
 	// and" idiom and let any other "not" fall through to match; a page's
 	// `@media not screen` block then applied on screen, the reverse of what
 	// it says.
-	if mediaMatches("not screen", 1024) {
+	if MediaMatches("not screen", 1024) {
 		t.Error(`"not screen" must NOT match on screen`)
 	}
 	if !mediaMatchesOn("not screen", Media{Type: Print, Width: 1024}) {
@@ -477,16 +477,16 @@ func TestMediaMatchesNotAllAnd(t *testing.T) {
 // media-feature value opening a hair's-width gap below the next breakpoint up,
 // so two adjacent responsive ranges never both match the same viewport width.
 func TestMediaMatchesSimpleCalc(t *testing.T) {
-	if !mediaMatches("(width<=calc(48rem - .02px))", 767) {
+	if !MediaMatches("(width<=calc(48rem - .02px))", 767) {
 		t.Error("width<=calc(48rem - .02px) (~767.98px) should match at 767px")
 	}
-	if mediaMatches("(width<=calc(48rem - .02px))", 1024) {
+	if MediaMatches("(width<=calc(48rem - .02px))", 1024) {
 		t.Error("width<=calc(48rem - .02px) should NOT match at 1024px")
 	}
-	if !mediaMatches("(width<=calc(1000px + 24px))", 1024) {
+	if !MediaMatches("(width<=calc(1000px + 24px))", 1024) {
 		t.Error("width<=calc(1000px + 24px) (1024px) should match at exactly 1024px")
 	}
-	if mediaMatches("(width<=calc(1000px + 24px))", 1025) {
+	if MediaMatches("(width<=calc(1000px + 24px))", 1025) {
 		t.Error("width<=calc(1000px + 24px) should NOT match at 1025px")
 	}
 	// evalMediaCalcs (calc.go's general evaluator, shared with ordinary
@@ -496,35 +496,35 @@ func TestMediaMatchesSimpleCalc(t *testing.T) {
 	// (`calc(1rem * 2 + 15rem + 2rem + 31rem)`, five terms including one
 	// product): a two-term-only evaluator left it unparsed, silently making a
 	// MOBILE-ONLY breakpoint match at every viewport (see FIDELITY.md).
-	if mediaMatches("(width<=calc(1px + 2px + 3px))", 999999) {
+	if MediaMatches("(width<=calc(1px + 2px + 3px))", 999999) {
 		t.Error("calc(1px + 2px + 3px) = 6px: width<=6px should NOT match at 999999px")
 	}
-	if !mediaMatches("(width<=calc(1px + 2px + 3px))", 6) {
+	if !MediaMatches("(width<=calc(1px + 2px + 3px))", 6) {
 		t.Error("calc(1px + 2px + 3px) = 6px: width<=6px should match at exactly 6px")
 	}
-	if !mediaMatches("(width<calc(1rem * 2 + 15rem + 2rem + 31rem))", 799) {
+	if !MediaMatches("(width<calc(1rem * 2 + 15rem + 2rem + 31rem))", 799) {
 		t.Error("MDN's real breakpoint (800px): width<800px should match at 799px")
 	}
-	if mediaMatches("(width<calc(1rem * 2 + 15rem + 2rem + 31rem))", 1024) {
+	if MediaMatches("(width<calc(1rem * 2 + 15rem + 2rem + 31rem))", 1024) {
 		t.Error("MDN's real breakpoint (800px): width<800px should NOT match at 1024px — the bug this covers")
 	}
 	// A construct genuinely outside what evalCalcExpr resolves (a percentage,
 	// which needs layout-time context this text-level pass never has) is
 	// left unparsed: the condition finds no width feature and matches
 	// optimistically, same as any other value this matcher cannot handle.
-	if !mediaMatches("(width<=calc(50% + 24px))", 999999) {
+	if !MediaMatches("(width<=calc(50% + 24px))", 999999) {
 		t.Error("a calc() containing a percentage should fall through to match optimistically")
 	}
 	// A value the regex's digit/dot character class accepts but strconv
 	// rejects (multiple dots, no actual digits) must not panic: the condition
 	// is simply left unevaluated (matches optimistically), same as any other
 	// unparseable value.
-	if !mediaMatches("(width<=...px)", 1024) {
+	if !MediaMatches("(width<=...px)", 1024) {
 		t.Error("an unparseable numeric value should fall through to match optimistically")
 	}
 	// An unterminated "calc(" (no matching close paren anywhere) must not
 	// panic or hang: evalMediaCalcs leaves the rest of the string untouched.
-	if !mediaMatches("(width<=calc(48rem - .02px", 1024) {
+	if !MediaMatches("(width<=calc(48rem - .02px", 1024) {
 		t.Error("an unterminated calc( should fall through to match optimistically")
 	}
 }
@@ -543,36 +543,36 @@ func TestMediaMatchesSimpleCalc(t *testing.T) {
 // Markdown heading unconditionally, and a whole family of near-identical
 // query pairs (`hover:none`/`any-hover:none`) carries the exact same risk.
 func TestMediaMatchesHoverAndPointer(t *testing.T) {
-	if mediaMatches("(hover:none)", 1024) {
+	if MediaMatches("(hover:none)", 1024) {
 		t.Error("(hover:none) should NOT match a mouse-equipped desktop context")
 	}
-	if !mediaMatches("(hover:hover)", 1024) {
+	if !MediaMatches("(hover:hover)", 1024) {
 		t.Error("(hover:hover) SHOULD match a mouse-equipped desktop context")
 	}
-	if mediaMatches("(any-hover:none)", 1024) {
+	if MediaMatches("(any-hover:none)", 1024) {
 		t.Error("(any-hover:none) should NOT match")
 	}
-	if !mediaMatches("(any-hover:hover)", 1024) {
+	if !MediaMatches("(any-hover:hover)", 1024) {
 		t.Error("(any-hover:hover) SHOULD match")
 	}
-	if mediaMatches("(pointer:coarse)", 1024) {
+	if MediaMatches("(pointer:coarse)", 1024) {
 		t.Error("(pointer:coarse) — GitHub's real touch-fallback query — should NOT match")
 	}
-	if mediaMatches("(pointer:none)", 1024) {
+	if MediaMatches("(pointer:none)", 1024) {
 		t.Error("(pointer:none) should NOT match")
 	}
-	if !mediaMatches("(pointer:fine)", 1024) {
+	if !MediaMatches("(pointer:fine)", 1024) {
 		t.Error("(pointer:fine) SHOULD match")
 	}
-	if mediaMatches("(any-pointer:coarse)", 1024) {
+	if MediaMatches("(any-pointer:coarse)", 1024) {
 		t.Error("(any-pointer:coarse) should NOT match")
 	}
-	if !mediaMatches("(any-pointer:fine)", 1024) {
+	if !MediaMatches("(any-pointer:fine)", 1024) {
 		t.Error("(any-pointer:fine) SHOULD match")
 	}
 	// A genuinely unrelated/unknown feature still matches optimistically,
 	// unaffected by this — only hover/pointer get the stricter treatment.
-	if !mediaMatches("(color-gamut:p3)", 1024) {
+	if !MediaMatches("(color-gamut:p3)", 1024) {
 		t.Error("an unrelated unknown feature should still match optimistically")
 	}
 }

@@ -301,9 +301,13 @@ func parseRules(src string, m Media) []Rule {
 // of the idiom that first exposed the bug.
 var notAllAndPrefix = regexp.MustCompile(`(?i)^\s*not\s+all\s+and\s+`)
 
-// mediaMatches evaluates a @media condition for screen at viewport width vw
+// MediaMatches evaluates a @media condition for screen at viewport width vw
 // — see mediaMatchesOn (media.go) for the rules, and Media for print.
-func mediaMatches(cond string, vw float64) bool {
+// Exported so a non-CSS caller (images.go's own <picture> <source>
+// selection, HTML Standard §4.8.5.1, round 195 engine#334) can reuse the
+// exact same matching this package already gives @media/<link media>,
+// rather than a second, independent implementation of the same grammar.
+func MediaMatches(cond string, vw float64) bool {
 	return mediaMatchesOn(cond, Media{Width: vw})
 }
 

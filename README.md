@@ -311,6 +311,10 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - **Images**: `<img>` over http(s) + `data:` (PNG/JPEG) and **SVG**
   ([go-gfx/oksvg](https://github.com/go-gfx/oksvg), a fork of srwiley/oksvg
   with `clipPath`, over rasterx) via `<img *.svg>`, `data:image/svg+xml` and **inline `<svg>`**.
+  **`<picture>`/`<source>`/`srcset`** (round 195): a `<source>` whose `media`
+  matches the current viewport wins over the `<img>`'s own fallback `src` —
+  only the first candidate of a matching `<source>`'s `srcset` is taken (no
+  `type`-attribute filtering, no width/density descriptor selection).
 - **JavaScript**: page scripts run via [goja](https://github.com/dop251/goja)
   against a real DOM, with `fetch()`/XHR and read-back of real laid-out geometry
   (`getBoundingClientRect`, `offsetWidth/Height`, `getComputedStyle`). A
@@ -333,6 +337,11 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 
 **Honest limits (not overclaimed)**
 
+- `<picture>`/`srcset`: a `<source>`'s `type` attribute (skip one whose
+  declared MIME type can't be decoded) and width/density descriptors
+  (picking the best of several `srcset` candidates) are not evaluated —
+  only the first comma-separated candidate of the first `media`-matching
+  `<source>` is ever taken. No confirmed trigger uses either.
 - `WebAssembly`: no WASI (`wasi_snapshot_preview1` — stdio, filesystem,
   clocks) is wired, so a module assuming a WASI host fails to instantiate
   with a LinkError naming the missing import. The synchronous
