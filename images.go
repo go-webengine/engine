@@ -201,6 +201,60 @@ func (e *Engine) loadImagesVec(ctx context.Context, doc *Document, sm css.StyleM
 	return sizes, bitmaps, vecs
 }
 
+// effectiveImgSrc resolves an <img>'s effective source, accounting for an
+// enclosing <picture> ancestor's <source> candidates (HTML Standard
+// §4.8.5.1 — a <source> whose `media` doesn't match the given viewport
+// width is skipped; the first one that does, in document order, wins). An
+// <img> with no <picture> parent takes none of this and returns its own
+// `src` unchanged — the only path a plain <img src="..."> can ever take.
+//
+// Deliberately narrower than the full algorithm: a <source>'s `type`
+// attribute (skip one whose declared MIME type can't be decoded) and a
+// srcset's width/density descriptors (picking the best of several
+// candidates) are not evaluated — the confirmed trigger (en.wikipedia.org's
+// own footer "Wikimedia Foundation"/"Powered by MediaWiki" logos, present
+// unconditionally in every article's static markup) has neither: one
+// type-less, descriptor-less srcset per <source>. Before this, this engine
+// read every <img>'s own `src` with zero awareness a <picture> could
+// override it, always showing Wikipedia's 25×25 fallback icon instead of
+// the wider branded button a real browser's own (min-width:500px) match
+// selects at this engine's own default 1024px render width.
+func effectiveImgSrc(n *dom.Node, viewportW float64) (string, bool) {
+	own, ok := n.Attribute("src")
+	if n.Parent == nil || n.Parent.Tag != "picture" {
+		return own, ok
+	}
+	for _, c := range n.Parent.Children {
+		if c.Tag != "source" {
+			continue
+		}
+		srcset, hasSrcset := c.Attribute("srcset")
+		if !hasSrcset {
+			continue
+		}
+		if media, hasMedia := c.Attribute("media"); hasMedia && !css.MediaMatches(media, viewportW) {
+			continue
+		}
+		if u := firstSrcsetCandidate(srcset); u != "" {
+			return u, true
+		}
+	}
+	return own, ok
+}
+
+// firstSrcsetCandidate returns the URL of a srcset's first comma-separated
+// candidate, ignoring any trailing width/density descriptor ("2x", "800w")
+// — see effectiveImgSrc's own doc comment for why only the first candidate
+// is ever used.
+func firstSrcsetCandidate(srcset string) string {
+	first := strings.SplitN(srcset, ",", 2)[0]
+	fields := strings.Fields(strings.TrimSpace(first))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
 // loadImageSet is the loader proper: the accepted set is decided in document
 // order before any fetch, the fetch+decode runs concurrently, and the map
 // is filled single-threaded, so the result is the same for any scheduling.
@@ -255,7 +309,7 @@ func (e *Engine) loadImageSet(ctx context.Context, doc *Document, sm css.StyleMa
 			jobs = append(jobs, n)
 			continue
 		}
-		src, ok := n.Attribute("src")
+		src, ok := effectiveImgSrc(n, float64(viewportW))
 		if !ok {
 			continue // a src-less <img> is skipped without charging any budget
 		}
@@ -315,7 +369,7 @@ func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMa
 		// rather than as text (#229).
 		return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: b, Data: data, Format: "svg", SourceW: w, SourceH: h, Vector: vec}
 	}
-	src, _ := n.Attribute("src") // presence was checked in the gate
+	src, _ := effectiveImgSrc(n, float64(viewportW)) // presence was checked in the gate
 	data, ok := e.fetchImageBytes(ctx, doc.URL, src)
 	if !ok {
 		return nil
