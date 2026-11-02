@@ -129,6 +129,21 @@ func (b *binder) installStubs(g *goja.Object) {
 	for _, name := range []string{"scrollTo", "scroll", "scrollBy", "focus", "blur", "moveTo", "resizeTo", "print", "close", "stop"} {
 		g.Set(name, noop)
 	}
+	// window.postMessage (HTML Standard §9.4.3) did not exist as a global at
+	// all — confirmed live (round 201) via Google's own widely-deployed
+	// reCAPTCHA script (gstatic.com/recaptcha/...), which calls it
+	// unconditionally at load and threw "ReferenceError: postMessage is not
+	// defined", the same whole-script-abort shape round 50's missing
+	// customElements had. A real cross-window message delivery has nowhere
+	// to go in this engine's single-document model (window/self/top/parent
+	// already all alias the one global object — see the loop above this
+	// function's own doc comment), so this is the same best-effort,
+	// state-only treatment window.location.assign()/.reload() already have:
+	// stop the crash, do not simulate real delivery no confirmed trigger
+	// needs. (A page's own same-window self-messaging via a real
+	// MessageChannel port's postMessage is unaffected — see wirePort in
+	// net.go, which already delivers for real.)
+	g.Set("postMessage", noop)
 	g.Set("alert", noop)
 	g.Set("confirm", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
 	g.Set("prompt", func(goja.FunctionCall) goja.Value { return goja.Null() })
