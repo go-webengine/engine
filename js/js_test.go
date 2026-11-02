@@ -972,6 +972,7 @@ func TestWindowStubs(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		window.scrollTo(0,0); window.scroll(); window.scrollBy(); window.print();
 		window.moveTo(); window.resizeTo(); window.stop(); window.focus(); window.blur(); window.close();
+		window.postMessage('x','*'); window.postMessage({a:1}, {targetOrigin:'*'});
 		console.log('confirm='+window.confirm('?')+' prompt='+window.prompt('?')+' open='+window.open('u')+' alert='+window.alert('!'));
 		console.log('sel='+window.getSelection());
 		console.log('sc='+window.structuredClone({a:7}).a);
@@ -1317,6 +1318,25 @@ func TestDocumentReferrerIsEmptyString(t *testing.T) {
 		console.log('referrer='+JSON.stringify(document.referrer)+' idx='+document.referrer.indexOf('x'));
 	`))
 	mustHave(t, logs, `referrer="" idx=-1`)
+}
+
+// TestWindowPostMessageDoesNotThrow covers the real regression (round 201):
+// window.postMessage did not exist as a global at all — only MessagePort's
+// own postMessage (MessageChannel, net.go) did. Confirmed live via Google's
+// own widely-deployed reCAPTCHA script, which calls it unconditionally at
+// load and threw "ReferenceError: postMessage is not defined", the same
+// whole-script-abort shape round 50's missing customElements had. Real
+// cross-window delivery has nowhere to go in this engine's single-document
+// model (window/self/top/parent already alias the one global object) — the
+// same best-effort, state-only treatment window.location.assign() already
+// has: stop the crash, not simulate delivery no confirmed trigger needs.
+func TestWindowPostMessageDoesNotThrow(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		window.postMessage('hello', '*');
+		top.postMessage({a:1}, '*');
+		console.log('ok');
+	`))
+	mustHave(t, logs, "ok")
 }
 
 func TestEmptyLocation(t *testing.T) {

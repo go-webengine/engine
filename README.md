@@ -328,6 +328,10 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   reading or navigating through either accessor stays consistent.
   `document.referrer` (round 200) is always `""` — honest, since this
   engine's single-URL fetch has no referring-page history to report.
+  `window.postMessage()` (round 201) is a no-op — this engine's
+  single-document model has no second window/frame to deliver to (a real
+  `MessagePort.postMessage`, via `MessageChannel`, is unaffected and
+  delivers for real).
 - **WebAssembly** (round 189): a page's own `WebAssembly.compile`/`instantiate`
   runs real `.wasm` modules via [wazero](https://github.com/tetratelabs/wazero)
   (pure Go, no CGO — its Interpreter engine covers every architecture this
