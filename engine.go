@@ -103,6 +103,23 @@ type Engine struct {
 	// instead of driving the process toward OOM. Zero selects a sane default; a
 	// negative value disables the guard.
 	MaxJSHeapBytes int64
+	// MaxWasmModuleBytes bounds a single WebAssembly.compile()/instantiate()
+	// call's input module size. Zero selects the 32 MiB default — generous
+	// for a typical compute module, small enough that a page cannot force
+	// an unbounded allocation just by naming a byte count. Raise it for
+	// larger real modules (Go-compiled WebAssembly binaries commonly reach
+	// into the tens to low hundreds of MiB). There is no "disable" value:
+	// a module always has SOME finite cap, matching wazero's own
+	// CompileModule, which has no unlimited-size mode either.
+	MaxWasmModuleBytes int64
+	// MaxWasmMemoryBytes bounds a WebAssembly module's own linear memory
+	// growth (its memory.grow). Zero selects the 16 MiB default. Rounded UP
+	// to the next whole 64 KiB page (WebAssembly's own page size) if not
+	// already a multiple, and clamped to the wasm32 4 GiB ceiling (65536
+	// pages) — wazero's WithMemoryLimitPages takes a page count, not a byte
+	// count, and always needs a concrete finite value; there is no
+	// "unlimited" sentinel to select instead.
+	MaxWasmMemoryBytes int64
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)

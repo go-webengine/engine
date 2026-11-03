@@ -51,6 +51,15 @@ type Options struct {
 	DevicePixelRatio float64
 	// Log, if non-nil, receives console.* output as "level: message" lines.
 	Log func(string)
+	// MaxWasmModuleBytes bounds a WebAssembly.compile()/instantiate() call's
+	// input size; zero selects defaultMaxWasmModuleBytes. See the field of
+	// the same name on the root engine.Engine (the public-facing doc
+	// comment) for the full rationale.
+	MaxWasmModuleBytes int64
+	// MaxWasmMemoryBytes bounds a WebAssembly module's own linear memory
+	// growth; zero selects defaultMaxWasmMemoryBytes. See engine.Engine's
+	// own field of the same name for the full rationale.
+	MaxWasmMemoryBytes int64
 }
 
 // DefaultTimeout is the script budget when Options.Timeout is zero.

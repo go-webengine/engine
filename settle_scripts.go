@@ -95,14 +95,16 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 // jsOptions builds the Options for a Session from the engine config.
 func (e *Engine) jsOptions(ctx context.Context, doc *Document, vpW, vpH int) js.Options {
 	return js.Options{
-		PageURL:          doc.URL,
-		UserAgent:        e.UserAgent,
-		Client:           e.Client,
-		Ctx:              ctx,
-		Timeout:          e.JSTimeout,
-		ViewportWidth:    vpW,
-		ViewportHeight:   vpH,
-		DevicePixelRatio: e.devScale(),
-		Log:              e.JSLog,
+		PageURL:            doc.URL,
+		UserAgent:          e.UserAgent,
+		Client:             e.Client,
+		Ctx:                ctx,
+		Timeout:            e.JSTimeout,
+		ViewportWidth:      vpW,
+		ViewportHeight:     vpH,
+		DevicePixelRatio:   e.devScale(),
+		Log:                e.JSLog,
+		MaxWasmModuleBytes: e.MaxWasmModuleBytes,
+		MaxWasmMemoryBytes: e.MaxWasmMemoryBytes,
 	}
 }

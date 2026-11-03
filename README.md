@@ -333,15 +333,19 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   `MessagePort.postMessage`, via `MessageChannel`, is unaffected and
   delivers for real).
 - **WebAssembly** (round 189): a page's own `WebAssembly.compile`/`instantiate`
+  (and, since 2026-11-03, `compileStreaming`/`instantiateStreaming` —
+  `instantiateStreaming(fetch(url))`, the overwhelmingly common real shape)
   runs real `.wasm` modules via [wazero](https://github.com/tetratelabs/wazero)
   (pure Go, no CGO — its Interpreter engine covers every architecture this
   project cross-builds for; its Compiler engine speeds up amd64/arm64 where
   available). A module's own exported functions and linear memory
   (`instance.exports.memory.buffer`, a real zero-copy `ArrayBuffer`) are
   modelled, with function imports wired to real JS callbacks. Bounded like
-  every other resource this engine budgets: a module-size cap, a
-  memory-growth cap, and the same wall-clock deadline JS execution is already
-  held to.
+  every other resource this engine budgets: a **configurable**
+  `Engine.MaxWasmModuleBytes`/`MaxWasmMemoryBytes` quota (zero keeps the
+  32 MiB/16 MiB defaults; raise either toward the wasm32 4 GiB ceiling for
+  genuinely larger real modules), and the same wall-clock deadline JS
+  execution is already held to.
 
 **Honest limits (not overclaimed)**
 
@@ -354,12 +358,17 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   only the first comma-separated candidate of the first `media`-matching
   `<source>` is ever taken. No confirmed trigger uses either.
 - `WebAssembly`: no WASI (`wasi_snapshot_preview1` — stdio, filesystem,
-  clocks) is wired, so a module assuming a WASI host fails to instantiate
-  with a LinkError naming the missing import. The synchronous
+  clocks) is wired, so a module assuming a WASI host (e.g. a `GOOS=wasip1`
+  Go build, as opposed to `GOOS=js`) fails to instantiate with a LinkError
+  naming the missing import. The synchronous
   `new WebAssembly.Module(...)`/`new WebAssembly.Instance(...)` constructor
-  forms, Table and Global imports/exports, standalone `Memory`/`Table`
-  objects (not tied to a module), and `compileStreaming`/`instantiateStreaming`
-  are not implemented — no confirmed container needs any of them yet.
+  forms, Table and Global imports/exports, and standalone `Memory`/`Table`
+  objects (not tied to a module) are not implemented — no confirmed
+  container needs any of them yet. `compileStreaming`/`instantiateStreaming`
+  ARE implemented (2026-11-03) but not via genuine incremental streaming —
+  this engine's own `fetch()` has no streaming body to begin with, so the
+  Response argument is fully read before compiling, same as the plain
+  `compile()`/`instantiate()` forms.
 - `clamp()` is only resolved for `font-size`, which resolves `%`/`vw` EAGERLY
   at cascade time — a width-like property's own percentage still depends on
   a containing block only known at layout time, the same wall `min()`/`max()`
@@ -556,9 +565,13 @@ capped (each confirmed live against a synthetic reproduction, not assumed):
   `compile()`'s input, a memory-growth cap bounds a hostile module's own
   `memory.grow` loop, and every call is deadlined to the SAME wall-clock
   budget JS execution is already held to — a runaway module cannot outrun
-  the page's own time budget any more than an infinite JS loop can. No WASI
-  is wired, so a module cannot reach the filesystem, the network, or a
-  clock through it.
+  the page's own time budget any more than an infinite JS loop can. Both
+  caps are configurable (`Engine.MaxWasmModuleBytes`/`MaxWasmMemoryBytes`,
+  2026-11-03) for a host that genuinely needs larger real modules, but
+  always bounded by SOME finite quota — never unlimited, and clamped to the
+  wasm32 4 GiB address-space ceiling regardless of what a caller requests.
+  No WASI is wired, so a module cannot reach the filesystem, the network,
+  or a clock through it.
 
 See `FIDELITY.md`'s rounds 166–178 for the full measured writeups. None of
 these change how a well-formed page renders — only how a pathological one

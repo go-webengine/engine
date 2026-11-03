@@ -56,29 +56,86 @@ import (
 //     wired. A module compiled assuming a WASI host fails to instantiate
 //     with a LinkError naming the missing import — the honest outcome for a
 //     capability this engine does not model, not a silent wrong answer.
-//   - compileStreaming/instantiateStreaming are not implemented: this engine
-//     has no Response/ReadableStream-based streaming fetch path to stream
-//     from; compile()/instantiate() with a plain BufferSource cover the
-//     same need for a module already fully in memory.
+//   - compileStreaming/instantiateStreaming are implemented (round N+1 of
+//     the go-wasmcontainers WebGPU-readiness roadmap, milestone 1), but not
+//     via genuine incremental streaming: this engine's fetch() already
+//     fully buffers a response before resolving it (js/net.go), so there is
+//     no partial-bytes-as-they-arrive path to feed wazero's own
+//     CompileModule([]byte), which itself takes a complete byte slice, not
+//     a stream. The JS-facing contract (Promise-based, takes a Response or
+//     a promise of one) is satisfied exactly; only the internal compile is
+//     buffer-then-compile rather than incrementally streamed. See
+//     streamingWasmBytes' own doc comment for how a Response/promise
+//     argument is resolved to bytes.
 //   - A WASM call honours this render's own wall-clock budget (b.deadman,
 //     the same one JS execution is bound by) via wazero's own
 //     WithCloseOnContextDone, so a runaway module cannot outrun the page's
 //     time budget the way an infinite JS loop already cannot.
-//   - A module's own memory.grow is bounded (maxWasmMemoryPages) against a
-//     hostile module exhausting host memory, the same budget discipline
+//   - A module's own size (Options.MaxWasmModuleBytes) and memory growth
+//     (Options.MaxWasmMemoryBytes) are each bounded by a CONFIGURABLE quota
+//     (zero selects a sane default — 32 MiB / 16 MiB respectively), not a
+//     hardcoded ceiling — a caller with genuinely larger real modules (Go-
+//     compiled WebAssembly binaries reaching into the hundreds of MiB) can
+//     raise either toward the wasm32 4 GiB address-space ceiling, which
+//     this engine clamps to rather than ever handing wazero a value its
+//     own WithMemoryLimitPages would panic on. The same budget discipline
 //     this project's other resource caps (MaxImages, maxRequests,
-//     maxCloneNodes) already follow.
+//     maxCloneNodes) already follow — always bounded, never unlimited.
 
 const (
-	// maxWasmModuleBytes bounds a single compile() call's input size — large
-	// enough for a genuine compute module, small enough that a page cannot
-	// use it to force an unbounded allocation.
-	maxWasmModuleBytes = 32 << 20 // 32 MiB
-	// maxWasmMemoryPages bounds a module's own linear memory growth (each
-	// page is 64 KiB) — 256 pages = 16 MiB, generous for a real computation
-	// without letting a hostile module's memory.grow loop exhaust the host.
-	maxWasmMemoryPages = 256
+	// defaultMaxWasmModuleBytes is Options.MaxWasmModuleBytes' zero-value
+	// default — large enough for a genuine compute module, small enough
+	// that a page cannot use it to force an unbounded allocation. A caller
+	// with genuinely larger real-world modules (Go-compiled WebAssembly
+	// binaries commonly reach into the tens to low hundreds of MiB) raises
+	// Options.MaxWasmModuleBytes explicitly; there is no "disable" value,
+	// matching wazero's own CompileModule, which has no unlimited-size mode.
+	defaultMaxWasmModuleBytes = 32 << 20 // 32 MiB
+	// defaultMaxWasmMemoryBytes is Options.MaxWasmMemoryBytes' zero-value
+	// default — generous for a real computation without letting a hostile
+	// module's memory.grow loop exhaust the host.
+	defaultMaxWasmMemoryBytes = 16 << 20 // 16 MiB
+	// wasmPageSize is WebAssembly's own fixed linear-memory page size (not
+	// configurable, spec-mandated).
+	wasmPageSize = 64 << 10 // 64 KiB
+	// maxWasmMemoryPages is the wasm32 address-space ceiling (2^32 bytes /
+	// 64 KiB per page) — the largest page count any 32-bit module could
+	// ever actually use, so a configured byte value past this is clamped
+	// rather than handed to wazero as a meaninglessly large request.
+	maxWasmMemoryPages = (1 << 32) / wasmPageSize // 65536 pages = 4 GiB
 )
+
+// maxWasmModuleBytes resolves Options.MaxWasmModuleBytes: zero selects
+// defaultMaxWasmModuleBytes, matching Options.Timeout's own "zero selects
+// the default" convention.
+func (b *binder) maxWasmModuleBytes() int64 {
+	if b.opt.MaxWasmModuleBytes <= 0 {
+		return defaultMaxWasmModuleBytes
+	}
+	return b.opt.MaxWasmModuleBytes
+}
+
+// maxWasmMemoryPages resolves Options.MaxWasmMemoryBytes to a wazero page
+// count: zero selects defaultMaxWasmMemoryBytes, a value not already a
+// whole number of pages rounds UP (a cap must cover at least the byte count
+// asked for, never less), and the result is clamped to the wasm32 ceiling —
+// wazero's own WithMemoryLimitPages takes a page count and always needs a
+// concrete, finite value, so there is no byte value that means "unlimited".
+func (b *binder) maxWasmMemoryPages() uint32 {
+	bytes := b.opt.MaxWasmMemoryBytes
+	if bytes <= 0 {
+		bytes = defaultMaxWasmMemoryBytes
+	}
+	// No lower-bound check needed here: bytes is always >= 1 at this point
+	// (the branch above already redirected any <= 0 value to the default),
+	// and ceiling-dividing a positive numerator by a positive denominator
+	// is always >= 1 — pages can never come out below 1.
+	pages := (bytes + wasmPageSize - 1) / wasmPageSize
+	if pages > maxWasmMemoryPages {
+		pages = maxWasmMemoryPages
+	}
+	return uint32(pages)
+}
 
 // wasmRT returns this render's WebAssembly runtime, creating it lazily on
 // first use so a page that never touches WebAssembly pays nothing for it.
@@ -86,7 +143,7 @@ const (
 func (b *binder) wasmRT() wazero.Runtime {
 	if b.wasmRuntime == nil {
 		cfg := wazero.NewRuntimeConfig().
-			WithMemoryLimitPages(maxWasmMemoryPages).
+			WithMemoryLimitPages(b.maxWasmMemoryPages()).
 			WithCloseOnContextDone(true)
 		b.wasmRuntime = wazero.NewRuntimeWithConfig(context.Background(), cfg)
 	}
@@ -163,14 +220,107 @@ func (b *binder) newWebAssembly() *goja.Object {
 		result.Set("instance", inst)
 		return b.resolved(result)
 	})
+	o.Set("compileStreaming", func(call goja.FunctionCall) goja.Value {
+		data, ok := b.streamingWasmBytes(call.Argument(0))
+		if !ok {
+			return b.rejected(b.wasmError("TypeError", "compileStreaming: argument did not resolve to a Response with a WebAssembly BufferSource body"))
+		}
+		ctx, cancel := b.wasmCtx()
+		defer cancel()
+		compiled, err := b.wasmRT().CompileModule(ctx, data)
+		if err != nil {
+			return b.rejected(b.wasmError("CompileError", err.Error()))
+		}
+		return b.resolved(b.wrapWasmModule(compiled))
+	})
+	o.Set("instantiateStreaming", func(call goja.FunctionCall) goja.Value {
+		importsArg := call.Argument(1)
+		data, ok := b.streamingWasmBytes(call.Argument(0))
+		if !ok {
+			return b.rejected(b.wasmError("TypeError", "instantiateStreaming: argument did not resolve to a Response with a WebAssembly BufferSource body"))
+		}
+		ctx, cancel := b.wasmCtx()
+		defer cancel()
+		compiled, err := b.wasmRT().CompileModule(ctx, data)
+		if err != nil {
+			return b.rejected(b.wasmError("CompileError", err.Error()))
+		}
+		inst, wErr := b.instantiateWasm(compiled, importsArg)
+		if wErr != nil {
+			return b.rejected(wErr)
+		}
+		result := b.vm.NewObject()
+		result.Set("module", b.wrapWasmModule(compiled))
+		result.Set("instance", inst)
+		return b.resolved(result)
+	})
 	return o
+}
+
+// streamingWasmBytes resolves compileStreaming/instantiateStreaming's own
+// argument — a Response, or (the overwhelmingly common real shape,
+// `instantiateStreaming(fetch(url))`) a promise of one — to the module's
+// raw bytes, bounded the same way a direct BufferSource argument already
+// is (wasmBytes).
+//
+// This engine's OWN promises (js/net.go's resolved/rejected, which fetch()
+// itself and Response.arrayBuffer() both return) are always already
+// SETTLED by the time any JS code observes them — the real HTTP GET (or
+// in-memory buffering) already happened inline before resolve() was ever
+// called (see fetch()'s own doc comment). So "await" here is a direct,
+// synchronous read of goja's own Promise.State()/Result(), not a
+// continuation — there is no job-queue machinery to drive, and a promise
+// that is NOT already settled (never produced by this engine's own code)
+// is correctly reported as unresolved rather than guessed at.
+func (b *binder) streamingWasmBytes(v goja.Value) ([]byte, bool) {
+	respVal, ok := b.awaitSettled(v)
+	if !ok {
+		return nil, false
+	}
+	resp, ok := respVal.(*goja.Object)
+	if !ok {
+		return nil, false
+	}
+	arrayBuffer, ok := goja.AssertFunction(resp.Get("arrayBuffer"))
+	if !ok {
+		return nil, false
+	}
+	abPromise, err := arrayBuffer(resp)
+	if err != nil {
+		return nil, false
+	}
+	abVal, ok := b.awaitSettled(abPromise)
+	if !ok {
+		return nil, false
+	}
+	return b.wasmBytes(abVal)
+}
+
+// awaitSettled resolves v to its final value when v is a Promise this
+// engine's own code already settled synchronously (see
+// streamingWasmBytes' own doc comment for why that is the only kind this
+// engine ever produces); a non-Promise value is returned unchanged. ok is
+// false for a rejected promise or one that is still pending.
+func (b *binder) awaitSettled(v goja.Value) (goja.Value, bool) {
+	obj, isObj := v.(*goja.Object)
+	if !isObj {
+		return v, true
+	}
+	p, isPromise := obj.Export().(*goja.Promise)
+	if !isPromise {
+		return v, true
+	}
+	if p.State() != goja.PromiseStateFulfilled {
+		return nil, false
+	}
+	return p.Result(), true
 }
 
 // wasmBytes extracts the raw module bytes from a BufferSource argument,
 // bounded by maxWasmModuleBytes.
 func (b *binder) wasmBytes(v goja.Value) ([]byte, bool) {
 	data, ok := b.bufferSourceBytes(v)
-	if !ok || len(data) == 0 || len(data) > maxWasmModuleBytes {
+	if !ok || len(data) == 0 || int64(len(data)) > b.maxWasmModuleBytes() {
 		return nil, false
 	}
 	return data, true
