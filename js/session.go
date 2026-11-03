@@ -264,6 +264,25 @@ func (s *Session) RunPending() (ran bool) {
 // Result returns the cumulative execution tally.
 func (s *Session) Result() Result { return s.res }
 
+// Done reports whether the page has called __webengineDone (only installed
+// when Options.EnableDoneSignal is set — see install()'s own doc comment),
+// and the value it passed, converted via goja's Export the same way Eval's
+// own return value is. ok is always false when EnableDoneSignal was never
+// set, since the global was never installed for a page to call.
+//
+// No nil-check needed on pageDoneResult here: the only place that sets
+// pageDone to true (window.go's own __webengineDone closure) sets
+// pageDoneResult in that same assignment, to call.Argument(0) — which is
+// never Go-nil, even when the page calls __webengineDone() with no
+// argument at all (goja's own FunctionCall.Argument returns Undefined(),
+// a non-nil goja.Value, for an out-of-range index).
+func (s *Session) Done() (value interface{}, ok bool) {
+	if !s.b.pageDone {
+		return nil, false
+	}
+	return s.b.pageDoneResult.Export(), true
+}
+
 // Eval runs code in this session's JS runtime and returns its value,
 // converted to a plain Go value via goja's Export (string, float64, bool,
 // nil, []interface{}, map[string]interface{}, ...). It exists for a host

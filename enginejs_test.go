@@ -85,6 +85,42 @@ func TestDisableJSDeterministic(t *testing.T) {
 	}
 }
 
+// TestEnableDoneSignalStopsSettleEarly proves the settle loop honors a page's
+// own __webengineDone() signal. It reuses TestSettleFixpointCap's own
+// self-replicating script chain (dynamic_test.go) — one generation per
+// settle pass, already proven to reach data-d="4" (one pre-loop pass plus
+// the three maxSettlePasses-bounded loop passes) — and has each generation
+// call __webengineDone() once n reaches 2. With EnableDoneSignal on, the
+// loop must break right after that generation, leaving data-d="2" rather
+// than running the chain out to "4". With EnableDoneSignal left at its
+// default (false), __webengineDone is never installed (the chain's own
+// typeof guard skips calling it), so the exact same page must still reach
+// "4" — proving the feature is a true no-op for a caller not using it.
+func TestEnableDoneSignalStopsSettleEarly(t *testing.T) {
+	src := `<html><head></head><body><script>
+		var code = "var b=document.body; var n=(+(b.getAttribute('data-d')||'0'))+1;" +
+			"b.setAttribute('data-d',''+n);" +
+			"if (n>=2 && typeof __webengineDone==='function'){__webengineDone(n);}" +
+			"var s=document.createElement('script'); s.textContent=b.getAttribute('data-code'); b.appendChild(s);";
+		document.body.setAttribute('data-code', code);
+		var s=document.createElement('script'); s.textContent=code; document.body.appendChild(s);
+	</script></body></html>`
+	vp := image.Rect(0, 0, 200, 200)
+
+	on := New()
+	on.EnableDoneSignal = true
+	doc, _ := renderDoc(t, on, src, context.Background(), vp)
+	if got, _ := dom.Find(doc.Root, "body").Attribute("data-d"); got != "2" {
+		t.Fatalf("data-d = %q, want %q (settle should stop right after __webengineDone fires)", got, "2")
+	}
+
+	off := New()
+	doc2, _ := renderDoc(t, off, src, context.Background(), vp)
+	if got, _ := dom.Find(doc2.Root, "body").Attribute("data-d"); got != "4" {
+		t.Fatalf("data-d = %q, want %q (EnableDoneSignal default must not change behaviour)", got, "4")
+	}
+}
+
 // TestJSInjectedLinkInHitMap proves the JavaScript pass runs on the
 // RenderWithLinks path too: a script that appends an <a href> to the body makes
 // that anchor appear in the returned hit-map, and with JS disabled it does not.

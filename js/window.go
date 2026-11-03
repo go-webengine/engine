@@ -72,6 +72,26 @@ func (b *binder) install() {
 	b.installEncoding(g)
 	b.installURLSearchParams(g)
 	b.installIntl(g)
+	// __webengineDone(value) — opt-in (Options.EnableDoneSignal), installed
+	// as a global only when set, so a caller not using this feature sees no
+	// behaviour change at all (not even an extra global name). Lets a
+	// page's own async test/automation code end the settle loop (see
+	// Session.Done, settle()'s own loop in settle_scripts.go) as soon as
+	// its work is actually finished, instead of running every pass out to
+	// the pass cap or the wall-clock budget — the automation need
+	// go-wasmcontainers' own roadmap flagged: "a render can wait for the
+	// page to post 'done'." The existing JSTimeout/deadman budget is
+	// unchanged either way: a page that never calls this still gets exactly
+	// today's behaviour, bounded exactly as before.
+	if b.opt.EnableDoneSignal {
+		g.Set("__webengineDone", func(call goja.FunctionCall) goja.Value {
+			if !b.pageDone {
+				b.pageDone = true
+				b.pageDoneResult = call.Argument(0)
+			}
+			return goja.Undefined()
+		})
+	}
 }
 
 // installTimers wires setTimeout/setInterval/rAF etc. onto g, all of which queue

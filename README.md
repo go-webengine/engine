@@ -346,6 +346,14 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   32 MiB/16 MiB defaults; raise either toward the wasm32 4 GiB ceiling for
   genuinely larger real modules), and the same wall-clock deadline JS
   execution is already held to.
+- **Automation: wait for a page to post "done"** (2026-11-03,
+  `Engine.EnableDoneSignal`): off by default (no behaviour change, not even
+  an extra global). On, it installs `__webengineDone(value)`, which a
+  page's own script calls once its async work is actually finished; the
+  settle loop (`RenderDocument`/`RenderHTML`) then returns as soon as that
+  fires, instead of running out the full pass/`JSTimeout` budget — the
+  "post done, meaning async completion with a timeout" shape an automation
+  caller needs, without any WebDriver/CDP protocol.
 
 **Honest limits (not overclaimed)**
 
