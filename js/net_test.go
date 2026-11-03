@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,14 @@ func netServer() *httptest.Server {
 			w.Write(body)
 		case "/bad.json":
 			w.Write([]byte(`{not json`))
+		case "/add.wasm":
+			// Serves the same real WebAssembly fixture wasm_test.go's own
+			// in-memory tests use, for instantiateStreaming/compileStreaming,
+			// which need a real fetch()-returned Response rather than a
+			// BufferSource literal.
+			w.Header().Set("Content-Type", "application/wasm")
+			data, _ := os.ReadFile("testdata/add.wasm")
+			w.Write(data)
 		default:
 			w.WriteHeader(404)
 		}

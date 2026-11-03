@@ -4,13 +4,17 @@
 package js
 
 import (
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dop251/goja"
 	"github.com/tetratelabs/wazero/api"
+
+	"github.com/go-webengine/engine/dom"
 )
 
 // wasmFixtureScript reads js/testdata/add.wasm (see gen_add_wasm.go's own
@@ -173,4 +177,139 @@ func TestToWasmValueI64AcceptsBigInt(t *testing.T) {
 func newTestVM(t *testing.T) *goja.Runtime {
 	t.Helper()
 	return goja.New()
+}
+
+// TestMaxWasmModuleBytesResolution covers Options.MaxWasmModuleBytes'
+// own "zero selects the default" resolution (go-wasmcontainers
+// WebGPU-readiness roadmap, milestone 1): a page needing a larger real
+// module (Go-compiled WebAssembly binaries commonly reach into the tens to
+// low hundreds of MiB) can raise it; a page that never sets it keeps
+// today's 32 MiB behaviour unchanged.
+func TestMaxWasmModuleBytesResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		opt  int64
+		want int64
+	}{
+		{"unset", 0, defaultMaxWasmModuleBytes},
+		{"negative treated as unset", -1, defaultMaxWasmModuleBytes},
+		{"explicit value kept exactly", 300 << 20, 300 << 20},
+	}
+	for _, c := range cases {
+		b := &binder{opt: Options{MaxWasmModuleBytes: c.opt}}
+		if got := b.maxWasmModuleBytes(); got != c.want {
+			t.Errorf("%s: maxWasmModuleBytes() = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// TestMaxWasmMemoryPagesResolution covers Options.MaxWasmMemoryBytes'
+// byte-to-page conversion: zero selects the default, a value already a
+// whole number of pages converts exactly, a value that ISN'T rounds UP
+// (a cap must cover at least the bytes asked for, never less), and a
+// value past the wasm32 address-space ceiling is clamped rather than
+// handed to wazero's own WithMemoryLimitPages, which panics past it.
+func TestMaxWasmMemoryPagesResolution(t *testing.T) {
+	const page = 64 << 10
+	cases := []struct {
+		name string
+		opt  int64
+		want uint32
+	}{
+		{"unset selects default", 0, defaultMaxWasmMemoryBytes / page},
+		{"exact multiple of the page size", 10 * page, 10},
+		{"rounds up a non-multiple", 10*page + 1, 11},
+		{"tiny positive value floors to one page", 1, 1},
+		{"past the wasm32 ceiling is clamped", 1 << 40, maxWasmMemoryPages},
+		{"exactly the ceiling is not clamped down", maxWasmMemoryPages * page, maxWasmMemoryPages},
+	}
+	for _, c := range cases {
+		b := &binder{opt: Options{MaxWasmMemoryBytes: c.opt}}
+		if got := b.maxWasmMemoryPages(); got != c.want {
+			t.Errorf("%s: maxWasmMemoryPages() = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// TestWasmModuleSizeQuotaEnforcedEndToEnd proves the configured quota is
+// actually consulted by the real compile() path, not just by the resolver
+// function in isolation: the same real fixture TestWebAssemblyValidate
+// accepts under default options is rejected once MaxWasmModuleBytes is
+// configured smaller than the fixture's own 123 bytes.
+func TestWasmModuleSizeQuotaEnforcedEndToEnd(t *testing.T) {
+	html := `<html><body><script>
+		` + wasmFixtureScript(t) + `
+		console.log('valid=' + WebAssembly.validate(bytes));
+	</script></body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	Run(root, Options{
+		PageURL:            testURL,
+		UserAgent:          "TestUA/1.0",
+		Client:             http.DefaultClient,
+		Timeout:            3 * time.Second,
+		Log:                func(s string) { logs = append(logs, s) },
+		MaxWasmModuleBytes: 10, // well under the 123-byte real fixture
+	})
+	mustHave(t, logs, "valid=false")
+}
+
+// TestInstantiateStreamingAndCompileStreaming is the confirmed real need
+// (go-wasmcontainers WebGPU-readiness roadmap, milestone 1):
+// instantiateStreaming/compileStreaming against a REAL fetch()-returned
+// Response, the overwhelmingly common real shape
+// (`instantiateStreaming(fetch(url))`), not the in-memory BufferSource
+// literal TestWebAssemblyInstantiateRoundTrip already covers. Exercises
+// both the direct-Response and promise-of-Response argument forms.
+func TestInstantiateStreamingAndCompileStreaming(t *testing.T) {
+	srv := netServer()
+	defer srv.Close()
+	logs, _ := runNet(t, srv, http.DefaultClient, `
+		WebAssembly.compileStreaming(fetch('/add.wasm')).then(function(mod) {
+			console.log('compileStreaming-ok=' + (mod !== undefined));
+		}, function(err) { console.log('compileStreaming-rejected=' + err); });
+		WebAssembly.instantiateStreaming(fetch('/add.wasm'), {env: {host_offset: function(x) { return x + 1000; }}}).then(function(result) {
+			console.log('instantiateStreaming-add=' + result.instance.exports.add(2, 3));
+		}, function(err) { console.log('instantiateStreaming-rejected=' + err); });
+	`)
+	mustHave(t, logs, "compileStreaming-ok=true", "instantiateStreaming-add=1005")
+}
+
+// TestStreamingWasmBytesRejectsVariousShapes covers every error path
+// streamingWasmBytes/awaitSettled fall through, not just the "plain
+// non-Response" one: a genuinely rejected promise (the one this engine's
+// OWN fetch() never produces — see awaitSettled's own doc comment — but a
+// caller can construct directly), a promise resolving to a non-object, an
+// object with no arrayBuffer() method at all, and a bare non-promise,
+// non-Response value. All must reject with a TypeError, never panic.
+func TestStreamingWasmBytesRejectsVariousShapes(t *testing.T) {
+	html := `<html><body><script>
+		function check(name, source) {
+			WebAssembly.instantiateStreaming(source).then(function() {
+				console.log(name + '=should-not-resolve');
+			}, function(err) { console.log(name + '=rejected:' + err.name); });
+		}
+		check('plainValue', 42);
+		check('rejectedPromise', Promise.reject(new Error('boom')));
+		check('resolvedToNonObject', Promise.resolve(42));
+		check('objectWithoutArrayBuffer', Promise.resolve({}));
+		// The spec's OTHER overload: a direct Response-shaped object, not
+		// wrapped in a promise at all (exercises awaitSettled's own
+		// not-a-Promise passthrough, not just its Promise-handling path).
+		check('directObjectNoArrayBuffer', {});
+		check('arrayBufferMethodThrows', {arrayBuffer: function(){ throw new Error('x'); }});
+		check('arrayBufferReturnsRejected', {arrayBuffer: function(){ return Promise.reject(new Error('y')); }});
+	</script></body></html>`
+	_, logs, _ := runJS(t, html)
+	mustHave(t, logs,
+		"plainValue=rejected:TypeError",
+		"rejectedPromise=rejected:TypeError",
+		"resolvedToNonObject=rejected:TypeError",
+		"objectWithoutArrayBuffer=rejected:TypeError",
+		"directObjectNoArrayBuffer=rejected:TypeError",
+		"arrayBufferMethodThrows=rejected:TypeError",
+		"arrayBufferReturnsRejected=rejected:TypeError")
 }
