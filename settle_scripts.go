@@ -87,6 +87,15 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 		if !sess.RunPending() {
 			break
 		}
+		// Opt-in (Options.EnableDoneSignal): a page that has called
+		// __webengineDone() is finished with its own async work, so there is no
+		// reason to keep spending passes/wall-clock on it — end the loop now
+		// rather than running out maxSettlePasses or JSTimeout. sess.Done()'s own
+		// ok is always false when the option was never set, so this is a no-op
+		// for every caller not using the feature.
+		if _, ok := sess.Done(); ok {
+			break
+		}
 	}
 	e.finishSettle(ctx, doc, vpW, vpH, fonts, rp, s)
 	return sess
@@ -106,5 +115,6 @@ func (e *Engine) jsOptions(ctx context.Context, doc *Document, vpW, vpH int) js.
 		Log:                e.JSLog,
 		MaxWasmModuleBytes: e.MaxWasmModuleBytes,
 		MaxWasmMemoryBytes: e.MaxWasmMemoryBytes,
+		EnableDoneSignal:   e.EnableDoneSignal,
 	}
 }

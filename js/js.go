@@ -60,6 +60,14 @@ type Options struct {
 	// growth; zero selects defaultMaxWasmMemoryBytes. See engine.Engine's
 	// own field of the same name for the full rationale.
 	MaxWasmMemoryBytes int64
+	// EnableDoneSignal installs a global function (see install()'s own doc
+	// comment for its exact name) a page's own script can call to end the
+	// settle loop early, once its async work is actually finished, instead
+	// of running every pass out to the pass cap or the wall-clock budget.
+	// False (the default) installs nothing — no behaviour change for a
+	// caller not using this feature. See engine.Engine's own field of the
+	// same name for the full rationale.
+	EnableDoneSignal bool
 }
 
 // DefaultTimeout is the script budget when Options.Timeout is zero.
@@ -134,6 +142,15 @@ type binder struct {
 	// for a synchronously-running classic script). Set/cleared by runScripts
 	// around each execute call.
 	currentScript *dom.Node
+
+	// pageDone/pageDoneResult back Session.Done — see Options.EnableDoneSignal's
+	// own doc comment. Named distinctly from Session's OWN unrelated "done"
+	// field (which means "this Session is closed") to avoid confusing the
+	// two. Set once, by the one global function install() installs when
+	// that option is set; never cleared, since a page signalling done more
+	// than once still means "done" (the FIRST signal is what matters).
+	pageDone       bool
+	pageDoneResult goja.Value
 
 	// scrollPos holds each element's own script-set scrollTop/scrollLeft, so
 	// a script that sets one reads the same value back — this engine has no

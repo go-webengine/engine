@@ -120,6 +120,18 @@ type Engine struct {
 	// count, and always needs a concrete finite value; there is no
 	// "unlimited" sentinel to select instead.
 	MaxWasmMemoryBytes int64
+	// EnableDoneSignal installs a global function, `__webengineDone(value)`,
+	// a page's own script can call to end the settle loop early, once its
+	// async work is actually finished, instead of running every pass out to
+	// the pass cap or the wall-clock budget (JSTimeout, unchanged either
+	// way — a page that never calls it still gets exactly today's bounded
+	// behaviour). False (the default) installs nothing — not even the
+	// global's name exists — so a caller not using this feature sees no
+	// behaviour change at all. Requested directly by go-wasmcontainers for
+	// their own e2e automation lane: "a render can wait for the page to
+	// post 'done', meaning async completion with a timeout" — the timeout
+	// is JSTimeout, already in place; this is the "post done" half.
+	EnableDoneSignal bool
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)

@@ -5,6 +5,7 @@ package js
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1337,6 +1338,69 @@ func TestWindowPostMessageDoesNotThrow(t *testing.T) {
 		console.log('ok');
 	`))
 	mustHave(t, logs, "ok")
+}
+
+// TestSessionDoneSignal covers Session.Done() directly at the js-package
+// level (round M6): with EnableDoneSignal on, a page calling
+// __webengineDone(value) makes Done() report (value, true); a page that
+// never calls it still reports (nil, false) even with the option on; and
+// with EnableDoneSignal left at its default (false), __webengineDone is
+// never installed as a global at all, so the same script that calls it
+// throws instead of succeeding (mirroring every other opt-in stub's own
+// "absent, not a no-op" contract — see installStubs' own doc comments).
+func TestSessionDoneSignal(t *testing.T) {
+	calledRoot, err := dom.Parse(page(`__webengineDone(42); console.log('ok');`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var logs []string
+	sess := Begin(calledRoot, Options{PageURL: testURL, Timeout: 3 * time.Second,
+		EnableDoneSignal: true, Log: func(l string) { logs = append(logs, l) }})
+	sess.RunInitial()
+	mustHave(t, logs, "ok")
+	v, ok := sess.Done()
+	if !ok || fmt.Sprint(v) != "42" {
+		t.Fatalf("Done() = (%v, %v), want (42, true)", v, ok)
+	}
+	sess.Close()
+
+	noArgRoot, err := dom.Parse(page(`__webengineDone();`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sessNoArg := Begin(noArgRoot, Options{PageURL: testURL, Timeout: 3 * time.Second,
+		EnableDoneSignal: true})
+	sessNoArg.RunInitial()
+	if v, ok := sessNoArg.Done(); !ok || v != nil {
+		t.Fatalf("Done() = (%v, %v), want (<undefined>, true) for a no-argument call", v, ok)
+	}
+	sessNoArg.Close()
+
+	neverCalledRoot, err := dom.Parse(page(`console.log('ok2');`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	sess2 := Begin(neverCalledRoot, Options{PageURL: testURL, Timeout: 3 * time.Second,
+		EnableDoneSignal: true})
+	sess2.RunInitial()
+	if _, ok := sess2.Done(); ok {
+		t.Fatal("Done() ok=true, want false: __webengineDone was never called")
+	}
+	sess2.Close()
+
+	offRoot, err := dom.Parse(page(`
+		try { __webengineDone(1); console.log('called'); }
+		catch (e) { console.log('threw:'+e.name); }
+	`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var offLogs []string
+	sess3 := Begin(offRoot, Options{PageURL: testURL, Timeout: 3 * time.Second,
+		Log: func(l string) { offLogs = append(offLogs, l) }})
+	sess3.RunInitial()
+	mustHave(t, offLogs, "threw:ReferenceError")
+	sess3.Close()
 }
 
 func TestEmptyLocation(t *testing.T) {
