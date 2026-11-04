@@ -423,6 +423,19 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   genuinely long-running page a real thing: a page's own `setInterval`-based
   "is it done yet" poll previously ran exactly once, very early, reporting
   a stale snapshot forever after.
+- **A one-shot `setTimeout`'s first firing also honours real wall-clock
+  delay under `EnableWorkerStreaming`** (2026-11-04): the fix above only
+  covered a repeating interval's own re-firings; a plain, one-shot
+  `setTimeout`'s first (and only) firing still fired at "the next
+  opportunity" rather than after its real requested delay. This breaks the
+  extremely common "safety-net timeout" idiom (race a near-immediate retry
+  against a much-later give-up timer) the moment a page expects it to wait
+  real time — confirmed directly: go-wasmcontainers' own e2e probe still
+  failed after the `setInterval` fix, and a standalone reproduction of
+  their exact page showed the whole render completing in under 4ms against
+  their own 15-second safety net. `EnableWorkerStreaming` now gates every
+  timer job's first firing by its real delay, not just a repeating
+  interval's own repeats.
 
 **Honest limits (not overclaimed)**
 
