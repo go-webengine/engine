@@ -1,0 +1,317 @@
+// Copyright (c) the go-webengine/engine authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+package js
+
+import (
+	"sync"
+	"time"
+
+	"github.com/dop251/goja"
+
+	"github.com/go-webengine/engine/dom"
+)
+
+// workerInboxCap bounds how many not-yet-delivered main->worker messages can
+// queue up — the same "always bounded" convention as maxTimerJobs/
+// maxRequests. A producer that outruns this gets its message dropped rather
+// than blocking the page's own script forever (see postToWorker).
+const workerInboxCap = 64
+
+// jsWorker is one `new Worker(url)`: a second, independent binder+goja.Runtime
+// on its own goroutine. goja's own documented contract is one Runtime per
+// goroutine with no passing object values between runtimes, so a Worker is
+// architecturally a second VM, not a second thread sharing the first —
+// everything crossing the main<->worker boundary goes through
+// cloneValue/reconstructValue (clone.go), never a raw goja.Value.
+//
+// The postMessage round-trip is deliberately synchronous/blocking rather
+// than truly async: this package has no background event loop of its own
+// (the main binder's timers/microtasks only drain when the engine's settle
+// loop or RunPending calls in) to deliver a worker's reply into, so
+// Worker.postMessage blocks the caller until the worker has fully processed
+// that one message (bounded by the render's own deadman budget) and then
+// delivers whatever the worker queued back in that same call — giving a
+// deterministic, testable round trip without inventing a second clock.
+type jsWorker struct {
+	wb          *binder   // the worker's own runtime, touched ONLY by w.run's goroutine
+	wrapperNode *dom.Node // sentinel key for the MAIN-side Worker object's own listeners
+
+	inbox  chan workerTask
+	stopCh chan struct{}
+	ready  chan struct{} // closed once the top-level script has finished
+	stop   sync.Once
+
+	mainMu    sync.Mutex
+	mainInbox []clonedValue // worker->main messages, delivered by drainWorkerInboxes
+
+	res Result // the worker's own script/timer tally (diagnostics only)
+}
+
+// workerTask is one main->worker postMessage delivery.
+type workerTask struct {
+	data clonedValue
+	done chan struct{} // closed once the worker has finished handling this task
+}
+
+// newWorkerBinder builds the binder for a Worker's own dedicated runtime. It
+// deliberately does not call install(): a Worker has no DOM, no document and
+// no window — only installWorkerGlobals' own cut-down global scope — so this
+// reuses just the fields that machinery needs (the vm, the sentinel-node
+// event dispatch maps windowNode/docNode already prove generic, the timer
+// queue). deadline is shared with the creating binder: a worker cannot
+// outlive the render's own overall budget.
+func newWorkerBinder(opt Options, deadline time.Time) *binder {
+	self := &dom.Node{Type: dom.Element, Tag: "#worker-self"}
+	return &binder{
+		vm:         goja.New(),
+		opt:        opt,
+		cache:      map[*dom.Node]*goja.Object{},
+		windowNode: self,
+		docNode:    self,
+		listeners:  map[*dom.Node]map[string][]*eventListenerEntry{},
+		onHandlers: map[*dom.Node]map[string]goja.Value{},
+		executed:   map[*dom.Node]bool{},
+		deadman:    deadline,
+	}
+}
+
+// installWorkerGlobals wires a Worker's own global scope (DedicatedWorkerGlobalScope,
+// minimal subset): console, postMessage (to main), onmessage/addEventListener
+// for "message", close(), and the same timer surface window gets.
+func (w *jsWorker) installWorkerGlobals() {
+	wb := w.wb
+	g := wb.vm.GlobalObject()
+	for _, name := range []string{"self", "globalThis"} {
+		g.Set(name, g)
+	}
+	g.Set("console", wb.newConsole())
+	wb.installTimers(g)
+
+	g.Set("postMessage", func(call goja.FunctionCall) goja.Value {
+		cv, err := cloneValue(call.Argument(0))
+		if err != nil {
+			wb.logf("postMessage: %v", err)
+			return goja.Undefined()
+		}
+		w.mainMu.Lock()
+		w.mainInbox = append(w.mainInbox, cv)
+		w.mainMu.Unlock()
+		return goja.Undefined()
+	})
+	g.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
+		opts, _ := call.Argument(2).(*goja.Object)
+		wb.addListener(wb.windowNode, call.Argument(0).String(), call.Argument(1), optBool(opts, "once"))
+		return goja.Undefined()
+	})
+	g.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
+		wb.removeListener(wb.windowNode, call.Argument(0).String(), call.Argument(1))
+		return goja.Undefined()
+	})
+	g.Set("dispatchEvent", func(call goja.FunctionCall) goja.Value {
+		wb.dispatch(wb.windowNode, eventType(call.Argument(0)), call.Argument(0))
+		return wb.vm.ToValue(true)
+	})
+	wb.accessor(g, "onmessage",
+		func() goja.Value { return orUndefined(wb.onHandler(wb.windowNode, "message")) },
+		func(v goja.Value) { wb.setOnHandler(wb.windowNode, "message", v) })
+	wb.accessor(g, "onerror",
+		func() goja.Value { return orUndefined(wb.onHandler(wb.windowNode, "error")) },
+		func(v goja.Value) { wb.setOnHandler(wb.windowNode, "error", v) })
+	g.Set("close", func(goja.FunctionCall) goja.Value {
+		w.stop.Do(func() { close(w.stopCh) })
+		return goja.Undefined()
+	})
+}
+
+// run executes the worker's top-level script once (bounded, contained like
+// every other script this package runs), signals ready, then services
+// main->worker messages until stopped. It is the only goroutine that ever
+// touches w.wb.
+func (w *jsWorker) run(src, name string) {
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				w.wb.logf("worker panic: %v", r)
+			}
+		}()
+		w.wb.execute(src, name)
+		w.wb.drainTimers(&w.res)
+	}()
+	close(w.ready)
+	// No case for w.inbox being closed: nothing ever closes it (only stopCh
+	// stops this loop — see terminate()/self-close()/Session.Close's own
+	// stopWorkers, and postToWorker's own send side, which only ever sends,
+	// never closes). A second receive-form here would be unreachable dead
+	// code, like Session.Done's own now-removed pageDoneResult nil-check.
+	for {
+		select {
+		case task := <-w.inbox:
+			w.deliver(task)
+		case <-w.stopCh:
+			return
+		}
+	}
+}
+
+// deliver reconstructs one main->worker message into the worker's own VM,
+// dispatches it as a "message" event on the worker's self scope, drains
+// anything that handler itself queued, then signals the task done — the
+// point at which the creating binder's blocked postToWorker call unblocks.
+func (w *jsWorker) deliver(task workerTask) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.wb.logf("worker panic: %v", r)
+		}
+		close(task.done)
+	}()
+	v := reconstructValue(w.wb.vm, task.data)
+	ev := w.wb.newEvent("message")
+	ev.Set("data", v)
+	w.wb.dispatch(w.wb.windowNode, "message", ev)
+	w.wb.drainTimers(&w.res)
+}
+
+// newWorker implements `new Worker(scriptURL)` on the main VM. The script is
+// fetched synchronously (reusing fetchScript exactly as external <script src>
+// does) and its top-level run completes before the constructor returns
+// (bounded by the render's own remaining budget), so by the time script gets
+// the Worker object back, the worker is already up — matching every other
+// fetch in this binder being synchronous-from-JS's-perspective. A fetch
+// failure dispatches "error" on the wrapper, mirroring runScripts' own
+// failed-external-script precedent, rather than throwing.
+func (b *binder) newWorker(call goja.ConstructorCall) *goja.Object {
+	o := b.vm.NewObject()
+	wrapperNode := &dom.Node{Type: dom.Element, Tag: "#worker"}
+
+	o.Set("addEventListener", func(c goja.FunctionCall) goja.Value {
+		opts, _ := c.Argument(2).(*goja.Object)
+		b.addListener(wrapperNode, c.Argument(0).String(), c.Argument(1), optBool(opts, "once"))
+		return goja.Undefined()
+	})
+	o.Set("removeEventListener", func(c goja.FunctionCall) goja.Value {
+		b.removeListener(wrapperNode, c.Argument(0).String(), c.Argument(1))
+		return goja.Undefined()
+	})
+	o.Set("dispatchEvent", func(c goja.FunctionCall) goja.Value {
+		b.dispatch(wrapperNode, eventType(c.Argument(0)), c.Argument(0))
+		return b.vm.ToValue(true)
+	})
+	b.accessor(o, "onmessage",
+		func() goja.Value { return orUndefined(b.onHandler(wrapperNode, "message")) },
+		func(v goja.Value) { b.setOnHandler(wrapperNode, "message", v) })
+	b.accessor(o, "onerror",
+		func() goja.Value { return orUndefined(b.onHandler(wrapperNode, "error")) },
+		func(v goja.Value) { b.setOnHandler(wrapperNode, "error", v) })
+
+	src, ok := b.fetchScript(call.Argument(0).String())
+	if !ok {
+		o.Set("postMessage", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+		o.Set("terminate", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+		// Queued, not dispatched here directly: the fetch already happened
+		// synchronously (fetchScript, like every other fetch in this
+		// binder), but the calling script's very next line is almost always
+		// `w.onerror = fn` — dispatching immediately, before that line runs,
+		// would fire to no listener. Queuing via the existing timer/job
+		// drain (the same mechanism wirePort's postMessage delivery uses)
+		// lets the rest of THIS script run first, matching the idiom's own
+		// expectation (and how a real, asynchronous fetch failure would
+		// naturally land after the constructor call returns).
+		b.jobs = append(b.jobs, timerJob{fn: b.wrapJob(func() {
+			b.dispatch(wrapperNode, "error", b.newEvent("error"))
+		}), self: goja.Undefined()})
+		return o
+	}
+
+	w := &jsWorker{
+		wb:          newWorkerBinder(b.opt, b.deadman),
+		wrapperNode: wrapperNode,
+		inbox:       make(chan workerTask, workerInboxCap),
+		stopCh:      make(chan struct{}),
+		ready:       make(chan struct{}),
+	}
+	w.installWorkerGlobals()
+	b.workers = append(b.workers, w)
+
+	go w.run(src, call.Argument(0).String())
+	select {
+	case <-w.ready:
+	case <-time.After(time.Until(b.deadman)):
+		w.stop.Do(func() { close(w.stopCh) })
+	}
+	b.drainWorkerInboxes()
+
+	o.Set("postMessage", func(c goja.FunctionCall) goja.Value {
+		b.postToWorker(w, c.Argument(0))
+		return goja.Undefined()
+	})
+	o.Set("terminate", func(goja.FunctionCall) goja.Value {
+		w.stop.Do(func() { close(w.stopCh) })
+		return goja.Undefined()
+	})
+	return o
+}
+
+// postToWorker clones data on the MAIN vm (the caller's own goroutine),
+// hands it to the worker, and blocks until the worker has finished handling
+// it (or the render's remaining budget runs out, or the worker was already
+// stopped) — see jsWorker's own doc comment for why this is synchronous.
+// It then delivers anything the worker queued back in that same call, so a
+// request/reply script (the common case, and this round's own verification
+// shape) sees the reply before postMessage returns.
+func (b *binder) postToWorker(w *jsWorker, data goja.Value) {
+	cv, err := cloneValue(data)
+	if err != nil {
+		b.logf("Worker.postMessage: %v", err)
+		return
+	}
+	select {
+	case <-w.stopCh:
+		return
+	default:
+	}
+	done := make(chan struct{})
+	select {
+	case w.inbox <- workerTask{data: cv, done: done}:
+	default:
+		b.logf("Worker.postMessage: inbox full, message dropped")
+		return
+	}
+	select {
+	case <-done:
+	case <-w.stopCh:
+	case <-time.After(time.Until(b.deadman)):
+	}
+	b.drainWorkerInboxes()
+}
+
+// drainWorkerInboxes delivers every worker->main message queued since the
+// last drain, dispatching "message" on each worker's own wrapper object on
+// THIS (the main) goroutine — the only goroutine allowed to touch b.vm. A
+// binder that never created a Worker has a nil b.workers, making this a
+// true no-op, called from drainTimers for eventual delivery even outside an
+// explicit postToWorker round trip (e.g. a worker's own top-level script
+// posting before any main->worker message occurs).
+func (b *binder) drainWorkerInboxes() {
+	for _, w := range b.workers {
+		w.mainMu.Lock()
+		items := w.mainInbox
+		w.mainInbox = nil
+		w.mainMu.Unlock()
+		for _, cv := range items {
+			v := reconstructValue(b.vm, cv)
+			ev := b.newEvent("message")
+			ev.Set("data", v)
+			b.dispatch(w.wrapperNode, "message", ev)
+		}
+	}
+}
+
+// stopWorkers terminates every live worker this binder created — called by
+// Session.Close so a render never leaks a worker goroutine past its own
+// session's lifetime.
+func (b *binder) stopWorkers() {
+	for _, w := range b.workers {
+		w.stop.Do(func() { close(w.stopCh) })
+	}
+}

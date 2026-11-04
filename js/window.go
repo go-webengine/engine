@@ -72,6 +72,11 @@ func (b *binder) install() {
 	b.installEncoding(g)
 	b.installURLSearchParams(g)
 	b.installIntl(g)
+	// Worker (HTML Standard §10.2.6): a second, independent binder+goja.Runtime
+	// on its own goroutine — see worker.go's own doc comment for the full
+	// cross-VM postMessage design (goja permits one Runtime per goroutine,
+	// never passing object values between runtimes).
+	g.Set("Worker", func(call goja.ConstructorCall) *goja.Object { return b.newWorker(call) })
 	// __webengineDone(value) — opt-in (Options.EnableDoneSignal), installed
 	// as a global only when set, so a caller not using this feature sees no
 	// behaviour change at all (not even an extra global name). Lets a
