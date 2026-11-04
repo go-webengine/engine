@@ -251,10 +251,7 @@ func reconstructValue(b *binder, cv clonedValue) goja.Value {
 		}
 		return o
 	case clonedSharedBuffer:
-		obj, _ := b.vm.ToValue(b.vm.NewArrayBuffer(x.sb.data)).(*goja.Object)
-		registerSharedBuffer(obj, x.sb)
-		b.ownedSharedBuffers = append(b.ownedSharedBuffers, obj)
-		return obj
+		return b.wrapSharedArrayBuffer(x.sb)
 	case clonedSharedView:
 		// Builds a FRESH ArrayBuffer wrapper for x.sb in this VM (the same
 		// shared []byte, a new JS-level object) rather than trying to find
@@ -274,9 +271,7 @@ func reconstructValue(b *binder, cv clonedValue) goja.Value {
 		// be unreachable dead code, like worker.go's own now-removed
 		// inbox-closed receive case.
 		elemSize := typedArrayOrDataViewKinds[x.kind]
-		bufObj, _ := b.vm.ToValue(b.vm.NewArrayBuffer(x.sb.data)).(*goja.Object)
-		registerSharedBuffer(bufObj, x.sb)
-		b.ownedSharedBuffers = append(b.ownedSharedBuffers, bufObj)
+		bufObj := b.wrapSharedArrayBuffer(x.sb)
 		ctor := b.vm.Get(x.kind)
 		var view *goja.Object
 		var err error

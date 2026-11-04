@@ -394,9 +394,17 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   Deliberately restricted to a registered SharedArrayBuffer's own views —
   a plain `ArrayBuffer` throws a named `TypeError` rather than silently
   misbehaving, since cross-VM sharing is the one confirmed need Atomics
-  exists for here. `instanceof SharedArrayBuffer` is a stated
-  simplification: it reports `false` (the object's prototype chain is
-  plain `ArrayBuffer`) — no confirmed need for that distinction yet.
+  exists for here. `instanceof SharedArrayBuffer`,
+  `Object.prototype.toString.call(x) === "[object SharedArrayBuffer]"`,
+  and `x.constructor === SharedArrayBuffer` all report correctly — on
+  the receiving side of a `postMessage` too, not just where it was
+  created — confirmed needed by go-wasmcontainers: real code (their own
+  e2e probe included) branches on `instanceof SharedArrayBuffer` to
+  choose a shared-memory path over a copy path. Remaining stated
+  simplification: `x instanceof ArrayBuffer` is also `true` (the spec's
+  two classes are siblings, not related by inheritance) — no confirmed
+  need to separate them, since checking `instanceof SharedArrayBuffer`
+  first (the common idiom) already takes the correct branch regardless.
 - **`window.crossOriginIsolated` + real COOP/COEP gating** (2026-11-04):
   `true` only when the top document's own response actually carried
   `Cross-Origin-Opener-Policy: same-origin` and

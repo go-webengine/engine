@@ -129,19 +129,69 @@ func (b *binder) forgetSharedBuffers() {
 	b.ownedSharedBuffers = nil
 }
 
-// installSharedArrayBuffer wires the SharedArrayBuffer global. It reuses
-// goja's own real ArrayBuffer (Runtime.NewArrayBuffer — the same zero-copy
-// Go-[]byte-backed wrapping wasm.go's wrapWasmMemory already relies on) for
-// every actual byte-level operation (slicing, DataView, TypedArray
-// construction all work for free); the only thing genuinely new here is
-// registering its identity in sharedBufferRegistry so Atomics.* and a
-// cross-VM postMessage (clone.go) recognize it. Known, stated simplification
-// (not hidden): the resulting object's prototype chain is plain ArrayBuffer,
-// so `x instanceof SharedArrayBuffer` reports false — no confirmed need for
-// that distinction exists yet; what matters is the shared bytes and Atomics
-// eligibility, both of which are real.
+// sharedArrayBufferPrototype returns (building once, lazily, per binder/VM —
+// a goja.Object belongs to one Runtime, so this cannot be shared across
+// binders) the prototype every SharedArrayBuffer-wrapper object in THIS VM
+// is stamped with: a plain object whose own prototype is this VM's real
+// ArrayBuffer.prototype (inheriting slice/byteLength and every other real
+// ArrayBuffer behaviour for free, since the wrapper genuinely IS one under
+// the hood — see wrapSharedArrayBuffer), with Symbol.toStringTag overridden
+// to "SharedArrayBuffer" via DefineDataPropertySymbol specifically (NOT
+// Object.SetSymbol's ordinary [[Set]] semantics, which — confirmed directly
+// against this pinned goja build — correctly REFUSES to shadow
+// ArrayBuffer.prototype's own non-writable toStringTag, the same "can't
+// shadow a non-writable inherited data property via plain assignment" rule
+// real JS itself follows; DefineDataPropertySymbol uses [[DefineOwnProperty]]
+// instead, which is allowed to). Makes `x instanceof SharedArrayBuffer` and
+// `Object.prototype.toString.call(x) === "[object SharedArrayBuffer]"` both
+// true — confirmed needed directly by go-wasmcontainers: real code (including
+// their own probe) branches on `instanceof SharedArrayBuffer` to choose a
+// shared-memory path over a copy path, so reporting plain ArrayBuffer here
+// would send such code down the WRONG path even though the memory actually
+// is shared. Stated, still-remaining simplification: `x instanceof
+// ArrayBuffer` is ALSO true (sabProto's own prototype chain includes real
+// ArrayBuffer.prototype), where the spec's two classes are siblings, not
+// related by inheritance — no confirmed need for a script to tell those
+// apart once `instanceof SharedArrayBuffer` itself is checked first, the
+// pattern go-wasmcontainers' own code (and the common `if (x instanceof
+// SharedArrayBuffer) … else if (x instanceof ArrayBuffer) …` idiom) uses.
+func (b *binder) sharedArrayBufferPrototype() *goja.Object {
+	if b.sabProto != nil {
+		return b.sabProto
+	}
+	abProto, _ := b.vm.Get("ArrayBuffer").(*goja.Object).Get("prototype").(*goja.Object)
+	proto := b.vm.NewObject()
+	_ = proto.SetPrototype(abProto)
+	_ = proto.DefineDataPropertySymbol(goja.SymToStringTag, b.vm.ToValue("SharedArrayBuffer"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	b.sabProto = proto
+	return proto
+}
+
+// wrapSharedArrayBuffer builds a new ArrayBuffer-backed JS object in b's own
+// VM over sb's own []byte (goja's real, zero-copy Runtime.NewArrayBuffer —
+// the same mechanism wasm.go's wrapWasmMemory already relies on, which is
+// why slicing/DataView/TypedArray construction all work for free), stamps
+// it with this VM's own sharedArrayBufferPrototype, registers it in
+// sharedBufferRegistry against sb, and records it on b.ownedSharedBuffers
+// for later cleanup (forgetSharedBuffers). The one place every
+// SharedArrayBuffer wrapper this binder ever creates — its own `new
+// SharedArrayBuffer(n)`, or one reconstructed from an incoming postMessage
+// (clone.go) — goes through, so all of them get the identical treatment.
+func (b *binder) wrapSharedArrayBuffer(sb *sharedBuffer) *goja.Object {
+	obj, _ := b.vm.ToValue(b.vm.NewArrayBuffer(sb.data)).(*goja.Object)
+	_ = obj.SetPrototype(b.sharedArrayBufferPrototype())
+	registerSharedBuffer(obj, sb)
+	b.ownedSharedBuffers = append(b.ownedSharedBuffers, obj)
+	return obj
+}
+
+// installSharedArrayBuffer wires the SharedArrayBuffer global, including its
+// own `.prototype` (sharedArrayBufferPrototype) and that prototype's own
+// `.constructor` back-reference, so `new SharedArrayBuffer(n).constructor
+// === SharedArrayBuffer` holds like any other real constructor.
 func (b *binder) installSharedArrayBuffer(g *goja.Object) {
-	g.Set("SharedArrayBuffer", func(call goja.ConstructorCall) *goja.Object {
+	proto := b.sharedArrayBufferPrototype()
+	ctor := func(call goja.ConstructorCall) *goja.Object {
 		n := int(call.Argument(0).ToInteger())
 		if n < 0 {
 			n = 0
@@ -149,13 +199,19 @@ func (b *binder) installSharedArrayBuffer(g *goja.Object) {
 		if n > maxSharedBufferBytes {
 			panic(b.vm.NewTypeError("SharedArrayBuffer: requested size exceeds the limit"))
 		}
-		data := make([]byte, n)
-		sb := &sharedBuffer{data: data}
-		obj, _ := b.vm.ToValue(b.vm.NewArrayBuffer(data)).(*goja.Object)
-		registerSharedBuffer(obj, sb)
-		b.ownedSharedBuffers = append(b.ownedSharedBuffers, obj)
-		return obj
-	})
+		sb := &sharedBuffer{data: make([]byte, n)}
+		return b.wrapSharedArrayBuffer(sb)
+	}
+	ctorVal := b.vm.ToValue(ctor)
+	if ctorObj, ok := ctorVal.(*goja.Object); ok {
+		// Without this, .name reads the wrapped Go closure's own derived
+		// name (e.g. "installSharedArrayBuffer.func1") instead of
+		// "SharedArrayBuffer" — confirmed directly, not assumed.
+		_ = ctorObj.DefineDataProperty("name", b.vm.ToValue("SharedArrayBuffer"), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+		_ = ctorObj.Set("prototype", proto)
+		_ = proto.DefineDataProperty("constructor", ctorVal, goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	}
+	g.Set("SharedArrayBuffer", ctorVal)
 }
 
 // atomicsElemKind maps a TypedArray's own constructor name (read via the

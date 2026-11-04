@@ -34,6 +34,39 @@ func runJSCOI(t *testing.T, htmlSrc string) (*dom.Node, []string, Result) {
 	return root, logs, res
 }
 
+// TestSharedArrayBufferHasItsOwnIdentity proves SharedArrayBuffer reports
+// its own identity, not plain ArrayBuffer's — confirmed needed directly by
+// go-wasmcontainers: real code (including their own e2e probe) branches on
+// `instanceof SharedArrayBuffer` to choose a shared-memory path over a copy
+// path, so reporting "ArrayBuffer" here would send such code down the WRONG
+// path even though the underlying memory genuinely is shared.
+func TestSharedArrayBufferHasItsOwnIdentity(t *testing.T) {
+	_, logs, res := runJSCOI(t, page(`
+		var sab = new SharedArrayBuffer(8);
+		console.log('instanceofSAB=' + (sab instanceof SharedArrayBuffer));
+		console.log('tag=' + Object.prototype.toString.call(sab));
+		console.log('ctorName=' + sab.constructor.name);
+		console.log('ctorIsSAB=' + (sab.constructor === SharedArrayBuffer));
+		console.log('isView=' + ArrayBuffer.isView(new Uint8Array(sab)));
+		console.log('byteLength=' + sab.byteLength);
+		// The peer's own probe idiom: branch on instanceof to pick a path.
+		var path = sab instanceof SharedArrayBuffer ? 'shared-path' : 'copy-path';
+		console.log('path=' + path);
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs,
+		"instanceofSAB=true",
+		"tag=[object SharedArrayBuffer]",
+		"ctorName=SharedArrayBuffer",
+		"ctorIsSAB=true",
+		"isView=true",
+		"byteLength=8",
+		"path=shared-path",
+	)
+}
+
 // TestSharedArrayBufferAndAtomicsGatedOnCrossOriginIsolation proves the gate
 // itself: without CrossOriginIsolated, SharedArrayBuffer/Atomics are not
 // installed at all (window.SharedArrayBuffer is undefined, matching a real
