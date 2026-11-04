@@ -132,6 +132,27 @@ type Engine struct {
 	// post 'done', meaning async completion with a timeout" — the timeout
 	// is JSTimeout, already in place; this is the "post done" half.
 	EnableDoneSignal bool
+	// EnableWorkerStreaming keeps the settle loop alive, after it reaches its
+	// own DOM-change fixpoint, continuing to deliver Worker postMessage
+	// traffic and drain timers on a REAL wall-clock cadence instead of
+	// stopping the instant a pass produces no layout change — js.Worker's
+	// own postMessage (engine#342) already delivers a reply synchronously
+	// within one postMessage call, but a page whose Worker(s) run
+	// independently and post UNSOLICITED messages over real time (a
+	// container streaming stdout for minutes, not replying to a request) has
+	// no other render-level moment that ever looks at them again, since
+	// nothing re-enters the settle loop once the DOM stops changing.
+	// False (the default): zero behaviour change, not even the extra
+	// real-time polling cost, for a caller not using this. Bounded exactly
+	// like every other JS execution path — the session's own JSTimeout
+	// deadman — so a render with this on, but no EnableDoneSignal ever
+	// firing, still terminates; pairing the two (a large JSTimeout, plus
+	// EnableDoneSignal to end precisely when the page's own work is
+	// actually finished) is the intended shape. Confirmed needed directly
+	// by go-wasmcontainers, whose containers post unsolicited stdout/
+	// stderr/exit-status/GPU-frame messages for the container's whole
+	// lifetime, not as a reply to any specific postMessage call.
+	EnableWorkerStreaming bool
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)

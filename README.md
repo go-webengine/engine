@@ -367,6 +367,18 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   background event loop to deliver an async reply into), bounded by the
   render's own wall-clock budget either way; `w.terminate()`/`self.close()`/
   the session itself closing all stop the worker's goroutine.
+- **`Engine.EnableWorkerStreaming`** (2026-11-04): a Worker's own
+  unsolicited, streamed messages (a container posting stdout for its whole
+  lifetime, not replying to a specific `postMessage` call) need the settle
+  loop to keep running past its own DOM-change fixpoint — off by default
+  (zero behaviour change, not even the extra real-time polling cost). On, a
+  live loop drains timers and Worker inboxes on a real ~15ms wall-clock
+  cadence until the page signals `__webengineDone` (pair this with
+  `EnableDoneSignal` and a large enough `JSTimeout`) or `JSTimeout` elapses
+  either way — never open-ended. Confirmed needed directly by
+  go-wasmcontainers after M2 shipped: their containers stream stdout/
+  stderr/exit-status/GPU-frame messages continuously, which M2's own
+  synchronous-reply `postMessage` round trip alone cannot surface.
 
 **Honest limits (not overclaimed)**
 

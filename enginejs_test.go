@@ -6,8 +6,11 @@ package engine
 import (
 	"context"
 	"image"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-webengine/engine/dom"
 )
@@ -182,6 +185,113 @@ func TestJSTitleReflectedInRenderInfo(t *testing.T) {
 	}
 	if wl.Title != "new title" {
 		t.Fatalf("RenderDocumentWithLinks title = %q, want %q", wl.Title, "new title")
+	}
+}
+
+// TestEnableWorkerStreamingDeliversUnsolicitedMessages proves
+// Engine.EnableWorkerStreaming's own core contract — confirmed directly by
+// go-wasmcontainers (engine#342's own peer, not a hypothetical): a Worker
+// that streams UNSOLICITED messages over real wall-clock time (not merely a
+// reply within one postMessage call, which js.Worker already delivered
+// before this round) is actually seen by main, while main keeps running its
+// own timers concurrently — the exact "worker streams N unsolicited
+// messages while main keeps running timers" shape the peer's own probe
+// checks for. Without EnableWorkerStreaming, the settle loop would stop the
+// instant the main script's single pass (registering onmessage, starting
+// its own timer chain) produces no further layout change, and NONE of the
+// worker's 100 messages would ever be observed.
+func TestEnableWorkerStreamingDeliversUnsolicitedMessages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			var n = 0;
+			function tick() {
+				n++;
+				postMessage(n);
+				if (n < 100) setTimeout(tick, 2);
+			}
+			tick();
+		`))
+	}))
+	defer srv.Close()
+
+	src := `<html><head><title>t</title></head><body><script>
+		var w = new Worker('` + srv.URL + `/worker.js');
+		var mainTicks = 0;
+		function mainTick() {
+			mainTicks++;
+			document.body.setAttribute('data-main-ticks', String(mainTicks));
+			setTimeout(mainTick, 3);
+		}
+		mainTick();
+		w.onmessage = function(e) {
+			document.body.setAttribute('data-got', String(e.data));
+			if (e.data >= 100) { __webengineDone(); }
+		};
+	</script></body></html>`
+
+	doc, err := parseDoc(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	e.EnableWorkerStreaming = true
+	e.EnableDoneSignal = true
+	e.JSTimeout = 5 * time.Second
+	vp := image.Rect(0, 0, 200, 100)
+
+	if _, _, err := e.RenderDocument(context.Background(), doc, vp); err != nil {
+		t.Fatal(err)
+	}
+
+	body := dom.Find(doc.Root, "body")
+	if got, _ := body.Attribute("data-got"); got != "100" {
+		t.Fatalf("data-got = %q, want %q (not every streamed message was delivered)", got, "100")
+	}
+	if ticks, _ := body.Attribute("data-main-ticks"); ticks == "" || ticks == "0" {
+		t.Fatalf("data-main-ticks = %q, want a positive count (main's own timers were starved)", ticks)
+	}
+}
+
+// TestEnableWorkerStreamingOffLeavesStreamingWorkerUnseen is the control for
+// the test above: with the feature left at its default (false), the SAME
+// page's streamed messages are NOT fully delivered (the settle loop still
+// stops at its old DOM-change fixpoint), proving the new mode is additive —
+// a caller not using it keeps today's exact behaviour.
+func TestEnableWorkerStreamingOffLeavesStreamingWorkerUnseen(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			var n = 0;
+			function tick() {
+				n++;
+				postMessage(n);
+				if (n < 100) setTimeout(tick, 2);
+			}
+			tick();
+		`))
+	}))
+	defer srv.Close()
+
+	src := `<html><head><title>t</title></head><body><script>
+		var w = new Worker('` + srv.URL + `/worker.js');
+		w.onmessage = function(e) {
+			document.body.setAttribute('data-got', String(e.data));
+		};
+	</script></body></html>`
+
+	doc, err := parseDoc(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	vp := image.Rect(0, 0, 200, 100)
+
+	if _, _, err := e.RenderDocument(context.Background(), doc, vp); err != nil {
+		t.Fatal(err)
+	}
+
+	body := dom.Find(doc.Root, "body")
+	if got, _ := body.Attribute("data-got"); got == "100" {
+		t.Fatalf("data-got = %q: the control page should NOT fully observe the stream without EnableWorkerStreaming", got)
 	}
 }
 

@@ -97,8 +97,48 @@ func (e *Engine) settle(ctx context.Context, doc *Document, vpW, vpH int, fonts 
 			break
 		}
 	}
+	if e.EnableWorkerStreaming {
+		e.liveLoop(ctx, doc, vpW, vpH, fonts, rp, s, sess, onStage)
+	}
 	e.finishSettle(ctx, doc, vpW, vpH, fonts, rp, s)
 	return sess
+}
+
+// liveLoopPollInterval is the real wall-clock cadence liveLoop polls at —
+// small enough that an onmessage handler reacts promptly to a streaming
+// Worker, large enough that an idle page (no Worker, or one that already
+// finished) spends negligible CPU waiting out __webengineDone/JSTimeout.
+const liveLoopPollInterval = 15 * time.Millisecond
+
+// liveLoop keeps a render alive, after the bounded pass loop above has
+// already reached its own DOM-change fixpoint, by repeatedly draining
+// timers/Worker messages and re-checking layout on a REAL cadence — see
+// Engine.EnableWorkerStreaming's own doc comment for why: the bounded loop
+// above stops the instant a pass changes nothing, which is exactly what
+// happens the moment a page's main script merely registers onmessage and
+// returns, long before its Worker(s) are done streaming. Each tick calls
+// relayoutPass itself (cheap when nothing changed — a DOM-signature compare
+// short-circuits before any real cascade/layout work), so a worker-driven
+// DOM mutation is picked up and re-laid-out exactly like any other script
+// mutation, just on a wall-clock cadence instead of a pass count. Always
+// terminates: sess.Expired() is the same JSTimeout deadman every other JS
+// execution path in this engine is already bound by, so a caller who turns
+// this on but never fires EnableDoneSignal still gets a bounded render, not
+// an open-ended one.
+func (e *Engine) liveLoop(ctx context.Context, doc *Document, vpW, vpH int, fonts *paint.Fonts, rp *renderPass, s *settleState, sess *js.Session, onStage func(stage string, rp *renderPass)) {
+	for {
+		if _, ok := sess.Done(); ok {
+			return
+		}
+		if ctx.Err() != nil || sess.Expired() {
+			return
+		}
+		time.Sleep(liveLoopPollInterval)
+		sess.RunPending()
+		if e.relayoutPass(ctx, doc, vpW, vpH, fonts, rp, s, onStage) {
+			sess.SetMetrics(e.liveMetrics(doc, rp, fonts, vpW, vpH))
+		}
+	}
 }
 
 // jsOptions builds the Options for a Session from the engine config.
