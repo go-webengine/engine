@@ -283,6 +283,15 @@ func (s *Session) Done() (value interface{}, ok bool) {
 	return s.b.pageDoneResult.Export(), true
 }
 
+// Expired reports whether this session's own wall-clock budget (Options.
+// Timeout) has been spent — the same deadman every script/timer/callback
+// path in this package is already bound by (binder.expired). It exists for
+// a host-level caller that keeps re-entering a session over real time
+// (engine#342's own live-worker-streaming mode, settle_scripts.go) and needs
+// to know when to stop WITHOUT running another script first (expired() is
+// otherwise only ever checked from inside an already-running JS path).
+func (s *Session) Expired() bool { return s.b.expired() }
+
 // Eval runs code in this session's JS runtime and returns its value,
 // converted to a plain Go value via goja's Export (string, float64, bool,
 // nil, []interface{}, map[string]interface{}, ...). It exists for a host

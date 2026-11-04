@@ -124,11 +124,45 @@ func (w *jsWorker) installWorkerGlobals() {
 	})
 }
 
+// workerTickInterval is the real wall-clock cadence a worker's own event
+// loop (run, below) drains its queued timers at once no message is pending
+// — independently chosen from the engine package's own liveLoopPollInterval
+// (settle_scripts.go), since js has no dependency on engine, but the same
+// reasoning: fast enough that a self-rescheduling setTimeout chain (a
+// container's own "read a chunk, post it, schedule the next read" loop)
+// behaves like real streaming over time rather than running out its WHOLE
+// maxTimerJobs budget instantly in one synchronous burst; slow enough that a
+// worker with nothing queued costs negligible CPU for the rest of its
+// lifetime.
+const workerTickInterval = 15 * time.Millisecond
+
 // run executes the worker's top-level script once (bounded, contained like
 // every other script this package runs), signals ready, then services
-// main->worker messages until stopped. It is the only goroutine that ever
-// touches w.wb.
+// main->worker messages AND the worker's own queued timers until stopped.
+// It is the only goroutine that ever touches w.wb.
+//
+// The periodic tick exists because a worker is meant to run autonomously —
+// go-wasmcontainers' own confirmed shape: "the worker runs for the
+// container's whole lifetime... posts unsolicited messages at any time" —
+// not merely react to messages from main. Without it, a worker's own
+// self-rescheduling setTimeout chain would have EVERY iteration drained
+// back-to-back with no real pacing the one time drainTimers ran (right after
+// the top-level script), burning its entire maxTimerJobs budget in a single
+// synchronous burst and then going silent forever; ticking on a real
+// interval lets such a chain behave like genuine streaming instead.
 func (w *jsWorker) run(src, name string) {
+	// Deliberately does NOT drain w.wb's timers here, before close(w.ready):
+	// the constructor (newWorker) blocks on w.ready and only then returns
+	// the Worker object, so the calling script's very next line is almost
+	// always `w.onmessage = fn`. A synchronous, unpaced drain right here
+	// would run a self-rescheduling setTimeout chain (a worker's own
+	// autonomous streaming loop) to completion in one burst BEFORE that
+	// listener is ever registered — every message dispatched to nobody,
+	// silently lost, with the worker then going silent forever having
+	// burned its whole run on an unobserved burst. Queued timers are
+	// drained by the ticker below instead, exactly like any other real
+	// timer: paced, and only once the constructor (and whatever the script
+	// does right after) has had its chance to register a listener first.
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -136,7 +170,6 @@ func (w *jsWorker) run(src, name string) {
 			}
 		}()
 		w.wb.execute(src, name)
-		w.wb.drainTimers(&w.res)
 	}()
 	close(w.ready)
 	// No case for w.inbox being closed: nothing ever closes it (only stopCh
@@ -144,10 +177,17 @@ func (w *jsWorker) run(src, name string) {
 	// stopWorkers, and postToWorker's own send side, which only ever sends,
 	// never closes). A second receive-form here would be unreachable dead
 	// code, like Session.Done's own now-removed pageDoneResult nil-check.
+	ticker := time.NewTicker(workerTickInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case task := <-w.inbox:
 			w.deliver(task)
+		case <-ticker.C:
+			if w.wb.expired() {
+				return
+			}
+			w.wb.drainTimers(&w.res)
 		case <-w.stopCh:
 			return
 		}
@@ -239,7 +279,16 @@ func (b *binder) newWorker(call goja.ConstructorCall) *goja.Object {
 	case <-time.After(time.Until(b.deadman)):
 		w.stop.Do(func() { close(w.stopCh) })
 	}
-	b.drainWorkerInboxes()
+	// Deliberately NOT drained here directly: the worker's own top-level
+	// script can (and commonly does — a "ready"/handshake message is an
+	// everyday idiom) call postMessage synchronously before this constructor
+	// even returns, and the calling script's very next line is almost always
+	// `w.onmessage = fn`. Draining right here, like the error-dispatch path
+	// above, would deliver to no listener and lose it. Queuing via the same
+	// job mechanism lets the REST of this script run first.
+	b.jobs = append(b.jobs, timerJob{fn: b.wrapJob(func() {
+		b.drainWorkerInboxes()
+	}), self: goja.Undefined()})
 
 	o.Set("postMessage", func(c goja.FunctionCall) goja.Value {
 		b.postToWorker(w, c.Argument(0))
