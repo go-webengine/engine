@@ -422,6 +422,11 @@ func TestAtomicsWaitWokenByNotifyAcrossWorkers(t *testing.T) {
 	e.EnableWorkerStreaming = true
 	e.EnableDoneSignal = true
 	e.JSTimeout = 5 * time.Second
+	// SharedArrayBuffer/Atomics are gated on cross-origin isolation (a real
+	// browser denies both without COOP/COEP) — this test builds its own
+	// Document (parseDoc, no real HTTP response headers to check), so it
+	// uses the Engine-level escape hatch rather than fabricating headers.
+	e.ForceCrossOriginIsolated = true
 	vp := image.Rect(0, 0, 200, 100)
 
 	if _, _, err := e.RenderDocument(context.Background(), doc, vp); err != nil {
@@ -471,6 +476,7 @@ func TestAtomicsWaitAcrossWorkersTimesOut(t *testing.T) {
 	e.EnableWorkerStreaming = true
 	e.EnableDoneSignal = true
 	e.JSTimeout = 5 * time.Second
+	e.ForceCrossOriginIsolated = true
 	vp := image.Rect(0, 0, 200, 100)
 
 	if _, _, err := e.RenderDocument(context.Background(), doc, vp); err != nil {

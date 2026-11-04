@@ -10,6 +10,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-browserhttp/browserhttp"
@@ -44,24 +45,46 @@ const fallbackUserAgent = "go-webengine/1.0 (+https://github.com/go-webengine)"
 // gets). Its timeout matches the browser client's default.
 var plainClient = &http.Client{Timeout: 30 * time.Second}
 
-// httpGet performs the HTTP GET of a page, returning body, final URL and
-// content-type. If the primary (browser-mimicking) client is served a
-// bot-challenge interstitial — a false positive that renders as a "security
-// verification / browser not supported" page instead of the real content — it
-// retries once with a plain, honestly-identified client, which such checks
-// routinely serve the real public page. The retry is used only when it
-// actually yields non-challenge content.
-func (e *Engine) httpGet(ctx context.Context, rawurl string) ([]byte, string, string, error) {
+// httpGet performs the HTTP GET of a page, returning body, final URL,
+// content-type, and whether the response was cross-origin-isolated (see
+// crossOriginIsolatedFromHeaders). If the primary (browser-mimicking) client
+// is served a bot-challenge interstitial — a false positive that renders as
+// a "security verification / browser not supported" page instead of the
+// real content — it retries once with a plain, honestly-identified client,
+// which such checks routinely serve the real public page. The retry is used
+// only when it actually yields non-challenge content.
+func (e *Engine) httpGet(ctx context.Context, rawurl string) ([]byte, string, string, bool, error) {
 	body, final, ctype, status, hdr, err := doGet(ctx, e.Client, rawurl, e.UserAgent)
 	if err != nil {
-		return nil, "", "", err
+		return nil, "", "", false, err
 	}
 	if isBotChallenge(status, hdr, body) {
 		if b2, f2, c2, s2, h2, e2 := doGet(ctx, plainClient, rawurl, fallbackUserAgent); e2 == nil && s2 < 400 && !isBotChallenge(s2, h2, b2) {
-			return b2, f2, c2, nil
+			return b2, f2, c2, crossOriginIsolatedFromHeaders(h2), nil
 		}
 	}
-	return body, final, ctype, nil
+	return body, final, ctype, crossOriginIsolatedFromHeaders(hdr), nil
+}
+
+// crossOriginIsolatedFromHeaders reports whether hdr satisfies the HTML
+// Standard's own cross-origin-isolation requirement — both
+// Cross-Origin-Opener-Policy: same-origin AND Cross-Origin-Embedder-Policy:
+// require-corp (or credentialless) — the gate real browsers apply before
+// exposing SharedArrayBuffer/Atomics at all (see Document.
+// CrossOriginIsolated's own doc comment for why this engine follows the
+// same spec rule rather than a simpler process-model argument).
+func crossOriginIsolatedFromHeaders(hdr http.Header) bool {
+	if hdr == nil {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(hdr.Get("Cross-Origin-Opener-Policy"))) != "same-origin" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(hdr.Get("Cross-Origin-Embedder-Policy"))) {
+	case "require-corp", "credentialless":
+		return true
+	}
+	return false
 }
 
 // doGet issues one GET through client, returning the (size-limited) body, the

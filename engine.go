@@ -37,6 +37,24 @@ type Document struct {
 	Title string    // <title> text
 	Root  *dom.Node // owned DOM tree
 	HTML  string    // decoded (UTF-8) source
+	// CrossOriginIsolated reports whether the top document's own response
+	// carried Cross-Origin-Opener-Policy: same-origin AND
+	// Cross-Origin-Embedder-Policy: require-corp (or credentialless) — the
+	// HTML Standard's own gate for exposing SharedArrayBuffer/Atomics at
+	// all. Computed by Fetch from the real response headers; false for a
+	// Document built any other way (parseDoc-style tests, a host's own
+	// Fetcher, which carries no headers) unless Engine.
+	// ForceCrossOriginIsolated opts in instead. Confirmed correct by
+	// go-wasmcontainers directly, pushing back on an earlier draft of this
+	// engine that reported it unconditionally true: this engine is used as
+	// a test lane beside real browsers, so a page missing these headers
+	// must see SAB denied here exactly as it would be there — reporting it
+	// true regardless would be a false green, the worst outcome for a test
+	// lane. It is also not merely a process-model question: a render can
+	// load cross-origin subresources (scripts, images, fetch) into the SAME
+	// runtime, so the Spectre-adjacent threat COOP/COEP gates against is
+	// real here too, even without a JIT.
+	CrossOriginIsolated bool
 }
 
 // RenderInfo carries metadata about a completed render.
@@ -153,6 +171,17 @@ type Engine struct {
 	// stderr/exit-status/GPU-frame messages for the container's whole
 	// lifetime, not as a reply to any specific postMessage call.
 	EnableWorkerStreaming bool
+	// ForceCrossOriginIsolated opts every render into SharedArrayBuffer/
+	// Atomics exposure (and window.crossOriginIsolated reading true)
+	// regardless of the actual document's own response headers — the escape
+	// hatch go-wasmcontainers themselves asked for, defaulting to off, so a
+	// host that builds its own Document (tests, a Fetcher with no headers to
+	// check) can still exercise SAB-using pages without fabricating real
+	// HTTP responses. Leave this off for anything meant to behave like a
+	// real browser: Document.CrossOriginIsolated (computed from the actual
+	// Cross-Origin-Opener-Policy/Cross-Origin-Embedder-Policy response
+	// headers by Fetch) is the spec-accurate signal.
+	ForceCrossOriginIsolated bool
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)
@@ -239,10 +268,11 @@ func New() *Engine {
 
 // Fetch retrieves and parses url into a Document.
 func (e *Engine) Fetch(ctx context.Context, rawurl string) (*Document, error) {
-	body, finalURL, ctype, err := e.get(ctx, rawurl)
+	body, finalURL, ctype, coi, err := e.get(ctx, rawurl)
 	if err != nil {
 		return nil, err
 	}
+	coi = coi || e.ForceCrossOriginIsolated
 	// Standalone-image response: the URL is a bare raster image (image/png,
 	// image/jpeg, …), not an HTML page. There is no markup to parse — feeding the
 	// image bytes to the HTML parser produces a garbage/empty DOM — so synthesise
@@ -258,7 +288,7 @@ func (e *Engine) Fetch(ctx context.Context, rawurl string) (*Document, error) {
 		if perr != nil {
 			return nil, perr
 		}
-		return &Document{URL: finalURL, Title: dom.Title(root), Root: root, HTML: src}, nil
+		return &Document{URL: finalURL, Title: dom.Title(root), Root: root, HTML: src, CrossOriginIsolated: coi}, nil
 	}
 	utf8, err := decodeCharset(body, ctype)
 	if err != nil {
@@ -269,25 +299,29 @@ func (e *Engine) Fetch(ctx context.Context, rawurl string) (*Document, error) {
 		return nil, err
 	}
 	return &Document{
-		URL:   finalURL,
-		Title: dom.Title(root),
-		Root:  root,
-		HTML:  string(utf8),
+		URL:                 finalURL,
+		Title:               dom.Title(root),
+		Root:                root,
+		HTML:                string(utf8),
+		CrossOriginIsolated: coi,
 	}, nil
 }
 
 // maxPageBytes bounds a page's body.
 const maxPageBytes = 32 << 20
 
-// get fetches a page or a style sheet: body, final URL and content type,
-// through Fetcher when the host set one, else the HTTP client (httpGet).
-func (e *Engine) get(ctx context.Context, rawurl string) ([]byte, string, string, error) {
+// get fetches a page or a style sheet: body, final URL, content type, and
+// whether the response was cross-origin-isolated, through Fetcher when the
+// host set one, else the HTTP client (httpGet). A Fetcher carries no headers
+// at all, so it always reports false — Engine.ForceCrossOriginIsolated is
+// the escape hatch for a host using one that still wants SAB exposed.
+func (e *Engine) get(ctx context.Context, rawurl string) ([]byte, string, string, bool, error) {
 	if e.Fetcher != nil {
 		body, ctype, err := e.Fetcher(ctx, rawurl)
 		if err != nil {
-			return nil, "", "", err
+			return nil, "", "", false, err
 		}
-		return capBytes(body, maxPageBytes), rawurl, ctype, nil
+		return capBytes(body, maxPageBytes), rawurl, ctype, false, nil
 	}
 	return e.httpGet(ctx, rawurl)
 }
@@ -848,7 +882,7 @@ func (e *Engine) fetchSheetNet(ctx context.Context, absURL string) (string, bool
 		if !strings.HasPrefix(absURL, "http://") && !strings.HasPrefix(absURL, "https://") {
 			return "", false
 		}
-		b, _, ct, err := e.get(ctx, absURL)
+		b, _, ct, _, err := e.get(ctx, absURL)
 		if err != nil {
 			return "", false
 		}

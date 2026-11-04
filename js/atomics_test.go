@@ -4,17 +4,71 @@
 package js
 
 import (
+	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-webengine/engine/dom"
 )
+
+// runJSCOI is runJS with CrossOriginIsolated set — SharedArrayBuffer/Atomics
+// are gated on it (see window.go's own install() doc comment: a real
+// browser denies both without COOP/COEP, confirmed as the right behaviour
+// here too by go-wasmcontainers), so every test in this file needs it.
+func runJSCOI(t *testing.T, htmlSrc string) (*dom.Node, []string, Result) {
+	t.Helper()
+	root, err := dom.Parse(htmlSrc)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		UserAgent:           "TestUA/1.0",
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	return root, logs, res
+}
+
+// TestSharedArrayBufferAndAtomicsGatedOnCrossOriginIsolation proves the gate
+// itself: without CrossOriginIsolated, SharedArrayBuffer/Atomics are not
+// installed at all (window.SharedArrayBuffer is undefined, matching a real
+// browser exactly — confirmed as the correct behaviour, not a shortcut, by
+// go-wasmcontainers, who use this engine as a test lane beside real
+// browsers), and window.crossOriginIsolated itself reads false. With it on,
+// both are present.
+func TestSharedArrayBufferAndAtomicsGatedOnCrossOriginIsolation(t *testing.T) {
+	_, logs, res := runJS(t, page(`
+		console.log('coi=' + crossOriginIsolated);
+		console.log('sab=' + (typeof SharedArrayBuffer));
+		console.log('atomics=' + (typeof Atomics));
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "coi=false", "sab=undefined", "atomics=undefined")
+
+	_, logs2, res2 := runJSCOI(t, page(`
+		console.log('coi=' + crossOriginIsolated);
+		console.log('sab=' + (typeof SharedArrayBuffer));
+		console.log('atomics=' + (typeof Atomics));
+	`))
+	if res2.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res2, logs2)
+	}
+	mustHave(t, logs2, "coi=true", "sab=function", "atomics=object")
+}
 
 // TestAtomicsLoadStoreAddCompareExchange covers the non-blocking ops within
 // a single VM (no Worker needed — these operate correctly same-VM too, the
 // blocking wait/notify pair is the one that needs two real goroutines, see
 // TestAtomicsWaitWokenByNotify below).
 func TestAtomicsLoadStoreAddCompareExchange(t *testing.T) {
-	_, logs, res := runJS(t, page(`
+	_, logs, res := runJSCOI(t, page(`
 		var sab = new SharedArrayBuffer(16);
 		var v = new Int32Array(sab);
 		Atomics.store(v, 0, 10);
@@ -45,7 +99,7 @@ func TestAtomicsLoadStoreAddCompareExchange(t *testing.T) {
 // Atomics at all is cross-VM shared memory) throws a clear, named error
 // rather than silently misbehaving against a plain ArrayBuffer's bytes.
 func TestAtomicsOnPlainArrayBufferThrows(t *testing.T) {
-	_, logs, res := runJS(t, page(`
+	_, logs, res := runJSCOI(t, page(`
 		try {
 			var v = new Int32Array(new ArrayBuffer(16));
 			Atomics.load(v, 0);
@@ -76,7 +130,7 @@ func TestAtomicsWaitNotEqualReturnsImmediately(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, logs, res := runJS(t, page(`
+		_, logs, res := runJSCOI(t, page(`
 			var sab = new SharedArrayBuffer(4);
 			var v = new Int32Array(sab);
 			Atomics.store(v, 0, 1);
@@ -102,7 +156,7 @@ func TestAtomicsWaitTimesOut(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, logs, res := runJS(t, page(`
+		_, logs, res := runJSCOI(t, page(`
 			var sab = new SharedArrayBuffer(4);
 			var v = new Int32Array(sab);
 			console.log('result=' + Atomics.wait(v, 0, 0, 50));

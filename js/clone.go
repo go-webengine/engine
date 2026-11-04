@@ -58,6 +58,44 @@ type clonedObject struct {
 // is defined by being the SAME memory on every side, not a copy of it.
 type clonedSharedBuffer struct{ sb *sharedBuffer }
 
+// clonedSharedView is clonedSharedBuffer's own counterpart for a typed-array
+// or DataView VIEW over a registered SharedArrayBuffer, posted directly
+// (e.g. `postMessage(uint8ArrayOverTheRing)`) rather than the raw buffer —
+// confirmed needed directly by go-wasmcontainers: their ring posts the view
+// itself. byteOffset/byteLength (not element count — DataView has no
+// `.length` at all; see reconstructValue's own conversion for a TypedArray)
+// are read uniformly off the view, since both kinds expose them.
+type clonedSharedView struct {
+	sb         *sharedBuffer
+	kind       string // "DataView", "Int32Array", "Uint8Array", …
+	byteOffset int
+	byteLength int
+}
+
+// typedArrayOrDataViewKinds names every TypedArray constructor plus DataView
+// — the full set this binding will reconstruct a shared VIEW as, broader
+// than atomics.go's own atomicsElemKind (which additionally restricts to
+// what Atomics itself may legally touch).
+var typedArrayOrDataViewKinds = map[string]int{ // kind -> element byte size (0 for DataView, which has none)
+	"DataView":          0,
+	"Int8Array":         1,
+	"Uint8Array":        1,
+	"Uint8ClampedArray": 1,
+	"Int16Array":        2,
+	"Uint16Array":       2,
+	"Int32Array":        4,
+	"Uint32Array":       4,
+	"Float32Array":      4,
+	"Float64Array":      8,
+	"BigInt64Array":     8,
+	"BigUint64Array":    8,
+}
+
+func isTypedArrayOrDataViewKind(name string) bool {
+	_, ok := typedArrayOrDataViewKinds[name]
+	return ok
+}
+
 // cloneErr reports a value this round's structured-clone subset cannot
 // represent — a function, Symbol, or an unsupported object class (Date,
 // RegExp, Map, Set, ArrayBuffer/TypedArray — SharedArrayBuffer transfer is
@@ -122,6 +160,29 @@ func cloneAt(v goja.Value, depth int, n *int) (clonedValue, error) {
 			// documents — a real, confirmed bug fixed here, not a
 			// hypothetical one (found while wiring SharedArrayBuffer
 			// through this same path for M3, engine#343).
+			//
+			// A TypedArray/DataView VIEW is checked first, by constructor
+			// name — NOT by probing for a `.buffer` property, which a
+			// coincidental plain object (`{buffer: anything}`) could also
+			// have, and NOT by Export() type, which cannot distinguish
+			// DataView from a plain object at all (both export as
+			// map[string]interface{}-incompatible shapes that still need a
+			// name-based check regardless). Only a name actually naming one
+			// of these kinds takes this branch.
+			if ctor, _ := obj.Get("constructor").(*goja.Object); ctor != nil {
+				if kind := ctor.Get("name").String(); isTypedArrayOrDataViewKind(kind) {
+					bufObj, _ := obj.Get("buffer").(*goja.Object)
+					sb, ok := lookupSharedBuffer(bufObj)
+					if !ok {
+						return nil, &cloneErr{"structured clone: " + kind + " is not supported (use a SharedArrayBuffer-backed view to share it with a Worker)"}
+					}
+					return clonedSharedView{
+						sb: sb, kind: kind,
+						byteOffset: int(obj.Get("byteOffset").ToInteger()),
+						byteLength: int(obj.Get("byteLength").ToInteger()),
+					}, nil
+				}
+			}
 			switch ex := obj.Export().(type) {
 			case goja.ArrayBuffer:
 				// A SharedArrayBuffer (atomics.go) IS, under the hood, a
@@ -194,6 +255,40 @@ func reconstructValue(b *binder, cv clonedValue) goja.Value {
 		registerSharedBuffer(obj, x.sb)
 		b.ownedSharedBuffers = append(b.ownedSharedBuffers, obj)
 		return obj
+	case clonedSharedView:
+		// Builds a FRESH ArrayBuffer wrapper for x.sb in this VM (the same
+		// shared []byte, a new JS-level object) rather than trying to find
+		// one already registered here: the raw buffer may never have been
+		// sent to this VM at all — go-wasmcontainers' own confirmed usage
+		// posts the view directly. A stated, minor limitation: if the SAME
+		// sharedBuffer arrives via more than one postMessage (as the raw
+		// buffer once, a view over it another time), each arrival gets its
+		// own distinct ArrayBuffer *object* in this VM — all backed by the
+		// identical bytes (so reads/writes/Atomics still agree), but
+		// `===` between them does not hold. No confirmed need for that
+		// identity to survive a separate postMessage call.
+		// No "unknown kind" check here: x.kind only ever reaches this case
+		// having already passed isTypedArrayOrDataViewKind in cloneAt, the
+		// SAME map this indexes — an unrecognized kind never produces a
+		// clonedSharedView in the first place, so a second check here would
+		// be unreachable dead code, like worker.go's own now-removed
+		// inbox-closed receive case.
+		elemSize := typedArrayOrDataViewKinds[x.kind]
+		bufObj, _ := b.vm.ToValue(b.vm.NewArrayBuffer(x.sb.data)).(*goja.Object)
+		registerSharedBuffer(bufObj, x.sb)
+		b.ownedSharedBuffers = append(b.ownedSharedBuffers, bufObj)
+		ctor := b.vm.Get(x.kind)
+		var view *goja.Object
+		var err error
+		if x.kind == "DataView" {
+			view, err = b.vm.New(ctor, bufObj, b.vm.ToValue(x.byteOffset), b.vm.ToValue(x.byteLength))
+		} else {
+			view, err = b.vm.New(ctor, bufObj, b.vm.ToValue(x.byteOffset), b.vm.ToValue(x.byteLength/elemSize))
+		}
+		if err != nil {
+			return goja.Undefined()
+		}
+		return view
 	default:
 		return b.vm.ToValue(x)
 	}

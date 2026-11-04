@@ -77,15 +77,22 @@ func (b *binder) install() {
 	// cross-VM postMessage design (goja permits one Runtime per goroutine,
 	// never passing object values between runtimes).
 	g.Set("Worker", func(call goja.ConstructorCall) *goja.Object { return b.newWorker(call) })
-	// SharedArrayBuffer + Atomics (HTML Standard §10.2.4 + ECMA-262's own
-	// Atomics namespace): cross-VM shared memory for Worker's own postMessage
-	// boundary — see atomics.go's own doc comments for the full design.
-	// Always installed (no COOP/COEP gate yet — a stated, not hidden, gap:
-	// see README's own doc comment on EnableWorkerStreaming/Atomics for why
-	// this engine's single-page-per-render model makes that gate's usual
-	// cross-origin-Spectre threat model not apply the same way here).
-	b.installSharedArrayBuffer(g)
-	b.installAtomics(g)
+	// crossOriginIsolated + SharedArrayBuffer + Atomics (HTML Standard
+	// §10.2.4 + ECMA-262's own Atomics namespace): cross-VM shared memory
+	// for Worker's own postMessage boundary — see atomics.go's own doc
+	// comments for the full design. Gated on Options.CrossOriginIsolated
+	// (computed from the real Cross-Origin-Opener-Policy/
+	// Cross-Origin-Embedder-Policy response headers — see
+	// engine.Document.CrossOriginIsolated's own doc comment), matching a
+	// real browser exactly rather than this engine's own earlier,
+	// corrected draft that reported it unconditionally true: confirmed by
+	// go-wasmcontainers that a test lane sitting beside real browsers must
+	// deny SAB on a page missing these headers too, or it is a false green.
+	g.Set("crossOriginIsolated", b.opt.CrossOriginIsolated)
+	if b.opt.CrossOriginIsolated {
+		b.installSharedArrayBuffer(g)
+		b.installAtomics(g)
+	}
 	// __webengineDone(value) — opt-in (Options.EnableDoneSignal), installed
 	// as a global only when set, so a caller not using this feature sees no
 	// behaviour change at all (not even an extra global name). Lets a
