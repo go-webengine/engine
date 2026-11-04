@@ -109,32 +109,63 @@ func (b *binder) install() {
 }
 
 // installTimers wires setTimeout/setInterval/rAF etc. onto g, all of which queue
-// their callback for the bounded drain pass.
+// their callback for the bounded drain pass. setInterval genuinely repeats
+// (drainTimers' own doc comment covers the real wall-clock pacing that needs);
+// clearTimeout/clearInterval genuinely cancel by id — see cancelTimer.
 func (b *binder) installTimers(g *goja.Object) {
 	// queue honours the caller's requested delay (defaulting to 0, clamped to
 	// non-negative) as an ordering hint for drainTimers — see its own doc
-	// comment for why delay order, not just enqueue order, matters.
-	queue := func(v, delayArg goja.Value) goja.Value {
+	// comment for why delay order, not just enqueue order, matters. The id it
+	// returns is ALWAYS allocated, even for a non-function v (matching a real
+	// browser: setTimeout(undefined) still returns a usable, if useless, id)
+	// — but only stored on the job itself (so clearTimeout/clearInterval can
+	// find it again) when v was actually callable.
+	queue := func(v, delayArg goja.Value, repeat bool) goja.Value {
+		b.nextID++
+		id := b.nextID
 		if fn, ok := goja.AssertFunction(v); ok {
 			delay := numOr(delayArg, 0)
 			if delay < 0 {
 				delay = 0
 			}
-			b.jobs = append(b.jobs, timerJob{fn: fn, self: goja.Undefined(), delay: delay})
+			b.jobs = append(b.jobs, timerJob{id: id, fn: fn, self: goja.Undefined(), delay: delay, repeat: repeat})
 		}
-		b.nextID++
-		return b.vm.ToValue(b.nextID)
+		return b.vm.ToValue(id)
 	}
-	g.Set("setTimeout", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), call.Argument(1)) })
-	// setInterval runs its callback once (never loops) to stay bounded.
-	g.Set("setInterval", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), call.Argument(1)) })
-	g.Set("requestAnimationFrame", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined()) })
-	g.Set("requestIdleCallback", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined()) })
-	g.Set("queueMicrotask", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined()) })
-	g.Set("setImmediate", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined()) })
+	g.Set("setTimeout", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), call.Argument(1), false) })
+	g.Set("setInterval", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), call.Argument(1), true) })
+	g.Set("requestAnimationFrame", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined(), false) })
+	g.Set("requestIdleCallback", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined(), false) })
+	g.Set("queueMicrotask", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined(), false) })
+	g.Set("setImmediate", func(call goja.FunctionCall) goja.Value { return queue(call.Argument(0), goja.Undefined(), false) })
+	for _, name := range []string{"clearTimeout", "clearInterval"} {
+		g.Set(name, func(call goja.FunctionCall) goja.Value {
+			b.cancelTimer(call.Argument(0).ToInteger())
+			return goja.Undefined()
+		})
+	}
 	noop := func(goja.FunctionCall) goja.Value { return goja.Undefined() }
-	for _, name := range []string{"clearTimeout", "clearInterval", "cancelAnimationFrame", "cancelIdleCallback"} {
+	for _, name := range []string{"cancelAnimationFrame", "cancelIdleCallback"} {
 		g.Set(name, noop)
+	}
+}
+
+// cancelTimer implements clearTimeout/clearInterval: removes a still-pending
+// job with this id from the queue, AND records the id as cancelled so a
+// setInterval job currently mid-callback (already removed from b.jobs,
+// about to re-queue itself in drainTimers — see its own doc comment) does
+// not come back after this call, matching a real `clearInterval` called
+// from within the interval's own callback.
+func (b *binder) cancelTimer(id int64) {
+	if b.cancelledTimers == nil {
+		b.cancelledTimers = map[int64]bool{}
+	}
+	b.cancelledTimers[id] = true
+	for i, j := range b.jobs {
+		if j.id == id {
+			b.jobs = append(b.jobs[:i], b.jobs[i+1:]...)
+			return
+		}
 	}
 }
 

@@ -295,6 +295,71 @@ func TestEnableWorkerStreamingOffLeavesStreamingWorkerUnseen(t *testing.T) {
 	}
 }
 
+// TestSetIntervalPollsRepeatedlyWithWorkerStreaming reproduces, and proves
+// fixed, go-wasmcontainers' own reported v0.27.1 symptom ("only 1/100"
+// messages observed): their page used setInterval to periodically check
+// "has everything arrived yet", and setInterval firing only once (this
+// engine's own pre-existing, undocumented-to-them simplification) meant that
+// check ran exactly once, very early, reporting a stale count rather than
+// the real one. With setInterval now genuinely repeating (paced by real
+// wall-clock time, not bursting), a worker streaming messages over real time
+// and a page polling for completion via setInterval must now see the true,
+// final count.
+func TestSetIntervalPollsRepeatedlyWithWorkerStreaming(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			var n = 0;
+			function tick() {
+				n++;
+				postMessage(n);
+				if (n < 20) setTimeout(tick, 2);
+			}
+			tick();
+		`))
+	}))
+	defer srv.Close()
+
+	src := `<html><head><title>t</title></head><body><script>
+		var w = new Worker('` + srv.URL + `/worker.js');
+		var received = 0;
+		w.onmessage = function(e) { received = e.data; };
+		var checks = 0;
+		var pollId = setInterval(function() {
+			checks++;
+			document.body.setAttribute('data-checks', String(checks));
+			document.body.setAttribute('data-received-at-done', String(received));
+			if (received >= 20) {
+				clearInterval(pollId);
+				__webengineDone();
+			}
+		}, 5);
+	</script></body></html>`
+
+	doc, err := parseDoc(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	e.EnableWorkerStreaming = true
+	e.EnableDoneSignal = true
+	e.JSTimeout = 3 * time.Second
+	vp := image.Rect(0, 0, 200, 100)
+
+	if _, _, err := e.RenderDocument(context.Background(), doc, vp); err != nil {
+		t.Fatal(err)
+	}
+
+	body := dom.Find(doc.Root, "body")
+	receivedAtDone, _ := body.Attribute("data-received-at-done")
+	checks, _ := body.Attribute("data-checks")
+	if receivedAtDone != "20" {
+		t.Fatalf("data-received-at-done = %q, want %q (checks=%q) — setInterval should have kept polling until the real count arrived", receivedAtDone, "20", checks)
+	}
+	if checks == "1" {
+		t.Fatal("setInterval only checked once — it should have polled repeatedly until the worker finished streaming")
+	}
+}
+
 // TestAtomicsWaitWokenByNotifyAcrossWorkers proves M3's own core contract
 // (issue #343): a SharedArrayBuffer created on main, shared with a Worker via
 // postMessage, backs a real cross-goroutine Atomics.wait/notify handshake —

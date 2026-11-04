@@ -88,11 +88,23 @@ type Result struct {
 	Err           error // first fatal setup error (nil on normal completion)
 }
 
-// timerJob is a queued callback from setTimeout/requestAnimationFrame/etc.
+// timerJob is a queued callback from setTimeout/setInterval/requestAnimationFrame/etc.
 type timerJob struct {
+	id    int64 // 0 for a job clearTimeout/clearInterval can never target (queueMicrotask, rAF, …)
 	fn    goja.Callable
 	self  goja.Value
 	delay int64 // requested delay in ms (setTimeout/setInterval only; 0 otherwise)
+	// repeat marks a setInterval job: drainTimers re-queues it (same id) after
+	// it runs, instead of letting it drop like every other (one-shot) job.
+	repeat bool
+	// readyAt gates a REPEATING job's own re-queued copy to the real
+	// wall-clock time its own delay actually requests — see drainTimers' own
+	// doc comment for why this is the one place this package's timer queue
+	// is a real clock, deliberately, and only there. Zero (every freshly
+	// queued job, repeat or not) means "ready whenever drainTimers next
+	// looks at it", unchanged from this package's existing, documented
+	// "not a real clock" behaviour for every job's own FIRST firing.
+	readyAt time.Time
 }
 
 // binder holds the runtime and all live state for one page execution.
@@ -120,6 +132,11 @@ type binder struct {
 
 	jobs   []timerJob
 	nextID int64
+	// cancelledTimers records every id clearTimeout/clearInterval has ever
+	// been called on, so a job already removed from b.jobs that is MID-FLIGHT
+	// (running right now, about to re-queue itself if it's a setInterval)
+	// still honours a cancel the callback issues on its own id.
+	cancelledTimers map[int64]bool
 	// scriptsCapWarned/jobsCapWarned make the maxScripts/maxTimerJobs caps
 	// log ONCE each, the first time they actually stop work, rather than
 	// either staying silent (confirmed, by go-wasmcontainers, as a real
@@ -326,16 +343,32 @@ func (b *binder) dispatchLifecycle(res *Result) {
 	b.drainTimers(res)
 }
 
-// drainTimers runs queued callbacks in ascending order of their own requested
-// delay (ties broken FIFO by original enqueue order), until the queue empties,
-// the job cap is hit, or the budget expires. This is not a real clock — no
-// wall-clock waiting happens between jobs — but ordering by delay rather than
-// pure enqueue order matters: real page code commonly races a near-immediate
-// setTimeout(fn, 0) retry/continuation against a much later
-// setTimeout(giveUp, 30000+) safety-net timeout, and draining strict FIFO can
-// let the safety-net job run first purely because it happened to be enqueued
-// earlier, when every real browser would run the smaller-delay job first.
-// Callbacks may enqueue more work, which is honoured within those bounds.
+// drainTimers runs queued, DUE callbacks in ascending order of their own
+// requested delay (ties broken FIFO by original enqueue order), until the
+// queue has nothing due, the job cap is hit, or the budget expires.
+//
+// For a one-shot job (setTimeout, rAF, …) this is NOT a real clock — no
+// wall-clock waiting happens before its first, only, firing — but ordering
+// by delay rather than pure enqueue order matters: real page code commonly
+// races a near-immediate setTimeout(fn, 0) retry/continuation against a much
+// later setTimeout(giveUp, 30000+) safety-net timeout, and draining strict
+// FIFO can let the safety-net job run first purely because it happened to be
+// enqueued earlier, when every real browser would run the smaller-delay job
+// first. Callbacks may enqueue more work, which is honoured within those
+// bounds.
+//
+// A setInterval job (repeat=true) is the ONE deliberate exception: once it
+// fires, its re-queued copy carries a real readyAt (time.Now()+delay), and
+// the "due" check below skips it until that wall-clock time actually passes
+// — otherwise a repeating interval would refire thousands of times in a
+// single burst the instant anything calls drainTimers, rather than at the
+// real cadence its own delay asks for (this is EXACTLY the bug
+// go-wasmcontainers hit: their page's periodic "are we done yet" poll,
+// before this fix, could only ever check once, the one time its own interval
+// job happened to be ready — see FIDELITY.md's own entry for the full story).
+// When nothing is due yet, this returns immediately rather than busy-waiting
+// — a later call (the next real tick, for a page using EnableWorkerStreaming)
+// catches it once its time arrives.
 func (b *binder) drainTimers(res *Result) {
 	// A worker's own top-level script may have posted to main before any
 	// main->worker message gave postToWorker a chance to deliver it (see
@@ -354,16 +387,29 @@ func (b *binder) drainTimers(res *Result) {
 		if b.expired() {
 			return
 		}
-		best := 0
-		for i := 1; i < len(b.jobs); i++ {
-			if b.jobs[i].delay < b.jobs[best].delay {
+		now := time.Now()
+		best := -1
+		for i := range b.jobs {
+			if !b.jobs[i].readyAt.IsZero() && b.jobs[i].readyAt.After(now) {
+				continue // a repeating interval's own next firing isn't due yet
+			}
+			if best == -1 || b.jobs[i].delay < b.jobs[best].delay {
 				best = i
 			}
+		}
+		if best == -1 {
+			return // every remaining job is a not-yet-due interval repeat
 		}
 		job := b.jobs[best]
 		b.jobs = append(b.jobs[:best], b.jobs[best+1:]...)
 		res.TimersRun++
 		b.callSafely(job.fn, job.self)
+		if job.repeat && !b.cancelledTimers[job.id] {
+			b.jobs = append(b.jobs, timerJob{
+				id: job.id, fn: job.fn, self: job.self, delay: job.delay, repeat: true,
+				readyAt: time.Now().Add(time.Duration(job.delay) * time.Millisecond),
+			})
+		}
 		b.drainWorkerInboxes()
 	}
 }
