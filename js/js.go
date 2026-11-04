@@ -120,6 +120,15 @@ type binder struct {
 
 	jobs   []timerJob
 	nextID int64
+	// scriptsCapWarned/jobsCapWarned make the maxScripts/maxTimerJobs caps
+	// log ONCE each, the first time they actually stop work, rather than
+	// either staying silent (confirmed, by go-wasmcontainers, as a real
+	// foot-gun for EnableWorkerStreaming's own long-lived renders — a cap
+	// hit there is an expected, reachable outcome, not just a pathological
+	// page) or logging every single subsequent check for the rest of a
+	// render that might run for minutes.
+	scriptsCapWarned bool
+	jobsCapWarned    bool
 	// mutationObservers holds every live `new MutationObserver(cb)` with an
 	// active observe() call — see mutationobserver.go.
 	mutationObservers []*mutationObserverReg
@@ -230,7 +239,14 @@ func (b *binder) runScripts(res *Result) {
 		if b.executed[s.node] {
 			continue
 		}
-		if res.ScriptsRun+res.ScriptsFailed >= maxScripts || b.expired() {
+		if res.ScriptsRun+res.ScriptsFailed >= maxScripts {
+			if !b.scriptsCapWarned {
+				b.scriptsCapWarned = true
+				b.logf("script cap reached (%d): remaining <script> elements this render will not run", maxScripts)
+			}
+			return
+		}
+		if b.expired() {
 			return
 		}
 		b.executed[s.node] = true
@@ -320,7 +336,14 @@ func (b *binder) drainTimers(res *Result) {
 	// when b.workers is nil (no Worker ever created).
 	b.drainWorkerInboxes()
 	for len(b.jobs) > 0 {
-		if res.TimersRun >= maxTimerJobs || b.expired() {
+		if res.TimersRun >= maxTimerJobs {
+			if !b.jobsCapWarned {
+				b.jobsCapWarned = true
+				b.logf("timer-job cap reached (%d) with %d still queued: further timers and Worker messages this render will not run", maxTimerJobs, len(b.jobs))
+			}
+			return
+		}
+		if b.expired() {
 			return
 		}
 		best := 0
