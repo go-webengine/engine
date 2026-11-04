@@ -1644,9 +1644,22 @@ func TestMaxScripts(t *testing.T) {
 	}
 	sb.WriteString("</body></html>")
 	root, _ := dom.Parse(sb.String())
-	res := Run(root, Options{PageURL: testURL})
+	var logs []string
+	res := Run(root, Options{PageURL: testURL, Log: func(s string) { logs = append(logs, s) }})
 	if res.ScriptsRun != maxScripts {
 		t.Fatalf("script cap not enforced: %+v", res)
+	}
+	// Confirmed need (go-wasmcontainers, engine#342 follow-up): hitting a
+	// cap must be a NAMED, visible event, never a silent stop — and exactly
+	// once, not spammed on every subsequent check.
+	n := 0
+	for _, l := range logs {
+		if strings.Contains(l, "script cap reached") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("script cap should log exactly once, got %d in: %v", n, logs)
 	}
 }
 
@@ -1656,9 +1669,19 @@ func TestMaxTimerJobs(t *testing.T) {
 		function f(){ setTimeout(f, 0); }
 		f();
 	</script></body></html>`)
-	res := Run(root, Options{PageURL: testURL, Timeout: 5 * time.Second})
+	var logs []string
+	res := Run(root, Options{PageURL: testURL, Timeout: 5 * time.Second, Log: func(s string) { logs = append(logs, s) }})
 	if res.TimersRun != maxTimerJobs {
 		t.Fatalf("timer job cap not enforced: %d", res.TimersRun)
+	}
+	n := 0
+	for _, l := range logs {
+		if strings.Contains(l, "timer-job cap reached") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("timer-job cap should log exactly once, got %d in: %v", n, logs)
 	}
 }
 
