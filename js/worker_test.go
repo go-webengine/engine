@@ -248,3 +248,61 @@ func TestWorkerPostMessageSharesTypedArrayView(t *testing.T) {
 		t.Fatalf("data-main-byte0 = %q, want %q (the worker's write through the shared view should be visible back on main)", got, "200")
 	}
 }
+
+// TestWorkerReceivedSharedArrayBufferReportsCorrectIdentity is the EXACT
+// shape of go-wasmcontainers' own failing e2e probe case ("posting a
+// SharedArrayBuffer shares it"): their worker script checks
+// `d instanceof SharedArrayBuffer` on the value it just received via
+// postMessage, branching to a copy-path (silently wrong) if that check
+// fails even though the underlying memory IS shared. Proves the
+// RECONSTRUCTED object on the RECEIVING side — not just a freshly
+// constructed one on the creating side (TestSharedArrayBufferHasItsOwnIdentity,
+// atomics_test.go) — also reports the correct identity, since
+// wrapSharedArrayBuffer is the one path both construction and
+// reconstruction go through.
+func TestWorkerReceivedSharedArrayBufferReportsCorrectIdentity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			onmessage = (e) => {
+				const d = e.data;
+				const sab = d instanceof SharedArrayBuffer;
+				const a = sab ? new Uint8Array(d) : d;
+				a[0] = 42;
+				postMessage((sab || a.buffer instanceof SharedArrayBuffer) ? "shared" : "copied");
+			};
+		`))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var sab = new SharedArrayBuffer(16), view = new Uint8Array(sab);
+		var w = new Worker('` + srv.URL + `/sab-worker.js');
+		w.onmessage = function(e) {
+			document.body.setAttribute('data-reply', e.data);
+			document.body.setAttribute('data-view0', String(view[0]));
+		};
+		w.postMessage(sab);
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-reply"); got != "shared" {
+		t.Fatalf("data-reply = %q, want %q (the worker's own `d instanceof SharedArrayBuffer` check should be true)", got, "shared")
+	}
+	if got, _ := body.Attribute("data-view0"); got != "42" {
+		t.Fatalf("data-view0 = %q, want %q (the worker's write should be visible through main's own original view)", got, "42")
+	}
+}

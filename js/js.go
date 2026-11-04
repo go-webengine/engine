@@ -268,6 +268,10 @@ type binder struct {
 	// from Session.Close/stopWorkers) uses this to remove exactly this
 	// binder's own entries, nothing more, when the render/worker ends.
 	ownedSharedBuffers []*goja.Object
+	// sabProto caches this VM's own SharedArrayBuffer.prototype (atomics.go's
+	// sharedArrayBufferPrototype) — built once, lazily, the first time a
+	// SharedArrayBuffer wrapper is ever created or reconstructed in this VM.
+	sabProto *goja.Object
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled
