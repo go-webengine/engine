@@ -329,6 +329,7 @@ func (s *Session) Close() {
 		s.stop()
 	}
 	s.b.stopWorkers()
+	s.b.forgetSharedBuffers()
 	if s.b.wasmRuntime != nil {
 		_ = s.b.wasmRuntime.Close(context.Background())
 	}

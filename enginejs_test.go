@@ -295,6 +295,129 @@ func TestEnableWorkerStreamingOffLeavesStreamingWorkerUnseen(t *testing.T) {
 	}
 }
 
+// TestAtomicsWaitWokenByNotifyAcrossWorkers proves M3's own core contract
+// (issue #343): a SharedArrayBuffer created on main, shared with a Worker via
+// postMessage, backs a real cross-goroutine Atomics.wait/notify handshake —
+// the worker's own real goroutine genuinely blocks in Atomics.wait (deferred
+// via setTimeout(fn, 0) so it runs on the worker's own ticker, never inline
+// inside the message handler — see deliver's own doc comment for why that
+// matters: doing it synchronously would deadlock against main's later
+// Atomics.notify call).
+//
+// The worker tells main it is ABOUT to wait (postMessage('waiting')) in the
+// exact same synchronous callback as the Atomics.wait call right after it,
+// with no yield point in between — so by the time main's own handler for
+// that message runs and calls Atomics.notify, the worker is GUARANTEED to
+// already be blocked (this engine's own timer queue has no real wall-clock
+// pacing WITHIN one drain burst — see drainTimers' own doc comment — so a
+// plain setTimeout-based delay cannot be used to approximate "the worker
+// should be waiting by now" reliably; this handshake needs no such timing
+// assumption at all). Confirms the woken wait observes the NEW value through
+// the SAME underlying memory (not a copy).
+func TestAtomicsWaitWokenByNotifyAcrossWorkers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			var view;
+			onmessage = function(e) {
+				view = new Int32Array(e.data);
+				setTimeout(function() {
+					postMessage('waiting');
+					var r = Atomics.wait(view, 0, 0, 5000);
+					postMessage(r + ':' + Atomics.load(view, 0));
+				}, 0);
+			};
+		`))
+	}))
+	defer srv.Close()
+
+	src := `<html><head><title>t</title></head><body><script>
+		var sab = new SharedArrayBuffer(4);
+		var view = new Int32Array(sab);
+		Atomics.store(view, 0, 0);
+		var w = new Worker('` + srv.URL + `/worker.js');
+		var notified = false;
+		w.onmessage = function(e) {
+			if (e.data === 'waiting' && !notified) {
+				notified = true;
+				Atomics.store(view, 0, 42);
+				Atomics.notify(view, 0);
+				return;
+			}
+			document.body.setAttribute('data-reply', String(e.data));
+			__webengineDone();
+		};
+		w.postMessage(sab);
+	</script></body></html>`
+
+	doc, err := parseDoc(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	e.EnableWorkerStreaming = true
+	e.EnableDoneSignal = true
+	e.JSTimeout = 5 * time.Second
+	vp := image.Rect(0, 0, 200, 100)
+
+	if _, _, err := e.RenderDocument(context.Background(), doc, vp); err != nil {
+		t.Fatal(err)
+	}
+
+	body := dom.Find(doc.Root, "body")
+	if got, _ := body.Attribute("data-reply"); got != "ok:42" {
+		t.Fatalf("data-reply = %q, want %q (wait should be woken by notify and see the new, shared value)", got, "ok:42")
+	}
+}
+
+// TestAtomicsWaitAcrossWorkersTimesOut is the control: with nobody ever
+// calling Atomics.notify, the worker's own Atomics.wait must time out on its
+// own short timeout rather than hang forever (or hang the render out to
+// JSTimeout).
+func TestAtomicsWaitAcrossWorkersTimesOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			var view;
+			onmessage = function(e) {
+				view = new Int32Array(e.data);
+				setTimeout(function() {
+					var r = Atomics.wait(view, 0, 0, 100);
+					postMessage(r);
+				}, 0);
+			};
+		`))
+	}))
+	defer srv.Close()
+
+	src := `<html><head><title>t</title></head><body><script>
+		var sab = new SharedArrayBuffer(4);
+		var w = new Worker('` + srv.URL + `/worker.js');
+		w.onmessage = function(e) {
+			document.body.setAttribute('data-reply', String(e.data));
+			__webengineDone();
+		};
+		w.postMessage(sab);
+	</script></body></html>`
+
+	doc, err := parseDoc(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	e.EnableWorkerStreaming = true
+	e.EnableDoneSignal = true
+	e.JSTimeout = 5 * time.Second
+	vp := image.Rect(0, 0, 200, 100)
+
+	if _, _, err := e.RenderDocument(context.Background(), doc, vp); err != nil {
+		t.Fatal(err)
+	}
+
+	body := dom.Find(doc.Root, "body")
+	if got, _ := body.Attribute("data-reply"); got != "timed-out" {
+		t.Fatalf("data-reply = %q, want %q", got, "timed-out")
+	}
+}
+
 // RenderDocumentFromHTML parses src and renders it with the with-links pipeline,
 // a small offline convenience for the JS hit-map tests.
 func (e *Engine) RenderDocumentFromHTML(t *testing.T, src, baseURL string, vp image.Rectangle) (*image.RGBA, *RenderInfo, []Link, error) {
