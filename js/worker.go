@@ -87,12 +87,19 @@ func (w *jsWorker) installWorkerGlobals() {
 	}
 	g.Set("console", wb.newConsole())
 	wb.installTimers(g)
-	// SharedArrayBuffer + Atomics (atomics.go): a worker's own global scope
-	// needs these every bit as much as the main document's does — the hot
-	// path (go-wasmcontainers, engine#343) is specifically a worker calling
-	// Atomics.wait on a buffer main shared with it.
-	wb.installSharedArrayBuffer(g)
-	wb.installAtomics(g)
+	// crossOriginIsolated + SharedArrayBuffer + Atomics (atomics.go): a
+	// worker's own global scope needs these every bit as much as the main
+	// document's does — the hot path (go-wasmcontainers, engine#343) is
+	// specifically a worker calling Atomics.wait on a buffer main shared
+	// with it. wb.opt is the SAME Options the creating binder's own
+	// CrossOriginIsolated was resolved into (newWorkerBinder passes it
+	// through unchanged) — "workers inherit it" (the spec's own rule,
+	// confirmed directly by go-wasmcontainers), not a separate decision.
+	g.Set("crossOriginIsolated", wb.opt.CrossOriginIsolated)
+	if wb.opt.CrossOriginIsolated {
+		wb.installSharedArrayBuffer(g)
+		wb.installAtomics(g)
+	}
 
 	g.Set("postMessage", func(call goja.FunctionCall) goja.Value {
 		cv, err := cloneValue(call.Argument(0))

@@ -191,3 +191,60 @@ func TestSessionCloseStopsWorkers(t *testing.T) {
 		t.Fatal("Session.Close() should stop every live worker")
 	}
 }
+
+// TestWorkerPostMessageSharesTypedArrayView proves M3's completeness item
+// confirmed directly by go-wasmcontainers: posting a typed-array VIEW
+// itself (not the raw SharedArrayBuffer) shares the underlying memory with
+// a Worker. The worker writes through the view it receives, reads the SAME
+// byte back via a DIFFERENT view kind (DataView) over the identical
+// buffer — proving cross-view consistency within one VM, go-wasmcontainers'
+// item 1 — and main observes the write too, once its own (synchronous,
+// blocking) postMessage call returns, proving the memory is genuinely
+// shared across the VMs, not copied.
+func TestWorkerPostMessageSharesTypedArrayView(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			onmessage = function(e) {
+				var view = e.data;
+				view[0] = 200;
+				var dv = new DataView(view.buffer);
+				postMessage('ctor=' + view.constructor.name + ' len=' + view.length + ' dvByte0=' + dv.getUint8(0));
+			};
+		`))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var sab = new SharedArrayBuffer(4);
+		var sendView = new Uint8Array(sab);
+		sendView[0] = 1;
+		var w = new Worker('` + srv.URL + `/view.js');
+		w.onmessage = function(e) {
+			document.body.setAttribute('data-reply', e.data);
+			document.body.setAttribute('data-main-byte0', String(sendView[0]));
+		};
+		w.postMessage(sendView);
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-reply"); got != "ctor=Uint8Array len=4 dvByte0=200" {
+		t.Fatalf("data-reply = %q, want %q", got, "ctor=Uint8Array len=4 dvByte0=200")
+	}
+	if got, _ := body.Attribute("data-main-byte0"); got != "200" {
+		t.Fatalf("data-main-byte0 = %q, want %q (the worker's write through the shared view should be visible back on main)", got, "200")
+	}
+}

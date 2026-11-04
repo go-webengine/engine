@@ -38,6 +38,104 @@ func TestCloneRoundTripPrimitivesArraysObjects(t *testing.T) {
 	}
 }
 
+// TestCloneRoundTripsSharedTypedArrayView proves cloneValue/reconstructValue
+// carry a typed-array VIEW over a SharedArrayBuffer by reference (not by
+// value) — confirmed needed directly by go-wasmcontainers: their ring posts
+// the Uint8Array view itself, not the raw buffer. The reconstructed view
+// must both read the ORIGINAL bytes correctly (kind, length, values) and
+// WRITE through to the exact same underlying []byte — proving this is
+// genuinely shared memory, not a copy that merely looks right once.
+func TestCloneRoundTripsSharedTypedArrayView(t *testing.T) {
+	src := goja.New()
+	dst := &binder{vm: goja.New()}
+
+	data := make([]byte, 8)
+	sb := &sharedBuffer{data: data}
+	srcBufObj, _ := src.ToValue(src.NewArrayBuffer(data)).(*goja.Object)
+	registerSharedBuffer(srcBufObj, sb)
+	src.Set("sab", srcBufObj)
+
+	v, err := src.RunString(`
+		var view = new Uint8Array(sab, 2, 4);
+		view[0] = 42;
+		view[1] = 7;
+		view;
+	`)
+	if err != nil {
+		t.Fatalf("source eval: %v", err)
+	}
+	cv, err := cloneValue(v)
+	if err != nil {
+		t.Fatalf("cloneValue: %v", err)
+	}
+	reconstructed := reconstructValue(dst, cv)
+	dst.vm.GlobalObject().Set("got", reconstructed)
+
+	check, err := dst.vm.RunString(`JSON.stringify([got.constructor.name, got.length, got.byteOffset, got[0], got[1]])`)
+	if err != nil {
+		t.Fatalf("dest eval: %v", err)
+	}
+	if want := `["Uint8Array",4,2,42,7]`; check.String() != want {
+		t.Fatalf("reconstructed view = %s, want %s", check.String(), want)
+	}
+
+	// Write through the RECONSTRUCTED view and confirm it lands in the
+	// SAME underlying []byte the source VM's own view still reads from —
+	// the whole point of SharedArrayBuffer, not just a correct-looking copy.
+	if _, err := dst.vm.RunString(`got[2] = 99;`); err != nil {
+		t.Fatalf("write through reconstructed view: %v", err)
+	}
+	if data[2+2] != 99 { // byteOffset 2 + index 2
+		t.Fatalf("data[4] = %d, want 99 (write through the reconstructed view should hit the original []byte)", data[4])
+	}
+}
+
+// TestCloneRoundTripsSharedDataView covers the OTHER branch
+// reconstructValue's clonedSharedView case has: DataView, which (unlike
+// every TypedArray kind) is constructed from a BYTE length directly, not an
+// element count — a real, distinct code path, not just the same logic under
+// a different name.
+func TestCloneRoundTripsSharedDataView(t *testing.T) {
+	src := goja.New()
+	dst := &binder{vm: goja.New()}
+
+	data := make([]byte, 8)
+	sb := &sharedBuffer{data: data}
+	srcBufObj, _ := src.ToValue(src.NewArrayBuffer(data)).(*goja.Object)
+	registerSharedBuffer(srcBufObj, sb)
+	src.Set("sab", srcBufObj)
+
+	v, err := src.RunString(`
+		var dv = new DataView(sab, 1, 4);
+		dv.setUint8(0, 7);
+		dv;
+	`)
+	if err != nil {
+		t.Fatalf("source eval: %v", err)
+	}
+	cv, err := cloneValue(v)
+	if err != nil {
+		t.Fatalf("cloneValue: %v", err)
+	}
+	reconstructed := reconstructValue(dst, cv)
+	dst.vm.GlobalObject().Set("got", reconstructed)
+
+	check, err := dst.vm.RunString(`JSON.stringify([got.constructor.name, got.byteLength, got.byteOffset, got.getUint8(0)])`)
+	if err != nil {
+		t.Fatalf("dest eval: %v", err)
+	}
+	if want := `["DataView",4,1,7]`; check.String() != want {
+		t.Fatalf("reconstructed DataView = %s, want %s", check.String(), want)
+	}
+
+	if _, err := dst.vm.RunString(`got.setUint8(1, 55);`); err != nil {
+		t.Fatalf("write through reconstructed DataView: %v", err)
+	}
+	if data[1+1] != 55 { // byteOffset 1 + index 1
+		t.Fatalf("data[2] = %d, want 55 (write through the reconstructed DataView should hit the original []byte)", data[2])
+	}
+}
+
 // TestCloneRejectsFunction proves a function throws a DataCloneError-shaped
 // Go error rather than silently vanishing or being miscloned as `{}`.
 func TestCloneRejectsFunction(t *testing.T) {

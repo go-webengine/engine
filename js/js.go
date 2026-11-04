@@ -68,6 +68,14 @@ type Options struct {
 	// caller not using this feature. See engine.Engine's own field of the
 	// same name for the full rationale.
 	EnableDoneSignal bool
+	// CrossOriginIsolated reports whether the top document's own response
+	// satisfied the HTML Standard's COOP/COEP requirement — see
+	// engine.Document.CrossOriginIsolated's own doc comment for the full
+	// rationale and engine.Engine.ForceCrossOriginIsolated for the escape
+	// hatch. False (the default) means SharedArrayBuffer/Atomics are not
+	// installed at all (window.SharedArrayBuffer is undefined, matching a
+	// real browser exactly) and window.crossOriginIsolated reads false.
+	CrossOriginIsolated bool
 }
 
 // DefaultTimeout is the script budget when Options.Timeout is zero.

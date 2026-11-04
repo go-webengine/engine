@@ -380,22 +380,38 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   stderr/exit-status/GPU-frame messages continuously, which M2's own
   synchronous-reply `postMessage` round trip alone cannot surface.
 - **`SharedArrayBuffer` + `Atomics`** (2026-11-04, engine#343): real
-  cross-VM shared memory for Worker's own `postMessage` boundary —
+  cross-VM shared memory for Worker's own `postMessage` boundary, gated on
+  real cross-origin isolation (below) exactly like a real browser —
   `new SharedArrayBuffer(n)` wraps goja's own zero-copy `ArrayBuffer`
-  (registered so a `postMessage` of it shares the SAME bytes instead of
-  cloning them, the one deliberate exception to every other value's
-  copy-not-share clone). `Atomics.load/store/add/compareExchange` work
-  across the plain 8/16/32-bit integer TypedArray kinds;
-  `Atomics.wait`/`notify` (restricted to `Int32Array`) give a real,
-  blocking cross-goroutine wait/wake handshake — `wait` genuinely parks
-  the calling Worker's own goroutine until a matching `notify` (or its own
-  timeout) wakes it. Deliberately restricted to a registered
-  SharedArrayBuffer's own views — a plain `ArrayBuffer` throws a named
-  `TypeError` rather than silently misbehaving, since cross-VM sharing is
-  the one confirmed need Atomics exists for here. `instanceof
-  SharedArrayBuffer` is a stated simplification: it reports `false` (the
-  object's prototype chain is plain `ArrayBuffer`) — no confirmed need for
-  that distinction yet.
+  (registered so a `postMessage` of it, OR of a typed-array/`DataView`
+  VIEW over it, shares the SAME bytes instead of cloning them — the one
+  deliberate exception to every other value's copy-not-share clone).
+  `Atomics.load/store/add/compareExchange` work across the plain
+  8/16/32-bit integer TypedArray kinds; `Atomics.wait`/`notify`
+  (restricted to `Int32Array`) give a real, blocking cross-goroutine
+  wait/wake handshake — `wait` genuinely parks the calling Worker's own
+  goroutine until a matching `notify` (or its own timeout) wakes it.
+  Deliberately restricted to a registered SharedArrayBuffer's own views —
+  a plain `ArrayBuffer` throws a named `TypeError` rather than silently
+  misbehaving, since cross-VM sharing is the one confirmed need Atomics
+  exists for here. `instanceof SharedArrayBuffer` is a stated
+  simplification: it reports `false` (the object's prototype chain is
+  plain `ArrayBuffer`) — no confirmed need for that distinction yet.
+- **`window.crossOriginIsolated` + real COOP/COEP gating** (2026-11-04):
+  `true` only when the top document's own response actually carried
+  `Cross-Origin-Opener-Policy: same-origin` and
+  `Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`) —
+  `SharedArrayBuffer`/`Atomics` are not installed at all otherwise
+  (`window.SharedArrayBuffer` is `undefined`), matching a real browser
+  exactly rather than a simplification: this engine is used as a test
+  lane beside Chromium/Firefox/Safari, so a page missing these headers
+  must see SAB denied here too, and a render can load cross-origin
+  subresources into the same runtime regardless of its own process
+  boundary, so the threat COOP/COEP guards against is real here as well.
+  `Engine.ForceCrossOriginIsolated` (off by default) is the escape hatch
+  for a host building its own `Document` with no real headers to check
+  (tests, a `Fetcher`). Workers inherit the creating page's own resolved
+  value, per spec.
 - **`setInterval` genuinely repeats** (2026-11-04): previously fired its
   callback once (`clearTimeout`/`clearInterval` were no-ops) — a
   simplification from before a page could usefully run long enough for

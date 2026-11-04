@@ -32,8 +32,8 @@ const defaultUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
 func newHTTPClient() *httpClient { return nil }
 
 // httpGet refuses: there is no network but the host's Fetcher.
-func (e *Engine) httpGet(context.Context, string) ([]byte, string, string, error) {
-	return nil, "", "", ErrNoNetwork
+func (e *Engine) httpGet(context.Context, string) ([]byte, string, string, bool, error) {
+	return nil, "", "", false, ErrNoNetwork
 }
 
 // httpBytes refuses: there is no network but the host's Fetcher.
