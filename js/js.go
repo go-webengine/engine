@@ -76,6 +76,29 @@ type Options struct {
 	// installed at all (window.SharedArrayBuffer is undefined, matching a
 	// real browser exactly) and window.crossOriginIsolated reads false.
 	CrossOriginIsolated bool
+	// RealTimeTimers gates a timer job's own FIRST firing by its real
+	// requested delay (time.Now()+delay), not just "whenever drainTimers
+	// next looks at it" — the one deliberate, OPT-IN exception to this
+	// package's own long-documented "not a real clock" timer model (see
+	// drainTimers' own doc comment). Off by default: every existing
+	// one-shot render keeps today's exact "fire at the next opportunity"
+	// behaviour, which is correct and desired there (no page has any way to
+	// observe the difference within one bounded settle pass anyway). On
+	// (mapped from engine.Engine.EnableWorkerStreaming — see its own field
+	// for the full rationale), a page's own long-delay "safety net"
+	// setTimeout (an extremely common, idiomatic JS pattern: race a
+	// near-immediate retry against a much-later give-up timer) genuinely
+	// waits that long instead of firing almost instantly — confirmed as a
+	// real, blocking bug by go-wasmcontainers' own e2e probe: their
+	// `setTimeout(giveUp, 15000)` fired within milliseconds, ending their
+	// streaming-worker test before more than one message could arrive, a
+	// render that completed in under 4ms instead of taking the 15 real
+	// seconds its own JS expected. setInterval's own REPEAT firings
+	// already had this same real gating unconditionally (shipped earlier,
+	// unaffected by this field) — this extends it to a job's first firing
+	// too, but only under this opt-in, so the ordinary bounded-render case
+	// is untouched.
+	RealTimeTimers bool
 }
 
 // DefaultTimeout is the script budget when Options.Timeout is zero.

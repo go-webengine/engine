@@ -360,6 +360,77 @@ func TestSetIntervalPollsRepeatedlyWithWorkerStreaming(t *testing.T) {
 	}
 }
 
+// TestRealTimeTimersHonorSafetyNetDelay reproduces, and proves fixed, the
+// real root cause behind go-wasmcontainers' OWN e2e probe reporting "only
+// 1/100 messages in 15 s" even after the setInterval fix: their page's
+// safety-net `setTimeout(giveUp, 15000)` — racing a worker's own streamed
+// messages, the exact "near-immediate retry vs. much-later give-up timer"
+// idiom drainTimers' own doc comment describes — fired almost instantly
+// (confirmed directly: a standalone reproduction of their exact scripts
+// completed in 3.68ms, not 15 real seconds) rather than waiting its own
+// requested delay, because only a repeating setInterval's OWN repeats had
+// real wall-clock gating before this fix — a plain one-shot setTimeout's
+// first (and only) firing did not. With RealTimeTimers now also gating a
+// job's first firing (mapped from EnableWorkerStreaming), the safety net
+// must wait its real delay, letting the worker's own faster stream finish
+// first.
+func TestRealTimeTimersHonorSafetyNetDelay(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			var i = 0;
+			(function tick() { postMessage(i++); if (i < 20) setTimeout(tick, 5); })();
+		`))
+	}))
+	defer srv.Close()
+
+	src := `<html><head><title>t</title></head><body><script>
+		var w = new Worker('` + srv.URL + `/worker.js');
+		var got = 0;
+		var safetyFired = false;
+		setTimeout(function() {
+			safetyFired = true;
+			document.body.setAttribute('data-safety-fired', 'true');
+			document.body.setAttribute('data-got-at-safety', String(got));
+			__webengineDone();
+		}, 2000);
+		w.onmessage = function(e) {
+			got = e.data + 1;
+			if (got >= 20 && !safetyFired) {
+				document.body.setAttribute('data-done-early', 'true');
+				__webengineDone();
+			}
+		};
+	</script></body></html>`
+
+	doc, err := parseDoc(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := New()
+	e.EnableWorkerStreaming = true
+	e.EnableDoneSignal = true
+	e.JSTimeout = 5 * time.Second
+	vp := image.Rect(0, 0, 200, 100)
+
+	start := time.Now()
+	if _, _, err := e.RenderDocument(context.Background(), doc, vp); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+
+	body := dom.Find(doc.Root, "body")
+	if got, _ := body.Attribute("data-safety-fired"); got == "true" {
+		gotAt, _ := body.Attribute("data-got-at-safety")
+		t.Fatalf("the 2s safety-net timeout fired after only %v, before the worker's own ~100ms stream finished (got %s/20 messages) — a one-shot setTimeout's first firing is not honouring its own real delay", elapsed, gotAt)
+	}
+	if got, _ := body.Attribute("data-done-early"); got != "true" {
+		t.Fatalf("data-done-early = %q, want %q — the stream should have finished well before the 2s safety net", got, "true")
+	}
+	if elapsed > time.Second {
+		t.Fatalf("render took %v, want well under the 2s safety net (the stream itself needs only ~100ms of real time)", elapsed)
+	}
+}
+
 // TestAtomicsWaitWokenByNotifyAcrossWorkers proves M3's own core contract
 // (issue #343): a SharedArrayBuffer created on main, shared with a Worker via
 // postMessage, backs a real cross-goroutine Atomics.wait/notify handshake —

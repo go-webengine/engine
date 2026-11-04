@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/dop251/goja"
 
@@ -135,7 +136,15 @@ func (b *binder) installTimers(g *goja.Object) {
 			if delay < 0 {
 				delay = 0
 			}
-			b.jobs = append(b.jobs, timerJob{id: id, fn: fn, self: goja.Undefined(), delay: delay, repeat: repeat})
+			job := timerJob{id: id, fn: fn, self: goja.Undefined(), delay: delay, repeat: repeat}
+			// Options.RealTimeTimers (its own doc comment has the full
+			// rationale): gate even this FIRST firing by the real delay,
+			// not just "next opportunity" — off by default, so an ordinary
+			// bounded render's existing behaviour is exactly unchanged.
+			if b.opt.RealTimeTimers {
+				job.readyAt = time.Now().Add(time.Duration(delay) * time.Millisecond)
+			}
+			b.jobs = append(b.jobs, job)
 		}
 		return b.vm.ToValue(id)
 	}
