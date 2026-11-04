@@ -396,6 +396,17 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   SharedArrayBuffer` is a stated simplification: it reports `false` (the
   object's prototype chain is plain `ArrayBuffer`) — no confirmed need for
   that distinction yet.
+- **`setInterval` genuinely repeats** (2026-11-04): previously fired its
+  callback once (`clearTimeout`/`clearInterval` were no-ops) — a
+  simplification from before a page could usefully run long enough for
+  repeating to matter. Now a real `setInterval` fires again at its own
+  requested cadence (real wall-clock time, not an instant burst), and
+  `clearTimeout`/`clearInterval` actually cancel by id, including from
+  within the interval's own callback (`clearInterval(id)` to stop
+  yourself). Confirmed needed the moment `EnableWorkerStreaming` made a
+  genuinely long-running page a real thing: a page's own `setInterval`-based
+  "is it done yet" poll previously ran exactly once, very early, reporting
+  a stale snapshot forever after.
 
 **Honest limits (not overclaimed)**
 

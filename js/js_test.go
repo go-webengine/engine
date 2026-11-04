@@ -1158,13 +1158,58 @@ func TestTimers(t *testing.T) {
 		requestIdleCallback(function(){console.log('idle')});
 		queueMicrotask(function(){console.log('mt')});
 		setImmediate(function(){console.log('imm')});
-		clearTimeout(1); clearInterval(2); cancelAnimationFrame(3); cancelIdleCallback(4);
+		// Arbitrary ids nothing above was ever assigned (ids are a small,
+		// sequential counter starting at 1 in this test — these are well
+		// clear of it) — clearing/cancelling an unknown id must be a
+		// harmless no-op, not an error, matching a real browser.
+		clearTimeout(10001); clearInterval(10002); cancelAnimationFrame(10003); cancelIdleCallback(10004);
 		setTimeout('notafunc', 0);
 		console.log('id='+(setTimeout(function(){},0)>0));
 	`))
 	mustHave(t, logs, "t0", "int", "raf", "idle", "mt", "imm", "id=true")
 	if res.TimersRun < 6 {
 		t.Fatalf("expected >=6 timers drained, got %d", res.TimersRun)
+	}
+}
+
+// TestClearTimeoutClearIntervalActuallyCancel proves clearTimeout/
+// clearInterval genuinely cancel the job their own id refers to (previously
+// both were hardcoded no-ops) — a cleared one-shot timer never fires, a
+// cleared interval never fires even once, and a REAL id captured from
+// setInterval is exactly what clearInterval needs (not some other counter).
+func TestClearTimeoutClearIntervalActuallyCancel(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var tId = setTimeout(function(){ console.log('timeout-fired'); }, 0);
+		clearTimeout(tId);
+		var iId = setInterval(function(){ console.log('interval-fired'); }, 0);
+		clearInterval(iId);
+		var kept = setTimeout(function(){ console.log('kept-fired'); }, 0);
+	`))
+	if has(logs, "timeout-fired") {
+		t.Fatal("a cleared setTimeout should never fire")
+	}
+	if has(logs, "interval-fired") {
+		t.Fatal("a cleared setInterval should never fire, not even once")
+	}
+	mustHave(t, logs, "kept-fired")
+}
+
+// TestSetIntervalCancelledFromWithinItsOwnCallback proves clearInterval
+// called BY the interval's own callback (the standard "run N times, then
+// stop yourself" idiom) takes effect on the SAME job drainTimers is about to
+// re-queue, not just on a still-pending, never-yet-run one.
+func TestSetIntervalCancelledFromWithinItsOwnCallback(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		var n = 0;
+		var id = setInterval(function(){
+			n++;
+			console.log('tick:' + n);
+			if (n >= 1) { clearInterval(id); }
+		}, 0);
+	`))
+	mustHave(t, logs, "tick:1")
+	if has(logs, "tick:2") {
+		t.Fatal("clearInterval from within the interval's own callback should stop it immediately, not let it fire again")
 	}
 }
 
