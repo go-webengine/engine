@@ -319,6 +319,7 @@ func (s *Session) Close() {
 	if s.stop != nil {
 		s.stop()
 	}
+	s.b.stopWorkers()
 	if s.b.wasmRuntime != nil {
 		_ = s.b.wasmRuntime.Close(context.Background())
 	}

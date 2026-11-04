@@ -198,6 +198,11 @@ type binder struct {
 	// wasmModules caches each WebAssembly.Module JS wrapper's underlying
 	// compiled form by object identity — see wrapWasmModule in wasm.go.
 	wasmModules map[*goja.Object]wazero.CompiledModule
+
+	// workers holds every live `new Worker(url)` this binder created — see
+	// worker.go. Nil for the overwhelming majority of pages that never touch
+	// Worker, making drainWorkerInboxes and stopWorkers true no-ops for them.
+	workers []*jsWorker
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled
@@ -308,6 +313,12 @@ func (b *binder) dispatchLifecycle(res *Result) {
 // earlier, when every real browser would run the smaller-delay job first.
 // Callbacks may enqueue more work, which is honoured within those bounds.
 func (b *binder) drainTimers(res *Result) {
+	// A worker's own top-level script may have posted to main before any
+	// main->worker message gave postToWorker a chance to deliver it (see
+	// drainWorkerInboxes' own doc comment) — give it a chance here too, the
+	// same "run pending async work" moment drainTimers already is. A no-op
+	// when b.workers is nil (no Worker ever created).
+	b.drainWorkerInboxes()
 	for len(b.jobs) > 0 {
 		if res.TimersRun >= maxTimerJobs || b.expired() {
 			return
@@ -322,6 +333,7 @@ func (b *binder) drainTimers(res *Result) {
 		b.jobs = append(b.jobs[:best], b.jobs[best+1:]...)
 		res.TimersRun++
 		b.callSafely(job.fn, job.self)
+		b.drainWorkerInboxes()
 	}
 }
 

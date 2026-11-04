@@ -354,6 +354,19 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   fires, instead of running out the full pass/`JSTimeout` budget — the
   "post done, meaning async completion with a timeout" shape an automation
   caller needs, without any WebDriver/CDP protocol.
+- **Dedicated Workers** (2026-11-04, `new Worker(scriptURL)`, engine#342):
+  a real second [goja](https://github.com/dop251/goja) runtime on its own
+  goroutine — goja supports one `Runtime` per goroutine but never passing
+  object values between them, so `postMessage` crosses the boundary through
+  a bounded, VM-agnostic structured-clone subset (booleans/numbers/strings/
+  plain Array/plain Object; a function, Symbol, Date/RegExp/Map/Set, or
+  ArrayBuffer/TypedArray throws, matching the real algorithm's own
+  `DataCloneError` rather than silently losing the value — `SharedArrayBuffer`
+  transfer is a later milestone). The round trip is deliberately
+  synchronous/blocking rather than truly async (this engine has no
+  background event loop to deliver an async reply into), bounded by the
+  render's own wall-clock budget either way; `w.terminate()`/`self.close()`/
+  the session itself closing all stop the worker's goroutine.
 
 **Honest limits (not overclaimed)**
 
