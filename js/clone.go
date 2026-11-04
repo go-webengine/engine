@@ -4,6 +4,7 @@
 package js
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/dop251/goja"
@@ -50,6 +51,12 @@ type clonedObject struct {
 	keys   []string
 	values map[string]clonedValue
 }
+
+// clonedSharedBuffer carries a *sharedBuffer (atomics.go) THROUGH the clone
+// rather than copying its bytes — the one deliberate exception to this
+// file's own "clone copies, never shares" rule, because a SharedArrayBuffer
+// is defined by being the SAME memory on every side, not a copy of it.
+type clonedSharedBuffer struct{ sb *sharedBuffer }
 
 // cloneErr reports a value this round's structured-clone subset cannot
 // represent — a function, Symbol, or an unsupported object class (Date,
@@ -104,16 +111,46 @@ func cloneAt(v goja.Value, depth int, n *int) (clonedValue, error) {
 			}
 			return out, nil
 		case "Object":
-			keys := obj.Keys()
-			co := clonedObject{keys: keys, values: make(map[string]clonedValue, len(keys))}
-			for _, k := range keys {
-				cv, err := cloneAt(obj.Get(k), depth+1, n)
-				if err != nil {
-					return nil, err
+			// ClassName()=="Object" is NOT reliable evidence this is a plain
+			// object in this goja version — confirmed directly (a small Go
+			// probe against the pinned build), ArrayBuffer, Map, Set, and
+			// EVERY TypedArray kind all report "Object" too (only Array,
+			// Date and RegExp get their own distinct name). Export()'s own
+			// per-type Go wrapper is what actually tells them apart; without
+			// this check, each of those was silently cloning as an empty-ish
+			// plain object instead of the explicit rejection this file
+			// documents — a real, confirmed bug fixed here, not a
+			// hypothetical one (found while wiring SharedArrayBuffer
+			// through this same path for M3, engine#343).
+			switch ex := obj.Export().(type) {
+			case goja.ArrayBuffer:
+				// A SharedArrayBuffer (atomics.go) IS, under the hood, a
+				// real goja ArrayBuffer — registered in sharedBufferRegistry
+				// the moment it was created — so this is the only way to
+				// tell it apart from a plain, non-shared ArrayBuffer (still
+				// unsupported).
+				if sb, ok := lookupSharedBuffer(obj); ok {
+					return clonedSharedBuffer{sb: sb}, nil
 				}
-				co.values[k] = cv
+				return nil, &cloneErr{"structured clone: ArrayBuffer is not supported (use SharedArrayBuffer to share it with a Worker)"}
+			case map[string]interface{}:
+				keys := obj.Keys()
+				co := clonedObject{keys: keys, values: make(map[string]clonedValue, len(keys))}
+				for _, k := range keys {
+					cv, err := cloneAt(obj.Get(k), depth+1, n)
+					if err != nil {
+						return nil, err
+					}
+					co.values[k] = cv
+				}
+				return co, nil
+			default:
+				// Map ([][2]interface{}), Set ([]interface{} — real Arrays
+				// were already routed to the "Array" case above, so a slice
+				// export reaching here cannot be one), every TypedArray kind
+				// ([]int8/[]uint8/[]int16/…), or anything else exotic.
+				return nil, &cloneErr{fmt.Sprintf("structured clone: unsupported value (%T)", ex)}
 			}
-			return co, nil
 		default:
 			return nil, &cloneErr{"structured clone: " + obj.ClassName() + " is not supported"}
 		}
@@ -127,9 +164,14 @@ func cloneAt(v goja.Value, depth int, n *int) (clonedValue, error) {
 	}
 }
 
-// reconstructValue builds a value live in vm (a DIFFERENT runtime than the
-// one cloneValue read from) out of a VM-agnostic clone.
-func reconstructValue(vm *goja.Runtime, cv clonedValue) goja.Value {
+// reconstructValue builds a value live in b's own VM (a DIFFERENT runtime
+// than the one cloneValue read from) out of a VM-agnostic clone. Takes the
+// receiving *binder, not a bare *goja.Runtime, because a clonedSharedBuffer
+// must register its new per-VM wrapper object in sharedBufferRegistry
+// (atomics.go) AND record it on b.ownedSharedBuffers so the registry entry
+// is cleaned up once b's own session/worker closes (forgetSharedBuffers) —
+// every other case here only ever needs b.vm.
+func reconstructValue(b *binder, cv clonedValue) goja.Value {
 	switch x := cv.(type) {
 	case nil:
 		return goja.Undefined()
@@ -138,16 +180,21 @@ func reconstructValue(vm *goja.Runtime, cv clonedValue) goja.Value {
 	case clonedArray:
 		items := make([]interface{}, len(x))
 		for i, e := range x {
-			items[i] = reconstructValue(vm, e)
+			items[i] = reconstructValue(b, e)
 		}
-		return vm.NewArray(items...)
+		return b.vm.NewArray(items...)
 	case clonedObject:
-		o := vm.NewObject()
+		o := b.vm.NewObject()
 		for _, k := range x.keys {
-			o.Set(k, reconstructValue(vm, x.values[k]))
+			o.Set(k, reconstructValue(b, x.values[k]))
 		}
 		return o
+	case clonedSharedBuffer:
+		obj, _ := b.vm.ToValue(b.vm.NewArrayBuffer(x.sb.data)).(*goja.Object)
+		registerSharedBuffer(obj, x.sb)
+		b.ownedSharedBuffers = append(b.ownedSharedBuffers, obj)
+		return obj
 	default:
-		return vm.ToValue(x)
+		return b.vm.ToValue(x)
 	}
 }

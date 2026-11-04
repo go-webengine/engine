@@ -87,6 +87,12 @@ func (w *jsWorker) installWorkerGlobals() {
 	}
 	g.Set("console", wb.newConsole())
 	wb.installTimers(g)
+	// SharedArrayBuffer + Atomics (atomics.go): a worker's own global scope
+	// needs these every bit as much as the main document's does — the hot
+	// path (go-wasmcontainers, engine#343) is specifically a worker calling
+	// Atomics.wait on a buffer main shared with it.
+	wb.installSharedArrayBuffer(g)
+	wb.installAtomics(g)
 
 	g.Set("postMessage", func(call goja.FunctionCall) goja.Value {
 		cv, err := cloneValue(call.Argument(0))
@@ -195,9 +201,21 @@ func (w *jsWorker) run(src, name string) {
 }
 
 // deliver reconstructs one main->worker message into the worker's own VM,
-// dispatches it as a "message" event on the worker's self scope, drains
-// anything that handler itself queued, then signals the task done — the
-// point at which the creating binder's blocked postToWorker call unblocks.
+// dispatches it as a "message" event on the worker's self scope, then
+// signals the task done — the point at which the creating binder's blocked
+// postToWorker call unblocks.
+//
+// Deliberately does NOT drain the worker's own queued timers here, unlike
+// the main binder's own dispatch paths: a handler may schedule a blocking
+// Atomics.wait via setTimeout(fn, 0) specifically to escape this very call
+// (see atomicsWait's own doc comment — calling it synchronously from inside
+// a message handler would hold the SENDER's blocked postToWorker hostage,
+// deadlocking against the sender's own later Atomics.notify). Draining here
+// too would inline that deferred call right back into this same stack,
+// defeating the escape. The ticker in run's own select loop drains every
+// queued timer — this handler's included — exactly once it actually ticks,
+// by which point this call (and the sender's blocked wait on task.done) has
+// already returned.
 func (w *jsWorker) deliver(task workerTask) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -205,11 +223,10 @@ func (w *jsWorker) deliver(task workerTask) {
 		}
 		close(task.done)
 	}()
-	v := reconstructValue(w.wb.vm, task.data)
+	v := reconstructValue(w.wb, task.data)
 	ev := w.wb.newEvent("message")
 	ev.Set("data", v)
 	w.wb.dispatch(w.wb.windowNode, "message", ev)
-	w.wb.drainTimers(&w.res)
 }
 
 // newWorker implements `new Worker(scriptURL)` on the main VM. The script is
@@ -348,7 +365,7 @@ func (b *binder) drainWorkerInboxes() {
 		w.mainInbox = nil
 		w.mainMu.Unlock()
 		for _, cv := range items {
-			v := reconstructValue(b.vm, cv)
+			v := reconstructValue(b, cv)
 			ev := b.newEvent("message")
 			ev.Set("data", v)
 			b.dispatch(w.wrapperNode, "message", ev)
@@ -362,5 +379,6 @@ func (b *binder) drainWorkerInboxes() {
 func (b *binder) stopWorkers() {
 	for _, w := range b.workers {
 		w.stop.Do(func() { close(w.stopCh) })
+		w.wb.forgetSharedBuffers()
 	}
 }

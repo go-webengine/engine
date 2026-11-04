@@ -212,6 +212,14 @@ type binder struct {
 	// worker.go. Nil for the overwhelming majority of pages that never touch
 	// Worker, making drainWorkerInboxes and stopWorkers true no-ops for them.
 	workers []*jsWorker
+
+	// ownedSharedBuffers holds every ArrayBuffer-classed object THIS binder's
+	// own VM registered in the package-level sharedBufferRegistry (atomics.go)
+	// — its own `new SharedArrayBuffer(n)` calls, and every one reconstructed
+	// into this VM from an incoming postMessage. forgetSharedBuffers (called
+	// from Session.Close/stopWorkers) uses this to remove exactly this
+	// binder's own entries, nothing more, when the render/worker ends.
+	ownedSharedBuffers []*goja.Object
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled

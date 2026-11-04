@@ -18,7 +18,7 @@ import (
 // commonly branch on.
 func TestCloneRoundTripPrimitivesArraysObjects(t *testing.T) {
 	src := goja.New()
-	dst := goja.New()
+	dst := &binder{vm: goja.New()}
 
 	v, err := src.RunString(`({a: 1, b: "s", c: [1, 2, [3, 4]], d: null, e: undefined, f: true})`)
 	if err != nil {
@@ -28,8 +28,8 @@ func TestCloneRoundTripPrimitivesArraysObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cloneValue: %v", err)
 	}
-	dst.GlobalObject().Set("got", reconstructValue(dst, cv))
-	check, err := dst.RunString(`JSON.stringify([got.a, got.b, got.c, got.d, ('e' in got), got.f])`)
+	dst.vm.GlobalObject().Set("got", reconstructValue(dst, cv))
+	check, err := dst.vm.RunString(`JSON.stringify([got.a, got.b, got.c, got.d, ('e' in got), got.f])`)
 	if err != nil {
 		t.Fatalf("dest eval: %v", err)
 	}
@@ -62,6 +62,38 @@ func TestCloneRejectsUnsupportedClass(t *testing.T) {
 	}
 	if _, err := cloneValue(v); err == nil {
 		t.Fatal("cloneValue(Date) should error, got nil")
+	}
+}
+
+// TestCloneRejectsMapSetAndTypedArray covers a real, confirmed defect found
+// while wiring SharedArrayBuffer through this same code (M3, engine#343):
+// ClassName() reports "Object" — not a distinct name — for a Map, a Set, a
+// plain (non-shared) ArrayBuffer, AND every TypedArray kind in this pinned
+// goja build (confirmed directly via a small Go probe against the actual
+// build, not assumed from the spec). Before the Export()-type-based check
+// cloneAt now does, each of these silently cloned as an empty-ish plain
+// object via the Keys()-based path instead of this file's own documented
+// explicit rejection — losing the value's real content without even an
+// error to notice by. Each case here must error, and specifically must NOT
+// come back as a clonedObject with zero keys (the silent-empty-clone shape
+// the bug actually produced).
+func TestCloneRejectsMapSetAndTypedArray(t *testing.T) {
+	vm := goja.New()
+	cases := []string{
+		"new Map([['a', 1]])",
+		"new Set([1, 2, 3])",
+		"new ArrayBuffer(8)",
+		"new Int32Array(4)",
+	}
+	for _, src := range cases {
+		v, err := vm.RunString(src)
+		if err != nil {
+			t.Fatalf("%s: eval: %v", src, err)
+		}
+		cv, err := cloneValue(v)
+		if err == nil {
+			t.Fatalf("%s: cloneValue should error, got a clone instead: %#v", src, cv)
+		}
 	}
 }
 

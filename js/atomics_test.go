@@ -1,0 +1,123 @@
+// Copyright (c) the go-webengine/engine authors.
+// SPDX-License-Identifier: BSD-3-Clause
+
+package js
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+// TestAtomicsLoadStoreAddCompareExchange covers the non-blocking ops within
+// a single VM (no Worker needed — these operate correctly same-VM too, the
+// blocking wait/notify pair is the one that needs two real goroutines, see
+// TestAtomicsWaitWokenByNotify below).
+func TestAtomicsLoadStoreAddCompareExchange(t *testing.T) {
+	_, logs, res := runJS(t, page(`
+		var sab = new SharedArrayBuffer(16);
+		var v = new Int32Array(sab);
+		Atomics.store(v, 0, 10);
+		console.log('load=' + Atomics.load(v, 0));
+		console.log('add-returns-old=' + Atomics.add(v, 0, 5));
+		console.log('after-add=' + Atomics.load(v, 0));
+		console.log('cas-match=' + Atomics.compareExchange(v, 0, 15, 99));
+		console.log('after-cas-match=' + Atomics.load(v, 0));
+		console.log('cas-nomatch=' + Atomics.compareExchange(v, 0, 15, 1));
+		console.log('after-cas-nomatch=' + Atomics.load(v, 0));
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs,
+		"load=10",
+		"add-returns-old=10",
+		"after-add=15",
+		"cas-match=15",
+		"after-cas-match=99",
+		"cas-nomatch=99",
+		"after-cas-nomatch=99",
+	)
+}
+
+// TestAtomicsOnPlainArrayBufferThrows proves this binding's own deliberate
+// restriction (atomics.go's own doc comment: the one confirmed need for
+// Atomics at all is cross-VM shared memory) throws a clear, named error
+// rather than silently misbehaving against a plain ArrayBuffer's bytes.
+func TestAtomicsOnPlainArrayBufferThrows(t *testing.T) {
+	_, logs, res := runJS(t, page(`
+		try {
+			var v = new Int32Array(new ArrayBuffer(16));
+			Atomics.load(v, 0);
+			console.log('should not reach here');
+		} catch (e) {
+			console.log('threw:' + e.name + ':' + e.message);
+		}
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	found := false
+	for _, l := range logs {
+		if strings.HasPrefix(l, "log: threw:TypeError:") && strings.Contains(l, "SharedArrayBuffer") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("want a TypeError naming SharedArrayBuffer, got: %v", logs)
+	}
+}
+
+// TestAtomicsWaitNotEqualReturnsImmediately proves Atomics.wait does not
+// block at all when the current value already differs from the expected
+// one — the fast, common, non-blocking path every ring-buffer consumer
+// takes most of the time.
+func TestAtomicsWaitNotEqualReturnsImmediately(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, logs, res := runJS(t, page(`
+			var sab = new SharedArrayBuffer(4);
+			var v = new Int32Array(sab);
+			Atomics.store(v, 0, 1);
+			console.log('result=' + Atomics.wait(v, 0, 0, 5000));
+		`))
+		if res.ScriptsFailed != 0 {
+			t.Errorf("script failed: %+v logs=%v", res, logs)
+		}
+		mustHave(t, logs, "result=not-equal")
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Atomics.wait on a mismatched value blocked instead of returning immediately")
+	}
+}
+
+// TestAtomicsWaitTimesOut proves a real, bounded timeout: nobody ever
+// notifies, so wait must return "timed-out" close to the requested
+// duration, never hang the test suite.
+func TestAtomicsWaitTimesOut(t *testing.T) {
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, logs, res := runJS(t, page(`
+			var sab = new SharedArrayBuffer(4);
+			var v = new Int32Array(sab);
+			console.log('result=' + Atomics.wait(v, 0, 0, 50));
+		`))
+		if res.ScriptsFailed != 0 {
+			t.Errorf("script failed: %+v logs=%v", res, logs)
+		}
+		mustHave(t, logs, "result=timed-out")
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Atomics.wait did not time out")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Atomics.wait took %v, want close to its own 50ms timeout", elapsed)
+	}
+}
