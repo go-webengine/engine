@@ -481,6 +481,22 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   the common control-flow statements and a fixed allow-list of built-in math
   functions — every construct outside that scope is a clear, named error,
   never a silent gap. Not yet wired to `navigator.gpu` (next in M5).
+- **`navigator.gpu`/`GPUAdapter`/`GPUDevice`/`GPUBuffer`** (2026-11-05,
+  engine#345): WebGPU compute via `go-macos/metal` (pure Go, no cgo,
+  cross-builds and cross-runs on every architecture this repo already
+  targets, reporting no usable adapter anywhere but darwin). Off by default
+  (`Engine.EnableWebGPU`) — same opt-in convention as `OPFSRoot`/
+  `ForceCrossOriginIsolated`: a page getting compute access to the host's
+  real GPU the instant it renders is a comparable capability grant to real
+  disk access, so it is not on by default like a real browser. When on,
+  `requestAdapter()` genuinely never rejects (resolves `null` with no
+  usable GPU, matching spec); `GPUBuffer`'s `mapAsync`/`getMappedRange`
+  return a real, zero-copy view over the buffer's own unified memory, and
+  `unmap`/`destroy` detach every such view, per spec. `GPUSupportedLimits`
+  reports the spec's own documented default values (not yet queried from
+  real hardware per-limit capability — stated honestly, not overclaimed).
+  Shader modules and the rest of the compute pipeline (bind groups, command
+  encoding, `queue.submit()`) are the next, final piece of M5.
 
 **Honest limits (not overclaimed)**
 
