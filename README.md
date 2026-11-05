@@ -461,6 +461,26 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   would exceed it throws `QuotaExceededError` with no partial change.
   `createSyncAccessHandle` takes a real exclusive lock per file
   (`NoModificationAllowedError` on a second concurrent open).
+- **`wgslmsl`: a pure-Go WGSL→MSL compute-shader translator** (2026-11-05,
+  engine#345, package `wgslmsl`): the first piece of WebGPU compute support
+  (M5). Parses and type-checks with `go-gfx/wgsl` (a pure-Go, CTS-conformant
+  WGSL frontend), then emits Metal Shading Language for a module's one
+  `@compute` entry point — no Rust toolchain, no vendored binary blob (an
+  earlier spike proved compiling `naga` to `wasm32-unknown-unknown` and
+  running it through this engine's own WebAssembly support also works end
+  to end, verified bit-for-bit against real Metal, but was superseded by
+  this pure-Go path once go-gfx/wgsl turned out to need only a backend).
+  Every array index is clamped against its real bound buffer's element
+  count — Metal performs no bounds checking of its own, so this is a real
+  security boundary: a page's own untrusted WGSL cannot read or write
+  adjacent GPU memory through an out-of-range index, proven on real
+  hardware by `TestOutOfBoundsIndexIsClamped`. Scoped deliberately to the
+  realistic compute-kernel subset: one entry point reaching one function
+  (no helper calls yet), `storage` resource arrays of scalar/vector element
+  type (no uniform buffers/textures/samplers/atomics/matrices/structs yet),
+  the common control-flow statements and a fixed allow-list of built-in math
+  functions — every construct outside that scope is a clear, named error,
+  never a silent gap. Not yet wired to `navigator.gpu` (next in M5).
 
 **Honest limits (not overclaimed)**
 
