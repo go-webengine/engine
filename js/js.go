@@ -310,6 +310,15 @@ type binder struct {
 	// see wrapGPUBuffer's own doc comment for why this is a registry by
 	// object identity rather than state threaded through the JS surface.
 	gpuBuffers map[*goja.Object]*gpuBufferState
+	// gpuShaderModules/gpuComputePipelines/gpuBindGroupLayouts/gpuBindGroups/
+	// gpuCommandBuffers are the same by-object-identity registry shape as
+	// gpuBuffers, one per WebGPU object kind webgpu.go's compute pipeline
+	// surface needs to recover real Go-level state from a JS object alone.
+	gpuShaderModules    map[*goja.Object]*gpuShaderModuleState
+	gpuComputePipelines map[*goja.Object]*gpuComputePipelineState
+	gpuBindGroupLayouts map[*goja.Object]*gpuBindGroupLayoutInfo
+	gpuBindGroups       map[*goja.Object]*gpuBindGroupInfo
+	gpuCommandBuffers   map[*goja.Object]*gpuCommandEncoderState
 
 	// isWorker marks a binder built by newWorkerBinder (worker.go) rather
 	// than the main document's own Begin — the one thing opfs.go needs to

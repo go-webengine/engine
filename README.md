@@ -496,7 +496,25 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   reports the spec's own documented default values (not yet queried from
   real hardware per-limit capability — stated honestly, not overclaimed).
   Shader modules and the rest of the compute pipeline (bind groups, command
-  encoding, `queue.submit()`) are the next, final piece of M5.
+  encoding, `queue.submit()`) follow below — M5 is now complete.
+- **`GPUShaderModule`/`GPUComputePipeline`/`GPUBindGroup`/`GPUCommandEncoder`/
+  `queue.submit()`** (2026-11-05, engine#345): the rest of the compute
+  pipeline, closing out M5. `createShaderModule` translates via `wgslmsl`
+  eagerly but never throws — a bad shader still gets a usable module object,
+  matching spec; the error surfaces from `getCompilationInfo()` or a clear
+  throw from `createComputePipeline`. Only `layout: "auto"` is supported
+  (an explicit `GPUBindGroupLayout` is a clear, named error) — `wgslmsl`
+  already infers the real binding layout from the shader source itself. A
+  stated gap inherited from `go-macos/metal`, not from this binding's own
+  choices: `Dispatch` picks its own threadgroup shape from the hardware,
+  with no way to force it to match a shader's declared `@workgroup_size`,
+  so `local_invocation_id`/`workgroup_id` may not reflect the intended
+  grouping — harmless for the common case (a kernel keyed purely off
+  `global_invocation_id`), stated rather than silently risked otherwise.
+  `TestComputePipelineEndToEnd` is the roadmap's own final verification: a
+  real compute shader created, compiled, bound and dispatched entirely
+  through the public `navigator.gpu`-shaped API, output checked bit-for-bit
+  against real Metal hardware.
 
 **Honest limits (not overclaimed)**
 

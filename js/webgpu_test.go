@@ -222,6 +222,148 @@ func TestGPUDeviceDestroyResolvesLost(t *testing.T) {
 	}
 }
 
+// TestComputePipelineEndToEnd is the roadmap's own final M5 verification
+// step, now through the FULL navigator.gpu JS surface (not just wgslmsl's
+// own Go-level API): a real compute shader, created, compiled, bound and
+// dispatched entirely via the public WebGPU-shaped API a real page would
+// use, output read back and checked bit-for-bit against real Metal
+// hardware when one is available.
+func TestComputePipelineEndToEnd(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@compute @workgroup_size(4)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+					data[id.x] = data[id.x] + 1.0;
+				}
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+
+			var buf = dev.createBuffer({
+				size: 16,
+				usage: GPUBufferUsage.STORAGE | GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_DST,
+			});
+
+			return buf.mapAsync(GPUMapMode.WRITE).then(function() {
+				new Float32Array(buf.getMappedRange()).set([1, 2, 3, 4]);
+				buf.unmap();
+
+				var bindGroup = dev.createBindGroup({
+					layout: pipeline.getBindGroupLayout(0),
+					entries: [{ binding: 0, resource: { buffer: buf } }],
+				});
+
+				var encoder = dev.createCommandEncoder();
+				var pass = encoder.beginComputePass();
+				pass.setPipeline(pipeline);
+				pass.setBindGroup(0, bindGroup);
+				pass.dispatchWorkgroups(1);
+				pass.end();
+				dev.queue.submit([encoder.finish()]);
+
+				return buf.mapAsync(GPUMapMode.READ);
+			}).then(function() {
+				var out = Array.from(new Float32Array(buf.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				buf.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := "2,3,4,5"
+	if got, _ := body.Attribute("data-out"); got != want {
+		t.Fatalf("data-out = %q, want %q (bit-for-bit)", got, want)
+	}
+}
+
+// TestComputePipelineRejectsExplicitLayout proves the stated scope gap
+// (only layout: "auto" is supported) is a clear, named error.
+func TestComputePipelineRejectsExplicitLayout(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) { data[id.x] = 0.0; }
+			`+"`"+` });
+			try {
+				dev.createComputePipeline({ layout: {}, compute: { module: module } });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestDispatchWithoutBindGroupRejected proves a dispatch missing a needed
+// bind group fails clearly rather than reading/writing an unbound buffer
+// index.
+func TestDispatchWithoutBindGroupRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) { data[id.x] = 0.0; }
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginComputePass();
+			pass.setPipeline(pipeline);
+			try {
+				pass.dispatchWorkgroups(1);
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:OperationError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:OperationError")
+	}
+}
+
 // TestGPUMapAsyncRejectsBadRange proves mapAsync's own alignment/range
 // validation (OperationError), matching the spec rather than silently
 // accepting a misaligned or out-of-bounds request.

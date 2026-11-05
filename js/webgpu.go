@@ -4,8 +4,14 @@
 package js
 
 import (
+	"encoding/binary"
+	"fmt"
+	"strconv"
+
 	"github.com/dop251/goja"
 	"github.com/go-macos/metal"
+
+	"github.com/go-webengine/engine/wgslmsl"
 )
 
 // closeGPUDevices releases every *metal.Device this binder's own
@@ -204,15 +210,33 @@ func (b *binder) newGPUDevice(dev *metal.Device) *goja.Object {
 		return b.gpuCreateBuffer(dev, call)
 	})
 
+	o.Set("createShaderModule", func(call goja.FunctionCall) goja.Value {
+		return b.gpuCreateShaderModule(call)
+	})
+	o.Set("createComputePipeline", func(call goja.FunctionCall) goja.Value {
+		return b.gpuCreateComputePipeline(dev, call)
+	})
+	o.Set("createBindGroup", func(call goja.FunctionCall) goja.Value {
+		return b.gpuCreateBindGroup(call)
+	})
+	o.Set("createCommandEncoder", func(call goja.FunctionCall) goja.Value {
+		return b.wrapGPUCommandEncoder(&gpuCommandEncoderState{dev: dev})
+	})
+
 	queue := b.vm.NewObject()
 	queue.Set("writeBuffer", func(call goja.FunctionCall) goja.Value {
 		return b.gpuQueueWriteBuffer(call)
 	})
+	queue.Set("submit", func(call goja.FunctionCall) goja.Value {
+		return b.gpuQueueSubmit(dev, call)
+	})
 	queue.Set("onSubmittedWorkDone", func(call goja.FunctionCall) goja.Value {
-		// Nothing can be pending: this binding has no queue.submit() yet
-		// (the rest of the compute pipeline — shader modules, bind groups,
-		// command encoding — is M5's own next round), so "every submitted
-		// unit of work has completed" is vacuously, correctly true.
+		// Nothing can EVER be pending when this resolves: go-macos/metal's
+		// own Device.Run (which queue.submit uses, see gpuQueueSubmit)
+		// blocks until the GPU has finished, so by the time a submit() call
+		// returns, every unit of work it carried has already completed —
+		// matching this whole binding's own "settles synchronously"
+		// convention for every other Promise.
 		return b.resolved(goja.Undefined())
 	})
 	o.Set("queue", queue)
@@ -402,4 +426,429 @@ func (b *binder) gpuQueueWriteBuffer(call goja.FunctionCall) goja.Value {
 	}
 	copy(st.buf.Bytes()[bufferOffset:bufferOffset+size], data[dataOffset:dataOffset+size])
 	return goja.Undefined()
+}
+
+// gpuShaderModuleState is the Go-level state behind one GPUShaderModule:
+// the WGSL source (kept, not just the translation, so createComputePipeline
+// can re-translate selecting a DIFFERENT entry point — see its own doc
+// comment) and the translation this binder already ran eagerly at
+// createShaderModule time against the module's own default entry-point
+// selection.
+type gpuShaderModuleState struct {
+	src    string
+	result *wgslmsl.Result
+	err    error
+}
+
+// gpuCreateShaderModule implements GPUDevice.createShaderModule(descriptor).
+// Translation happens eagerly, right here — this binding settles everything
+// synchronously — but a translation failure does NOT reject or throw: per
+// spec, shader module creation always succeeds with a USABLE (if invalid)
+// module object, and the error surfaces later, via getCompilationInfo() or
+// (in this binding's own simplified, synchronous model, which has no
+// device-timeline validation-error/device-lost event stream to report it
+// through otherwise) a clear throw from createComputePipeline.
+func (b *binder) gpuCreateShaderModule(call goja.FunctionCall) goja.Value {
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("createShaderModule: a GPUShaderModuleDescriptor is required"))
+	}
+	src := desc.Get("code").String()
+	res, err := wgslmsl.Translate(src, wgslmsl.Options{})
+	return b.wrapGPUShaderModule(&gpuShaderModuleState{src: src, result: res, err: err})
+}
+
+func (b *binder) wrapGPUShaderModule(st *gpuShaderModuleState) *goja.Object {
+	o := b.vm.NewObject()
+	o.Set("getCompilationInfo", func(call goja.FunctionCall) goja.Value {
+		var messages []interface{}
+		if st.err != nil {
+			msg := b.vm.NewObject()
+			msg.Set("message", st.err.Error())
+			msg.Set("type", "error")
+			msg.Set("lineNum", 0)
+			msg.Set("linePos", 0)
+			msg.Set("offset", 0)
+			msg.Set("length", 0)
+			messages = append(messages, msg)
+		}
+		info := b.vm.NewObject()
+		info.Set("messages", b.vm.NewArray(messages...))
+		return b.resolved(info)
+	})
+	if b.gpuShaderModules == nil {
+		b.gpuShaderModules = map[*goja.Object]*gpuShaderModuleState{}
+	}
+	b.gpuShaderModules[o] = st
+	return o
+}
+
+// gpuComputePipelineState is the Go-level state behind one
+// GPUComputePipeline: the compiled, ready-to-dispatch go-macos/metal
+// pipeline and the exact wgslmsl.Result it was built from — dispatch-time
+// code (gpuComputePassState's own dispatchWorkgroups) needs the latter's
+// own Bindings (for the group/binding -> Metal buffer index map) and
+// WorkgroupSize (to convert a workgroup COUNT into the total THREAD count
+// go-macos/metal's own Dispatch expects — see dispatchWorkgroups' own doc
+// comment for the one stated gap this causes).
+type gpuComputePipelineState struct {
+	pipe   *metal.Pipeline
+	result *wgslmsl.Result
+}
+
+// gpuCreateComputePipeline implements GPUDevice.createComputePipeline(descriptor).
+// Only `layout: "auto"` is supported (no explicit GPUBindGroupLayout/
+// GPUPipelineLayout construction yet) — the one layout mode a script using
+// wgslmsl's own inferred bindings (every realistic simple compute shader)
+// actually needs; getBindGroupLayout(index) below is what a script then
+// calls to build a matching GPUBindGroup.
+func (b *binder) gpuCreateComputePipeline(dev *metal.Device, call goja.FunctionCall) goja.Value {
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("createComputePipeline: a GPUComputePipelineDescriptor is required"))
+	}
+	if layout := desc.Get("layout"); layout == nil || layout.String() != "auto" {
+		panic(unsupportedJS(b, "createComputePipeline: only layout: \"auto\" is supported (no explicit GPUBindGroupLayout/GPUPipelineLayout yet)"))
+	}
+	computeObj, _ := desc.Get("compute").(*goja.Object)
+	if computeObj == nil {
+		panic(b.vm.NewTypeError("createComputePipeline: a compute stage (GPUProgrammableStage) is required"))
+	}
+	moduleObj, _ := computeObj.Get("module").(*goja.Object)
+	modState := b.gpuShaderModules[moduleObj]
+	if modState == nil {
+		panic(b.vm.NewTypeError("createComputePipeline: compute.module must be a GPUShaderModule"))
+	}
+	entryPoint := ""
+	if ep := computeObj.Get("entryPoint"); ep != nil && !goja.IsUndefined(ep) {
+		entryPoint = ep.String()
+	}
+	var result *wgslmsl.Result
+	if entryPoint != "" {
+		// Re-translate selecting the requested entry point by its WGSL
+		// SOURCE name: the module may declare more than one compute entry
+		// point, in which case createShaderModule's own eager translation
+		// already failed with an ambiguity error (modState.err) — this is
+		// precisely how a script resolves that ambiguity, so modState's
+		// own cached result/error is deliberately NOT consulted here.
+		r, err := wgslmsl.Translate(modState.src, wgslmsl.Options{EntryPoint: entryPoint})
+		if err != nil {
+			panic(b.domException("OperationError", "createComputePipeline: "+err.Error()))
+		}
+		result = r
+	} else if modState.err != nil {
+		panic(b.domException("OperationError", "createComputePipeline: shader module failed to compile: "+modState.err.Error()))
+	} else {
+		result = modState.result
+	}
+	lib, err := dev.Compile(result.MSL)
+	if err != nil {
+		panic(b.domException("OperationError", "createComputePipeline: Metal rejected the generated shader: "+err.Error()))
+	}
+	pipe, err := lib.Pipeline(result.EntryPointName)
+	if err != nil {
+		panic(b.domException("OperationError", err.Error()))
+	}
+	return b.wrapGPUComputePipeline(&gpuComputePipelineState{pipe: pipe, result: result})
+}
+
+func (b *binder) wrapGPUComputePipeline(st *gpuComputePipelineState) *goja.Object {
+	o := b.vm.NewObject()
+	o.Set("getBindGroupLayout", func(call goja.FunctionCall) goja.Value {
+		idx := int(call.Argument(0).ToInteger())
+		layoutObj := b.vm.NewObject()
+		if b.gpuBindGroupLayouts == nil {
+			b.gpuBindGroupLayouts = map[*goja.Object]*gpuBindGroupLayoutInfo{}
+		}
+		b.gpuBindGroupLayouts[layoutObj] = &gpuBindGroupLayoutInfo{pipeline: st, group: idx}
+		return layoutObj
+	})
+	if b.gpuComputePipelines == nil {
+		b.gpuComputePipelines = map[*goja.Object]*gpuComputePipelineState{}
+	}
+	b.gpuComputePipelines[o] = st
+	return o
+}
+
+// gpuBindGroupLayoutInfo is what pipeline.getBindGroupLayout(index) returns
+// a handle to: which pipeline and which @group(index) it names. It carries
+// no resource-type validation of its own (the one real check — that every
+// binding a dispatch actually needs is present — happens at
+// dispatchWorkgroups time, against wgslmsl.Result.Bindings directly).
+type gpuBindGroupLayoutInfo struct {
+	pipeline *gpuComputePipelineState
+	group    int
+}
+
+// gpuBindGroupInfo is the Go-level state behind one GPUBindGroup: which
+// @group(N) it was built for, and the real buffer bound at each WGSL
+// `binding` index within it.
+type gpuBindGroupInfo struct {
+	group    int
+	bindings map[int]*gpuBufferState
+}
+
+// gpuCreateBindGroup implements GPUDevice.createBindGroup(descriptor).
+// Every entry's resource must be a plain `{buffer}` GPUBufferBinding over
+// the WHOLE buffer (no offset/size, no sampler/texture/external-texture
+// resources yet) — the one shape wgslmsl's own storage-array-only resource
+// scope ever needs.
+func (b *binder) gpuCreateBindGroup(call goja.FunctionCall) goja.Value {
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("createBindGroup: a GPUBindGroupDescriptor is required"))
+	}
+	layoutObj, _ := desc.Get("layout").(*goja.Object)
+	info := b.gpuBindGroupLayouts[layoutObj]
+	if info == nil {
+		panic(b.vm.NewTypeError("createBindGroup: layout must come from pipeline.getBindGroupLayout()"))
+	}
+	entriesObj, _ := desc.Get("entries").(*goja.Object)
+	if entriesObj == nil {
+		panic(b.vm.NewTypeError("createBindGroup: entries is required"))
+	}
+	n := int(entriesObj.Get("length").ToInteger())
+	bindings := map[int]*gpuBufferState{}
+	for i := 0; i < n; i++ {
+		entry, _ := entriesObj.Get(strconv.Itoa(i)).(*goja.Object)
+		if entry == nil {
+			panic(b.vm.NewTypeError("createBindGroup: entries must be GPUBindGroupEntry objects"))
+		}
+		bindingIdx := int(entry.Get("binding").ToInteger())
+		resObj, _ := entry.Get("resource").(*goja.Object)
+		if resObj == nil {
+			panic(unsupportedJS(b, "createBindGroup: entry.resource must be a GPUBufferBinding ({buffer}) — samplers/textures are not supported"))
+		}
+		bufObj, _ := resObj.Get("buffer").(*goja.Object)
+		st := b.gpuBuffers[bufObj]
+		if st == nil {
+			panic(b.vm.NewTypeError("createBindGroup: entry.resource.buffer must be a GPUBuffer"))
+		}
+		if off := resObj.Get("offset"); off != nil && !goja.IsUndefined(off) && off.ToInteger() != 0 {
+			panic(unsupportedJS(b, "createBindGroup: a non-zero GPUBufferBinding offset is not supported"))
+		}
+		if sz := resObj.Get("size"); sz != nil && !goja.IsUndefined(sz) && int(sz.ToInteger()) != st.size {
+			panic(unsupportedJS(b, "createBindGroup: a GPUBufferBinding size other than the whole buffer is not supported"))
+		}
+		bindings[bindingIdx] = st
+	}
+	bgObj := b.vm.NewObject()
+	if b.gpuBindGroups == nil {
+		b.gpuBindGroups = map[*goja.Object]*gpuBindGroupInfo{}
+	}
+	b.gpuBindGroups[bgObj] = &gpuBindGroupInfo{group: info.group, bindings: bindings}
+	return bgObj
+}
+
+// gpuCommandEncoderState is the Go-level state behind one
+// GPUCommandEncoder/GPUCommandBuffer — this binding uses the SAME Go value
+// for both (finish() just stops further recording and hands back a new JS
+// object identity over the identical state), since nothing here needs them
+// to be distinct beyond that. Deliberately scoped to AT MOST ONE compute
+// pass per encoder — the realistic shape every test and real usage needs so
+// far; a second beginComputePass() is a clear, named rejection, not a
+// silent no-op.
+type gpuCommandEncoderState struct {
+	dev        *metal.Device
+	passOpen   bool
+	passEnded  bool
+	finished   bool
+	dispatches []gpuRecordedDispatch
+}
+
+// gpuRecordedDispatch is one dispatchWorkgroups() call, fully resolved at
+// the moment it was recorded: every WGSL resource binding the pipeline
+// needs is already mapped to its real *metal.Buffer (including the
+// synthesised bounds-checking sizes buffer, sizesBuf, freed once
+// gpuQueueSubmit's own dev.Run has finished using it), and the workgroup
+// count has already been converted to the TOTAL thread count
+// go-macos/metal's own Dispatch expects.
+type gpuRecordedDispatch struct {
+	pipeline *gpuComputePipelineState
+	buffers  map[int]*metal.Buffer
+	sizesBuf *metal.Buffer
+	x, y, z  int
+}
+
+func (b *binder) wrapGPUCommandEncoder(st *gpuCommandEncoderState) *goja.Object {
+	o := b.vm.NewObject()
+	o.Set("beginComputePass", func(call goja.FunctionCall) goja.Value {
+		if st.finished {
+			panic(b.vm.NewTypeError("beginComputePass: this command encoder has already finished"))
+		}
+		if st.passOpen || st.passEnded {
+			panic(unsupportedJS(b, "beginComputePass: only one compute pass per command encoder is supported"))
+		}
+		st.passOpen = true
+		return b.wrapGPUComputePassEncoder(st)
+	})
+	o.Set("finish", func(call goja.FunctionCall) goja.Value {
+		if st.finished {
+			panic(b.vm.NewTypeError("finish: this command encoder has already finished"))
+		}
+		st.finished = true
+		cbObj := b.vm.NewObject()
+		if b.gpuCommandBuffers == nil {
+			b.gpuCommandBuffers = map[*goja.Object]*gpuCommandEncoderState{}
+		}
+		b.gpuCommandBuffers[cbObj] = st
+		return cbObj
+	})
+	return o
+}
+
+// wrapGPUComputePassEncoder builds the GPUComputePassEncoder surface. Bind
+// state (the current pipeline and every bind group set so far) persists
+// across multiple dispatchWorkgroups() calls within the SAME pass, exactly
+// as the spec requires — setPipeline/setBindGroup only ever update this
+// closure-captured state, and dispatchWorkgroups reads whatever is current
+// at the moment it is called.
+func (b *binder) wrapGPUComputePassEncoder(enc *gpuCommandEncoderState) *goja.Object {
+	var curPipeline *gpuComputePipelineState
+	curBindGroups := map[int]*gpuBindGroupInfo{}
+
+	o := b.vm.NewObject()
+	o.Set("setPipeline", func(call goja.FunctionCall) goja.Value {
+		pObj, _ := call.Argument(0).(*goja.Object)
+		p := b.gpuComputePipelines[pObj]
+		if p == nil {
+			panic(b.vm.NewTypeError("setPipeline: expected a GPUComputePipeline"))
+		}
+		curPipeline = p
+		return goja.Undefined()
+	})
+	o.Set("setBindGroup", func(call goja.FunctionCall) goja.Value {
+		idx := int(call.Argument(0).ToInteger())
+		bgObj, _ := call.Argument(1).(*goja.Object)
+		bg := b.gpuBindGroups[bgObj]
+		if bg == nil {
+			panic(b.vm.NewTypeError("setBindGroup: expected a GPUBindGroup"))
+		}
+		curBindGroups[idx] = bg
+		return goja.Undefined()
+	})
+	o.Set("dispatchWorkgroups", func(call goja.FunctionCall) goja.Value {
+		return b.gpuDispatchWorkgroups(enc, curPipeline, curBindGroups, call)
+	})
+	o.Set("end", func(call goja.FunctionCall) goja.Value {
+		enc.passOpen = false
+		enc.passEnded = true
+		return goja.Undefined()
+	})
+	return o
+}
+
+// gpuDispatchWorkgroups implements GPUComputePassEncoder.dispatchWorkgroups.
+//
+// The one stated, go-macos/metal-level gap: go-macos/metal's own Dispatch
+// takes a TOTAL thread-grid size and picks the threadgroup SHAPE itself
+// (from the hardware's own reported limits), with no way for this binding
+// to force it to match the WGSL shader's own declared @workgroup_size. This
+// is harmless for the realistic subset wgslmsl itself supports today (a
+// kernel keyed purely off global_invocation_id — confirmed correct
+// end-to-end by wgslmsl's own tests, since dispatchThreads semantics always
+// gives the right GLOBAL thread position regardless of internal grouping):
+// but local_invocation_id/local_invocation_index/workgroup_id, though
+// accepted as entry-point parameters, may not reflect the actually-executed
+// threadgroup shape when it differs from the WGSL source's own declared
+// size — stated here rather than silently wrong, since go-macos/metal has
+// no lower-level dispatch call this binding could use instead.
+func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gpuComputePipelineState, bindGroups map[int]*gpuBindGroupInfo, call goja.FunctionCall) goja.Value {
+	if pipeline == nil {
+		panic(b.domException("OperationError", "dispatchWorkgroups: no pipeline is set"))
+	}
+	x := int(call.Argument(0).ToInteger())
+	y := 1
+	if a := call.Argument(1); a != nil && !goja.IsUndefined(a) {
+		y = int(a.ToInteger())
+	}
+	z := 1
+	if a := call.Argument(2); a != nil && !goja.IsUndefined(a) {
+		z = int(a.ToInteger())
+	}
+	ws := pipeline.result.WorkgroupSize
+
+	buffers := map[int]*metal.Buffer{}
+	for _, bnd := range pipeline.result.Bindings {
+		bg, ok := bindGroups[bnd.Group]
+		if !ok {
+			panic(b.domException("OperationError", fmt.Sprintf("dispatchWorkgroups: no bind group set for @group(%d)", bnd.Group)))
+		}
+		bst, ok := bg.bindings[bnd.BindingIndex]
+		if !ok {
+			panic(b.domException("OperationError", fmt.Sprintf("dispatchWorkgroups: bind group for @group(%d) has no binding for @binding(%d)", bnd.Group, bnd.BindingIndex)))
+		}
+		buffers[bnd.MetalIndex] = bst.buf
+	}
+	var sizesBuf *metal.Buffer
+	if pipeline.result.SizeMetalIndex >= 0 {
+		sb, err := enc.dev.NewBuffer(4 * len(pipeline.result.Bindings))
+		if err != nil {
+			panic(b.domException("OperationError", err.Error()))
+		}
+		for i, bnd := range pipeline.result.Bindings {
+			bst := bindGroups[bnd.Group].bindings[bnd.BindingIndex]
+			count := uint32(bst.size / bnd.ElemBytes)
+			binary.LittleEndian.PutUint32(sb.Bytes()[i*4:], count)
+		}
+		buffers[pipeline.result.SizeMetalIndex] = sb
+		sizesBuf = sb
+	}
+	enc.dispatches = append(enc.dispatches, gpuRecordedDispatch{
+		pipeline: pipeline,
+		buffers:  buffers,
+		sizesBuf: sizesBuf,
+		x:        x * ws[0],
+		y:        y * ws[1],
+		z:        z * ws[2],
+	})
+	return goja.Undefined()
+}
+
+// gpuQueueSubmit implements GPUQueue.submit(commandBuffers): every recorded
+// dispatch, across every command buffer given, replays through ONE real
+// go-macos/metal Device.Run call (which blocks until the GPU has actually
+// finished — see onSubmittedWorkDone's own doc comment for why that makes
+// it correct to resolve immediately), then releases every ephemeral sizes
+// buffer a dispatch allocated.
+func (b *binder) gpuQueueSubmit(dev *metal.Device, call goja.FunctionCall) goja.Value {
+	arr, _ := call.Argument(0).(*goja.Object)
+	if arr == nil {
+		panic(b.vm.NewTypeError("submit: expected a sequence of GPUCommandBuffer"))
+	}
+	n := int(arr.Get("length").ToInteger())
+	var dispatches []gpuRecordedDispatch
+	for i := 0; i < n; i++ {
+		cbObj, _ := arr.Get(strconv.Itoa(i)).(*goja.Object)
+		cb := b.gpuCommandBuffers[cbObj]
+		if cb == nil {
+			panic(b.vm.NewTypeError("submit: expected a GPUCommandBuffer"))
+		}
+		dispatches = append(dispatches, cb.dispatches...)
+	}
+	err := dev.Run(func(e *metal.Encoder) {
+		for _, d := range dispatches {
+			e.Use(d.pipeline.pipe)
+			for idx, buf := range d.buffers {
+				e.Buffer(idx, buf)
+			}
+			e.Dispatch(d.x, d.y, d.z)
+		}
+	})
+	for _, d := range dispatches {
+		if d.sizesBuf != nil {
+			d.sizesBuf.Close()
+		}
+	}
+	if err != nil {
+		panic(b.domException("OperationError", err.Error()))
+	}
+	return goja.Undefined()
+}
+
+// unsupportedJS reports a construct this binding's own deliberately bounded
+// WebGPU scope does not (yet) support, matching wgslmsl's own "clear, named
+// rejection, never a silently wrong or partial translation" convention.
+func unsupportedJS(b *binder, msg string) goja.Value {
+	return b.vm.NewTypeError("webgpu: unsupported: " + msg)
 }
