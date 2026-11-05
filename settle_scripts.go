@@ -160,5 +160,6 @@ func (e *Engine) jsOptions(ctx context.Context, doc *Document, vpW, vpH int) js.
 		RealTimeTimers:      e.EnableWorkerStreaming,
 		OPFSRoot:            e.OPFSRoot,
 		MaxOPFSBytes:        e.MaxOPFSBytes,
+		EnableWebGPU:        e.EnableWebGPU,
 	}
 }

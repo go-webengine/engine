@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/dop251/goja"
+	"github.com/go-macos/metal"
 	"github.com/tetratelabs/wazero"
 
 	"github.com/go-webengine/engine/dom"
@@ -111,6 +112,17 @@ type Options struct {
 	// defaultMaxOPFSBytes, negative disables the guard. See
 	// engine.Engine.MaxOPFSBytes for the full rationale.
 	MaxOPFSBytes int64
+	// EnableWebGPU installs navigator.gpu (WebGPU compute via go-macos/metal
+	// on darwin; requestAdapter() resolves null elsewhere, per spec, rather
+	// than the property being absent). False (the default) installs nothing
+	// — matching this package's own established convention for every other
+	// capability that grants a page access to a real host resource
+	// (CrossOriginIsolated's SharedArrayBuffer, OPFSRoot's real disk): a
+	// rendered page getting arbitrary compute access to the host's real GPU
+	// is a comparable capability grant, confirmed by the user to need the
+	// same opt-in treatment. See engine.Engine.EnableWebGPU for the full
+	// rationale.
+	EnableWebGPU bool
 }
 
 // DefaultTimeout is the script budget when Options.Timeout is zero.
@@ -284,6 +296,20 @@ type binder struct {
 	// sharedArrayBufferPrototype) — built once, lazily, the first time a
 	// SharedArrayBuffer wrapper is ever created or reconstructed in this VM.
 	sabProto *goja.Object
+
+	// gpuDevices holds every *metal.Device this binder's own
+	// navigator.gpu.requestAdapter() calls have created (webgpu.go), so
+	// closeGPUDevices (called from Session.Close/stopWorkers) can release
+	// each one when the render/worker ends — a real GPU handle, not a pure
+	// Go allocation, so it must not leak across many renders in a
+	// long-lived host process. Nil for the overwhelming majority of pages
+	// that never touch navigator.gpu.
+	gpuDevices []*metal.Device
+	// gpuBuffers maps each live GPUBuffer wrapper object this binder's own
+	// VM created to its real Go-level state (webgpu.go's gpuBufferState) —
+	// see wrapGPUBuffer's own doc comment for why this is a registry by
+	// object identity rather than state threaded through the JS surface.
+	gpuBuffers map[*goja.Object]*gpuBufferState
 
 	// isWorker marks a binder built by newWorkerBinder (worker.go) rather
 	// than the main document's own Begin — the one thing opfs.go needs to

@@ -114,6 +114,12 @@ func (w *jsWorker) installWorkerGlobals() {
 		wb.installSharedArrayBuffer(g)
 		wb.installAtomics(g)
 	}
+	// navigator.gpu + GPUBufferUsage/GPUMapMode (WebGPU, Exposed=(Window,
+	// Worker)): same opt-in gate as the main document's own install().
+	if wb.opt.EnableWebGPU {
+		g.Set("GPUBufferUsage", wb.newGPUBufferUsage())
+		g.Set("GPUMapMode", wb.newGPUMapMode())
+	}
 
 	g.Set("postMessage", func(call goja.FunctionCall) goja.Value {
 		cv, err := cloneValue(call.Argument(0))
@@ -401,5 +407,6 @@ func (b *binder) stopWorkers() {
 	for _, w := range b.workers {
 		w.stop.Do(func() { close(w.stopCh) })
 		w.wb.forgetSharedBuffers()
+		w.wb.closeGPUDevices()
 	}
 }

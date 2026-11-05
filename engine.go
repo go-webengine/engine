@@ -213,6 +213,21 @@ type Engine struct {
 	// tracked incrementally) — never against an in-memory copy that could
 	// drift from what is actually on disk.
 	MaxOPFSBytes int64
+	// EnableWebGPU installs navigator.gpu — WebGPU compute, via
+	// github.com/go-macos/metal on darwin (requestAdapter() resolves null,
+	// per spec, rather than rejecting, on a machine with no usable GPU, and
+	// on every other platform — go-macos/metal itself cross-builds and
+	// cross-runs everywhere, reporting ErrUnsupported there). False (the
+	// default): navigator.gpu is not installed at all, zero behaviour
+	// change, matching this engine's own established convention for every
+	// other capability that grants a page access to a real host resource
+	// (ForceCrossOriginIsolated's SharedArrayBuffer, OPFSRoot's real disk).
+	// A page getting arbitrary compute access to the host's real GPU the
+	// instant it is rendered — with no opt-in — is a comparable capability
+	// grant (GPU compute cycles, driver-crash surface), confirmed by the
+	// user to need the same treatment rather than defaulting on like a real
+	// browser does.
+	EnableWebGPU bool
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)

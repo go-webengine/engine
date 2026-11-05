@@ -94,6 +94,13 @@ func (b *binder) install() {
 		b.installSharedArrayBuffer(g)
 		b.installAtomics(g)
 	}
+	// navigator.gpu + GPUBufferUsage/GPUMapMode (WebGPU): see
+	// Options.EnableWebGPU's own doc comment for why this is opt-in rather
+	// than on by default like a real browser.
+	if b.opt.EnableWebGPU {
+		g.Set("GPUBufferUsage", b.newGPUBufferUsage())
+		g.Set("GPUMapMode", b.newGPUMapMode())
+	}
 	// __webengineDone(value) — opt-in (Options.EnableDoneSignal), installed
 	// as a global only when set, so a caller not using this feature sees no
 	// behaviour change at all (not even an extra global name). Lets a
@@ -405,6 +412,9 @@ func (b *binder) newNavigator() goja.Value {
 	o.Set("javaEnabled", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
 	o.Set("sendBeacon", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
 	o.Set("storage", b.newStorageManager())
+	if b.opt.EnableWebGPU {
+		o.Set("gpu", b.newGPU())
+	}
 	return o
 }
 
