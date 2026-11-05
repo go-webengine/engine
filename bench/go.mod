@@ -26,6 +26,7 @@ require (
 	github.com/go-browserhttp/browserhttp v0.2.0 // indirect
 	github.com/go-gfx/gfx v0.37.0 // indirect
 	github.com/go-gfx/oksvg v0.3.1 // indirect
+	github.com/go-gfx/wgsl v0.4.0 // indirect
 	github.com/go-images/gif v0.2.0 // indirect
 	github.com/go-images/jpeg v0.3.0 // indirect
 	github.com/go-images/jpeg2000 v0.14.0 // indirect
