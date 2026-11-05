@@ -99,6 +99,18 @@ type Options struct {
 	// too, but only under this opt-in, so the ordinary bounded-render case
 	// is untouched.
 	RealTimeTimers bool
+	// OPFSRoot, when non-empty, enables navigator.storage.getDirectory() and
+	// names the real on-disk directory it is scoped under — see
+	// engine.Engine.OPFSRoot's own doc comment for the full rationale
+	// (including the security caveat this capability needed before
+	// shipping, engine#344). Empty (the default) installs nothing: a
+	// script's `'getDirectory' in navigator.storage` reads false, matching
+	// a browser with no persistent-storage access granted.
+	OPFSRoot string
+	// MaxOPFSBytes bounds a single origin's total OPFS usage; zero selects
+	// defaultMaxOPFSBytes, negative disables the guard. See
+	// engine.Engine.MaxOPFSBytes for the full rationale.
+	MaxOPFSBytes int64
 }
 
 // DefaultTimeout is the script budget when Options.Timeout is zero.
@@ -272,6 +284,15 @@ type binder struct {
 	// sharedArrayBufferPrototype) — built once, lazily, the first time a
 	// SharedArrayBuffer wrapper is ever created or reconstructed in this VM.
 	sabProto *goja.Object
+
+	// isWorker marks a binder built by newWorkerBinder (worker.go) rather
+	// than the main document's own Begin — the one thing opfs.go needs to
+	// decide whether createSyncAccessHandle exists on a FileSystemFileHandle
+	// this VM creates, matching the File System Standard's own
+	// [Exposed=DedicatedWorker] restriction (it is meaningless outside a
+	// Worker: there is no other context in this engine with its own
+	// independent event loop to block synchronously).
+	isWorker bool
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled

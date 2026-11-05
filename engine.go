@@ -182,6 +182,37 @@ type Engine struct {
 	// Cross-Origin-Opener-Policy/Cross-Origin-Embedder-Policy response
 	// headers by Fetch) is the spec-accurate signal.
 	ForceCrossOriginIsolated bool
+	// OPFSRoot, when non-empty, enables the Origin Private File System
+	// (navigator.storage.getDirectory(), File System Standard) and names the
+	// real, durable, writable directory it is scoped under — one
+	// SHA-256-hashed subdirectory per origin (scheme://host[:port]), so two
+	// different pages fetched by the same Engine can never read or write
+	// each other's OPFS tree even though they share one root. Empty (the
+	// default): navigator.storage.getDirectory is not installed at all — a
+	// caller not opting in gets zero behaviour change, in particular no
+	// real-disk writes a page's own script could trigger, matching this
+	// field's own roadmap caveat (engine#344): a headless engine fetching
+	// arbitrary untrusted URLs and letting their script write to a REAL
+	// directory on the host's disk is meaningfully larger attack surface
+	// than anything this engine exposes to page content by default (images,
+	// fetched bytes, localStorage all stay in memory and die with the
+	// render) — a host opts in deliberately, the same shape as FileRoot's
+	// own directory-scoped, traversal-refusing file: URL access. Every
+	// child name getFileHandle/getDirectoryHandle/removeEntry is given is
+	// validated before ever reaching a path join (rejects "", ".", "..",
+	// and any "/", "\" or NUL byte), which is what makes traversal outside
+	// the per-origin directory structurally impossible rather than merely
+	// filtered.
+	OPFSRoot string
+	// MaxOPFSBytes bounds the total bytes a single origin's OPFS tree may
+	// hold — the same "always bounded" convention as MaxWasmModuleBytes/
+	// MaxWasmMemoryBytes. Zero selects the 50 MiB default; a negative value
+	// disables the guard. Enforced on every FileSystemSyncAccessHandle
+	// write()/truncate() that would grow a file, by comparing against the
+	// origin directory's real on-disk usage (walked once, lazily, then
+	// tracked incrementally) — never against an in-memory copy that could
+	// drift from what is actually on disk.
+	MaxOPFSBytes int64
 	// JSLog, if non-nil, receives console.* and diagnostic lines from the script
 	// pass (used for debugging; nil discards them).
 	JSLog func(string)

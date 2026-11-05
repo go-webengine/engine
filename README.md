@@ -444,6 +444,23 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   their own 15-second safety net. `EnableWorkerStreaming` now gates every
   timer job's first firing by its real delay, not just a repeating
   interval's own repeats.
+- **Origin Private File System** (2026-11-05, `navigator.storage.getDirectory()`,
+  engine#344): `FileSystemDirectoryHandle`/`FileSystemFileHandle`
+  (`getFileHandle`/`getDirectoryHandle`/`removeEntry`) and
+  `FileSystemSyncAccessHandle` (`read`/`write`/`truncate`/`getSize`/`flush`/`close`,
+  `[Exposed=DedicatedWorker]` per spec — only reachable from inside a
+  Worker). Off by default (`Engine.OPFSRoot` empty): nothing is installed,
+  zero real-disk writes a page could ever trigger. A host opts in by naming
+  a real, durable directory; each origin gets its own SHA-256-hashed
+  subdirectory under it, so two pages fetched by the same `Engine` can
+  never see each other's tree. Every name is validated BEFORE any path
+  join (rejects empty, `.`, `..`, `/`, `\`, NUL), making traversal outside
+  the origin directory structurally impossible rather than filtered.
+  `Engine.MaxOPFSBytes` bounds a single origin's total usage (zero selects
+  a 50 MiB default, negative disables the guard); a write/truncate that
+  would exceed it throws `QuotaExceededError` with no partial change.
+  `createSyncAccessHandle` takes a real exclusive lock per file
+  (`NoModificationAllowedError` on a second concurrent open).
 
 **Honest limits (not overclaimed)**
 

@@ -158,5 +158,7 @@ func (e *Engine) jsOptions(ctx context.Context, doc *Document, vpW, vpH int) js.
 		EnableDoneSignal:    e.EnableDoneSignal,
 		CrossOriginIsolated: doc.CrossOriginIsolated || e.ForceCrossOriginIsolated,
 		RealTimeTimers:      e.EnableWorkerStreaming,
+		OPFSRoot:            e.OPFSRoot,
+		MaxOPFSBytes:        e.MaxOPFSBytes,
 	}
 }
