@@ -73,6 +73,7 @@ func newWorkerBinder(opt Options, deadline time.Time) *binder {
 		onHandlers: map[*dom.Node]map[string]goja.Value{},
 		executed:   map[*dom.Node]bool{},
 		deadman:    deadline,
+		isWorker:   true,
 	}
 }
 
@@ -86,6 +87,19 @@ func (w *jsWorker) installWorkerGlobals() {
 		g.Set(name, g)
 	}
 	g.Set("console", wb.newConsole())
+	// DOMException is a general exception type the spec exposes in every
+	// script context, not a DOM-specific interface installInterfaces alone
+	// would cover — see installDOMExceptionOnly's own doc comment. Needed
+	// here specifically because createSyncAccessHandle's own errors
+	// (opfs.go's domException helper) are thrown as real DOMExceptions.
+	wb.installDOMExceptionOnly(g)
+	// WorkerNavigator (HTML Standard §10.2.3.1): the same newNavigator() the
+	// main document's window gets — it only ever reads wb.vm/wb.opt, nothing
+	// document-specific — so a worker gets userAgent and, per opfs.go, the
+	// navigator.storage.getDirectory() entry point its own OPFS usage needs
+	// (createSyncAccessHandle itself is only ever reachable from a
+	// FileSystemFileHandle built by THIS binder, gated on wb.isWorker).
+	g.Set("navigator", wb.newNavigator())
 	wb.installTimers(g)
 	// crossOriginIsolated + SharedArrayBuffer + Atomics (atomics.go): a
 	// worker's own global scope needs these every bit as much as the main

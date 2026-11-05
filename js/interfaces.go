@@ -260,6 +260,22 @@ func (b *binder) installInterfaces(g *goja.Object) {
 	}
 }
 
+// installDOMExceptionOnly builds just the DOMException constructor/prototype,
+// for a context that never calls the full installInterfaces (a Worker has no
+// DOM/BOM tree at all — see newWorkerBinder's own doc comment) but still
+// needs DOMException to exist: it is a general ECMAScript exception type the
+// spec exposes in every script context, not a DOM-specific interface, and
+// opfs.go's own domException helper (shared by both the main document and
+// every Worker) relies on it being there either way.
+func (b *binder) installDOMExceptionOnly(g *goja.Object) {
+	proto := b.vm.NewObject()
+	_ = proto.SetPrototype(b.objectPrototype())
+	ctor := b.newInterfaceCtor("DOMException", proto)
+	_ = ctor.Set("prototype", proto)
+	_ = proto.DefineDataProperty("constructor", ctor, goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	g.Set("DOMException", ctor)
+}
+
 // objectPrototype returns the runtime's Object.prototype (root of every chain).
 func (b *binder) objectPrototype() *goja.Object {
 	if oc, ok := b.vm.GlobalObject().Get("Object").(*goja.Object); ok {

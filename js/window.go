@@ -404,6 +404,7 @@ func (b *binder) newNavigator() goja.Value {
 	o.Set("maxTouchPoints", 0)
 	o.Set("javaEnabled", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
 	o.Set("sendBeacon", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
+	o.Set("storage", b.newStorageManager())
 	return o
 }
 
