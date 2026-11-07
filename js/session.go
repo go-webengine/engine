@@ -330,6 +330,7 @@ func (s *Session) Close() {
 	}
 	s.b.stopWorkers()
 	s.b.forgetSharedBuffers()
+	s.b.forgetWasmMemories()
 	s.b.closeGPUDevices()
 	if s.b.wasmRuntime != nil {
 		_ = s.b.wasmRuntime.Close(context.Background())

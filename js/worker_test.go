@@ -308,6 +308,86 @@ func TestWorkerReceivedSharedArrayBufferReportsCorrectIdentity(t *testing.T) {
 	}
 }
 
+// TestWorkerReceivedWasmMemoryIsTrulyShared proves the exact architecture
+// go-wasmcontainers confirmed directly needing: a shared `WebAssembly.Memory`
+// object itself (not just its .buffer) posted to a Worker, with a write made
+// through the WORKER's own reconstructed wrapper visible back through the
+// MAIN thread's original one — i.e. the postMessage reconstructed a SECOND
+// view over the SAME Go-level bytes (wrapSharedWasmMemory/sharedBuffer),
+// never a copy. This is the "engine worker reads/writes the guest's memory
+// directly" half of their own described flow.
+func TestWorkerReceivedWasmMemoryIsTrulyShared(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			onmessage = (e) => {
+				const mem = e.data;
+				const view = new Int32Array(mem.buffer);
+				view[0] = 4242;
+				postMessage('tag=' + Object.prototype.toString.call(mem) + ' isSAB=' + (mem.buffer instanceof SharedArrayBuffer));
+			};
+		`))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var mem = new WebAssembly.Memory({initial: 1, maximum: 2, shared: true});
+		var view = new Int32Array(mem.buffer);
+		var w = new Worker('` + srv.URL + `/mem-worker.js');
+		w.onmessage = function(e) {
+			document.body.setAttribute('data-reply', e.data);
+			document.body.setAttribute('data-view0', String(view[0]));
+		};
+		w.postMessage(mem);
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-reply"); got != "tag=[object WebAssembly.Memory] isSAB=true" {
+		t.Fatalf("data-reply = %q, want %q", got, "tag=[object WebAssembly.Memory] isSAB=true")
+	}
+	if got, _ := body.Attribute("data-view0"); got != "4242" {
+		t.Fatalf("data-view0 = %q, want %q (the worker's write through its own reconstructed Memory should be visible through main's original one)", got, "4242")
+	}
+}
+
+// TestNonSharedWasmMemoryCannotBePostMessaged proves the documented
+// restriction (clone.go's own lookupWasmMemory check): postMessage-ing a
+// NON-shared Memory is logged and dropped with a clear, specific reason —
+// the SAME "logged and dropped, not thrown" contract
+// TestWorkerCloneUnsupportedValueFromWorkerLogged already establishes for
+// an unsupported value in general — rather than silently cloning as a
+// useless plain object or crashing on its own `grow` function property.
+func TestNonSharedWasmMemoryCannotBePostMessaged(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`onmessage = (e) => { postMessage('should-not-receive'); };`))
+	}))
+	defer srv.Close()
+
+	_, logs, res := runJS(t, page(`
+		var mem = new WebAssembly.Memory({initial: 1});
+		var w = new Worker('`+srv.URL+`/noop-worker.js');
+		w.postMessage(mem);
+		w.postMessage('still-alive');
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "postMessage: structured clone: a non-shared WebAssembly.Memory cannot be cloned")
+}
+
 // TestImportScriptsSharesGlobalScopeAndRunsInOrder proves the core contract
 // (confirmed needed directly by go-wasmcontainers, whose classic worker's
 // very first statement is `importScripts("wasm_exec.js")`): each url is

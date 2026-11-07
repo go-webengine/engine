@@ -297,6 +297,13 @@ type binder struct {
 	// SharedArrayBuffer wrapper is ever created or reconstructed in this VM.
 	sabProto *goja.Object
 
+	// ownedWasmMemories holds every `new WebAssembly.Memory(...)` wrapper
+	// object THIS binder's own VM registered in the package-level
+	// wasmMemoryRegistry (wasm.go) — mirrors ownedSharedBuffers exactly, one
+	// registry/cleanup pair per kind of cross-VM-shareable object. Cleaned
+	// up by forgetWasmMemories (Session.Close/stopWorkers).
+	ownedWasmMemories []*goja.Object
+
 	// gpuDevices holds every *metal.Device this binder's own
 	// navigator.gpu.requestAdapter() calls have created (webgpu.go), so
 	// closeGPUDevices (called from Session.Close/stopWorkers) can release

@@ -72,6 +72,14 @@ type clonedSharedView struct {
 	byteLength int
 }
 
+// clonedWasmMemory carries a SHARED `new WebAssembly.Memory(...)` wrapper's
+// own *sharedBuffer (wasm.go) through the clone — the same "clone copies,
+// never shares" exception clonedSharedBuffer documents, for the same
+// reason. Confirmed directly needed by go-wasmcontainers: their own guest
+// worker posts the Memory object itself (not just its .buffer) to a second,
+// plain-JS worker.
+type clonedWasmMemory struct{ sb *sharedBuffer }
+
 // typedArrayOrDataViewKinds names every TypedArray constructor plus DataView
 // — the full set this binding will reconstruct a shared VIEW as, broader
 // than atomics.go's own atomicsElemKind (which additionally restricts to
@@ -149,6 +157,19 @@ func cloneAt(v goja.Value, depth int, n *int) (clonedValue, error) {
 			}
 			return out, nil
 		case "Object":
+			// A WebAssembly.Memory wrapper (wasm.go) is checked before
+			// anything else in this case: it is a bespoke Go-built object
+			// (ClassName()=="Object" like everything else here) carrying a
+			// real `grow` FUNCTION property, which the generic paths below
+			// would reject outright ("a function cannot be cloned") well
+			// before ever reaching the ArrayBuffer-shaped Export() check
+			// that would otherwise apply to its `.buffer`.
+			if sb, isMemory := lookupWasmMemory(obj); isMemory {
+				if sb == nil {
+					return nil, &cloneErr{"structured clone: a non-shared WebAssembly.Memory cannot be cloned (construct it with shared: true to share it with a Worker)"}
+				}
+				return clonedWasmMemory{sb: sb}, nil
+			}
 			// ClassName()=="Object" is NOT reliable evidence this is a plain
 			// object in this goja version — confirmed directly (a small Go
 			// probe against the pinned build), ArrayBuffer, Map, Set, and
@@ -252,6 +273,8 @@ func reconstructValue(b *binder, cv clonedValue) goja.Value {
 		return o
 	case clonedSharedBuffer:
 		return b.wrapSharedArrayBuffer(x.sb)
+	case clonedWasmMemory:
+		return b.wrapSharedWasmMemory(x.sb)
 	case clonedSharedView:
 		// Builds a FRESH ArrayBuffer wrapper for x.sb in this VM (the same
 		// shared []byte, a new JS-level object) rather than trying to find
