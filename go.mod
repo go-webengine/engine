@@ -38,7 +38,7 @@ require (
 	github.com/go-simd/highway v0.0.14 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/google/pprof v0.0.0-20240727154555-813a5fbdbec8 // indirect
-	github.com/klauspost/compress v1.18.7 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/refraction-networking/utls v1.8.2 // indirect
 	github.com/tannevaled/gobig2 v0.2.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
