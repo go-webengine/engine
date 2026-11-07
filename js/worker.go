@@ -4,6 +4,7 @@
 package js
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -155,6 +156,69 @@ func (w *jsWorker) installWorkerGlobals() {
 		w.stop.Do(func() { close(w.stopCh) })
 		return goja.Undefined()
 	})
+	// importScripts (HTML Standard §10.3.4, WorkerGlobalScope): the one
+	// thing a classic dedicated worker needs that this package's own
+	// top-level-script-only model didn't yet cover — confirmed needed
+	// directly by go-wasmcontainers (`importScripts("wasm_exec.js")` is
+	// literally their worker's first statement).
+	g.Set("importScripts", wb.importScripts)
+}
+
+// importScripts implements WorkerGlobalScope.importScripts(...urls) (HTML
+// Standard §10.3.4, "import scripts into worker global scope"). Every url
+// is resolved and syntax-checked FIRST — a bad url throws SyntaxError
+// before anything is fetched, matching the spec's own algorithm order —
+// then each is fetched and run IN TURN, sharing this worker's own global
+// scope exactly like multiple top-level <script> tags would (runRethrow
+// runs against the SAME b.vm). A fetch failure or an uncaught exception in
+// an imported script propagates to the CALLER (the worker script that
+// invoked importScripts) — spec's own "rethrow errors: true" — unlike
+// every OTHER script this package ever runs (a worker's own top-level
+// script, or a queued timer callback), whose errors are caught and merely
+// logged (see execute's own doc comment: "a script error never
+// propagates"). A script that already ran is not undone if a LATER url in
+// the same call fails.
+func (b *binder) importScripts(call goja.FunctionCall) goja.Value {
+	urls := make([]string, len(call.Arguments))
+	for i, a := range call.Arguments {
+		urls[i] = a.String()
+	}
+	for _, u := range urls {
+		if _, ok := resolveURL(b.opt.PageURL, u); !ok {
+			panic(b.domException("SyntaxError", "importScripts: cannot parse URL "+u))
+		}
+	}
+	for _, u := range urls {
+		src, ok := b.fetchScript(u)
+		if !ok {
+			panic(b.vm.NewTypeError("importScripts: failed to fetch " + u))
+		}
+		if err := b.runRethrow(src, u); err != nil {
+			var exc *goja.Exception
+			if errors.As(err, &exc) {
+				panic(exc.Value())
+			}
+			panic(b.vm.NewGoError(err))
+		}
+	}
+	return goja.Undefined()
+}
+
+// runRethrow compiles and runs one script exactly like execute (js.go),
+// except it RETURNS a compile/runtime error instead of logging it and
+// swallowing it — the one case this package needs that for: importScripts'
+// own spec-mandated "rethrow errors" contract.
+func (b *binder) runRethrow(src, name string) error {
+	prog, err := goja.Compile(name, src, false)
+	if err != nil {
+		return err
+	}
+	b.vm.ClearInterrupt()
+	if b.opt.Ctx.Err() != nil {
+		b.vm.Interrupt("context cancelled")
+	}
+	_, err = b.vm.RunProgram(prog)
+	return err
 }
 
 // workerTickInterval is the real wall-clock cadence a worker's own event
@@ -288,7 +352,8 @@ func (b *binder) newWorker(call goja.ConstructorCall) *goja.Object {
 		func() goja.Value { return orUndefined(b.onHandler(wrapperNode, "error")) },
 		func(v goja.Value) { b.setOnHandler(wrapperNode, "error", v) })
 
-	src, ok := b.fetchScript(call.Argument(0).String())
+	scriptArg := call.Argument(0).String()
+	src, ok := b.fetchScript(scriptArg)
 	if !ok {
 		o.Set("postMessage", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
 		o.Set("terminate", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
@@ -307,8 +372,21 @@ func (b *binder) newWorker(call goja.ConstructorCall) *goja.Object {
 		return o
 	}
 
+	// A worker's own settings object resolves relative URLs (importScripts,
+	// or any future fetch a worker makes) against the WORKER's own script
+	// URL, never the creating document's — a real, confirmed bug fixed here
+	// (engine#342 follow-up): newWorkerBinder previously inherited
+	// b.opt.PageURL UNCHANGED from the creating binder, so
+	// `importScripts('wasm_exec.js')` from a worker NOT co-located with the
+	// main page resolved against the wrong origin/path entirely. Found by
+	// direct reproduction (a worker served from a different path than its
+	// own relative importScripts target), not assumed.
+	workerOpt := b.opt
+	if abs, ok := resolveURL(b.opt.PageURL, scriptArg); ok {
+		workerOpt.PageURL = abs
+	}
 	w := &jsWorker{
-		wb:          newWorkerBinder(b.opt, b.deadman),
+		wb:          newWorkerBinder(workerOpt, b.deadman),
 		wrapperNode: wrapperNode,
 		inbox:       make(chan workerTask, workerInboxCap),
 		stopCh:      make(chan struct{}),

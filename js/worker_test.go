@@ -306,3 +306,152 @@ func TestWorkerReceivedSharedArrayBufferReportsCorrectIdentity(t *testing.T) {
 		t.Fatalf("data-view0 = %q, want %q (the worker's write should be visible through main's own original view)", got, "42")
 	}
 }
+
+// TestImportScriptsSharesGlobalScopeAndRunsInOrder proves the core contract
+// (confirmed needed directly by go-wasmcontainers, whose classic worker's
+// very first statement is `importScripts("wasm_exec.js")`): each url is
+// fetched and run, IN ORDER, sharing the worker's own global scope exactly
+// like multiple top-level <script> tags — a `var` from the first script is
+// visible to the second, and both are visible to the worker's own
+// top-level code afterward.
+func TestImportScriptsSharesGlobalScopeAndRunsInOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/a.js":
+			w.Write([]byte(`var fromA = 'a'; self.order = (self.order || []).concat('a');`))
+		case "/b.js":
+			w.Write([]byte(`var fromB = fromA + 'b'; self.order = self.order.concat('b');`))
+		case "/worker.js":
+			w.Write([]byte(`
+				importScripts('/a.js', '/b.js');
+				postMessage(fromB + ':' + order.join(','));
+			`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "ab:a,b" {
+		t.Fatalf("data-reply = %q, want %q", got, "ab:a,b")
+	}
+}
+
+// TestImportScriptsFetchFailureThrowsCatchably proves a fetch failure
+// rethrows into the CALLING script (catchable there) rather than silently
+// aborting the worker or being swallowed like a top-level script's own
+// errors are.
+func TestImportScriptsFetchFailureThrowsCatchably(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/worker.js" {
+			w.Write([]byte(`
+				try {
+					importScripts('/missing.js');
+					postMessage('should-not-reach-here');
+				} catch (e) {
+					postMessage('caught:' + e.name);
+				}
+			`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "caught:TypeError" {
+		t.Fatalf("data-reply = %q, want %q", got, "caught:TypeError")
+	}
+}
+
+// TestImportScriptsUncaughtErrorPropagatesButWorkerSurvives proves an
+// uncaught exception from an IMPORTED script propagates to the calling
+// script (here, uncaught all the way out of the worker's own top-level
+// script, so it is caught and logged exactly like any other top-level
+// worker script error — see execute's own "a script error never
+// propagates" doc comment) rather than crashing the worker goroutine or
+// silently continuing as if nothing happened.
+func TestImportScriptsUncaughtErrorPropagatesButWorkerSurvives(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/throws.js":
+			w.Write([]byte(`throw new RangeError('boom from throws.js');`))
+		case "/worker.js":
+			w.Write([]byte(`
+				importScripts('/throws.js');
+				postMessage('should-not-reach-here');
+			`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var w = new Worker('` + srv.URL + `/worker.js');
+		var replied = false;
+		w.onmessage = function(e) { replied = true; };
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL: testURL,
+		Client:  http.DefaultClient,
+		Timeout: 3 * time.Second,
+		Log:     func(s string) { logs = append(logs, s) },
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed (the MAIN document's own script, not the worker's): %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "boom from throws.js")
+	if has(logs, "should-not-reach-here") {
+		t.Fatal("the worker's own postMessage after importScripts should never have run")
+	}
+}
+
+// TestDOMExceptionAvailableInWorkerForImportScripts is a narrower,
+// deterministic check of the SyntaxError path alone (a URL containing a NUL
+// byte, which net/url.Parse rejects), run synchronously inside the worker's
+// own top-level script rather than depending on a second real fetch.
+func TestDOMExceptionAvailableInWorkerForImportScripts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/worker.js" {
+			w.Write([]byte("try {\n" +
+				"importScripts('http://ex\\x00ample/a.js');\n" +
+				"postMessage('should-not-reach-here');\n" +
+				"} catch (e) {\n" +
+				"postMessage('caught:' + e.name);\n" +
+				"}\n"))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-reply")
+	if got != "caught:SyntaxError" && got != "caught:TypeError" {
+		t.Fatalf("data-reply = %q, want caught:SyntaxError (or caught:TypeError, if this Go version's net/url accepts the NUL byte)", got)
+	}
+}

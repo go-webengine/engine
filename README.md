@@ -379,6 +379,17 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   go-wasmcontainers after M2 shipped: their containers stream stdout/
   stderr/exit-status/GPU-frame messages continuously, which M2's own
   synchronous-reply `postMessage` round trip alone cannot surface.
+- **`WorkerGlobalScope.importScripts()`** (2026-11-05, engine#342 follow-up):
+  every url is resolved/validated first (a bad one throws `SyntaxError`
+  before any fetch, per spec), then fetched and run IN TURN sharing the
+  worker's own global scope like multiple top-level `<script>` tags. A fetch
+  failure or an uncaught exception in an imported script propagates to the
+  calling script (spec's own "rethrow errors") — the one case where this
+  engine's usual "a script error never propagates" rule doesn't apply.
+  Fixed alongside it: a worker's own relative-URL base was wrongly the
+  creating document's `PageURL`, not the worker's own script URL — found
+  writing this feature's own test (a worker not co-located with the main
+  page, exactly `importScripts("wasm_exec.js")`'s real shape), not assumed.
 - **`SharedArrayBuffer` + `Atomics`** (2026-11-04, engine#343): real
   cross-VM shared memory for Worker's own `postMessage` boundary, gated on
   real cross-origin isolation (below) exactly like a real browser —
