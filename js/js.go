@@ -352,6 +352,15 @@ type binder struct {
 	// its own ordered bindGroupLayouts — see gpuCreatePipelineLayout's own
 	// doc comment (webgpu.go).
 	gpuPipelineLayouts map[*goja.Object][]*goja.Object
+	// gpuErrorScopes is one GPUDevice's own error-scope stack and
+	// "uncapturederror" listener, keyed by the *metal.Device it wraps —
+	// see gpuErrorScopeState/gpuGuard's own doc comments (webgpu.go) for
+	// the full WebGPU error-model rationale.
+	gpuErrorScopes map[*metal.Device]*gpuErrorScopeState
+	// gpuErrorProtos caches each GPU error class's own .prototype (built
+	// once per binder/VM, by class name) — see newGPUError's own doc
+	// comment (webgpu.go).
+	gpuErrorProtos map[string]*goja.Object
 
 	// isWorker marks a binder built by newWorkerBinder (worker.go) rather
 	// than the main document's own Begin — the one thing opfs.go needs to

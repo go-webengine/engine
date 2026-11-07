@@ -426,6 +426,83 @@ func TestDevicePushPopErrorScopeAndUncapturedError(t *testing.T) {
 	}
 }
 
+// TestCreateComputePipelineBadWGSLCapturedByErrorScope reproduces
+// go-wasmcontainers' own exact first confirmed scenario: bad WGSL must
+// come back as a captured, positioned GPUValidationError, not a thrown
+// exception that kills the guest.
+func TestCreateComputePipelineBadWGSLCapturedByErrorScope(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: 'this is not valid WGSL at all {{{' });
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+			} catch (e) { threw = true; }
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (bad WGSL must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestQueueWriteBufferOutOfRangeCapturedByErrorScope reproduces
+// go-wasmcontainers' own exact third confirmed scenario: an out-of-range
+// queue.writeBuffer() is GPU content validation, captured by an open
+// error scope, never a thrown TypeError.
+func TestQueueWriteBufferOutOfRangeCapturedByErrorScope(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var buf = dev.createBuffer({ size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				dev.queue.writeBuffer(buf, 0, new Uint8Array(32)); // 32 bytes into a 16-byte buffer
+			} catch (e) { threw = true; }
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				buf.destroy();
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (an out-of-range writeBuffer must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
 // TestPopErrorScopeWithoutPushRejects proves the one real, spec-correct
 // validation this binding's own error scopes DO enforce without capturing
 // anything: popErrorScope() with no matching pushErrorScope rejects with
@@ -548,6 +625,16 @@ func TestComputePipelineRejectsExplicitLayout(t *testing.T) {
 // TestDispatchWithoutBindGroupRejected proves a dispatch missing a needed
 // bind group fails clearly rather than reading/writing an unbound buffer
 // index.
+// TestDispatchWithoutBindGroupRejected proves the WebGPU error MODEL
+// (§22), not a synchronous throw: a dispatch missing a bind group for a
+// declared @group is GPU content validation, which per spec never throws
+// — it is captured by an open error scope (or fired as
+// "uncapturederror" with none open), and the call itself still returns
+// normally. Confirmed directly needed by go-wasmcontainers: their own
+// go-gfx/webgpu wraps calls in pushErrorScope("validation")/
+// popErrorScope() specifically so a guest's own mistake surfaces as a
+// captured, positioned error rather than killing the whole worker — a
+// real synchronous throw here would do exactly that.
 func TestDispatchWithoutBindGroupRejected(t *testing.T) {
 	root, logs, res := runWebGPU(t, page(`
 		navigator.gpu.requestAdapter().then(function(a) {
@@ -564,23 +651,85 @@ func TestDispatchWithoutBindGroupRejected(t *testing.T) {
 			var encoder = dev.createCommandEncoder();
 			var pass = encoder.beginComputePass();
 			pass.setPipeline(pipeline);
+			dev.pushErrorScope('validation');
 			try {
 				pass.dispatchWorkgroups(1);
-				document.body.setAttribute('data-result', 'should-have-thrown');
+				document.body.setAttribute('data-threw', 'false');
 			} catch (e) {
-				document.body.setAttribute('data-result', 'threw:' + e.name);
+				document.body.setAttribute('data-threw', 'true:' + e.name);
 			}
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				document.body.setAttribute('data-captured-message', err ? err.message : '');
+			});
 		});
 	`))
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-	got, _ := dom.Find(root, "body").Attribute("data-result")
-	if got == "skip-no-gpu" {
+	body := dom.Find(root, "body")
+	got, _ := body.Attribute("data-threw")
+	if got == "" {
+		if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+			t.Skip("no usable GPU on this machine/platform")
+		}
+	}
+	if got != "false" {
+		t.Fatalf("data-threw = %q, want %q (a GPU validation error must never throw synchronously)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+	if got, _ := body.Attribute("data-captured-message"); got == "" {
+		t.Fatal("data-captured-message is empty, want a real message naming the missing bind group")
+	}
+}
+
+// TestDispatchErrorFiresUncapturedErrorWithNoScopeOpen is
+// TestDispatchWithoutBindGroupRejected's own counterpart with NO error
+// scope open: the SAME GPU validation failure must still not throw, and
+// must instead fire "uncapturederror" on the device — confirmed by
+// go-wasmcontainers' own ask directly ("when no scope is open, fire
+// uncapturederror on the device").
+func TestDispatchErrorFiresUncapturedErrorWithNoScopeOpen(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) { data[id.x] = 0.0; }
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginComputePass();
+			pass.setPipeline(pipeline);
+			var fired = null;
+			dev.addEventListener('uncapturederror', function(e) { fired = e.error; });
+			try {
+				pass.dispatchWorkgroups(1);
+				document.body.setAttribute('data-threw', 'false');
+			} catch (e) {
+				document.body.setAttribute('data-threw', 'true:' + e.name);
+			}
+			document.body.setAttribute('data-fired-name', fired ? fired.constructor.name : 'null');
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
 		t.Skip("no usable GPU on this machine/platform")
 	}
-	if got != "threw:OperationError" {
-		t.Fatalf("data-result = %q, want %q", got, "threw:OperationError")
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q", got, "false")
+	}
+	if got, _ := body.Attribute("data-fired-name"); got != "GPUValidationError" {
+		t.Fatalf("data-fired-name = %q, want %q (uncapturederror should fire with no scope open)", got, "GPUValidationError")
 	}
 }
 

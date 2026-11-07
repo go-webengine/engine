@@ -27,6 +27,163 @@ func (b *binder) closeGPUDevices() {
 	b.gpuDevices = nil
 }
 
+// gpuScope is one open device.pushErrorScope(filter) call: the filter it
+// was pushed with ("validation"/"out-of-memory"/"internal") and the
+// first matching error it has captured, if any — per spec, a scope holds
+// AT MOST one error; a later matching error while one is already
+// captured is simply discarded, never overwrites it.
+type gpuScope struct {
+	filter   string
+	captured goja.Value
+}
+
+// gpuErrorScopeState is one GPUDevice's own error-scope stack and
+// "uncapturederror" listener — see gpuGuard's own doc comment for how an
+// error actually lands here.
+type gpuErrorScopeState struct {
+	scopes            []*gpuScope
+	onUncapturedError goja.Value
+}
+
+// gpuErrorProto returns (building once, lazily, per binder/VM and per
+// class name) the .prototype every GPU error object of that class is
+// stamped with — confirmed directly needed by go-wasmcontainers:
+// go-gfx/webgpu reads `err.constructor.name` on whatever popErrorScope()
+// resolves with to tell GPUValidationError/GPUOutOfMemoryError/
+// GPUInternalError apart. These are never exposed as globals (no
+// confirmed need for a script to call `new GPUValidationError(...)`
+// itself — only to read one popErrorScope() already handed it), so the
+// constructor function built here exists purely to give `.constructor`/
+// `.constructor.name` the right identity, the same minimal-cost pattern
+// wasmClassCtor (wasm.go) already established for WebAssembly.Module/
+// Instance.
+func (b *binder) gpuErrorProto(className string) *goja.Object {
+	if p, ok := b.gpuErrorProtos[className]; ok {
+		return p
+	}
+	if b.gpuErrorProtos == nil {
+		b.gpuErrorProtos = map[string]*goja.Object{}
+	}
+	proto := b.vm.NewObject()
+	ctor := b.vm.ToValue(func(goja.ConstructorCall) *goja.Object { return nil })
+	if ctorObj, ok := ctor.(*goja.Object); ok {
+		_ = ctorObj.DefineDataProperty("name", b.vm.ToValue(className), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+	}
+	_ = proto.DefineDataProperty("constructor", ctor, goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	_ = proto.DefineDataPropertySymbol(goja.SymToStringTag, b.vm.ToValue(className), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	b.gpuErrorProtos[className] = proto
+	return proto
+}
+
+// newGPUError builds one GPUError-shaped object ({message}, prototyped
+// so .constructor.name reads className).
+func (b *binder) newGPUError(className, message string) *goja.Object {
+	o := b.vm.NewObject()
+	_ = o.SetPrototype(b.gpuErrorProto(className))
+	o.Set("message", message)
+	return o
+}
+
+func (b *binder) newGPUValidationError(message string) *goja.Object {
+	return b.newGPUError("GPUValidationError", message)
+}
+
+// gpuValidationPanic wraps a GPU error object (and the error-scope filter
+// class it belongs under — "validation" or "out-of-memory", WebGPU's own
+// two concrete GPUError subtypes this binding ever generates) so
+// gpuGuard's own recover can tell "generate a validation error, per
+// WebGPU's own error model (§22)" apart from an ordinary thrown
+// TypeError (a WebIDL-level argument-shape problem — wrong type, missing
+// required field — which must still throw synchronously regardless of
+// any open error scope; this binding keeps that distinction rather than
+// routing every panic through the scope mechanism). Both are otherwise
+// goja.Value, indistinguishable by type alone, which is why this exists
+// as its own Go type instead of relying on a value comparison.
+type gpuValidationPanic struct {
+	err   *goja.Object
+	class string
+}
+
+// panicValidation is what every call site that represents GPU CONTENT
+// validation (as opposed to WebIDL argument misuse) panics with —
+// confirmed directly needed by go-wasmcontainers' own three negative
+// tests (bad WGSL, a dispatch missing a bind group for a declared
+// @group, an out-of-range queue.writeBuffer): their own go-gfx/webgpu
+// wraps calls in pushErrorScope("validation")/popErrorScope() and
+// expects the captured error back, not a thrown exception that kills
+// the whole guest.
+func (b *binder) panicValidation(message string) {
+	panic(gpuValidationPanic{err: b.newGPUValidationError(message), class: "validation"})
+}
+
+// panicOutOfMemory is panicValidation's own counterpart for a real
+// allocation failure (createBuffer against go-macos/metal) — the OTHER
+// concrete GPUError subtype a pushErrorScope("out-of-memory") is meant to
+// catch. Routed through the SAME gpuGuard mechanism, matched against a
+// scope's own filter by class, not lumped under "validation" just
+// because no confirmed test exercises this one yet.
+func (b *binder) panicOutOfMemory(message string) {
+	panic(gpuValidationPanic{err: b.newGPUError("GPUOutOfMemoryError", message), class: "out-of-memory"})
+}
+
+// gpuGuard runs fn, catching ONLY a panicValidation-raised error (see its
+// own doc comment for why that is the one panic shape this intercepts,
+// never an ordinary TypeError or an unrelated Go panic, both of which
+// propagate through unchanged — a real bug must still crash). Per
+// WebGPU's own error model (§22 "Errors & Debugging"): a caught error is
+// handed to the INNERMOST open error scope whose own filter matches it
+// (walking outward — a scope with a non-matching filter lets it pass
+// through to the next one), captured there only if that scope does not
+// already hold an error; if no open scope matches at all, it fires
+// "uncapturederror" on the device instead. Either way, fn's own call
+// still "succeeds" as far as the script can tell — invalidResult stands
+// in for whatever the real result would have been, matching spec's own
+// "return an invalid object" contract (never a throw, never a rejected
+// promise, for this error class specifically).
+func (b *binder) gpuGuard(dev *metal.Device, invalidResult goja.Value, fn func() goja.Value) goja.Value {
+	st := b.gpuErrorScopes[dev]
+	var result goja.Value
+	var caught *goja.Object
+	var class string
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				return
+			}
+			vp, ok := r.(gpuValidationPanic)
+			if !ok {
+				panic(r)
+			}
+			caught, class = vp.err, vp.class
+		}()
+		result = fn()
+	}()
+	if caught == nil {
+		return result
+	}
+	if st != nil {
+		for i := len(st.scopes) - 1; i >= 0; i-- {
+			sc := st.scopes[i]
+			if sc.filter != class {
+				continue
+			}
+			if sc.captured == nil {
+				sc.captured = caught
+			}
+			return invalidResult
+		}
+		if st.onUncapturedError != nil {
+			if fn, ok := goja.AssertFunction(st.onUncapturedError); ok {
+				ev := b.newEvent("uncapturederror")
+				ev.Set("error", caught)
+				b.callSafely(fn, goja.Undefined(), ev)
+			}
+		}
+	}
+	return invalidResult
+}
+
 // gpuLimitDefaults is the WebGPU Specification's own "Limit default and
 // better values" table (§3.6.2 Limits, W3C Working Draft read for this
 // binding), used verbatim: this binding does not yet query Metal for the
@@ -232,52 +389,66 @@ func (b *binder) newGPUDevice(dev *metal.Device) *goja.Object {
 	})
 	o.Set("lost", lostPromise)
 
-	// pushErrorScope/popErrorScope (WebGPU §4.5): this binding reports
-	// every GPU-surface error SYNCHRONOUSLY, as a thrown JS exception at
-	// the point of the failing call (createBuffer, createComputePipeline,
-	// …) — there is no asynchronous validation-error/device-lost event
-	// stream for an error scope to CAPTURE instead. errorScopeDepth is
-	// still real and spec-correct for the one thing that does not need
-	// capturing: push/pop balance. popErrorScope() with no matching push
-	// is a real OperationError per spec; a BALANCED pop, with nothing in
-	// between having thrown (a thrown error here always propagates past
-	// the scope as an exception, same as it would with no scope at all —
-	// a stated, not hidden, simplification), resolves null — "no error
-	// occurred in this scope", which is accurate for every case this
-	// binding can actually observe.
-	errorScopeDepth := 0
+	// pushErrorScope/popErrorScope/"uncapturederror" (WebGPU §22 "Errors &
+	// Debugging"): a REAL error-scope stack, confirmed directly needed by
+	// go-wasmcontainers — go-gfx/webgpu wraps every creation in
+	// pushErrorScope("validation")/popErrorScope() and turns the popped
+	// GPUValidationError's own message into a Go error, so their guest's
+	// bad WGSL must come back as a captured error, not a thrown exception
+	// that kills the worker (the original, simpler design here DID throw
+	// synchronously for every GPU error, which this round corrects for
+	// the specific error class WebGPU itself documents as "generate a
+	// [validation] error", never a throw — see gpuGuard's own doc comment
+	// for exactly which call sites changed and which stayed real
+	// synchronous TypeErrors, a WebIDL-level distinction this binding
+	// still keeps).
+	errState := &gpuErrorScopeState{}
+	if b.gpuErrorScopes == nil {
+		b.gpuErrorScopes = map[*metal.Device]*gpuErrorScopeState{}
+	}
+	b.gpuErrorScopes[dev] = errState
 	o.Set("pushErrorScope", func(call goja.FunctionCall) goja.Value {
-		errorScopeDepth++
+		errState.scopes = append(errState.scopes, &gpuScope{filter: call.Argument(0).String()})
 		return goja.Undefined()
 	})
 	o.Set("popErrorScope", func(call goja.FunctionCall) goja.Value {
-		if errorScopeDepth == 0 {
+		if len(errState.scopes) == 0 {
 			return b.rejected(b.domException("OperationError", "popErrorScope: no matching pushErrorScope"))
 		}
-		errorScopeDepth--
-		return b.resolved(goja.Null())
+		n := len(errState.scopes) - 1
+		sc := errState.scopes[n]
+		errState.scopes = errState.scopes[:n]
+		if sc.captured == nil {
+			return b.resolved(goja.Null())
+		}
+		return b.resolved(sc.captured)
 	})
-	// "uncapturederror" (WebGPU §4.5.3): fires when an error is NOT caught
-	// by any error scope. This binding's own errors are always thrown
-	// synchronously (see pushErrorScope's own doc comment immediately
-	// above) rather than queued onto a device-timeline event, so nothing
-	// here ever actually dispatches this event — registering a listener
-	// is accepted (so a script that defensively adds one does not throw)
-	// but it will never fire, stated rather than faked with a listener
-	// that is silently never called for a reason the registration itself
-	// does not reveal.
-	o.Set("addEventListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
-	o.Set("removeEventListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	o.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
+		if call.Argument(0).String() == "uncapturederror" {
+			errState.onUncapturedError = call.Argument(1)
+		}
+		return goja.Undefined()
+	})
+	o.Set("removeEventListener", func(call goja.FunctionCall) goja.Value {
+		if call.Argument(0).String() == "uncapturederror" {
+			errState.onUncapturedError = nil
+		}
+		return goja.Undefined()
+	})
 
 	o.Set("createBuffer", func(call goja.FunctionCall) goja.Value {
-		return b.gpuCreateBuffer(dev, call)
+		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
+			return b.gpuCreateBuffer(dev, call)
+		})
 	})
 
 	o.Set("createShaderModule", func(call goja.FunctionCall) goja.Value {
 		return b.gpuCreateShaderModule(call)
 	})
 	o.Set("createComputePipeline", func(call goja.FunctionCall) goja.Value {
-		return b.gpuCreateComputePipeline(dev, call)
+		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
+			return b.gpuCreateComputePipeline(dev, call)
+		})
 	})
 	o.Set("createComputePipelineAsync", func(call goja.FunctionCall) goja.Value {
 		return b.gpuCreateComputePipelineAsync(dev, call)
@@ -297,10 +468,14 @@ func (b *binder) newGPUDevice(dev *metal.Device) *goja.Object {
 
 	queue := b.vm.NewObject()
 	queue.Set("writeBuffer", func(call goja.FunctionCall) goja.Value {
-		return b.gpuQueueWriteBuffer(call)
+		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
+			return b.gpuQueueWriteBuffer(call)
+		})
 	})
 	queue.Set("submit", func(call goja.FunctionCall) goja.Value {
-		return b.gpuQueueSubmit(dev, call)
+		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
+			return b.gpuQueueSubmit(dev, call)
+		})
 	})
 	queue.Set("onSubmittedWorkDone", func(call goja.FunctionCall) goja.Value {
 		// Nothing can EVER be pending when this resolves: go-macos/metal's
@@ -356,7 +531,7 @@ func (b *binder) gpuCreateBuffer(dev *metal.Device, call goja.FunctionCall) goja
 	}
 	buf, err := dev.NewBuffer(size)
 	if err != nil {
-		panic(b.domException("OperationError", err.Error()))
+		b.panicOutOfMemory(err.Error())
 	}
 	clear(buf.Bytes()) // spec: device memory is allocated and zeroed
 	st := &gpuBufferState{buf: buf, size: size, usage: usage, mapState: "unmapped"}
@@ -494,7 +669,13 @@ func (b *binder) gpuQueueWriteBuffer(call goja.FunctionCall) goja.Value {
 		size = int(a.ToInteger())
 	}
 	if bufferOffset < 0 || size < 0 || dataOffset < 0 || dataOffset+size > len(data) || bufferOffset+size > st.size {
-		panic(b.vm.NewTypeError("writeBuffer: range out of bounds"))
+		// A range/bounds problem is GPU CONTENT validation per spec
+		// (WebGPU's own writeBuffer algorithm "generates a validation
+		// error"), not a WebIDL argument-shape issue — confirmed directly
+		// needed by go-wasmcontainers' own "out-of-range writes" negative
+		// test, which expects this captured by an open error scope, not
+		// thrown.
+		b.panicValidation("writeBuffer: range out of bounds")
 	}
 	copy(st.buf.Bytes()[bufferOffset:bufferOffset+size], data[dataOffset:dataOffset+size])
 	return goja.Undefined()
@@ -584,9 +765,23 @@ type gpuComputePipelineState struct {
 // gpuCreatePipelineLayout (confirmed directly needed by go-wasmcontainers:
 // their own batch compute path binds a loop-budget group next to the
 // guest's own groups, which `layout: "auto"`'s single-pipeline inference
-// cannot express). Returns (state, nil) on success or (nil, errVal) on
-// failure — NEVER panics — so the sync wrapper can panic with errVal and
-// the async one can reject with it, without duplicating this logic.
+// cannot express).
+//
+// Two distinct failure shapes, deliberately NOT unified into one: a
+// WebIDL-level argument-shape problem (missing descriptor, wrong object
+// type) is RETURNED as a TypeError — the sync caller panics with it (a
+// real synchronous throw, correct regardless of any open error scope)
+// and the async caller rejects with it directly. A GPU CONTENT
+// validation failure (bad WGSL, a shader Metal itself rejects) instead
+// PANICS via panicValidation — confirmed directly needed by
+// go-wasmcontainers' own "bad WGSL must come back as a captured error,
+// not kill the worker": the sync caller runs inside gpuGuard (its own
+// outer closure in newGPUDevice), which routes this panic through the
+// device's error scopes; the async caller recovers it itself and
+// rejects directly, bypassing scopes entirely — matching spec's own
+// special-cased behaviour for createComputePipelineAsync specifically
+// (its own promise reports a compile failure directly, never through
+// pushErrorScope/popErrorScope).
 func (b *binder) gpuBuildComputePipeline(dev *metal.Device, call goja.FunctionCall) (*gpuComputePipelineState, goja.Value) {
 	desc, _ := call.Argument(0).(*goja.Object)
 	if desc == nil {
@@ -626,26 +821,30 @@ func (b *binder) gpuBuildComputePipeline(dev *metal.Device, call goja.FunctionCa
 		// own cached result/error is deliberately NOT consulted here.
 		r, err := wgslmsl.Translate(modState.src, wgslmsl.Options{EntryPoint: entryPoint})
 		if err != nil {
-			return nil, b.domException("OperationError", "createComputePipeline: "+err.Error())
+			b.panicValidation("createComputePipeline: " + err.Error())
 		}
 		result = r
 	} else if modState.err != nil {
-		return nil, b.domException("OperationError", "createComputePipeline: shader module failed to compile: "+modState.err.Error())
+		b.panicValidation("createComputePipeline: shader module failed to compile: " + modState.err.Error())
 	} else {
 		result = modState.result
 	}
 	lib, err := dev.Compile(result.MSL)
 	if err != nil {
-		return nil, b.domException("OperationError", "createComputePipeline: Metal rejected the generated shader: "+err.Error())
+		b.panicValidation("createComputePipeline: Metal rejected the generated shader: " + err.Error())
 	}
 	pipe, err := lib.Pipeline(result.EntryPointName)
 	if err != nil {
-		return nil, b.domException("OperationError", err.Error())
+		b.panicValidation(err.Error())
 	}
 	return &gpuComputePipelineState{pipe: pipe, result: result, explicitLayouts: explicitLayouts}, nil
 }
 
 // gpuCreateComputePipeline implements GPUDevice.createComputePipeline(descriptor).
+// A real GPU-validation failure (panicValidation, inside
+// gpuBuildComputePipeline) propagates past this function unchanged — its
+// own caller (newGPUDevice's "createComputePipeline" closure) runs this
+// inside gpuGuard, which is what actually routes it to an error scope.
 func (b *binder) gpuCreateComputePipeline(dev *metal.Device, call goja.FunctionCall) goja.Value {
 	st, errVal := b.gpuBuildComputePipeline(dev, call)
 	if errVal != nil {
@@ -658,10 +857,33 @@ func (b *binder) gpuCreateComputePipeline(dev *metal.Device, call goja.FunctionC
 // GPUDevice.createComputePipelineAsync(descriptor) — the SAME translate/
 // compile work as the sync form (this binding settles everything
 // synchronously; there is no real background compile to await), wrapped
-// in an already-settled Promise instead of panicking, per spec's own
-// Promise<GPUComputePipeline> return type.
+// in an already-settled Promise instead of panicking. Deliberately does
+// NOT run through gpuGuard/error scopes — per spec, this one call always
+// reports a compile failure by rejecting ITS OWN promise directly, never
+// through pushErrorScope/popErrorScope (see gpuBuildComputePipeline's
+// own doc comment) — so a panicValidation from inside it is recovered
+// HERE, locally, converting it straight to a rejection.
 func (b *binder) gpuCreateComputePipelineAsync(dev *metal.Device, call goja.FunctionCall) goja.Value {
-	st, errVal := b.gpuBuildComputePipeline(dev, call)
+	var st *gpuComputePipelineState
+	var errVal goja.Value
+	var validationErr *goja.Object
+	func() {
+		defer func() {
+			r := recover()
+			if r == nil {
+				return
+			}
+			vp, ok := r.(gpuValidationPanic)
+			if !ok {
+				panic(r)
+			}
+			validationErr = vp.err
+		}()
+		st, errVal = b.gpuBuildComputePipeline(dev, call)
+	}()
+	if validationErr != nil {
+		return b.rejected(validationErr)
+	}
 	if errVal != nil {
 		return b.rejected(errVal)
 	}
@@ -948,7 +1170,9 @@ func (b *binder) wrapGPUComputePassEncoder(enc *gpuCommandEncoderState) *goja.Ob
 		return goja.Undefined()
 	})
 	o.Set("dispatchWorkgroups", func(call goja.FunctionCall) goja.Value {
-		return b.gpuDispatchWorkgroups(enc, curPipeline, curBindGroups, call)
+		return b.gpuGuard(enc.dev, goja.Undefined(), func() goja.Value {
+			return b.gpuDispatchWorkgroups(enc, curPipeline, curBindGroups, call)
+		})
 	})
 	o.Set("end", func(call goja.FunctionCall) goja.Value {
 		enc.passOpen = false
@@ -975,7 +1199,7 @@ func (b *binder) wrapGPUComputePassEncoder(enc *gpuCommandEncoderState) *goja.Ob
 // no lower-level dispatch call this binding could use instead.
 func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gpuComputePipelineState, bindGroups map[int]*gpuBindGroupInfo, call goja.FunctionCall) goja.Value {
 	if pipeline == nil {
-		panic(b.domException("OperationError", "dispatchWorkgroups: no pipeline is set"))
+		b.panicValidation("dispatchWorkgroups: no pipeline is set")
 	}
 	x := int(call.Argument(0).ToInteger())
 	y := 1
@@ -992,11 +1216,11 @@ func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gp
 	for _, bnd := range pipeline.result.Bindings {
 		bg, ok := bindGroups[bnd.Group]
 		if !ok {
-			panic(b.domException("OperationError", fmt.Sprintf("dispatchWorkgroups: no bind group set for @group(%d)", bnd.Group)))
+			b.panicValidation(fmt.Sprintf("dispatchWorkgroups: no bind group set for @group(%d)", bnd.Group))
 		}
 		bst, ok := bg.bindings[bnd.BindingIndex]
 		if !ok {
-			panic(b.domException("OperationError", fmt.Sprintf("dispatchWorkgroups: bind group for @group(%d) has no binding for @binding(%d)", bnd.Group, bnd.BindingIndex)))
+			b.panicValidation(fmt.Sprintf("dispatchWorkgroups: bind group for @group(%d) has no binding for @binding(%d)", bnd.Group, bnd.BindingIndex))
 		}
 		buffers[bnd.MetalIndex] = bst.buf
 	}
@@ -1004,7 +1228,7 @@ func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gp
 	if pipeline.result.SizeMetalIndex >= 0 {
 		sb, err := enc.dev.NewBuffer(4 * pipeline.result.SizesCount)
 		if err != nil {
-			panic(b.domException("OperationError", err.Error()))
+			b.panicValidation(err.Error())
 		}
 		for _, bnd := range pipeline.result.Bindings {
 			if bnd.Kind != wgslmsl.BindingStorageArray {
@@ -1121,13 +1345,13 @@ func (b *binder) gpuQueueSubmit(dev *metal.Device, call goja.FunctionCall) goja.
 			continue
 		}
 		if err := runPending(); err != nil {
-			panic(b.domException("OperationError", err.Error()))
+			b.panicValidation(err.Error())
 		}
 		copy(c.copy.dst.Bytes()[c.copy.dstOffset:c.copy.dstOffset+c.copy.size],
 			c.copy.src.Bytes()[c.copy.srcOffset:c.copy.srcOffset+c.copy.size])
 	}
 	if err := runPending(); err != nil {
-		panic(b.domException("OperationError", err.Error()))
+		b.panicValidation(err.Error())
 	}
 	return goja.Undefined()
 }

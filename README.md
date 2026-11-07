@@ -404,6 +404,23 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **WebGPU error scopes now actually CAPTURE errors** (fix, 2026-11-08,
+  round 10): round 9's `pushErrorScope`/`popErrorScope` only got the
+  push/pop balance right — every GPU error still threw synchronously,
+  which go-wasmcontainers caught immediately: per WebGPU's own error
+  model (§22), `create*`/`submit`/`dispatch` NEVER throw for a GPU
+  content-validation failure (bad WGSL, a dispatch missing a bind group,
+  an out-of-range `writeBuffer`) — the error is captured by the innermost
+  open scope matching its class, or fires `"uncapturederror"` with none
+  open, and the call itself still returns. A real, WebIDL-aware
+  distinction is kept throughout: an actual argument-shape problem
+  (missing descriptor, wrong type) still throws a synchronous `TypeError`
+  regardless of any open scope — only GPU content validation is captured.
+  `GPUValidationError`/`GPUOutOfMemoryError` objects are real, with their
+  own `.constructor.name`, matching exactly what go-gfx/webgpu reads off
+  a popped error. `createComputePipelineAsync` deliberately bypasses
+  scopes entirely and rejects its own promise directly on a compile
+  failure — a documented special case in spec, not an oversight.
 - **WebGPU: feature/limit iterables, error scopes, explicit bind group
   layouts, `copyBufferToBuffer`** (feature, 2026-11-07, round 9): with
   Go's `net/http` fetch working (round 8), the next stop was WebGPU
@@ -413,10 +430,10 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   `Symbol.iterator`, and only the first two existed). A follow-up
   measurement, each item checked independently, narrowed the remaining
   gaps to exactly four: the features iterable, `device.pushErrorScope`/
-  `popErrorScope` (this binding's own errors are always thrown
-  synchronously — there is no async error-timeline to CAPTURE instead,
-  stated directly; push/pop balance is still real and spec-correct), the
-  `GPUShaderStage` namespace (never installed, unlike its
+  `popErrorScope` (push/pop balance was real and spec-correct from the
+  start; actually CAPTURING an error instead of still throwing past the
+  scope took one more day — see round 10 below, which go-wasmcontainers'
+  own report caught immediately), the `GPUShaderStage` namespace (never installed, unlike its
   `GPUBufferUsage`/`GPUMapMode` siblings), and `device.createBindGroupLayout`
   (which also blocked `createPipelineLayout`/`createComputePipelineAsync`/
   the mapAsync-readback item behind it). Explicit (non-`"auto"`) pipeline
