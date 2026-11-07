@@ -135,6 +135,24 @@ func (w *jsWorker) installWorkerGlobals() {
 	wb.installURLSearchParams(g)
 	wb.installIntl(g)
 	g.Set("performance", wb.newPerformance())
+	// WebAssembly (Exposed=(Window, Worker) per the WebAssembly JS API —
+	// confirmed missing live by go-wasmcontainers' own worker-side probe:
+	// their wasm_exec.js calls WebAssembly.instantiateStreaming at startup).
+	// newWebAssembly's own body touches only b.vm/b.opt/the lazily-created
+	// wazero runtime (wasmRT) — confirmed by reading it, no DOM dependency.
+	g.Set("WebAssembly", wb.newWebAssembly())
+	// location (WorkerLocation, HTML Standard §10.2.3.2): confirmed missing
+	// live ("location is not defined") by the same probe, which reads
+	// location.search/location.hostname. Reuses the SAME newLocation() the
+	// main document's window gets — it only ever reads wb.opt.PageURL
+	// (correctly the WORKER's own script URL, not the creating document's,
+	// thanks to newWorker's own base-URL fix) and does real net/url
+	// parsing, no DOM dependency. A stated, deliberate simplification:
+	// real WorkerLocation has no assign()/replace()/reload() (a worker
+	// cannot navigate itself) — this object still has them as harmless
+	// no-ops/mutators, since no confirmed need justifies a stricter,
+	// separate read-only type yet.
+	g.Set("location", wb.newLocation())
 	wb.installTimers(g)
 	// crossOriginIsolated + SharedArrayBuffer + Atomics (atomics.go): a
 	// worker's own global scope needs these every bit as much as the main
@@ -155,6 +173,17 @@ func (w *jsWorker) installWorkerGlobals() {
 		g.Set("GPUBufferUsage", wb.newGPUBufferUsage())
 		g.Set("GPUMapMode", wb.newGPUMapMode())
 	}
+	// Nested Worker (HTML Standard §10.2.6 permits it; confirmed needed
+	// directly by go-wasmcontainers: their own engine spawns workers from
+	// within a worker). newWorker has no hidden assumption that it is only
+	// ever called on the TOP-level binder — it already operates generically
+	// on whichever *binder it is a method of (wb here), appending to wb's
+	// OWN workers slice, fetching the child's script against wb's OWN
+	// PageURL (so a grandchild's relative URL correctly resolves against
+	// ITS creating worker's location, recursively) — the one thing that
+	// needed fixing for this to be safe was stopWorkers' own cleanup not
+	// cascading into a worker's own children; see its own doc comment.
+	g.Set("Worker", func(call goja.ConstructorCall) *goja.Object { return wb.newWorker(call) })
 
 	g.Set("postMessage", func(call goja.FunctionCall) goja.Value {
 		cv, err := cloneValue(call.Argument(0))
@@ -514,10 +543,16 @@ func (b *binder) drainWorkerInboxes() {
 
 // stopWorkers terminates every live worker this binder created — called by
 // Session.Close so a render never leaks a worker goroutine past its own
+// session's lifetime. Recurses into each worker's OWN stopWorkers too — a
+// real fix needed once nested Worker (a worker creating its own child
+// workers) became possible: without this, Session.Close's single-level
+// walk would stop only the direct children, leaking every grandchild's own
+// goroutine, GPU device and SharedArrayBuffer registry entries past the
 // session's lifetime.
 func (b *binder) stopWorkers() {
 	for _, w := range b.workers {
 		w.stop.Do(func() { close(w.stopCh) })
+		w.wb.stopWorkers()
 		w.wb.forgetSharedBuffers()
 		w.wb.closeGPUDevices()
 	}

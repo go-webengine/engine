@@ -130,6 +130,43 @@ func (b *binder) installNet(g *goja.Object) {
 		return o
 	})
 	g.Set("MessageChannel", func(call goja.ConstructorCall) *goja.Object { return b.newMessageChannel() })
+	g.Set("Response", func(call goja.ConstructorCall) *goja.Object {
+		return b.newResponseFromInit(call)
+	})
+}
+
+// newResponseFromInit implements `new Response(body, init)` (Fetch
+// Standard §6.3): a Response not backed by a real network fetch — the one
+// confirmed-useful case this binding needs it for is a runtime shim's own
+// `typeof Response === "function"` capability probe (a common
+// feature-detection idiom, confirmed missing live by go-wasmcontainers'
+// own worker-side probe) seeing a real constructor instead of a
+// ReferenceError, rather than any real code here constructing a mock
+// Response itself.
+func (b *binder) newResponseFromInit(call goja.ConstructorCall) *goja.Object {
+	var raw []byte
+	if bodyArg := call.Argument(0); bodyArg != nil && !goja.IsUndefined(bodyArg) && !goja.IsNull(bodyArg) {
+		if bs, ok := b.bufferSourceBytes(bodyArg); ok {
+			raw = bs
+		} else {
+			raw = []byte(bodyArg.String())
+		}
+	}
+	status := 200
+	statusText := ""
+	hdr := http.Header{}
+	if initObj, ok := call.Argument(1).(*goja.Object); ok {
+		if s := initObj.Get("status"); s != nil && !goja.IsUndefined(s) {
+			status = int(s.ToInteger())
+		}
+		if st := initObj.Get("statusText"); st != nil && !goja.IsUndefined(st) {
+			statusText = st.String()
+		}
+		for k, v := range headerMapFromArg(initObj.Get("headers")) {
+			hdr.Set(k, v)
+		}
+	}
+	return b.newResponse(&httpResult{status: status, statusText: statusText, headers: hdr, raw: raw})
 }
 
 // fetch performs a bounded request through e.Client and returns a real Promise
