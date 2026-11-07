@@ -547,3 +547,64 @@ func TestWasmModuleSharedMemoryRequiresCrossOriginIsolation(t *testing.T) {
 	}
 	mustHave(t, logs, "rejected:CompileError")
 }
+
+// TestWasmInstanceAndModuleInstanceofHold covers the real, confirmed need:
+// Go's own wasm_exec.js (Go.run) does `if (!(instance instanceof
+// WebAssembly.Instance)) throw ...` — before WebAssembly.Instance/.Module
+// existed as real constructors with their own .prototype, that `instanceof`
+// itself threw "Value is not an object: undefined" rather than evaluating
+// to false, aborting the whole guest.
+func TestWasmInstanceAndModuleInstanceofHold(t *testing.T) {
+	html := `<html><body><script>
+		` + wasmFixtureScript(t) + `
+		WebAssembly.instantiate(bytes, {env: {host_offset: function(x) { return x + 1000; }}}).then(function(result) {
+			console.log('oneStepInstance=' + (result.instance instanceof WebAssembly.Instance));
+			console.log('oneStepModule=' + (result.module instanceof WebAssembly.Module));
+			console.log('ctorName=' + WebAssembly.Instance.name + ',' + WebAssembly.Module.name);
+			try {
+				new WebAssembly.Module(bytes);
+				console.log('syncModuleCtor=did-not-throw');
+			} catch (e) { console.log('syncModuleCtor=' + e.name); }
+			try {
+				new WebAssembly.Instance(result.module, {});
+				console.log('syncInstanceCtor=did-not-throw');
+			} catch (e) { console.log('syncInstanceCtor=' + e.name); }
+		}, function(err) { console.log('unexpected-rejection=' + err); });
+	</script></body></html>`
+	_, logs, res := runJS(t, html)
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs,
+		"oneStepInstance=true",
+		"oneStepModule=true",
+		"ctorName=Instance,Module",
+		"syncModuleCtor=TypeError",
+		"syncInstanceCtor=TypeError",
+	)
+}
+
+// TestWasmCompileThenInstantiateModuleInstanceofHolds is the two-step
+// `WebAssembly.compile(bytes).then(m => WebAssembly.instantiate(m,
+// imports))` path's own counterpart, kept as its own test (rather than
+// chained onto the one-step test above) because instantiating the SAME
+// compiled module's host-import namespace twice in one render hits an
+// unrelated wazero constraint ("module[env] has already been
+// instantiated") — out of scope for this round, not something
+// go-wasmcontainers reported.
+func TestWasmCompileThenInstantiateModuleInstanceofHolds(t *testing.T) {
+	html := `<html><body><script>
+		` + wasmFixtureScript(t) + `
+		WebAssembly.compile(bytes).then(function(mod) {
+			console.log('compileModule=' + (mod instanceof WebAssembly.Module));
+			return WebAssembly.instantiate(mod, {env: {host_offset: function(x) { return x + 1000; }}});
+		}).then(function(inst) {
+			console.log('twoStepInstance=' + (inst instanceof WebAssembly.Instance));
+		}, function(err) { console.log('unexpected-rejection=' + err); });
+	</script></body></html>`
+	_, logs, res := runJS(t, html)
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "compileModule=true", "twoStepInstance=true")
+}

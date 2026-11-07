@@ -1130,15 +1130,42 @@ func TestNavigator(t *testing.T) {
 	mustHave(t, logs, "nav=TestUA/1.0|en-US|2|true|false|false|1|true|Netscape")
 }
 
+// TestHistoryScreenPerformance also covers performance.now()/.timeOrigin's
+// REAL values (fixed from an always-0 stub — see newPerformance's own doc
+// comment for why: a Go-compiled guest's own wasm_exec.js uses
+// performance.now() as its monotonic clock) — checked as plausible real
+// numbers rather than an exact string, since they are real wall-clock
+// readings, not deterministic constants.
 func TestHistoryScreenPerformance(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		history.pushState({},'','/x'); history.replaceState({},'',''); history.back(); history.forward(); history.go(-1);
 		console.log('hist='+history.length+','+history.state+','+history.scrollRestoration);
 		console.log('screen='+screen.width+','+screen.height+','+screen.availWidth+','+screen.colorDepth+','+screen.pixelDepth);
-		console.log('perf='+performance.now()+','+performance.getEntriesByType('x').length+','+performance.getEntries().length+','+performance.getEntriesByName('n').length+','+performance.timeOrigin);
+		console.log('entries='+performance.getEntriesByType('x').length+','+performance.getEntries().length+','+performance.getEntriesByName('n').length);
+		console.log('now='+performance.now()+' timeOrigin='+performance.timeOrigin);
 		performance.mark('m'); performance.measure('x'); performance.clearMarks(); performance.clearMeasures();
 	`))
-	mustHave(t, logs, "hist=1,null,auto", "screen=1024,768,1024,24,24", "perf=0,0,0,0,0")
+	mustHave(t, logs, "hist=1,null,auto", "screen=1024,768,1024,24,24", "entries=0,0,0")
+	var now, timeOrigin float64
+	for _, l := range logs {
+		i := strings.Index(l, "now=")
+		if i < 0 {
+			continue
+		}
+		if n, _ := fmt.Sscanf(l[i:], "now=%f timeOrigin=%f", &now, &timeOrigin); n == 2 {
+			if now < 0 {
+				t.Fatalf("performance.now() = %v, want >= 0", now)
+			}
+			// A real timeOrigin is milliseconds since the Unix epoch — far
+			// bigger than any plausible now() elapsed-time value, so this
+			// also catches a regression back to the old always-0 stub.
+			if timeOrigin < 1e12 {
+				t.Fatalf("performance.timeOrigin = %v, want a real epoch-ms timestamp", timeOrigin)
+			}
+			return
+		}
+	}
+	t.Fatalf("no now=/timeOrigin= log line found: %v", logs)
 }
 
 func TestConsoleLevels(t *testing.T) {

@@ -82,6 +82,7 @@ func Begin(root *dom.Node, opt Options) *Session {
 		opt.ViewportHeight = 768
 	}
 
+	now := time.Now()
 	b := &binder{
 		vm:          goja.New(),
 		root:        root,
@@ -96,7 +97,8 @@ func Begin(root *dom.Node, opt Options) *Session {
 		scrollPos:   map[*dom.Node][2]float64{},
 		mediaTime:   map[*dom.Node]float64{},
 		mediaPaused: map[*dom.Node]bool{},
-		deadman:     time.Now().Add(opt.Timeout),
+		deadman:     now.Add(opt.Timeout),
+		timeOrigin:  now,
 	}
 	s := &Session{b: b}
 

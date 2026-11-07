@@ -404,6 +404,23 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`WebAssembly.Instance`/`.Module` identity, and a real
+  `performance.now()`** (fix, 2026-11-07, round 7): round 6's fetch fix
+  unblocked go-wasmcontainers' probe; the next run found both inside the
+  Worker a guest runs in. Go's own `wasm_exec.js` does `instance
+  instanceof WebAssembly.Instance`, which threw outright (not just
+  `false`) when neither global existed — now both are real constructors
+  with their own `.prototype`, stamped onto every `compile()`/
+  `instantiate()` result; the deliberately-unsupported synchronous
+  constructor forms now throw a clear `TypeError` instead of not existing
+  at all. `performance.now()` was a pure stub (`return 0`, for the main
+  document too, not Worker-specific) masked by an existing test's own
+  exact-string assertion pinning the wrong output — go-wasmcontainers'
+  probe measured a 2,000,000-iteration loop between two calls giving the
+  identical value. Fixed with a real per-binder `timeOrigin`
+  (`time.Since` from it), since `wasm_exec.js` uses `performance.now()`
+  for Go's own monotonic clock — under the stub, elapsed time inside a
+  guest never advanced AT ALL, however long it actually ran.
 - **`fetch()` no longer silently truncates a response over 8 MiB** (fix,
   2026-11-07, round 6): found investigating a SEPARATE go-wasmcontainers
   report that a ~10 MiB plain Go-compiled wasm module "did not report
@@ -638,10 +655,14 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 - `WebAssembly`: no WASI (`wasi_snapshot_preview1` — stdio, filesystem,
   clocks) is wired, so a module assuming a WASI host (e.g. a `GOOS=wasip1`
   Go build, as opposed to `GOOS=js`) fails to instantiate with a LinkError
-  naming the missing import. The synchronous
-  `new WebAssembly.Module(...)`/`new WebAssembly.Instance(...)` constructor
-  forms, Table and Global imports/exports, and standalone `Table` objects
-  are not implemented — no confirmed container needs any of them yet.
+  naming the missing import. `WebAssembly.Module`/`WebAssembly.Instance`
+  exist as real constructors with their own `.prototype` (so `instanceof`
+  holds for `compile()`/`instantiate()` results — round 7, 2026-11-07,
+  confirmed needed by Go's own `wasm_exec.js`), but calling either
+  SYNCHRONOUSLY via `new` still throws a `TypeError` — no confirmed
+  container uses that form over the async `compile()`/`instantiate()`.
+  Table and Global imports/exports, and standalone `Table` objects are not
+  implemented — no confirmed container needs any of them yet.
   Standalone `new WebAssembly.Memory(descriptor)` (including `shared:
   true`) IS implemented (2026-11-07, round 4), and so is a module's own
   LOCALLY DECLARED shared memory, read back via `instance.exports.memory`
