@@ -154,6 +154,16 @@ type Engine struct {
 	// silently wrong" convention (MaxWasmModuleBytes/MaxWasmMemoryBytes/
 	// MaxJSHeapBytes above).
 	MaxResponseBytes int64
+	// MaxRequests bounds how many fetch()/XMLHttpRequest requests a
+	// single render may issue. Zero selects the 100 default. Found
+	// genuinely too small for a real workload, not hypothetical:
+	// go-wasmcontainers' own page fetches ~123 ONNX models plus their own
+	// inputs/outputs — several hundred requests — which the old hardcoded
+	// 100 made unconditionally impossible past the first batch, with no
+	// way to raise it. Matches MaxResponseBytes' own "always bounded,
+	// configurable for a larger real workload" convention immediately
+	// above.
+	MaxRequests int
 	// EnableDoneSignal installs a global function, `__webengineDone(value)`,
 	// a page's own script can call to end the settle loop early, once its
 	// async work is actually finished, instead of running every pass out to

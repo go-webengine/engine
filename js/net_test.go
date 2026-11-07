@@ -159,10 +159,10 @@ func TestFetchRoutesThroughClient(t *testing.T) {
 func TestFetchRequestLimit(t *testing.T) {
 	srv := netServer()
 	defer srv.Close()
-	// Fire more than maxRequests fetches; those past the cap must reject.
+	// Fire more than the default max fetches; those past the cap must reject.
 	logs, _ := runNet(t, srv, http.DefaultClient, `
-		var okc=0, errc=0, pending=`+itoa(maxRequests+20)+`;
-		for (var i=0;i<`+itoa(maxRequests+20)+`;i++){
+		var okc=0, errc=0, pending=`+itoa(defaultMaxRequests+20)+`;
+		for (var i=0;i<`+itoa(defaultMaxRequests+20)+`;i++){
 			fetch('/x.txt').then(function(){okc++; done();}, function(){errc++; done();});
 		}
 		function done(){ if(--pending===0){ console.log('ok='+okc+' err='+errc); } }
@@ -318,7 +318,7 @@ func TestDoRequestErrorBranches(t *testing.T) {
 		t.Fatal("nil client should error")
 	}
 	// Request cap.
-	b2 := &binder{vm: goja.New(), opt: Options{PageURL: "https://x/", Client: http.DefaultClient, Ctx: context.Background()}, deadman: time.Now().Add(time.Second), reqCount: maxRequests}
+	b2 := &binder{vm: goja.New(), opt: Options{PageURL: "https://x/", Client: http.DefaultClient, Ctx: context.Background()}, deadman: time.Now().Add(time.Second), reqCount: defaultMaxRequests}
 	if _, err := b2.doRequest("GET", "/y", nil, ""); err == nil {
 		t.Fatal("request cap should error")
 	}
@@ -352,6 +352,63 @@ func TestMaxResponseBytesResolution(t *testing.T) {
 		if got := b.maxResponseBytes(); got != c.want {
 			t.Errorf("%s: maxResponseBytes() = %d, want %d", c.name, got, c.want)
 		}
+	}
+}
+
+// TestMaxRequestsResolution mirrors TestMaxResponseBytesResolution's own
+// table shape for the new resolver.
+func TestMaxRequestsResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		opt  int
+		want int
+	}{
+		{"unset", 0, defaultMaxRequests},
+		{"negative treated as unset", -1, defaultMaxRequests},
+		{"explicit value kept exactly", 500, 500},
+	}
+	for _, c := range cases {
+		b := &binder{opt: Options{MaxRequests: c.opt}}
+		if got := b.maxRequests(); got != c.want {
+			t.Errorf("%s: maxRequests() = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// TestMaxRequestsRaisedAllowsMoreFetches is go-wasmcontainers' own
+// confirmed need, directly: their own page fetches ~123 ONNX models plus
+// their own inputs/outputs — several hundred requests — which the OLD
+// hardcoded 100-request cap made unconditionally impossible past the
+// first batch, with no way to raise it. Fires MORE than the OLD hardcoded
+// value, with Options.MaxRequests raised past it, and checks every one
+// succeeds.
+func TestMaxRequestsRaisedAllowsMoreFetches(t *testing.T) {
+	srv := netServer()
+	defer srv.Close()
+	const n = defaultMaxRequests + 50
+	root, err := dom.Parse(page(`
+		var okc=0, errc=0, pending=` + itoa(n) + `;
+		for (var i=0;i<` + itoa(n) + `;i++){
+			fetch('/x.txt').then(function(){okc++; done();}, function(){errc++; done();});
+		}
+		function done(){ if(--pending===0){ document.body.setAttribute('data-result', 'ok='+okc+' err='+errc); } }
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := Run(root, Options{
+		PageURL:     srv.URL + "/",
+		UserAgent:   "TestUA",
+		Client:      http.DefaultClient,
+		Timeout:     3 * time.Second,
+		MaxRequests: n,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v", res)
+	}
+	want := "ok=" + itoa(n) + " err=0"
+	if got, _ := dom.Find(root, "body").Attribute("data-result"); got != want {
+		t.Fatalf("data-result = %q, want %q", got, want)
 	}
 }
 

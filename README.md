@@ -404,6 +404,13 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`Options.MaxRequests`/`Engine.MaxRequests`** (feature, 2026-11-08,
+  round 11): go-wasmcontainers' own real workload fetches on the order of
+  123 ONNX models plus their inputs/outputs per render — several hundred
+  requests — which hit the previous hardcoded 100-request cap with no way
+  to raise it. Now configurable, zero selects the unchanged default, the
+  SAME convention `MaxResponseBytes`/`MaxWasmModuleBytes`/
+  `MaxWasmMemoryBytes` already follow.
 - **WebGPU error scopes now actually CAPTURE errors** (fix, 2026-11-08,
   round 10): round 9's `pushErrorScope`/`popErrorScope` only got the
   push/pop balance right — every GPU error still threw synchronously,
