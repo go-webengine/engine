@@ -637,8 +637,9 @@ func TestWorkerHasCrypto(t *testing.T) {
 // regression test: every general-purpose (non-DOM) global the main
 // document's install() has, that the WebCryptoAPI-shaped gap could equally
 // have hidden from a Worker, is reachable — TextEncoder/TextDecoder, URL,
-// URLSearchParams, Intl, and performance.now() (a plain stub even for the
-// main document, so nothing is lost by sharing it).
+// URLSearchParams, Intl, and performance.now() (a real, advancing clock
+// as of round 7 — see newPerformance's own doc comment — shared by the
+// main document and every Worker alike, so nothing is lost by sharing it).
 func TestWorkerHasGeneralPurposeGlobals(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/worker.js" {
@@ -674,6 +675,47 @@ func TestWorkerHasGeneralPurposeGlobals(t *testing.T) {
 	want := "bytesLen=2 text=hi url=https://ex.com/foo?x=1 sp=1,2 intlOk=true perfOk=true"
 	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != want {
 		t.Fatalf("data-reply = %q, want %q", got, want)
+	}
+}
+
+// TestWorkerHasAbortControllerAndHeadersEntries reproduces go-wasmcontainers'
+// own exact confirmed context: INSIDE a Worker, Go's js/wasm net/http
+// transport (net/http/roundtrip_js.go) creates an AbortController before
+// every fetch and passes its signal, then calls `.headers.entries()` on
+// the response — both threw outright (not just missing data) before this
+// round, aborting the guest before a single byte came back.
+func TestWorkerHasAbortControllerAndHeadersEntries(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/worker.js" {
+			w.Write([]byte(`
+				var c = new AbortController();
+				fetch('/data.json', {signal: c.signal}).then(function(resp) {
+					var pairs = [];
+					for (var e of resp.headers.entries()) { pairs.push(e[0] + '=' + e[1]); }
+					postMessage('abortedBefore=' + c.signal.aborted + ' headerEntries=' + pairs.join(','));
+				}, function(err) { postMessage('REJECTED:' + err); });
+			`))
+			return
+		}
+		if r.URL.Path == "/data.json" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-reply")
+	if !strings.Contains(got, "abortedBefore=false") || !strings.Contains(got, "content-type=application/json") {
+		t.Fatalf("data-reply = %q, want abortedBefore=false and a content-type header entry", got)
 	}
 }
 

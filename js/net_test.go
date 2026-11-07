@@ -212,6 +212,90 @@ func TestHeadersObject(t *testing.T) {
 	mustHave(t, logs, "get=1, 3", "hasB=true", "hasZ=false", "afterDel=false")
 }
 
+// TestHeadersIterableMethods covers entries()/keys()/values() and
+// Symbol.iterator (defaulting to entries(), both checked) — confirmed
+// directly needed by go-wasmcontainers: Go's own js/wasm net/http
+// transport (net/http/roundtrip_js.go) calls
+// `result.Get("headers").Call("entries")` on every fetch response and
+// panicked outright ("property entries is not a function") when the
+// method did not exist at all. Also locks in sorted-and-combined
+// iteration order (Fetch §5.2's own requirement), which forEach's
+// previous Go-map-order iteration did not guarantee.
+func TestHeadersIterableMethods(t *testing.T) {
+	root, _ := dom.Parse(`<html><body><script>
+		var h = new Headers({'B': '2', 'A': '1'});
+		h.append('a', '3');
+		var entryPairs = [];
+		for (var e of h.entries()) { entryPairs.push(e[0] + '=' + e[1]); }
+		console.log('entries=' + entryPairs.join(','));
+		console.log('keys=' + Array.from(h.keys()).join(','));
+		console.log('values=' + Array.from(h.values()).join(','));
+		var forOfPairs = [];
+		for (var e of h) { forOfPairs.push(e[0] + '=' + e[1]); }
+		console.log('symbolIterator=' + forOfPairs.join(','));
+	</script></body></html>`)
+	var logs []string
+	Run(root, Options{PageURL: "https://x/", Client: http.DefaultClient, Log: func(s string) { logs = append(logs, s) }})
+	mustHave(t, logs,
+		"entries=a=1, 3,b=2",
+		"keys=a,b",
+		"values=1, 3,2",
+		"symbolIterator=a=1, 3,b=2",
+	)
+}
+
+// TestAbortControllerBasics covers the real, confirmed need: Go's own
+// js/wasm net/http transport calls `new AbortController()` before EVERY
+// fetch and passes its .signal in the init object — the global's mere
+// absence threw "AbortController is not defined" before any fetch could
+// even start. Covers the default-reason case (a real DOMException named
+// "AbortError") and a custom reason, plus onabort firing.
+func TestAbortControllerBasics(t *testing.T) {
+	root, _ := dom.Parse(`<html><body><script>
+		var c1 = new AbortController();
+		console.log('initialAborted=' + c1.signal.aborted);
+		var firedWith = null;
+		c1.signal.onabort = function(e) { firedWith = e.target.reason; };
+		c1.abort();
+		console.log('afterAbort=' + c1.signal.aborted + ' reasonName=' + c1.signal.reason.name + ' firedSame=' + (firedWith === c1.signal.reason));
+
+		var c2 = new AbortController();
+		c2.abort('custom reason');
+		console.log('customReason=' + c2.signal.reason);
+
+		var c3 = new AbortController();
+		c3.abort();
+		c3.abort('ignored, already aborted');
+		console.log('secondAbortIgnored=' + c3.signal.reason.name);
+	</script></body></html>`)
+	var logs []string
+	Run(root, Options{PageURL: "https://x/", Client: http.DefaultClient, Log: func(s string) { logs = append(logs, s) }})
+	mustHave(t, logs,
+		"initialAborted=false",
+		"afterAbort=true reasonName=AbortError firedSame=true",
+		"customReason=custom reason",
+		"secondAbortIgnored=AbortError",
+	)
+}
+
+// TestFetchRejectsAlreadyAbortedSignal covers the one case genuine for
+// THIS engine's always-synchronous fetch() (see fetch's own doc comment
+// for why real mid-flight cancellation does not apply): a signal already
+// aborted BEFORE fetch() is called must reject immediately with the
+// signal's own reason, not be silently ignored.
+func TestFetchRejectsAlreadyAbortedSignal(t *testing.T) {
+	srv := netServer()
+	defer srv.Close()
+	logs, _ := runNet(t, srv, http.DefaultClient, `
+		var c = new AbortController();
+		c.abort('stop');
+		fetch('/x.txt', {signal: c.signal}).then(function(r) {
+			console.log('unexpected-resolution');
+		}, function(reason) { console.log('rejected=' + reason); });
+	`)
+	mustHave(t, logs, "rejected=stop")
+}
+
 func TestMessageChannel(t *testing.T) {
 	root, _ := dom.Parse(`<html><body><script>
 		var mc=new MessageChannel();

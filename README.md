@@ -404,6 +404,20 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`Headers.entries()`/`.keys()`/`.values()`, and `AbortController`**
+  (feature, 2026-11-07, round 8): with Go actually running inside both
+  workers (round 7), the next stop was its first `net/http` fetch —
+  `net/http/roundtrip_js.go` panics on `headers.entries()`, which did not
+  exist, and constructs `new AbortController()` before every fetch, which
+  did not exist as a global at all. `Headers` now implements the Fetch
+  Standard's own pair-iterable (`entries`/`keys`/`values`, sorted and
+  combined by name, plus `Symbol.iterator` defaulting to `entries()` so
+  `for...of` works directly over a `Headers` object). `AbortController`'s
+  `.signal` is real (`.aborted`/`.reason`/`.onabort`/`throwIfAborted`);
+  this engine's `fetch()` is always synchronous by construction, so there
+  is no genuinely in-flight request to cancel mid-flight — stated
+  directly rather than faked — but a signal already aborted BEFORE
+  `fetch()` is called now correctly rejects immediately with its reason.
 - **`WebAssembly.Instance`/`.Module` identity, and a real
   `performance.now()`** (fix, 2026-11-07, round 7): round 6's fetch fix
   unblocked go-wasmcontainers' probe; the next run found both inside the
