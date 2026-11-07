@@ -404,6 +404,32 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **WebGPU: feature/limit iterables, error scopes, explicit bind group
+  layouts, `copyBufferToBuffer`** (feature, 2026-11-07, round 9): with
+  Go's `net/http` fetch working (round 8), the next stop was WebGPU
+  itself — go-gfx/webgpu panics reading `adapter.features`/
+  `device.features` with `.values()` (`GPUSupportedFeatures` is
+  `setlike<DOMString>`: `has`/`size`/`values`/`keys`/`entries`/`forEach`/
+  `Symbol.iterator`, and only the first two existed). A follow-up
+  measurement, each item checked independently, narrowed the remaining
+  gaps to exactly four: the features iterable, `device.pushErrorScope`/
+  `popErrorScope` (this binding's own errors are always thrown
+  synchronously — there is no async error-timeline to CAPTURE instead,
+  stated directly; push/pop balance is still real and spec-correct), the
+  `GPUShaderStage` namespace (never installed, unlike its
+  `GPUBufferUsage`/`GPUMapMode` siblings), and `device.createBindGroupLayout`
+  (which also blocked `createPipelineLayout`/`createComputePipelineAsync`/
+  the mapAsync-readback item behind it). Explicit (non-`"auto"`) pipeline
+  layouts are now supported — confirmed needed because go-wasmcontainers'
+  own batch compute path binds a loop-budget group next to the guest's
+  own groups, which a single pipeline's inferred `"auto"` layout cannot
+  express. `GPUCommandEncoder.copyBufferToBuffer` is new too, with a real
+  correctness subtlety worth citing: executing it as a plain Go `copy()`
+  the instant it is RECORDED (rather than in the order commands actually
+  run on the GPU) could read stale, pre-dispatch bytes, since Metal's own
+  command buffer only executes once a `dev.Run` closure returns — fixed
+  by flushing (and blocking on) every pending dispatch before each copy,
+  rather than batching an entire submission into one `dev.Run` call.
 - **`Headers.entries()`/`.keys()`/`.values()`, and `AbortController`**
   (feature, 2026-11-07, round 8): with Go actually running inside both
   workers (round 7), the next stop was its first `net/http` fetch —
@@ -626,10 +652,11 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   pipeline, closing out M5. `createShaderModule` translates via `wgslmsl`
   eagerly but never throws — a bad shader still gets a usable module object,
   matching spec; the error surfaces from `getCompilationInfo()` or a clear
-  throw from `createComputePipeline`. Only `layout: "auto"` is supported
-  (an explicit `GPUBindGroupLayout` is a clear, named error) — `wgslmsl`
-  already infers the real binding layout from the shader source itself. A
-  stated gap inherited from `go-macos/metal`, not from this binding's own
+  throw from `createComputePipeline`. `layout: "auto"` was the only
+  supported form at first — `wgslmsl` already infers the real binding
+  layout from the shader source itself — until round 9 (below) added
+  explicit `createBindGroupLayout`/`createPipelineLayout`. A stated gap
+  inherited from `go-macos/metal`, not from this binding's own
   choices: `Dispatch` picks its own threadgroup shape from the hardware,
   with no way to force it to match a shader's declared `@workgroup_size`,
   so `local_invocation_id`/`workgroup_id` may not reflect the intended

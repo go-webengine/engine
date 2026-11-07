@@ -33,20 +33,21 @@ func runWebGPU(t *testing.T, htmlSrc string) (*dom.Node, []string, Result) {
 
 // TestWebGPUDisabledByDefault proves Options.EnableWebGPU's own "zero
 // behaviour change" contract: with it unset, navigator.gpu and the
-// GPUBufferUsage/GPUMapMode globals are not installed at all — matching
-// this engine's own established convention for a capability granting
-// access to a real host resource (CrossOriginIsolated's SharedArrayBuffer,
-// Options.OPFSRoot's real disk).
+// GPUBufferUsage/GPUMapMode/GPUShaderStage globals are not installed at
+// all — matching this engine's own established convention for a
+// capability granting access to a real host resource
+// (CrossOriginIsolated's SharedArrayBuffer, Options.OPFSRoot's real disk).
 func TestWebGPUDisabledByDefault(t *testing.T) {
 	_, logs, res := runJS(t, page(`
 		console.log('hasGPU=' + ('gpu' in navigator));
 		console.log('hasUsage=' + (typeof GPUBufferUsage));
 		console.log('hasMapMode=' + (typeof GPUMapMode));
+		console.log('hasShaderStage=' + (typeof GPUShaderStage));
 	`))
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-	mustHave(t, logs, "hasGPU=false", "hasUsage=undefined", "hasMapMode=undefined")
+	mustHave(t, logs, "hasGPU=false", "hasUsage=undefined", "hasMapMode=undefined", "hasShaderStage=undefined")
 }
 
 // TestRequestAdapterNeverRejects proves GPU.requestAdapter()'s own spec
@@ -67,6 +68,8 @@ func TestRequestAdapterNeverRejects(t *testing.T) {
 			document.body.setAttribute('data-fallback', String(a.info.isFallbackAdapter));
 			document.body.setAttribute('data-has-limits', String(typeof a.limits.maxBufferSize === 'number'));
 			document.body.setAttribute('data-features-has-x', String(a.features.has('x')));
+			document.body.setAttribute('data-features-values', String(Array.from(a.features.values()).length));
+			document.body.setAttribute('data-shader-stage-compute', String(GPUShaderStage.COMPUTE));
 		}, function(e) {
 			document.body.setAttribute('data-adapter', 'REJECTED:' + e);
 		});
@@ -87,6 +90,17 @@ func TestRequestAdapterNeverRejects(t *testing.T) {
 	}
 	if v, _ := body.Attribute("data-features-has-x"); v != "false" {
 		t.Fatalf("data-features-has-x = %q, want false (no optional features implemented yet)", v)
+	}
+	// Confirmed directly needed by go-wasmcontainers: go-gfx/webgpu reads
+	// adapter.features with .values() then drives the iterator manually —
+	// this must not throw "property values is not a function", and since
+	// no optional feature is implemented, Array.from(...) over it is
+	// correctly empty.
+	if v, _ := body.Attribute("data-features-values"); v != "0" {
+		t.Fatalf("data-features-values = %q, want 0 (empty, but values() must exist and be iterable)", v)
+	}
+	if v, _ := body.Attribute("data-shader-stage-compute"); v != "4" {
+		t.Fatalf("data-shader-stage-compute = %q, want 4 (GPUShaderStage.COMPUTE, WebGPU spec value)", v)
 	}
 	if v, _ := body.Attribute("data-fallback"); v != "false" {
 		t.Fatalf("data-fallback = %q, want false", v)
@@ -291,8 +305,214 @@ func TestComputePipelineEndToEnd(t *testing.T) {
 	}
 }
 
-// TestComputePipelineRejectsExplicitLayout proves the stated scope gap
-// (only layout: "auto" is supported) is a clear, named error.
+// TestExplicitBindGroupLayoutEndToEnd reproduces go-wasmcontainers' own
+// exact confirmed minimum: a 4-invocation storage-buffer compute shader
+// with an EXPLICIT (not "auto") layout — createBindGroupLayout +
+// createPipelineLayout, confirmed needed because their own batch path
+// binds a loop-budget group next to the guest's own groups, which a
+// single pipeline's own "auto"-inferred layout cannot express — read back
+// through a SEPARATE buffer via copyBufferToBuffer + mapAsync (the
+// storage buffer itself is never mapped, matching real usage: a buffer
+// used as a compute target and a buffer that is CPU-mappable are
+// typically different buffers). Expects [0, 3, 6, 9], bit-for-bit, on
+// real Metal hardware when one is available.
+func TestExplicitBindGroupLayoutEndToEnd(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<u32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+					data[id.x] = id.x * 3u;
+				}
+			`+"`"+` });
+
+			var bindGroupLayout = dev.createBindGroupLayout({
+				entries: [{ binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'storage' } }],
+			});
+			var pipelineLayout = dev.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] });
+			var pipeline = dev.createComputePipeline({ layout: pipelineLayout, compute: { module: module } });
+
+			var storageBuf = dev.createBuffer({
+				size: 16,
+				usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+			});
+			var readbackBuf = dev.createBuffer({
+				size: 16,
+				usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+			});
+
+			var bindGroup = dev.createBindGroup({
+				layout: bindGroupLayout,
+				entries: [{ binding: 0, resource: { buffer: storageBuf } }],
+			});
+
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginComputePass();
+			pass.setPipeline(pipeline);
+			pass.setBindGroup(0, bindGroup);
+			pass.dispatchWorkgroups(4);
+			pass.end();
+			encoder.copyBufferToBuffer(storageBuf, 0, readbackBuf, 0, 16);
+			dev.queue.submit([encoder.finish()]);
+
+			return readbackBuf.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint32Array(readbackBuf.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readbackBuf.destroy();
+				storageBuf.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := "0,3,6,9"
+	if got, _ := body.Attribute("data-out"); got != want {
+		t.Fatalf("data-out = %q, want %q (bit-for-bit)", got, want)
+	}
+}
+
+// TestDevicePushPopErrorScopeAndUncapturedError covers
+// pushErrorScope/popErrorScope's own push/pop balance (confirmed directly
+// needed by go-wasmcontainers: "Object has no member 'pushErrorScope'"
+// blocked their own probe item before it ever reached device.lost/
+// queue.onSubmittedWorkDone) and that "uncapturederror" can be registered
+// without throwing — see pushErrorScope's own doc comment in webgpu.go
+// for why this binding's error scopes always resolve null rather than
+// capturing a real error (every error here is a synchronous thrown
+// exception, not an async device-timeline event).
+func TestDevicePushPopErrorScopeAndUncapturedError(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			dev.addEventListener('uncapturederror', function(e) {});
+			dev.pushErrorScope('validation');
+			var buf = dev.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE });
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-popped', String(err));
+				buf.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty", got)
+	}
+	if got, _ := body.Attribute("data-popped"); got != "null" {
+		t.Fatalf("data-popped = %q, want %q (no error occurred in the scope)", got, "null")
+	}
+}
+
+// TestPopErrorScopeWithoutPushRejects proves the one real, spec-correct
+// validation this binding's own error scopes DO enforce without capturing
+// anything: popErrorScope() with no matching pushErrorScope rejects with
+// an OperationError, rather than resolving null for a mismatched call.
+func TestPopErrorScopeWithoutPushRejects(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			return dev.popErrorScope().then(function() {
+				document.body.setAttribute('data-result', 'should-have-rejected');
+			}, function(e) {
+				document.body.setAttribute('data-result', 'rejected:' + e.name);
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "rejected:OperationError" {
+		t.Fatalf("data-result = %q, want %q", got, "rejected:OperationError")
+	}
+}
+
+// TestCreateComputePipelineAsyncEndToEnd covers
+// createComputePipelineAsync — the SAME translate/compile work as the
+// sync form, via an already-settled Promise (this binding has no real
+// background compile to await). Both a successful creation and a
+// rejection (an unsupported layout, mirroring
+// TestComputePipelineRejectsExplicitLayout's own case) are checked
+// through the async entry point specifically, not assumed from the sync
+// one.
+func TestCreateComputePipelineAsyncEndToEnd(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<u32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) { data[id.x] = 7u; }
+			`+"`"+` });
+			return dev.createComputePipelineAsync({ layout: 'auto', compute: { module: module } }).then(function(pipeline) {
+				document.body.setAttribute('data-async-ok', String(typeof pipeline.getBindGroupLayout === 'function'));
+				return dev.createComputePipelineAsync({ layout: {}, compute: { module: module } });
+			}).then(function() {
+				document.body.setAttribute('data-async-reject', 'should-have-rejected');
+			}, function(e) {
+				document.body.setAttribute('data-async-reject', 'rejected:' + e.name);
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty", got)
+	}
+	if got, _ := body.Attribute("data-async-ok"); got != "true" {
+		t.Fatalf("data-async-ok = %q, want true", got)
+	}
+	if got, _ := body.Attribute("data-async-reject"); got != "rejected:TypeError" {
+		t.Fatalf("data-async-reject = %q, want %q", got, "rejected:TypeError")
+	}
+}
+
+// TestComputePipelineRejectsExplicitLayout proves createComputePipeline
+// still rejects a `layout` that is neither `"auto"` nor a REAL
+// GPUPipelineLayout from createPipelineLayout() — a bare `{}` object here
+// (never registered) is exactly the shape a script would pass by mistake.
+// Explicit layouts built the real way (TestExplicitBindGroupLayoutEndToEnd)
+// are supported as of this round; this test covers the rejection path
+// that remains, not the "explicit layouts are unsupported" gap that used
+// to be here.
 func TestComputePipelineRejectsExplicitLayout(t *testing.T) {
 	root, logs, res := runWebGPU(t, page(`
 		navigator.gpu.requestAdapter().then(function(a) {

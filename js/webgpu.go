@@ -75,14 +75,25 @@ func (b *binder) newGPUSupportedLimits() *goja.Object {
 	return o
 }
 
-// newGPUSupportedFeatures returns an empty, setlike GPUSupportedFeatures:
-// this binding does not yet implement any optional WebGPU feature
-// (timestamp-query, shader-f16, …), so `adapter.features.has(x)` correctly
-// reads false for every x rather than claiming something unimplemented.
+// newGPUSupportedFeatures returns an empty, setlike<DOMString>
+// GPUSupportedFeatures (WebGPU §3.5): this binding does not yet implement
+// any optional WebGPU feature (timestamp-query, shader-f16, …), so
+// `adapter.features.has(x)` correctly reads false for every x rather than
+// claiming something unimplemented. `values`/`keys`/`entries`/`forEach`/
+// `[Symbol.iterator]` (confirmed directly needed: go-gfx/webgpu's own
+// gpu_js.go reads `adapter.features`/`device.features` with `.values()`
+// then manually drives the iterator) all correctly report EMPTY, matching
+// `size === 0` — there is nothing to iterate, not a missing method.
 func (b *binder) newGPUSupportedFeatures() *goja.Object {
 	o := b.vm.NewObject()
 	o.Set("size", 0)
 	o.Set("has", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(false) })
+	empty := func(goja.FunctionCall) goja.Value { return b.newArrayIterator(nil) }
+	o.Set("values", empty)
+	o.Set("keys", empty)
+	o.Set("entries", empty)
+	o.Set("forEach", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	_ = o.DefineDataPropertySymbol(goja.SymIterator, b.vm.ToValue(empty), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
 	return o
 }
 
@@ -110,6 +121,21 @@ func (b *binder) newGPUMapMode() *goja.Object {
 	o := b.vm.NewObject()
 	o.Set("READ", gpuMapModeRead)
 	o.Set("WRITE", gpuMapModeWrite)
+	return o
+}
+
+// newGPUShaderStage builds the GPUShaderStage namespace (WebGPU §3.3:
+// `namespace GPUShaderStage { const GPUFlagsConstant VERTEX = 0x1; … }`) —
+// confirmed directly needed by go-wasmcontainers: go-gfx/webgpu's own
+// createBindGroupLayout descriptor construction reads
+// GPUShaderStage.COMPUTE, which threw "GPUShaderStage is not defined"
+// (the global did not exist at all, unlike its GPUBufferUsage/GPUMapMode
+// siblings).
+func (b *binder) newGPUShaderStage() *goja.Object {
+	o := b.vm.NewObject()
+	o.Set("VERTEX", 0x1)
+	o.Set("FRAGMENT", 0x2)
+	o.Set("COMPUTE", 0x4)
 	return o
 }
 
@@ -206,6 +232,43 @@ func (b *binder) newGPUDevice(dev *metal.Device) *goja.Object {
 	})
 	o.Set("lost", lostPromise)
 
+	// pushErrorScope/popErrorScope (WebGPU §4.5): this binding reports
+	// every GPU-surface error SYNCHRONOUSLY, as a thrown JS exception at
+	// the point of the failing call (createBuffer, createComputePipeline,
+	// …) — there is no asynchronous validation-error/device-lost event
+	// stream for an error scope to CAPTURE instead. errorScopeDepth is
+	// still real and spec-correct for the one thing that does not need
+	// capturing: push/pop balance. popErrorScope() with no matching push
+	// is a real OperationError per spec; a BALANCED pop, with nothing in
+	// between having thrown (a thrown error here always propagates past
+	// the scope as an exception, same as it would with no scope at all —
+	// a stated, not hidden, simplification), resolves null — "no error
+	// occurred in this scope", which is accurate for every case this
+	// binding can actually observe.
+	errorScopeDepth := 0
+	o.Set("pushErrorScope", func(call goja.FunctionCall) goja.Value {
+		errorScopeDepth++
+		return goja.Undefined()
+	})
+	o.Set("popErrorScope", func(call goja.FunctionCall) goja.Value {
+		if errorScopeDepth == 0 {
+			return b.rejected(b.domException("OperationError", "popErrorScope: no matching pushErrorScope"))
+		}
+		errorScopeDepth--
+		return b.resolved(goja.Null())
+	})
+	// "uncapturederror" (WebGPU §4.5.3): fires when an error is NOT caught
+	// by any error scope. This binding's own errors are always thrown
+	// synchronously (see pushErrorScope's own doc comment immediately
+	// above) rather than queued onto a device-timeline event, so nothing
+	// here ever actually dispatches this event — registering a listener
+	// is accepted (so a script that defensively adds one does not throw)
+	// but it will never fire, stated rather than faked with a listener
+	// that is silently never called for a reason the registration itself
+	// does not reveal.
+	o.Set("addEventListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	o.Set("removeEventListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+
 	o.Set("createBuffer", func(call goja.FunctionCall) goja.Value {
 		return b.gpuCreateBuffer(dev, call)
 	})
@@ -215,6 +278,15 @@ func (b *binder) newGPUDevice(dev *metal.Device) *goja.Object {
 	})
 	o.Set("createComputePipeline", func(call goja.FunctionCall) goja.Value {
 		return b.gpuCreateComputePipeline(dev, call)
+	})
+	o.Set("createComputePipelineAsync", func(call goja.FunctionCall) goja.Value {
+		return b.gpuCreateComputePipelineAsync(dev, call)
+	})
+	o.Set("createBindGroupLayout", func(call goja.FunctionCall) goja.Value {
+		return b.gpuCreateBindGroupLayout(call)
+	})
+	o.Set("createPipelineLayout", func(call goja.FunctionCall) goja.Value {
+		return b.gpuCreatePipelineLayout(call)
 	})
 	o.Set("createBindGroup", func(call goja.FunctionCall) goja.Value {
 		return b.gpuCreateBindGroup(call)
@@ -494,30 +566,51 @@ func (b *binder) wrapGPUShaderModule(st *gpuShaderModuleState) *goja.Object {
 type gpuComputePipelineState struct {
 	pipe   *metal.Pipeline
 	result *wgslmsl.Result
+	// explicitLayouts is nil for a `layout: "auto"` pipeline (the existing
+	// path: getBindGroupLayout(idx) synthesizes a fresh, pipeline-scoped
+	// handle per index on demand). Non-nil for a pipeline built from an
+	// explicit GPUPipelineLayout (gpuCreatePipelineLayout's own ordered
+	// bindGroupLayouts) — getBindGroupLayout(idx) then returns the SAME
+	// object identity the script passed into createPipelineLayout at that
+	// index, matching spec (a non-auto pipeline's own layout is fixed,
+	// not pipeline-specific).
+	explicitLayouts []*goja.Object
 }
 
-// gpuCreateComputePipeline implements GPUDevice.createComputePipeline(descriptor).
-// Only `layout: "auto"` is supported (no explicit GPUBindGroupLayout/
-// GPUPipelineLayout construction yet) — the one layout mode a script using
-// wgslmsl's own inferred bindings (every realistic simple compute shader)
-// actually needs; getBindGroupLayout(index) below is what a script then
-// calls to build a matching GPUBindGroup.
-func (b *binder) gpuCreateComputePipeline(dev *metal.Device, call goja.FunctionCall) goja.Value {
+// gpuBuildComputePipeline is createComputePipeline/createComputePipelineAsync's
+// shared core: translate (or re-translate for an explicit entryPoint),
+// compile through Metal, and resolve the pipeline's own layout — either
+// `"auto"` (unchanged) or an explicit GPUPipelineLayout object from
+// gpuCreatePipelineLayout (confirmed directly needed by go-wasmcontainers:
+// their own batch compute path binds a loop-budget group next to the
+// guest's own groups, which `layout: "auto"`'s single-pipeline inference
+// cannot express). Returns (state, nil) on success or (nil, errVal) on
+// failure — NEVER panics — so the sync wrapper can panic with errVal and
+// the async one can reject with it, without duplicating this logic.
+func (b *binder) gpuBuildComputePipeline(dev *metal.Device, call goja.FunctionCall) (*gpuComputePipelineState, goja.Value) {
 	desc, _ := call.Argument(0).(*goja.Object)
 	if desc == nil {
-		panic(b.vm.NewTypeError("createComputePipeline: a GPUComputePipelineDescriptor is required"))
+		return nil, b.vm.NewTypeError("createComputePipeline: a GPUComputePipelineDescriptor is required")
 	}
-	if layout := desc.Get("layout"); layout == nil || layout.String() != "auto" {
-		panic(unsupportedJS(b, "createComputePipeline: only layout: \"auto\" is supported (no explicit GPUBindGroupLayout/GPUPipelineLayout yet)"))
+	var explicitLayouts []*goja.Object
+	layout := desc.Get("layout")
+	if layoutObj, ok := layout.(*goja.Object); ok {
+		layouts, found := b.gpuPipelineLayouts[layoutObj]
+		if !found {
+			return nil, b.vm.NewTypeError("createComputePipeline: layout must be \"auto\" or a GPUPipelineLayout from createPipelineLayout()")
+		}
+		explicitLayouts = layouts
+	} else if layout == nil || layout.String() != "auto" {
+		return nil, b.vm.NewTypeError("createComputePipeline: layout must be \"auto\" or a GPUPipelineLayout from createPipelineLayout()")
 	}
 	computeObj, _ := desc.Get("compute").(*goja.Object)
 	if computeObj == nil {
-		panic(b.vm.NewTypeError("createComputePipeline: a compute stage (GPUProgrammableStage) is required"))
+		return nil, b.vm.NewTypeError("createComputePipeline: a compute stage (GPUProgrammableStage) is required")
 	}
 	moduleObj, _ := computeObj.Get("module").(*goja.Object)
 	modState := b.gpuShaderModules[moduleObj]
 	if modState == nil {
-		panic(b.vm.NewTypeError("createComputePipeline: compute.module must be a GPUShaderModule"))
+		return nil, b.vm.NewTypeError("createComputePipeline: compute.module must be a GPUShaderModule")
 	}
 	entryPoint := ""
 	if ep := computeObj.Get("entryPoint"); ep != nil && !goja.IsUndefined(ep) {
@@ -533,29 +626,58 @@ func (b *binder) gpuCreateComputePipeline(dev *metal.Device, call goja.FunctionC
 		// own cached result/error is deliberately NOT consulted here.
 		r, err := wgslmsl.Translate(modState.src, wgslmsl.Options{EntryPoint: entryPoint})
 		if err != nil {
-			panic(b.domException("OperationError", "createComputePipeline: "+err.Error()))
+			return nil, b.domException("OperationError", "createComputePipeline: "+err.Error())
 		}
 		result = r
 	} else if modState.err != nil {
-		panic(b.domException("OperationError", "createComputePipeline: shader module failed to compile: "+modState.err.Error()))
+		return nil, b.domException("OperationError", "createComputePipeline: shader module failed to compile: "+modState.err.Error())
 	} else {
 		result = modState.result
 	}
 	lib, err := dev.Compile(result.MSL)
 	if err != nil {
-		panic(b.domException("OperationError", "createComputePipeline: Metal rejected the generated shader: "+err.Error()))
+		return nil, b.domException("OperationError", "createComputePipeline: Metal rejected the generated shader: "+err.Error())
 	}
 	pipe, err := lib.Pipeline(result.EntryPointName)
 	if err != nil {
-		panic(b.domException("OperationError", err.Error()))
+		return nil, b.domException("OperationError", err.Error())
 	}
-	return b.wrapGPUComputePipeline(&gpuComputePipelineState{pipe: pipe, result: result})
+	return &gpuComputePipelineState{pipe: pipe, result: result, explicitLayouts: explicitLayouts}, nil
+}
+
+// gpuCreateComputePipeline implements GPUDevice.createComputePipeline(descriptor).
+func (b *binder) gpuCreateComputePipeline(dev *metal.Device, call goja.FunctionCall) goja.Value {
+	st, errVal := b.gpuBuildComputePipeline(dev, call)
+	if errVal != nil {
+		panic(errVal)
+	}
+	return b.wrapGPUComputePipeline(st)
+}
+
+// gpuCreateComputePipelineAsync implements
+// GPUDevice.createComputePipelineAsync(descriptor) — the SAME translate/
+// compile work as the sync form (this binding settles everything
+// synchronously; there is no real background compile to await), wrapped
+// in an already-settled Promise instead of panicking, per spec's own
+// Promise<GPUComputePipeline> return type.
+func (b *binder) gpuCreateComputePipelineAsync(dev *metal.Device, call goja.FunctionCall) goja.Value {
+	st, errVal := b.gpuBuildComputePipeline(dev, call)
+	if errVal != nil {
+		return b.rejected(errVal)
+	}
+	return b.resolved(b.wrapGPUComputePipeline(st))
 }
 
 func (b *binder) wrapGPUComputePipeline(st *gpuComputePipelineState) *goja.Object {
 	o := b.vm.NewObject()
 	o.Set("getBindGroupLayout", func(call goja.FunctionCall) goja.Value {
 		idx := int(call.Argument(0).ToInteger())
+		if st.explicitLayouts != nil {
+			if idx < 0 || idx >= len(st.explicitLayouts) {
+				panic(b.vm.NewTypeError("getBindGroupLayout: index out of range for this pipeline's explicit layout"))
+			}
+			return st.explicitLayouts[idx]
+		}
 		layoutObj := b.vm.NewObject()
 		if b.gpuBindGroupLayouts == nil {
 			b.gpuBindGroupLayouts = map[*goja.Object]*gpuBindGroupLayoutInfo{}
@@ -570,14 +692,78 @@ func (b *binder) wrapGPUComputePipeline(st *gpuComputePipelineState) *goja.Objec
 	return o
 }
 
-// gpuBindGroupLayoutInfo is what pipeline.getBindGroupLayout(index) returns
-// a handle to: which pipeline and which @group(index) it names. It carries
-// no resource-type validation of its own (the one real check — that every
-// binding a dispatch actually needs is present — happens at
-// dispatchWorkgroups time, against wgslmsl.Result.Bindings directly).
+// gpuBindGroupLayoutInfo is what pipeline.getBindGroupLayout(index) (the
+// "auto" path) or device.createBindGroupLayout() (the explicit path)
+// returns a handle to. It carries no resource-type validation of its own
+// either way — the one real check — that every binding a dispatch
+// actually needs is present — happens at dispatchWorkgroups time, against
+// wgslmsl.Result.Bindings directly, which is keyed by the WGSL source's
+// own @group/@binding numbers (set at setBindGroup time), never by
+// anything a GPUBindGroupLayout/GPUPipelineLayout object itself declares.
+// pipeline/group are therefore only meaningful for an "auto" layout (kept
+// for that path's own identity, even though dispatch does not read them
+// either); an explicit layout (gpuCreateBindGroupLayout) leaves both zero.
 type gpuBindGroupLayoutInfo struct {
 	pipeline *gpuComputePipelineState
 	group    int
+}
+
+// gpuCreateBindGroupLayout implements
+// GPUDevice.createBindGroupLayout(descriptor) — confirmed directly needed
+// by go-wasmcontainers for their own explicit-layout batch compute path.
+// The descriptor's own entries (binding/visibility/buffer type) carry no
+// enforcement here, for the SAME reason gpuBindGroupLayoutInfo's own doc
+// comment gives: this binding validates resource bindings against the
+// WGSL source itself, at dispatch time, not against anything a
+// JS-constructed layout object declares — so a layout object's only real
+// job, in this binding, is to be a recognizable handle createBindGroup()
+// and createPipelineLayout() accept.
+func (b *binder) gpuCreateBindGroupLayout(call goja.FunctionCall) goja.Value {
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("createBindGroupLayout: a GPUBindGroupLayoutDescriptor is required"))
+	}
+	layoutObj := b.vm.NewObject()
+	if b.gpuBindGroupLayouts == nil {
+		b.gpuBindGroupLayouts = map[*goja.Object]*gpuBindGroupLayoutInfo{}
+	}
+	b.gpuBindGroupLayouts[layoutObj] = &gpuBindGroupLayoutInfo{group: -1}
+	return layoutObj
+}
+
+// gpuCreatePipelineLayout implements
+// GPUDevice.createPipelineLayout(descriptor): descriptor.bindGroupLayouts
+// is an ordered sequence of GPUBindGroupLayout objects (array position =
+// @group number a pipeline built from this layout expects at that index —
+// WebGPU §4.3), each of which must already be a real GPUBindGroupLayout
+// this binding issued (createBindGroupLayout, or another pipeline's own
+// getBindGroupLayout). Registered by object identity in
+// b.gpuPipelineLayouts so createComputePipeline/createComputePipelineAsync
+// can recognize it later (gpuBuildComputePipeline).
+func (b *binder) gpuCreatePipelineLayout(call goja.FunctionCall) goja.Value {
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("createPipelineLayout: a GPUPipelineLayoutDescriptor is required"))
+	}
+	arr, _ := desc.Get("bindGroupLayouts").(*goja.Object)
+	if arr == nil {
+		panic(b.vm.NewTypeError("createPipelineLayout: bindGroupLayouts is required"))
+	}
+	n := int(arr.Get("length").ToInteger())
+	layouts := make([]*goja.Object, n)
+	for i := 0; i < n; i++ {
+		layoutObj, _ := arr.Get(strconv.Itoa(i)).(*goja.Object)
+		if layoutObj == nil || b.gpuBindGroupLayouts[layoutObj] == nil {
+			panic(b.vm.NewTypeError("createPipelineLayout: bindGroupLayouts entries must be GPUBindGroupLayout objects"))
+		}
+		layouts[i] = layoutObj
+	}
+	pipelineLayoutObj := b.vm.NewObject()
+	if b.gpuPipelineLayouts == nil {
+		b.gpuPipelineLayouts = map[*goja.Object][]*goja.Object{}
+	}
+	b.gpuPipelineLayouts[pipelineLayoutObj] = layouts
+	return pipelineLayoutObj
 }
 
 // gpuBindGroupInfo is the Go-level state behind one GPUBindGroup: which
@@ -649,11 +835,24 @@ func (b *binder) gpuCreateBindGroup(call goja.FunctionCall) goja.Value {
 // far; a second beginComputePass() is a clear, named rejection, not a
 // silent no-op.
 type gpuCommandEncoderState struct {
-	dev        *metal.Device
-	passOpen   bool
-	passEnded  bool
-	finished   bool
-	dispatches []gpuRecordedDispatch
+	dev       *metal.Device
+	passOpen  bool
+	passEnded bool
+	finished  bool
+	commands  []gpuRecordedCommand
+}
+
+// gpuRecordedCommand is one command recorded on a GPUCommandEncoder, IN
+// THE EXACT ORDER it was encoded — dispatchWorkgroups (inside a compute
+// pass) and copyBufferToBuffer (directly on the encoder, confirmed
+// directly needed by go-wasmcontainers for their own readback-via-
+// mapAsync batch path) interleave freely per spec, so both go through
+// this ONE ordered list rather than two separate ones gpuQueueSubmit
+// would otherwise have to merge by guesswork. Exactly one of
+// dispatch/copy is non-nil.
+type gpuRecordedCommand struct {
+	dispatch *gpuRecordedDispatch
+	copy     *gpuRecordedCopy
 }
 
 // gpuRecordedDispatch is one dispatchWorkgroups() call, fully resolved at
@@ -670,6 +869,24 @@ type gpuRecordedDispatch struct {
 	x, y, z  int
 }
 
+// gpuRecordedCopy is one copyBufferToBuffer() call. Executed as a plain
+// Go `copy()` over go-macos/metal's own zero-copy unified-memory backing
+// arrays — correct ONLY once every dispatch recorded BEFORE it has
+// actually finished running on the GPU, which is why gpuQueueSubmit does
+// NOT batch every command into one dev.Run call: it flushes (and BLOCKS
+// on, per dev.Run's own documented behaviour) every pending dispatch
+// before executing a copy, so a copy reading a dispatch's own output
+// always sees the real, GPU-written bytes, never a stale pre-dispatch
+// buffer the naive "one dev.Run for everything" shape would risk (Go's
+// own copy() runs at CLOSURE-RECORDING time, not at the GPU's own command-
+// buffer-execution time, if it were interleaved inside a single dev.Run
+// closure instead).
+type gpuRecordedCopy struct {
+	src, dst             *metal.Buffer
+	srcOffset, dstOffset int
+	size                 int
+}
+
 func (b *binder) wrapGPUCommandEncoder(st *gpuCommandEncoderState) *goja.Object {
 	o := b.vm.NewObject()
 	o.Set("beginComputePass", func(call goja.FunctionCall) goja.Value {
@@ -681,6 +898,9 @@ func (b *binder) wrapGPUCommandEncoder(st *gpuCommandEncoderState) *goja.Object 
 		}
 		st.passOpen = true
 		return b.wrapGPUComputePassEncoder(st)
+	})
+	o.Set("copyBufferToBuffer", func(call goja.FunctionCall) goja.Value {
+		return b.gpuCopyBufferToBuffer(st, call)
 	})
 	o.Set("finish", func(call goja.FunctionCall) goja.Value {
 		if st.finished {
@@ -797,53 +1017,116 @@ func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gp
 		buffers[pipeline.result.SizeMetalIndex] = sb
 		sizesBuf = sb
 	}
-	enc.dispatches = append(enc.dispatches, gpuRecordedDispatch{
+	enc.commands = append(enc.commands, gpuRecordedCommand{dispatch: &gpuRecordedDispatch{
 		pipeline: pipeline,
 		buffers:  buffers,
 		sizesBuf: sizesBuf,
 		x:        x * ws[0],
 		y:        y * ws[1],
 		z:        z * ws[2],
-	})
+	}})
 	return goja.Undefined()
 }
 
-// gpuQueueSubmit implements GPUQueue.submit(commandBuffers): every recorded
-// dispatch, across every command buffer given, replays through ONE real
-// go-macos/metal Device.Run call (which blocks until the GPU has actually
-// finished — see onSubmittedWorkDone's own doc comment for why that makes
-// it correct to resolve immediately), then releases every ephemeral sizes
-// buffer a dispatch allocated.
+// gpuCopyBufferToBuffer implements
+// GPUCommandEncoder.copyBufferToBuffer(source, sourceOffset, destination,
+// destinationOffset, size) — confirmed directly needed by
+// go-wasmcontainers for their own batch compute readback path (a storage
+// buffer's result copied into a MAP_READ buffer, then read back via
+// mapAsync/getMappedRange, since a buffer used as a compute shader
+// storage target cannot ALSO be directly mapped). Offsets/size must each
+// be a multiple of 4 per spec. Recorded into enc.commands, not copied
+// immediately — see gpuRecordedCopy's own doc comment for why ordering
+// relative to dispatches matters and how gpuQueueSubmit preserves it.
+func (b *binder) gpuCopyBufferToBuffer(enc *gpuCommandEncoderState, call goja.FunctionCall) goja.Value {
+	if enc.finished {
+		panic(b.vm.NewTypeError("copyBufferToBuffer: this command encoder has already finished"))
+	}
+	srcObj, _ := call.Argument(0).(*goja.Object)
+	srcSt := b.gpuBuffers[srcObj]
+	if srcSt == nil {
+		panic(b.vm.NewTypeError("copyBufferToBuffer: source must be a GPUBuffer"))
+	}
+	srcOffset := int(call.Argument(1).ToInteger())
+	dstObj, _ := call.Argument(2).(*goja.Object)
+	dstSt := b.gpuBuffers[dstObj]
+	if dstSt == nil {
+		panic(b.vm.NewTypeError("copyBufferToBuffer: destination must be a GPUBuffer"))
+	}
+	dstOffset := int(call.Argument(3).ToInteger())
+	size := int(call.Argument(4).ToInteger())
+	if srcOffset%4 != 0 || dstOffset%4 != 0 || size%4 != 0 {
+		panic(b.vm.NewTypeError("copyBufferToBuffer: sourceOffset/destinationOffset/size must each be a multiple of 4"))
+	}
+	if srcOffset < 0 || dstOffset < 0 || size < 0 || srcOffset+size > srcSt.size || dstOffset+size > dstSt.size {
+		panic(b.vm.NewTypeError("copyBufferToBuffer: range out of bounds"))
+	}
+	enc.commands = append(enc.commands, gpuRecordedCommand{copy: &gpuRecordedCopy{
+		src: srcSt.buf, dst: dstSt.buf, srcOffset: srcOffset, dstOffset: dstOffset, size: size,
+	}})
+	return goja.Undefined()
+}
+
+// gpuQueueSubmit implements GPUQueue.submit(commandBuffers). Every
+// recorded command, across every command buffer given, replays in ORDER
+// — but NOT as one single dev.Run call spanning everything: a run of
+// consecutive dispatches is flushed through dev.Run (which BLOCKS until
+// the GPU has actually finished — see onSubmittedWorkDone's own doc
+// comment for why that makes it correct to resolve immediately) before
+// each copyBufferToBuffer, so a copy reading a dispatch's own output
+// always sees the real, post-dispatch bytes (see gpuRecordedCopy's own
+// doc comment for why batching a copy INSIDE the same dev.Run as the
+// dispatch it depends on would be a real, silent correctness bug, not
+// just a style choice).
 func (b *binder) gpuQueueSubmit(dev *metal.Device, call goja.FunctionCall) goja.Value {
 	arr, _ := call.Argument(0).(*goja.Object)
 	if arr == nil {
 		panic(b.vm.NewTypeError("submit: expected a sequence of GPUCommandBuffer"))
 	}
 	n := int(arr.Get("length").ToInteger())
-	var dispatches []gpuRecordedDispatch
+	var commands []gpuRecordedCommand
 	for i := 0; i < n; i++ {
 		cbObj, _ := arr.Get(strconv.Itoa(i)).(*goja.Object)
 		cb := b.gpuCommandBuffers[cbObj]
 		if cb == nil {
 			panic(b.vm.NewTypeError("submit: expected a GPUCommandBuffer"))
 		}
-		dispatches = append(dispatches, cb.dispatches...)
+		commands = append(commands, cb.commands...)
 	}
-	err := dev.Run(func(e *metal.Encoder) {
-		for _, d := range dispatches {
-			e.Use(d.pipeline.pipe)
-			for idx, buf := range d.buffers {
-				e.Buffer(idx, buf)
+	var pending []gpuRecordedDispatch
+	runPending := func() error {
+		if len(pending) == 0 {
+			return nil
+		}
+		err := dev.Run(func(e *metal.Encoder) {
+			for _, d := range pending {
+				e.Use(d.pipeline.pipe)
+				for idx, buf := range d.buffers {
+					e.Buffer(idx, buf)
+				}
+				e.Dispatch(d.x, d.y, d.z)
 			}
-			e.Dispatch(d.x, d.y, d.z)
+		})
+		for _, d := range pending {
+			if d.sizesBuf != nil {
+				d.sizesBuf.Close()
+			}
 		}
-	})
-	for _, d := range dispatches {
-		if d.sizesBuf != nil {
-			d.sizesBuf.Close()
-		}
+		pending = nil
+		return err
 	}
-	if err != nil {
+	for _, c := range commands {
+		if c.dispatch != nil {
+			pending = append(pending, *c.dispatch)
+			continue
+		}
+		if err := runPending(); err != nil {
+			panic(b.domException("OperationError", err.Error()))
+		}
+		copy(c.copy.dst.Bytes()[c.copy.dstOffset:c.copy.dstOffset+c.copy.size],
+			c.copy.src.Bytes()[c.copy.srcOffset:c.copy.srcOffset+c.copy.size])
+	}
+	if err := runPending(); err != nil {
 		panic(b.domException("OperationError", err.Error()))
 	}
 	return goja.Undefined()

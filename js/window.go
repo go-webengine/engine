@@ -94,10 +94,11 @@ func (b *binder) install() {
 		b.installSharedArrayBuffer(g)
 		b.installAtomics(g)
 	}
-	// navigator.gpu + GPUBufferUsage/GPUMapMode (WebGPU): see
+	// navigator.gpu + GPUBufferUsage/GPUMapMode/GPUShaderStage (WebGPU): see
 	// Options.EnableWebGPU's own doc comment for why this is opt-in rather
 	// than on by default like a real browser.
 	if b.opt.EnableWebGPU {
+		g.Set("GPUShaderStage", b.newGPUShaderStage())
 		g.Set("GPUBufferUsage", b.newGPUBufferUsage())
 		g.Set("GPUMapMode", b.newGPUMapMode())
 	}
