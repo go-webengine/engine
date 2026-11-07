@@ -65,6 +65,10 @@ type Options struct {
 	// body; zero selects defaultMaxResponseBytes. See engine.Engine's own
 	// field of the same name for the full rationale.
 	MaxResponseBytes int64
+	// MaxRequests bounds how many fetch()/XMLHttpRequest requests one
+	// render may issue; zero selects defaultMaxRequests. See
+	// engine.Engine's own field of the same name for the full rationale.
+	MaxRequests int
 	// EnableDoneSignal installs a global function (see install()'s own doc
 	// comment for its exact name) a page's own script can call to end the
 	// settle loop early, once its async work is actually finished, instead

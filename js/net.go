@@ -21,7 +21,14 @@ import (
 // total time; these bound request count and per-response size so a page cannot
 // exhaust memory or issue unbounded requests within the budget.
 const (
-	maxRequests = 100
+	// defaultMaxRequests is Options.MaxRequests' zero-value default —
+	// confirmed too small for a real workload, not hypothetical: a
+	// go-wasmcontainers page fetching ~123 ONNX models plus their own
+	// inputs/outputs issues several hundred requests from one page, which
+	// the old hardcoded 100 made unconditionally impossible past the
+	// first batch. Same "zero selects a sane default, configurable for a
+	// larger real workload" convention as MaxResponseBytes right below.
+	defaultMaxRequests = 100
 	// defaultMaxResponseBytes is Options.MaxResponseBytes' zero-value
 	// default, matching MaxWasmModuleBytes/MaxWasmMemoryBytes's own "zero
 	// selects a sane default, configurable for a larger real workload"
@@ -43,6 +50,15 @@ func (b *binder) maxResponseBytes() int64 {
 	return b.opt.MaxResponseBytes
 }
 
+// maxRequests resolves Options.MaxRequests: zero (or negative) selects
+// defaultMaxRequests, the SAME resolver shape as maxResponseBytes above.
+func (b *binder) maxRequests() int {
+	if b.opt.MaxRequests <= 0 {
+		return defaultMaxRequests
+	}
+	return b.opt.MaxRequests
+}
+
 // doRequest performs a single JS-initiated HTTP request through the engine's
 // shared client (b.opt.Client) — the SAME client the engine uses, so any
 // transport-level guard (e.g. the browserproxy's SSRF filter) applies to JS
@@ -57,7 +73,7 @@ func (b *binder) doRequest(method, rawURL string, headers map[string]string, bod
 	if b.opt.Client == nil {
 		return nil, errString("no HTTP client available")
 	}
-	if b.reqCount >= maxRequests {
+	if b.reqCount >= b.maxRequests() {
 		return nil, errString("request limit exceeded")
 	}
 	abs, ok := resolveURL(b.opt.PageURL, rawURL)

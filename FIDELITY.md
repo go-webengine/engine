@@ -18,6 +18,14 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-11-08 (round 11) — `Options.MaxRequests` / `Engine.MaxRequests` (feature, engine#342 fallout)
+
+go-wasmcontainers' own real workload fetches on the order of 123 ONNX models plus their inputs/outputs — several hundred requests per render — which hit the previous hardcoded `maxRequests = 100` cap with no way to raise it. Same convention as `MaxResponseBytes`/`MaxWasmModuleBytes`/`MaxWasmMemoryBytes`: a sane default, configurable for a confirmed larger real workload.
+
+- **`js/net.go`**: the unexported `maxRequests = 100` constant renamed `defaultMaxRequests`, with a new `(b *binder) maxRequests() int` resolver (zero or negative → default, matching every other `maxXxx()` resolver in this file) threaded into `doRequest`'s own existing cap check.
+- **`Options.MaxRequests`/`Engine.MaxRequests`** (new fields, `js/js.go`/`engine.go`), threaded through `settle_scripts.go`'s `jsOptions`.
+- Tests: `js/net_test.go`'s new `TestMaxRequestsResolution` (the resolver's own zero/negative/explicit-value table) and `TestMaxRequestsRaisedAllowsMoreFetches` (a real end-to-end render issuing `defaultMaxRequests+50` fetches with `MaxRequests` raised to match, asserting all succeed with zero errors). Three pre-existing literal references to the renamed constant fixed. `go build`/`go vet`/`go test ./...`/`go test -race ./...`/`govulncheck` clean, cross-build verified on every GOARCH this repo's CI checks, the separate `bench/` module unaffected.
+
 ## 2026-11-08 (round 10) — WebGPU error scopes now actually CAPTURE errors, instead of throwing past them (fix, engine#342 fallout)
 
 Round 9's `pushErrorScope`/`popErrorScope` only got the push/pop BALANCE right — every GPU error still threw synchronously at the point of failure, same as before any error scope existed, which go-wasmcontainers caught immediately: WebGPU's own error model (§22 "Errors & Debugging") says `create*`/`submit`/`dispatch` NEVER throw for a GPU content-validation failure — the error is captured by the innermost open scope (or fires `"uncapturederror"` with none open), and the call itself still returns, an "invalid" placeholder standing in for the real result. go-gfx/webgpu relies on exactly that: it wraps creations in `pushErrorScope("validation")`/`popErrorScope()` and turns the popped `GPUValidationError`'s own message into a Go error — so a guest's bad WGSL needs to come back as a captured, positioned error, not a panic that kills the whole worker (in Go's own `syscall/js`, a JS exception re-panics on the Go side, so the previous throw-synchronously design was fatal for them, not just spec-incorrect).
