@@ -32,8 +32,8 @@ require (
 	github.com/go-images/jpeg2000 v0.14.0 // indirect
 	github.com/go-images/png v0.2.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
-	github.com/go-macos/metal v0.4.0 // indirect
-	github.com/go-macos/objc v0.11.2 // indirect
+	github.com/go-macos/metal v0.6.1 // indirect
+	github.com/go-macos/objc v0.12.0 // indirect
 	github.com/go-opentype/fonts v0.14.0 // indirect
 	github.com/go-opentype/opentype v0.16.2-0.20261027113239-5e69589e9a5e // indirect
 	github.com/go-simd/highway v0.0.14 // indirect
