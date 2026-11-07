@@ -61,6 +61,10 @@ type Options struct {
 	// growth; zero selects defaultMaxWasmMemoryBytes. See engine.Engine's
 	// own field of the same name for the full rationale.
 	MaxWasmMemoryBytes int64
+	// MaxResponseBytes bounds a single fetch()/XMLHttpRequest response
+	// body; zero selects defaultMaxResponseBytes. See engine.Engine's own
+	// field of the same name for the full rationale.
+	MaxResponseBytes int64
 	// EnableDoneSignal installs a global function (see install()'s own doc
 	// comment for its exact name) a page's own script can call to end the
 	// settle loop early, once its async work is actually finished, instead

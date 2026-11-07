@@ -4,6 +4,7 @@
 package js
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
@@ -246,6 +247,145 @@ func TestDoRequestErrorBranches(t *testing.T) {
 	b4 := &binder{vm: goja.New(), opt: Options{PageURL: "https://x/", Client: http.DefaultClient, Ctx: context.Background()}, deadman: time.Now().Add(-time.Second)}
 	if _, err := b4.doRequest("GET", "/y", nil, ""); err == nil {
 		t.Fatal("exhausted budget should error")
+	}
+}
+
+// TestMaxResponseBytesResolution mirrors TestMaxWasmModuleBytesResolution's
+// own table shape for the new resolver — zero (or negative) selects the
+// default, a positive value is kept exactly.
+func TestMaxResponseBytesResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		opt  int64
+		want int64
+	}{
+		{"unset", 0, defaultMaxResponseBytes},
+		{"negative treated as unset", -1, defaultMaxResponseBytes},
+		{"explicit value kept exactly", 20 << 20, 20 << 20},
+	}
+	for _, c := range cases {
+		b := &binder{opt: Options{MaxResponseBytes: c.opt}}
+		if got := b.maxResponseBytes(); got != c.want {
+			t.Errorf("%s: maxResponseBytes() = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
+// exactSizeServer serves exactly n bytes of 'a' at "/body" — used to probe
+// the response-size limit's own boundary precisely, rather than guessing
+// from a fixed-size fixture.
+func exactSizeServer(n int) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(bytes.Repeat([]byte("a"), n))
+	}))
+}
+
+// TestDoRequestRejectsResponseOverTheLimit proves the real, confirmed
+// defect this round fixed: a response body larger than the configured
+// limit used to come back as an apparently-successful fetch carrying a
+// SILENTLY TRUNCATED prefix (io.ReadAll(io.LimitReader(resp.Body, limit))
+// alone cannot distinguish "the body was exactly this size" from "the
+// body was larger and got cut off"). It must now reject outright, naming
+// the limit, rather than returning truncated bytes with a nil error.
+func TestDoRequestRejectsResponseOverTheLimit(t *testing.T) {
+	srv := exactSizeServer(11)
+	defer srv.Close()
+	b := &binder{
+		vm:      goja.New(),
+		opt:     Options{PageURL: srv.URL + "/", Client: http.DefaultClient, Ctx: context.Background(), MaxResponseBytes: 10},
+		deadman: time.Now().Add(time.Second),
+	}
+	res, err := b.doRequest("GET", "/body", nil, "")
+	if err == nil {
+		t.Fatalf("want an error for an 11-byte body over a 10-byte limit, got a successful result: %+v", res)
+	}
+	if !strings.Contains(err.Error(), "exceeds the configured size limit") || !strings.Contains(err.Error(), "10 bytes") {
+		t.Fatalf("error = %q, want it to name the limit (10 bytes) and say it was exceeded", err.Error())
+	}
+}
+
+// TestDoRequestAcceptsResponseExactlyAtTheLimit is
+// TestDoRequestRejectsResponseOverTheLimit's own boundary control: a body
+// of EXACTLY the configured limit must succeed, with every byte intact —
+// guards against an off-by-one in the "read limit+1, reject if that extra
+// byte arrived" detection (e.g. rejecting at exactly the limit instead of
+// one past it).
+func TestDoRequestAcceptsResponseExactlyAtTheLimit(t *testing.T) {
+	srv := exactSizeServer(10)
+	defer srv.Close()
+	b := &binder{
+		vm:      goja.New(),
+		opt:     Options{PageURL: srv.URL + "/", Client: http.DefaultClient, Ctx: context.Background(), MaxResponseBytes: 10},
+		deadman: time.Now().Add(time.Second),
+	}
+	res, err := b.doRequest("GET", "/body", nil, "")
+	if err != nil {
+		t.Fatalf("a body exactly at the limit should succeed, got: %v", err)
+	}
+	if len(res.raw) != 10 {
+		t.Fatalf("raw body length = %d, want 10 (truncated or corrupted)", len(res.raw))
+	}
+}
+
+// TestFetchRejectsOversizedResponseVisibleToScript is the SAME fix,
+// proven at the JS-visible fetch() layer go-wasmcontainers' own page code
+// actually observes: the promise REJECTS with a TypeError naming the real
+// cause, rather than resolving to a Response whose body a script would
+// have no way to know was incomplete.
+func TestFetchRejectsOversizedResponseVisibleToScript(t *testing.T) {
+	srv := exactSizeServer(11)
+	defer srv.Close()
+	root, err := dom.Parse(`<html><body><script>
+		fetch('/body').then(function(r){ console.log('unexpected-success'); },
+			function(e){ console.log('rejected:' + e.name + ':' + e.message); });
+	</script></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:          srv.URL + "/",
+		Client:           http.DefaultClient,
+		Timeout:          3 * time.Second,
+		Log:              func(s string) { logs = append(logs, s) },
+		MaxResponseBytes: 10,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "rejected:TypeError")
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "exceeds the configured size limit") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the rejection message to name the real cause, got: %v", logs)
+	}
+}
+
+// TestMaxResponseBytesRaisedAcceptsALargerResponse is go-wasmcontainers'
+// own confirmed need, directly: raising Options.MaxResponseBytes past the
+// default lets a real fetch of a response bigger than 8 MiB (their own
+// ~10 MiB Go-compiled WebAssembly module) succeed intact, where it used
+// to come back silently truncated with no way to configure around it at
+// all.
+func TestMaxResponseBytesRaisedAcceptsALargerResponse(t *testing.T) {
+	const size = 9 << 20 // bigger than the OLD hardcoded 8 MiB cap
+	srv := exactSizeServer(size)
+	defer srv.Close()
+	b := &binder{
+		vm:      goja.New(),
+		opt:     Options{PageURL: srv.URL + "/", Client: http.DefaultClient, Ctx: context.Background(), MaxResponseBytes: size},
+		deadman: time.Now().Add(10 * time.Second),
+	}
+	res, err := b.doRequest("GET", "/body", nil, "")
+	if err != nil {
+		t.Fatalf("a body within the RAISED limit should succeed, got: %v", err)
+	}
+	if len(res.raw) != size {
+		t.Fatalf("raw body length = %d, want %d", len(res.raw), size)
 	}
 }
 

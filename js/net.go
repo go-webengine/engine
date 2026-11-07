@@ -20,16 +20,38 @@ import (
 // total time; these bound request count and per-response size so a page cannot
 // exhaust memory or issue unbounded requests within the budget.
 const (
-	maxRequests       = 100
-	maxResponseBytes  = 8 << 20 // 8 MB per response
-	perRequestTimeout = 6 * time.Second
+	maxRequests = 100
+	// defaultMaxResponseBytes is Options.MaxResponseBytes' zero-value
+	// default, matching MaxWasmModuleBytes/MaxWasmMemoryBytes's own "zero
+	// selects a sane default, configurable for a larger real workload"
+	// convention — see engine.Engine's own field of the same name for why
+	// this needed to become configurable at all (a real ~10 MiB
+	// go-wasmcontainers module was silently truncated under the old,
+	// hardcoded 8 MiB value).
+	defaultMaxResponseBytes = 8 << 20 // 8 MB per response
+	perRequestTimeout       = 6 * time.Second
 )
+
+// maxResponseBytes resolves Options.MaxResponseBytes: zero (or negative)
+// selects defaultMaxResponseBytes, matching MaxWasmModuleBytes's own
+// resolver (maxWasmModuleBytes in wasm.go).
+func (b *binder) maxResponseBytes() int64 {
+	if b.opt.MaxResponseBytes <= 0 {
+		return defaultMaxResponseBytes
+	}
+	return b.opt.MaxResponseBytes
+}
 
 // doRequest performs a single JS-initiated HTTP request through the engine's
 // shared client (b.opt.Client) — the SAME client the engine uses, so any
 // transport-level guard (e.g. the browserproxy's SSRF filter) applies to JS
 // fetches too. It resolves rawURL against the page base, is bounded by the
-// remaining JS budget, and reads at most maxResponseBytes.
+// remaining JS budget, and REJECTS (rather than silently truncating) a
+// response body larger than maxResponseBytes — see that method's own doc
+// comment for the real, confirmed defect this fixed: a response over the
+// old hardcoded 8 MiB cap used to come back as an apparently-successful
+// fetch() carrying truncated, corrupt bytes, with nothing in the response
+// itself (or any error) indicating data was lost.
 func (b *binder) doRequest(method, rawURL string, headers map[string]string, body string) (*httpResult, error) {
 	if b.opt.Client == nil {
 		return nil, errString("no HTTP client available")
@@ -75,9 +97,20 @@ func (b *binder) doRequest(method, rawURL string, headers map[string]string, bod
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	limit := b.maxResponseBytes()
+	// Read ONE byte past the limit: if that extra byte is actually there,
+	// the real body exceeds the limit and this request must REJECT, never
+	// silently hand back a truncated prefix as if it were the whole body
+	// (the real defect this fixed — io.ReadAll(io.LimitReader(resp.Body,
+	// limit)) alone returns a nil error at exactly `limit` bytes whether
+	// or not more data existed beyond it, so a caller could never tell a
+	// complete small response apart from a truncated large one).
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, errString("response body exceeds the configured size limit (" + strconv.FormatInt(limit, 10) + " bytes)")
 	}
 	final := abs
 	if resp.Request != nil && resp.Request.URL != nil {
