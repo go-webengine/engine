@@ -209,9 +209,19 @@ type binder struct {
 	// active observe() call — see mutationobserver.go.
 	mutationObservers []*mutationObserverReg
 	deadman           time.Time
-	cookie            string
-	storage           map[string]*storageArea
-	reqCount          int // JS-initiated HTTP requests this render (bounded by maxRequests)
+	// timeOrigin is the real wall-clock instant this binder's own global
+	// was created (the main render's own Begin, or a Worker's own
+	// newWorkerBinder) — performance.now()'s own reference point (newPerformance,
+	// window.go), per the HR-Time spec's own per-global-object timeOrigin.
+	// Confirmed directly needed by go-wasmcontainers: a Go-compiled guest's
+	// own wasm_exec.js uses performance.now() for its monotonic clock
+	// (runtime.nanotime1) — before this field existed, now() was a stub
+	// that always returned 0, so time.Since/timers inside the guest would
+	// never see elapsed time pass at all.
+	timeOrigin time.Time
+	cookie     string
+	storage    map[string]*storageArea
+	reqCount   int // JS-initiated HTTP requests this render (bounded by maxRequests)
 
 	// metrics is the real geometry/used-value source read back by
 	// getBoundingClientRect / offset* / getComputedStyle. Nil = report zeros /
@@ -284,6 +294,13 @@ type binder struct {
 	// state (compiled form + isShared) by object identity — see
 	// wasmModuleState/wrapWasmModule in wasm.go.
 	wasmModules map[*goja.Object]wasmModuleState
+	// wasmModuleProto/wasmInstanceProto cache this VM's own
+	// WebAssembly.Module.prototype / WebAssembly.Instance.prototype (built
+	// once, lazily, by installWasmClassIdentity in wasm.go) so every
+	// object compile()/instantiate() return is stamped with it —
+	// confirmed directly needed by go-wasmcontainers: Go's own
+	// wasm_exec.js does `instance instanceof WebAssembly.Instance`.
+	wasmModuleProto, wasmInstanceProto *goja.Object
 
 	// workers holds every live `new Worker(url)` this binder created — see
 	// worker.go. Nil for the overwhelming majority of pages that never touch

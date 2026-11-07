@@ -74,6 +74,7 @@ func newWorkerBinder(opt Options, deadline time.Time) *binder {
 		onHandlers: map[*dom.Node]map[string]goja.Value{},
 		executed:   map[*dom.Node]bool{},
 		deadman:    deadline,
+		timeOrigin: time.Now(),
 		isWorker:   true,
 	}
 }

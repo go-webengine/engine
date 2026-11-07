@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -743,6 +744,48 @@ func TestWorkerHasWebAssembly(t *testing.T) {
 	}
 	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "add=1005" {
 		t.Fatalf("data-reply = %q, want %q", got, "add=1005")
+	}
+}
+
+// TestWorkerWasmInstanceofAndPerformanceNow reproduces go-wasmcontainers'
+// own exact failing context: INSIDE a Worker (not the main document),
+// `instance instanceof WebAssembly.Instance` must hold (Go's own
+// wasm_exec.js, Go.run, throws "Value is not an object: undefined" at
+// wasm_exec.js:480 otherwise) and performance.now() must advance with
+// real elapsed time across a real busy-loop (their own probe: a
+// 2e6-iteration loop between two calls gave the SAME value under the old
+// always-0 stub — Chromium's own does not).
+func TestWorkerWasmInstanceofAndPerformanceNow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/worker.js" {
+			w.Write([]byte(
+				wasmFixtureScript(t) + `
+				WebAssembly.instantiate(bytes, {env: {host_offset: function(x) { return x + 1000; }}}).then(function(result) {
+					var t0 = performance.now();
+					var sum = 0;
+					for (var i = 0; i < 2000000; i++) { sum += i; }
+					var t1 = performance.now();
+					postMessage('isInstance=' + (result.instance instanceof WebAssembly.Instance) + ' advanced=' + (t1 > t0) + ' sum=' + sum);
+				}, function(e) {
+					postMessage('REJECTED:' + e);
+				});
+			`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-reply")
+	if !strings.Contains(got, "isInstance=true") || !strings.Contains(got, "advanced=true") {
+		t.Fatalf("data-reply = %q, want isInstance=true and advanced=true", got)
 	}
 }
 

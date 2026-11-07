@@ -483,10 +483,23 @@ func (b *binder) newScreen() goja.Value {
 	return o
 }
 
+// newPerformance builds window.performance (or a Worker's own, per
+// installWorkerGlobals — the HTML/HR-Time spec gives each global object
+// its own Performance interface, timeOrigin included). `now()` is REAL
+// wall-clock elapsed time since b.timeOrigin (the binder's own creation
+// instant), not the always-0 stub this used to be — confirmed directly
+// needed by go-wasmcontainers: a Go-compiled guest's own wasm_exec.js
+// uses performance.now() for its monotonic clock (runtime.nanotime1), so
+// time.Since/timers inside the guest never advanced at all under the old
+// stub, however long the guest actually ran.
 func (b *binder) newPerformance() goja.Value {
 	o := b.vm.NewObject()
-	o.Set("now", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(0) })
-	o.Set("timeOrigin", 0)
+	o.Set("now", func(goja.FunctionCall) goja.Value {
+		return b.vm.ToValue(float64(time.Since(b.timeOrigin)) / float64(time.Millisecond))
+	})
+	// timeOrigin is itself a DOMHighResTimeStamp: milliseconds since the
+	// Unix epoch, per spec — not the zero stub this used to be either.
+	o.Set("timeOrigin", float64(b.timeOrigin.UnixNano())/float64(time.Millisecond))
 	o.Set("getEntriesByType", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
 	o.Set("getEntriesByName", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })
 	o.Set("getEntries", func(goja.FunctionCall) goja.Value { return b.vm.NewArray() })

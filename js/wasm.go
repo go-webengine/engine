@@ -206,6 +206,7 @@ func (b *binder) wasmCtx() (context.Context, context.CancelFunc) {
 // newWebAssembly builds the window.WebAssembly namespace object.
 func (b *binder) newWebAssembly() *goja.Object {
 	o := b.vm.NewObject()
+	b.installWasmClassIdentity(o)
 	o.Set("validate", func(call goja.FunctionCall) goja.Value {
 		data, ok := b.wasmBytes(call.Argument(0))
 		if !ok {
@@ -471,11 +472,52 @@ type wasmModuleState struct {
 	isShared bool
 }
 
+// installWasmClassIdentity wires WebAssembly.Module and WebAssembly.Instance
+// as real constructor functions, each with its own .prototype — so
+// `instanceof` holds for the objects compile()/instantiate() return, which
+// are stamped with these same prototypes (wrapWasmModule, instantiateWasm).
+// Confirmed directly needed by go-wasmcontainers: Go's own wasm_exec.js
+// (Go.run, wasm_exec.js:480) does `if (!(instance instanceof
+// WebAssembly.Instance)) throw ...` — the global didn't exist at all
+// before this, so the `instanceof` itself threw "Value is not an object:
+// undefined" rather than evaluating to false. The SYNCHRONOUS constructor
+// forms (`new WebAssembly.Module(bytes)`/`new WebAssembly.Instance(mod,
+// imports)`) remain deliberately unsupported — this file's own top doc
+// comment already states no confirmed container uses them over the async
+// compile()/instantiate() — so calling either via `new` throws a clear,
+// named TypeError rather than silently doing nothing.
+func (b *binder) installWasmClassIdentity(o *goja.Object) {
+	b.wasmModuleProto = b.vm.NewObject()
+	b.wasmInstanceProto = b.vm.NewObject()
+	o.Set("Module", b.wasmClassCtor("Module", b.wasmModuleProto))
+	o.Set("Instance", b.wasmClassCtor("Instance", b.wasmInstanceProto))
+}
+
+// wasmClassCtor builds one WebAssembly.{Module,Instance} constructor
+// function, wiring its own `.name`/`.prototype` and that prototype's own
+// `.constructor` back-reference — the same pattern installSharedArrayBuffer
+// (atomics.go) already established for a constructor whose instances are
+// built some OTHER way than calling it directly via `new`.
+func (b *binder) wasmClassCtor(name string, proto *goja.Object) goja.Value {
+	ctor := func(call goja.ConstructorCall) *goja.Object {
+		panic(b.wasmError("TypeError", "WebAssembly."+name+": the synchronous constructor is not supported; use WebAssembly.compile/instantiate"))
+	}
+	ctorVal := b.vm.ToValue(ctor)
+	if ctorObj, ok := ctorVal.(*goja.Object); ok {
+		_ = ctorObj.DefineDataProperty("name", b.vm.ToValue(name), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+		_ = ctorObj.Set("prototype", proto)
+		_ = proto.DefineDataProperty("constructor", ctorVal, goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	}
+	return ctorVal
+}
+
 // wasmModules caches each WebAssembly.Module JS wrapper's underlying state
 // by JS object identity, mirroring b.cache's own node<->wrapper identity
-// role.
+// role. The wrapper is stamped with wasmModuleProto so `instanceof
+// WebAssembly.Module` holds (installWasmClassIdentity).
 func (b *binder) wrapWasmModule(compiled wazero.CompiledModule, isShared bool) *goja.Object {
 	o := b.vm.NewObject()
+	_ = o.SetPrototype(b.wasmModuleProto)
 	if b.wasmModules == nil {
 		b.wasmModules = map[*goja.Object]wasmModuleState{}
 	}
@@ -511,6 +553,7 @@ func (b *binder) instantiateWasm(compiled wazero.CompiledModule, importsArg goja
 		return nil, b.wasmError("LinkError", err.Error())
 	}
 	inst := b.vm.NewObject()
+	_ = inst.SetPrototype(b.wasmInstanceProto)
 	inst.Set("exports", b.wasmExports(mod, compiled, isShared))
 	return inst, nil
 }
