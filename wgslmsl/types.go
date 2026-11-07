@@ -79,3 +79,40 @@ func scalarOrVecElemBytes(t wgsl.Type) (int, error) {
 		return 0, unsupported("%s as a storage buffer element type (only scalars and vectors)", t.String())
 	}
 }
+
+// atomicScalarKind returns a's own scalar kind, erroring unless it is one of
+// the two kinds the WGSL spec itself permits for an atomic type ("Unless
+// otherwise specified, T must be either u32 or i32" — Atomic Built-in
+// Functions) — confirmed from the spec, not assumed, and confirmed again by
+// compiling both kinds' own MSL spelling (atomic_uint/atomic_int) against
+// the real Metal compiler before this shipped.
+func atomicScalarKind(a *wgsl.AtomicType) (wgsl.ScalarKind, error) {
+	s, ok := a.Elem.(*wgsl.ScalarType)
+	if !ok || (s.Kind != wgsl.KU32 && s.Kind != wgsl.KI32) {
+		return 0, unsupported("atomic<%s> (only atomic<u32> or atomic<i32>)", a.Elem.String())
+	}
+	return s.Kind, nil
+}
+
+// atomicElemBytes is a's element byte size — always 4, since only u32/i32
+// are ever permitted (atomicScalarKind).
+func atomicElemBytes(a *wgsl.AtomicType) (int, error) {
+	if _, err := atomicScalarKind(a); err != nil {
+		return 0, err
+	}
+	return 4, nil
+}
+
+// atomicMSLType names a's own Metal Shading Language spelling: atomic_uint
+// or atomic_int (metal_atomic), the type every atomic_*_explicit built-in
+// this package emits (expr.go's atomicCallExpr) operates on.
+func atomicMSLType(a *wgsl.AtomicType) (string, error) {
+	k, err := atomicScalarKind(a)
+	if err != nil {
+		return "", err
+	}
+	if k == wgsl.KU32 {
+		return "atomic_uint", nil
+	}
+	return "atomic_int", nil
+}

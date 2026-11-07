@@ -502,10 +502,12 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   hardware by `TestOutOfBoundsIndexIsClamped`. Scoped deliberately to the
   realistic compute-kernel subset: one entry point reaching one function
   (no helper calls yet), `storage` resource arrays of scalar/vector element
-  type (no uniform buffers/textures/samplers/atomics/matrices/structs yet),
-  the common control-flow statements and a fixed allow-list of built-in math
-  functions — every construct outside that scope is a clear, named error,
-  never a silent gap. Not yet wired to `navigator.gpu` (next in M5).
+  type, plus (2026-11-07) a bare `<uniform>` scalar/vector and a storage
+  `atomic<u32>`/`atomic<i32>` with the ten common atomic built-ins (no
+  textures/samplers/matrices/structs yet), the common control-flow
+  statements and a fixed allow-list of built-in math functions — every
+  construct outside that scope is a clear, named error, never a silent
+  gap. Not yet wired to `navigator.gpu` (next in M5).
 - **`navigator.gpu`/`GPUAdapter`/`GPUDevice`/`GPUBuffer`** (2026-11-05,
   engine#345): WebGPU compute via `go-macos/metal` (pure Go, no cgo,
   cross-builds and cross-runs on every architecture this repo already
@@ -540,6 +542,22 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   real compute shader created, compiled, bound and dispatched entirely
   through the public `navigator.gpu`-shaped API, output checked bit-for-bit
   against real Metal hardware.
+- **`wgslmsl`: uniform buffers and storage `atomic<u32>`/`atomic<i32>`**
+  (2026-11-07, engine#345 follow-up): go-wasmcontainers' own second
+  confirmed need — every looping kernel in their batch path rewrites each
+  loop to count against a `var<uniform> budget: u32` and sets a
+  `var<storage, read_write> flag: atomic<u32>` via `atomicStore` before
+  breaking. `atomicLoad`/`Store`/`Add`/`Sub`/`Max`/`Min`/`And`/`Or`/`Xor`/
+  `Exchange` map 1:1 to `metal_atomic`'s own `atomic_*_explicit` functions
+  (confirmed by compiling each against the real Metal compiler before this
+  shipped, not assumed from documentation — Apple's own spec PDF exceeded
+  the fetch tool's size limit). Confirmed directly, not just reasoned
+  about: `layout: "auto"` already handles a kernel using `@group(0)` and
+  an explicit `@group(3)` together correctly, with no changes needed.
+  Still blocked, and stated: `var<workgroup>`/`workgroupBarrier()`/an
+  exact `@workgroup_size`-matching dispatch (needed by their LLM kernels)
+  — `go-macos/metal` v0.6.0 still has no way to pin an explicit
+  threadgroup shape for `Dispatch`.
 
 **Honest limits (not overclaimed)**
 

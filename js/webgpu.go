@@ -782,14 +782,17 @@ func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gp
 	}
 	var sizesBuf *metal.Buffer
 	if pipeline.result.SizeMetalIndex >= 0 {
-		sb, err := enc.dev.NewBuffer(4 * len(pipeline.result.Bindings))
+		sb, err := enc.dev.NewBuffer(4 * pipeline.result.SizesCount)
 		if err != nil {
 			panic(b.domException("OperationError", err.Error()))
 		}
-		for i, bnd := range pipeline.result.Bindings {
+		for _, bnd := range pipeline.result.Bindings {
+			if bnd.Kind != wgslmsl.BindingStorageArray {
+				continue // only an indexed storage array needs a bounds-check slot
+			}
 			bst := bindGroups[bnd.Group].bindings[bnd.BindingIndex]
 			count := uint32(bst.size / bnd.ElemBytes)
-			binary.LittleEndian.PutUint32(sb.Bytes()[i*4:], count)
+			binary.LittleEndian.PutUint32(sb.Bytes()[bnd.SizesIndex*4:], count)
 		}
 		buffers[pipeline.result.SizeMetalIndex] = sb
 		sizesBuf = sb

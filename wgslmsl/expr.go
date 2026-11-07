@@ -188,7 +188,7 @@ func (tr *translator) indexExpr(ix *wgsl.Index) (string, error) {
 			return "", err
 		}
 		b := tr.bindings[tr.resources[r]]
-		clamped := fmt.Sprintf("metal::min(uint(%s), metal::max(_sizes.s%d, 1u) - 1u)", i, b.MetalIndex)
+		clamped := fmt.Sprintf("metal::min(uint(%s), metal::max(_sizes.s%d, 1u) - 1u)", i, b.SizesIndex)
 		return fmt.Sprintf("%s[%s]", x, clamped), nil
 	}
 	x, err := tr.expr(ix.X)
@@ -255,7 +255,65 @@ func isSwizzle(name string) bool {
 // built-in function call (mslBuiltinFn). A call to a user-defined function
 // never reaches here: Translate already rejects any entry point that
 // reaches more than its own one function (see the package doc comment).
+// atomicBuiltinFn maps a WGSL atomic built-in function name to its Metal
+// Shading Language spelling (metal_atomic) — confirmed by compiling every
+// one of these against the real Metal compiler before this shipped, not
+// assumed from documentation: exchange has no "fetch" in its MSL name
+// (atomic_exchange_explicit), unlike the read-modify-write arithmetic/
+// bitwise ops, which all do. atomicCompareExchangeWeak is deliberately not
+// supported yet (its WGSL return type, a `__atomic_compare_exchange_result`
+// struct, is a kind this package's own bounded scope has no story for) —
+// no confirmed real need for it either, unlike every op below.
+var atomicBuiltinFn = map[string]string{
+	"atomicLoad": "atomic_load_explicit", "atomicStore": "atomic_store_explicit",
+	"atomicAdd": "atomic_fetch_add_explicit", "atomicSub": "atomic_fetch_sub_explicit",
+	"atomicMax": "atomic_fetch_max_explicit", "atomicMin": "atomic_fetch_min_explicit",
+	"atomicAnd": "atomic_fetch_and_explicit", "atomicOr": "atomic_fetch_or_explicit",
+	"atomicXor": "atomic_fetch_xor_explicit", "atomicExchange": "atomic_exchange_explicit",
+}
+
+// atomicCallExpr emits one WGSL atomic built-in call. Its first argument is
+// always `&resource` (WGSL requires a pointer to the atomic object; spec
+// "Atomic Built-in Functions": the atomic_ptr parameter type is
+// ptr<AS, atomic<T>, read_write>) — since this package's own atomic
+// resource is ALREADY emitted as a real MSL pointer parameter (device
+// atomic_uint* name), translating `&resource` is simply the bare parameter
+// name, never an actual address-of in the generated code. Every WGSL atomic
+// built-in uses one single, fixed memory ordering (spec: "All atomic
+// built-in functions use a relaxed memory ordering"), which is why every
+// MSL call this emits hard-codes memory_order_relaxed rather than accepting
+// one as an argument — there is no WGSL-level ordering to translate.
+func (tr *translator) atomicCallExpr(mslName string, c *wgsl.Call) (string, error) {
+	if len(c.Args) == 0 {
+		return "", unsupported("%s: missing the atomic pointer argument", c.Fn.Name)
+	}
+	ptrExpr, ok := c.Args[0].(*wgsl.Unary)
+	if !ok || ptrExpr.Op != "&" {
+		return "", unsupported("%s: the first argument must be &resource (a pointer to a storage atomic<T>)", c.Fn.Name)
+	}
+	if _, tracked := tr.resourceOf(ptrExpr.X); !tracked {
+		return "", unsupported("%s: the first argument must be a tracked atomic<T> storage resource", c.Fn.Name)
+	}
+	ptr, err := tr.expr(ptrExpr.X)
+	if err != nil {
+		return "", err
+	}
+	args := []string{ptr}
+	for _, a := range c.Args[1:] {
+		s, err := tr.expr(a)
+		if err != nil {
+			return "", err
+		}
+		args = append(args, s)
+	}
+	args = append(args, "memory_order_relaxed")
+	return fmt.Sprintf("metal::%s(%s)", mslName, strings.Join(args, ", ")), nil
+}
+
 func (tr *translator) callExpr(c *wgsl.Call) (string, error) {
+	if mslName, ok := atomicBuiltinFn[c.Fn.Name]; ok {
+		return tr.atomicCallExpr(mslName, c)
+	}
 	args := make([]string, len(c.Args))
 	for i, a := range c.Args {
 		s, err := tr.expr(a)

@@ -65,11 +65,12 @@ func builtinAttr(name string) (string, error) {
 // information go-gfx/wgsl's Check produced, the resource bindings
 // discovered so far (in Metal buffer index order), and the output buffer.
 type translator struct {
-	info      *wgsl.Info
-	bindings  []Binding
-	resources map[*wgsl.VarObj]int // VarObj -> index into bindings
-	indent    int
-	buf       strings.Builder
+	info       *wgsl.Info
+	bindings   []Binding
+	resources  map[*wgsl.VarObj]int // VarObj -> index into bindings
+	sizesCount int                  // number of BindingStorageArray resources seen so far
+	indent     int
+	buf        strings.Builder
 }
 
 func (tr *translator) line(format string, a ...interface{}) {
@@ -93,11 +94,11 @@ func (tr *translator) translateEntryPoint(ep *wgsl.EntryPoint) (*Result, error) 
 	tr.buf.WriteByte('\n')
 
 	sizeIndex := -1
-	if len(tr.bindings) > 0 {
+	if tr.sizesCount > 0 {
 		sizeIndex = len(tr.bindings)
 		tr.line("struct _Sizes {")
 		tr.indent++
-		for i := range tr.bindings {
+		for i := 0; i < tr.sizesCount; i++ {
 			tr.line("uint s%d;", i)
 		}
 		tr.indent--
@@ -142,40 +143,77 @@ func (tr *translator) translateEntryPoint(ep *wgsl.EntryPoint) (*Result, error) 
 		WorkgroupSize:  [3]int{int(ws[0]), int(ws[1]), int(ws[2])},
 		Bindings:       tr.bindings,
 		SizeMetalIndex: sizeIndex,
+		SizesCount:     tr.sizesCount,
 	}, nil
 }
 
 // resolveResources walks ep.Resources (already sorted by group then binding
 // — go-gfx/wgsl's own deterministic order) and assigns each a Metal buffer
-// index in that same order. Only a runtime-sized storage array of scalar or
-// vector element type is supported (see the package doc comment for why:
-// the one shape this package's own bounds-checking and the realistic
-// compute-shader subset both need).
+// index in that same order. Three resource shapes are supported (see
+// BindingKind's own doc comment for the full rationale of each): a
+// runtime-sized storage array of scalar or vector element type, a bare
+// storage atomic<u32|i32>, and a bare uniform scalar or vector — the shapes
+// confirmed needed directly by go-wasmcontainers (engine#345 follow-up: a
+// `var<uniform> budget: u32` loop-iteration budget paired with a
+// `var<storage, read_write> flag: atomic<u32>` set via atomicStore before
+// breaking, in every one of their looping compute kernels).
 func (tr *translator) resolveResources(ep *wgsl.EntryPoint) error {
 	tr.resources = map[*wgsl.VarObj]int{}
 	for _, r := range ep.Resources {
-		if r.AS != wgsl.ASStorage {
-			return unsupported("resource %q in address space %s (only <storage>)", r.Name, r.AS)
+		switch r.AS {
+		case wgsl.ASStorage:
+			switch store := derefType(r.Store).(type) {
+			case *wgsl.ArrayType:
+				if !store.Runtime {
+					return unsupported("resource %q: a fixed-size storage array (only a runtime-sized one, e.g. array<f32>)", r.Name)
+				}
+				elemBytes, err := scalarOrVecElemBytes(store.Elem)
+				if err != nil {
+					return err
+				}
+				tr.addBinding(r, BindingStorageArray, elemBytes)
+			case *wgsl.AtomicType:
+				elemBytes, err := atomicElemBytes(store)
+				if err != nil {
+					return err
+				}
+				tr.addBinding(r, BindingAtomic, elemBytes)
+			default:
+				return unsupported("resource %q of type %s (only a runtime-sized storage array or a bare atomic<u32|i32>)", r.Name, r.Store.String())
+			}
+		case wgsl.ASUniform:
+			elemBytes, err := scalarOrVecElemBytes(r.Store)
+			if err != nil {
+				return unsupported("resource %q of type %s (only a scalar or vector <uniform>)", r.Name, r.Store.String())
+			}
+			tr.addBinding(r, BindingUniform, elemBytes)
+		default:
+			return unsupported("resource %q in address space %s (only <storage> and <uniform>)", r.Name, r.AS)
 		}
-		arr, ok := derefType(r.Store).(*wgsl.ArrayType)
-		if !ok || !arr.Runtime {
-			return unsupported("resource %q of type %s (only a runtime-sized storage array, e.g. array<f32>)", r.Name, r.Store.String())
-		}
-		elemBytes, err := scalarOrVecElemBytes(arr.Elem)
-		if err != nil {
-			return err
-		}
-		idx := len(tr.bindings)
-		tr.resources[r] = idx
-		tr.bindings = append(tr.bindings, Binding{
-			Group:        intOr(r.Group, 0),
-			BindingIndex: intOr(r.Binding, 0),
-			Name:         r.Name,
-			MetalIndex:   idx,
-			ElemBytes:    elemBytes,
-		})
 	}
 	return nil
+}
+
+// addBinding records r as a resolved Binding of kind at the next Metal
+// buffer index, allocating it a _Sizes struct slot too when kind ==
+// BindingStorageArray.
+func (tr *translator) addBinding(r *wgsl.VarObj, kind BindingKind, elemBytes int) {
+	idx := len(tr.bindings)
+	sizesIndex := -1
+	if kind == BindingStorageArray {
+		sizesIndex = tr.sizesCount
+		tr.sizesCount++
+	}
+	tr.resources[r] = idx
+	tr.bindings = append(tr.bindings, Binding{
+		Group:        intOr(r.Group, 0),
+		BindingIndex: intOr(r.Binding, 0),
+		Name:         r.Name,
+		MetalIndex:   idx,
+		Kind:         kind,
+		ElemBytes:    elemBytes,
+		SizesIndex:   sizesIndex,
+	})
 }
 
 func intOr(p *int64, def int) int {
@@ -186,22 +224,39 @@ func intOr(p *int64, def int) int {
 }
 
 // entryParams builds the kernel function's own parameter list: one
-// `[[buffer(N)]]` pointer per resolved resource, the `_Sizes` struct if
-// sizeIndex >= 0, then one builtin parameter per ep.Inputs entry.
+// `[[buffer(N)]]` parameter per resolved resource (its own MSL shape
+// depending on its Kind — see BindingKind's own doc comment), the `_Sizes`
+// struct if sizeIndex >= 0, then one builtin parameter per ep.Inputs entry.
 func (tr *translator) entryParams(ep *wgsl.EntryPoint, sizeIndex int) ([]string, error) {
 	var params []string
 	for _, r := range ep.Resources {
 		b := tr.bindings[tr.resources[r]]
-		arr := derefType(r.Store).(*wgsl.ArrayType)
-		elemMSL, err := mslType(arr.Elem)
-		if err != nil {
-			return nil, err
+		switch b.Kind {
+		case BindingStorageArray:
+			arr := derefType(r.Store).(*wgsl.ArrayType)
+			elemMSL, err := mslType(arr.Elem)
+			if err != nil {
+				return nil, err
+			}
+			qualifier := "device"
+			if !r.Access.Writable() {
+				qualifier = "const device"
+			}
+			params = append(params, fmt.Sprintf("%s %s* %s [[buffer(%d)]]", qualifier, elemMSL, identMSL(r.Name), b.MetalIndex))
+		case BindingAtomic:
+			at := derefType(r.Store).(*wgsl.AtomicType)
+			atomicMSL, err := atomicMSLType(at)
+			if err != nil {
+				return nil, err
+			}
+			params = append(params, fmt.Sprintf("device %s* %s [[buffer(%d)]]", atomicMSL, identMSL(r.Name), b.MetalIndex))
+		case BindingUniform:
+			uMSL, err := mslType(derefType(r.Store))
+			if err != nil {
+				return nil, err
+			}
+			params = append(params, fmt.Sprintf("constant %s& %s [[buffer(%d)]]", uMSL, identMSL(r.Name), b.MetalIndex))
 		}
-		qualifier := "device"
-		if !r.Access.Writable() {
-			qualifier = "const device"
-		}
-		params = append(params, fmt.Sprintf("%s %s* %s [[buffer(%d)]]", qualifier, elemMSL, identMSL(r.Name), b.MetalIndex))
 	}
 	if sizeIndex >= 0 {
 		params = append(params, fmt.Sprintf("constant _Sizes& _sizes [[buffer(%d)]]", sizeIndex))
