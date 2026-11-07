@@ -59,14 +59,20 @@ func runOnMetal(t *testing.T, res *Result, input []float32) []float32 {
 		binary.LittleEndian.PutUint32(dataBuf.Bytes()[i*4:], math.Float32bits(v))
 	}
 
-	sizesBuf, err := dev.NewBuffer(4 * len(res.Bindings))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sizesBuf.Close()
-	for i, b := range res.Bindings {
-		count := uint32((n * 4) / b.ElemBytes)
-		binary.LittleEndian.PutUint32(sizesBuf.Bytes()[i*4:], count)
+	var sizesBuf *metal.Buffer
+	if res.SizeMetalIndex >= 0 {
+		sizesBuf, err = dev.NewBuffer(4 * res.SizesCount)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer sizesBuf.Close()
+		for _, b := range res.Bindings {
+			if b.Kind != BindingStorageArray {
+				continue
+			}
+			count := uint32((n * 4) / b.ElemBytes)
+			binary.LittleEndian.PutUint32(sizesBuf.Bytes()[b.SizesIndex*4:], count)
+		}
 	}
 
 	err = dev.Run(func(e *metal.Encoder) {
@@ -149,6 +155,139 @@ func TestOutOfBoundsIndexIsClamped(t *testing.T) {
 	}
 }
 
+// TestUniformBudgetAndAtomicFlag is the roadmap's own next confirmed need
+// (engine#345 follow-up, go-wasmcontainers' batch/loopbudget.go pattern:
+// every looping kernel in their batch path rewrites each loop to count
+// against a `var<uniform> budget: u32` and sets a
+// `var<storage, read_write> flag: atomic<u32>` via atomicStore before
+// breaking). Exercises both new resource kinds together, AND the peer's own
+// explicit question — an explicit group 3 layout alongside the guest's own
+// group 0 — in one real, dispatched kernel.
+func TestUniformBudgetAndAtomicFlag(t *testing.T) {
+	const src = `
+		@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+		@group(3) @binding(0) var<storage, read_write> flag: atomic<u32>;
+		@group(3) @binding(1) var<uniform> budget: u32;
+
+		@compute @workgroup_size(1)
+		fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+			var i: u32 = 0u;
+			loop {
+				if (i >= budget) {
+					atomicStore(&flag, 1u);
+					break;
+				}
+				data[id.x] = data[id.x] + 1.0;
+				i = i + 1u;
+			}
+			let n = atomicLoad(&flag);
+			if (n == 1u) {
+				data[id.x] = data[id.x] + 1000.0;
+			}
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if len(res.Bindings) != 3 {
+		t.Fatalf("Bindings = %+v, want 3 (data, flag, budget)", res.Bindings)
+	}
+	var dataB, flagB, budgetB *Binding
+	for i := range res.Bindings {
+		b := &res.Bindings[i]
+		switch b.Name {
+		case "data":
+			dataB = b
+		case "flag":
+			flagB = b
+		case "budget":
+			budgetB = b
+		}
+	}
+	if dataB == nil || flagB == nil || budgetB == nil {
+		t.Fatalf("missing an expected binding: %+v", res.Bindings)
+	}
+	if dataB.Kind != BindingStorageArray || dataB.SizesIndex != 0 {
+		t.Fatalf("data binding = %+v, want Kind=BindingStorageArray SizesIndex=0", dataB)
+	}
+	if flagB.Kind != BindingAtomic || flagB.SizesIndex != -1 {
+		t.Fatalf("flag binding = %+v, want Kind=BindingAtomic SizesIndex=-1", flagB)
+	}
+	if budgetB.Kind != BindingUniform || budgetB.SizesIndex != -1 {
+		t.Fatalf("budget binding = %+v, want Kind=BindingUniform SizesIndex=-1", budgetB)
+	}
+	if budgetB.Group != 3 || flagB.Group != 3 || dataB.Group != 0 {
+		t.Fatalf("group assignment wrong: data.Group=%d flag.Group=%d budget.Group=%d, want 0,3,3", dataB.Group, flagB.Group, budgetB.Group)
+	}
+	if res.SizesCount != 1 {
+		t.Fatalf("SizesCount = %d, want 1 (only the one storage-array binding needs bounds accounting)", res.SizesCount)
+	}
+
+	dev, err := metal.Default()
+	if err != nil {
+		t.Skipf("no usable GPU on this machine: %v", err)
+	}
+	defer dev.Close()
+	lib, err := dev.Compile(res.MSL)
+	if err != nil {
+		t.Fatalf("Metal rejected the generated MSL: %v\n--- MSL ---\n%s", err, res.MSL)
+	}
+	defer lib.Close()
+	pipe, err := lib.Pipeline(res.EntryPointName)
+	if err != nil {
+		t.Fatalf("Pipeline(%q): %v", res.EntryPointName, err)
+	}
+	defer pipe.Close()
+
+	dataBuf, err := dev.NewBuffer(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dataBuf.Close()
+
+	flagBuf, err := dev.NewBuffer(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer flagBuf.Close()
+
+	budgetBuf, err := dev.NewBuffer(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer budgetBuf.Close()
+	binary.LittleEndian.PutUint32(budgetBuf.Bytes(), 5)
+
+	sizesBuf, err := dev.NewBuffer(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sizesBuf.Close()
+	binary.LittleEndian.PutUint32(sizesBuf.Bytes(), 1) // data: 1 element
+
+	err = dev.Run(func(e *metal.Encoder) {
+		e.Use(pipe)
+		e.Buffer(dataB.MetalIndex, dataBuf)
+		e.Buffer(flagB.MetalIndex, flagBuf)
+		e.Buffer(budgetB.MetalIndex, budgetBuf)
+		e.Buffer(res.SizeMetalIndex, sizesBuf)
+		e.Dispatch(1)
+	})
+	if err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	gotData := math.Float32frombits(binary.LittleEndian.Uint32(dataBuf.Bytes()))
+	gotFlag := binary.LittleEndian.Uint32(flagBuf.Bytes())
+	// The loop runs 5 times (budget), then sets flag=1 and breaks; the
+	// kernel then reads the flag back and, seeing 1, adds 1000.
+	wantData := float32(1005)
+	if gotData != wantData || gotFlag != 1 {
+		t.Fatalf("got data=%v flag=%v, want data=%v flag=1", gotData, gotFlag, wantData)
+	}
+}
+
 // TestControlFlowAndBuiltinMath exercises if/for/while/loop, the common
 // built-in math functions, and a non-trivial workgroup size together — the
 // realistic shape of a GPGPU kernel beyond the minimal vector-add case.
@@ -224,7 +363,7 @@ func TestUnsupportedConstructsAreRejected(t *testing.T) {
 				data[id.x] = helper(data[id.x]);
 			}
 		`,
-		"uniform buffer resource": `
+		"struct-typed uniform buffer resource": `
 			struct Params { scale: f32 }
 			@group(0) @binding(0) var<uniform> p: Params;
 			@group(0) @binding(1) var<storage, read_write> data: array<f32>;

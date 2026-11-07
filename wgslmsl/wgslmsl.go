@@ -44,6 +44,44 @@ type Options struct {
 	EntryPoint string
 }
 
+// BindingKind classifies what the host (js/webgpu.go) needs to do for one
+// resolved Binding — the three resource shapes this package supports, each
+// needing a different MSL parameter form and a different (or no) bounds
+// accounting.
+type BindingKind int
+
+const (
+	// BindingStorageArray is `var<storage, read|read_write> name: array<T>`
+	// — emitted as a `device T*`/`const device T*` pointer, every index
+	// clamped against this binding's own SizesIndex field of the
+	// synthesised _Sizes struct (see Result.SizeMetalIndex).
+	BindingStorageArray BindingKind = iota
+	// BindingAtomic is `var<storage, read_write> name: atomic<u32|i32>` —
+	// emitted as a `device atomic_uint*`/`device atomic_int*` pointer,
+	// touched only through the WGSL atomic* built-in functions (never
+	// indexed, so it needs no bounds accounting of its own).
+	BindingAtomic
+	// BindingUniform is `var<uniform> name: T` (T a scalar or vector) —
+	// emitted as a read-only `constant T&` reference. WGSL forbids a
+	// runtime-sized array in uniform address space (confirmed from the
+	// spec, not assumed), so a uniform resource never needs bounds
+	// accounting either.
+	BindingUniform
+)
+
+func (k BindingKind) String() string {
+	switch k {
+	case BindingStorageArray:
+		return "storage-array"
+	case BindingAtomic:
+		return "atomic"
+	case BindingUniform:
+		return "uniform"
+	default:
+		return "unknown"
+	}
+}
+
 // Binding is one resource this translation bound to a real Metal buffer
 // index, in Resources' own order (go-gfx/wgsl's EntryPoint.Resources is
 // already sorted by group then binding — the same deterministic policy the
@@ -55,11 +93,19 @@ type Binding struct {
 	Group, BindingIndex int
 	Name                string // the WGSL variable name, for diagnostics
 	MetalIndex          int
-	// ElemBytes is the resource's element byte size (4 for f32/i32/u32, 8
-	// for vec2<f32>, 16 for vec4<f32>, …) — the host needs it to compute
-	// SizeMetalIndex's own element-count value from the bound GPUBuffer's
-	// real byte length.
+	Kind                BindingKind
+	// ElemBytes is the resource's element byte size (4 for f32/i32/u32/
+	// atomic<u32|i32>, 8 for vec2<f32>, 16 for vec4<f32>, …). Meaningful for
+	// BindingStorageArray (the host needs it to compute this binding's own
+	// SizesIndex field from the bound GPUBuffer's real byte length) and
+	// reported for the other kinds too, for diagnostics, though nothing
+	// consumes it there.
 	ElemBytes int
+	// SizesIndex is this binding's own field index within the synthesised
+	// _Sizes struct (Result.SizeMetalIndex) — meaningful ONLY when Kind ==
+	// BindingStorageArray; -1 for every other kind, which needs no bounds
+	// accounting at all.
+	SizesIndex int
 }
 
 // Result is a successful translation.
@@ -72,19 +118,22 @@ type Result struct {
 	EntryPointName string
 	WorkgroupSize  [3]int
 	Bindings       []Binding
-	// SizeMetalIndex is the Metal buffer index of the synthesised
-	// "_bufferSizes" struct every kernel with at least one runtime-sized
-	// storage array binding takes — one uint32 per Bindings entry (same
-	// order), each the bound buffer's real element COUNT (byte length /
-	// ElemBytes). This is what every array index this package emits is
-	// clamped against (see clampedIndex) — Metal performs no bounds
-	// checking of its own, so this is a real security boundary, not a
-	// correctness nicety: without it, a page's own WGSL could read or write
-	// adjacent GPU memory outside its bound buffer via an out-of-range
-	// index. -1 when no binding needs it (no array indexing was ever
-	// bounds-checked because the kernel has no runtime-sized array
-	// resource).
+	// SizeMetalIndex is the Metal buffer index of the synthesised "_Sizes"
+	// struct every kernel with at least one BindingStorageArray resource
+	// takes — one uint32 per such binding (at its own SizesIndex), each the
+	// bound buffer's real element COUNT (byte length / ElemBytes). This is
+	// what every array index this package emits is clamped against (see
+	// indexExpr) — Metal performs no bounds checking of its own, so this is
+	// a real security boundary, not a correctness nicety: without it, a
+	// page's own WGSL could read or write adjacent GPU memory outside its
+	// bound buffer via an out-of-range index. -1 when no binding needs it
+	// (no BindingStorageArray resource in this kernel).
 	SizeMetalIndex int
+	// SizesCount is the number of uint32 fields in the synthesised _Sizes
+	// struct (0 when SizeMetalIndex is -1) — the host allocates a buffer of
+	// exactly SizesCount*4 bytes and fills each BindingStorageArray
+	// binding's own SizesIndex slot in it.
+	SizesCount int
 }
 
 // translateError is returned for anything in src this package's own

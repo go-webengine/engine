@@ -393,3 +393,109 @@ func TestGPUMapAsyncRejectsBadRange(t *testing.T) {
 		t.Fatalf("data-misaligned = %q, want OperationError", v)
 	}
 }
+
+// TestComputePipelineWithUniformAtomicAndMultipleGroups directly answers a
+// question go-wasmcontainers asked explicitly (engine#345 follow-up,
+// batch/loopbudget.go: their rewrite uses an explicit @group(3) layout
+// alongside the guest shader's own @group(0)) through the REAL public API —
+// layout: "auto" correctly builds a SEPARATE GPUBindGroupLayout per group
+// number a kernel actually uses (pipeline.getBindGroupLayout(0) and (3) are
+// independent, bound with two separate createBindGroup/setBindGroup calls),
+// and a `var<uniform>` budget plus a `var<storage, read_write>
+// atomic<u32>` flag — their own loop-budget pattern exactly — both work
+// through createBuffer/createBindGroup/dispatchWorkgroups like any other
+// resource.
+func TestComputePipelineWithUniformAtomicAndMultipleGroups(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@group(3) @binding(0) var<storage, read_write> flag: atomic<u32>;
+				@group(3) @binding(1) var<uniform> budget: u32;
+
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+					var i: u32 = 0u;
+					loop {
+						if (i >= budget) {
+							atomicStore(&flag, 1u);
+							break;
+						}
+						data[id.x] = data[id.x] + 1.0;
+						i = i + 1u;
+					}
+					let n = atomicLoad(&flag);
+					if (n == 1u) {
+						data[id.x] = data[id.x] + 1000.0;
+					}
+				}
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+
+			var dataBuf = dev.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_DST });
+			var flagBuf = dev.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			var budgetBuf = dev.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_DST });
+
+			return dataBuf.mapAsync(GPUMapMode.WRITE).then(function() {
+				new Float32Array(dataBuf.getMappedRange())[0] = 0;
+				dataBuf.unmap();
+				return budgetBuf.mapAsync(GPUMapMode.WRITE);
+			}).then(function() {
+				new Uint32Array(budgetBuf.getMappedRange())[0] = 5;
+				budgetBuf.unmap();
+
+				var group0 = dev.createBindGroup({
+					layout: pipeline.getBindGroupLayout(0),
+					entries: [{ binding: 0, resource: { buffer: dataBuf } }],
+				});
+				var group3 = dev.createBindGroup({
+					layout: pipeline.getBindGroupLayout(3),
+					entries: [
+						{ binding: 0, resource: { buffer: flagBuf } },
+						{ binding: 1, resource: { buffer: budgetBuf } },
+					],
+				});
+
+				var encoder = dev.createCommandEncoder();
+				var pass = encoder.beginComputePass();
+				pass.setPipeline(pipeline);
+				pass.setBindGroup(0, group0);
+				pass.setBindGroup(3, group3);
+				pass.dispatchWorkgroups(1);
+				pass.end();
+				dev.queue.submit([encoder.finish()]);
+
+				return Promise.all([dataBuf.mapAsync(GPUMapMode.READ), flagBuf.mapAsync(GPUMapMode.READ)]);
+			}).then(function() {
+				var data = new Float32Array(dataBuf.getMappedRange())[0];
+				var flag = new Uint32Array(flagBuf.getMappedRange())[0];
+				document.body.setAttribute('data-data', String(data));
+				document.body.setAttribute('data-flag', String(flag));
+				dataBuf.destroy();
+				flagBuf.destroy();
+				budgetBuf.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	if got, _ := body.Attribute("data-data"); got != "1005" {
+		t.Fatalf("data-data = %q, want 1005 (5 loop iterations + 1000 once flag is observed set)", got)
+	}
+	if got, _ := body.Attribute("data-flag"); got != "1" {
+		t.Fatalf("data-flag = %q, want 1", got)
+	}
+}
