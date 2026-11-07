@@ -155,6 +155,7 @@ func (e *Engine) jsOptions(ctx context.Context, doc *Document, vpW, vpH int) js.
 		Log:                 e.JSLog,
 		MaxWasmModuleBytes:  e.MaxWasmModuleBytes,
 		MaxWasmMemoryBytes:  e.MaxWasmMemoryBytes,
+		MaxResponseBytes:    e.MaxResponseBytes,
 		EnableDoneSignal:    e.EnableDoneSignal,
 		CrossOriginIsolated: doc.CrossOriginIsolated || e.ForceCrossOriginIsolated,
 		RealTimeTimers:      e.EnableWorkerStreaming,

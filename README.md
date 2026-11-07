@@ -404,6 +404,22 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`fetch()` no longer silently truncates a response over 8 MiB** (fix,
+  2026-11-07, round 6): found investigating a SEPARATE go-wasmcontainers
+  report that a ~10 MiB plain Go-compiled wasm module "did not report
+  within 5 min and logged nothing at all" via `instantiateStreaming`. A
+  real ~9 MiB fixture compiled through wazero directly in 1.6s — not slow
+  at all — so the real cause was upstream: `io.ReadAll(io.LimitReader(...,
+  8<<20))` returns a **nil error** whether a body was exactly 8 MiB or far
+  larger and simply cut off, so ANY fetch over 8 MiB (a WASM module, an
+  image, JSON) used to come back looking like a successful response
+  carrying silently truncated, corrupt bytes. `doRequest` now reads one
+  byte past the limit and REJECTS outright, naming the real cause and the
+  exact limit, if that extra byte arrived — never a truncated "success".
+  The cap itself is now configurable (`Engine.MaxResponseBytes`/`Options.
+  MaxResponseBytes`, zero selects the unchanged 8 MiB default), the SAME
+  convention `MaxWasmModuleBytes`/`MaxWasmMemoryBytes` already follow, so
+  a caller with legitimately larger resources raises it explicitly.
 - **A module's own DECLARED shared memory** (2026-11-07, round 5, engine#342
   follow-up): resolves round 4's one open question below — asked
   go-wasmcontainers directly whether their guest modules import memory or

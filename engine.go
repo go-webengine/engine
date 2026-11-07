@@ -138,6 +138,22 @@ type Engine struct {
 	// count, and always needs a concrete finite value; there is no
 	// "unlimited" sentinel to select instead.
 	MaxWasmMemoryBytes int64
+	// MaxResponseBytes bounds a single fetch()/XMLHttpRequest response
+	// body. Zero selects the 8 MiB default. Found genuinely too small for
+	// a real workload, not hypothetical: go-wasmcontainers' own ~10 MiB
+	// Go-compiled WebAssembly module, fetched via instantiateStreaming,
+	// was SILENTLY TRUNCATED to 8 MiB before this field existed — the old
+	// hardcoded cap had no way to raise it, and (the real defect, fixed
+	// the same round) the truncation itself was never surfaced as an
+	// error, so the page saw what looked like a successful fetch of
+	// corrupt, incomplete bytes. Raise this for a page that legitimately
+	// fetches larger resources; a response that still exceeds the
+	// (default or configured) cap now REJECTS the fetch with a clear
+	// error naming the limit, rather than silently handing back a
+	// truncated body — matching this engine's own "always bounded, never
+	// silently wrong" convention (MaxWasmModuleBytes/MaxWasmMemoryBytes/
+	// MaxJSHeapBytes above).
+	MaxResponseBytes int64
 	// EnableDoneSignal installs a global function, `__webengineDone(value)`,
 	// a page's own script can call to end the settle loop early, once its
 	// async work is actually finished, instead of running every pass out to
