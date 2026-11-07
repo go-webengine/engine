@@ -8,6 +8,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -166,6 +167,7 @@ func (b *binder) installNet(g *goja.Object) {
 	g.Set("Response", func(call goja.ConstructorCall) *goja.Object {
 		return b.newResponseFromInit(call)
 	})
+	g.Set("AbortController", func(call goja.ConstructorCall) *goja.Object { return b.newAbortController() })
 }
 
 // newResponseFromInit implements `new Response(body, init)` (Fetch
@@ -210,6 +212,17 @@ func (b *binder) fetch(call goja.FunctionCall) goja.Value {
 	method, headers, body := requestInit(call.Argument(1))
 
 	promise, resolve, reject := b.vm.NewPromise()
+	// A signal that is ALREADY aborted before fetch() is even called must
+	// reject immediately (DOM §3.1/Fetch §4.1's own "signal is aborted"
+	// check) — the one case that is real and meaningful for THIS engine's
+	// always-synchronous fetch (see this function's own doc comment for
+	// why genuine mid-flight cancellation does not apply).
+	if initObj, ok := call.Argument(1).(*goja.Object); ok {
+		if sig, ok := initObj.Get("signal").(*goja.Object); ok && sig.Get("aborted").ToBoolean() {
+			_ = reject(sig.Get("reason"))
+			return b.vm.ToValue(promise)
+		}
+	}
 	res, err := b.doRequest(method, url, headers, body)
 	if err != nil {
 		_ = reject(b.vm.NewTypeError("fetch failed: " + err.Error()))
@@ -255,6 +268,22 @@ func (b *binder) newHeaders(src map[string]string) *goja.Object {
 	for k, v := range src {
 		m[strings.ToLower(k)] = v
 	}
+	// sortedKeys returns m's own keys, lower-case and SORTED — the Fetch
+	// Standard's own pair-iterable definition for Headers requires
+	// iterating "header list, sorted and combined" by name; forEach/
+	// entries/keys/values (and Symbol.iterator, which defaults to
+	// entries()) all go through this ONE function so they agree with
+	// each other, not just internally with Go's own map iteration order
+	// (which is deliberately randomised and would otherwise make two
+	// forEach calls over the SAME Headers disagree on order).
+	sortedKeys := func() []string {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return keys
+	}
 	o := b.vm.NewObject()
 	o.Set("get", func(call goja.FunctionCall) goja.Value {
 		if v, ok := m[strings.ToLower(call.Argument(0).String())]; ok {
@@ -286,13 +315,127 @@ func (b *binder) newHeaders(src map[string]string) *goja.Object {
 	})
 	o.Set("forEach", func(call goja.FunctionCall) goja.Value {
 		if fn, ok := goja.AssertFunction(call.Argument(0)); ok {
-			for k, v := range m {
-				b.callSafely(fn, goja.Undefined(), b.vm.ToValue(v), b.vm.ToValue(k))
+			for _, k := range sortedKeys() {
+				b.callSafely(fn, goja.Undefined(), b.vm.ToValue(m[k]), b.vm.ToValue(k))
 			}
 		}
 		return goja.Undefined()
 	})
+	// entries()/keys()/values() (Fetch §5.2's own pair-iterable, iterated
+	// sorted-and-combined — confirmed directly needed by go-wasmcontainers:
+	// Go's own js/wasm net/http transport, net/http/roundtrip_js.go, calls
+	// `result.Get("headers").Call("entries")` on every fetch response and
+	// panicked outright when the method did not exist at all). Each
+	// returns a FRESH iterator over a snapshot of the CURRENT keys/values
+	// at call time — matching the spec's own "a new Headers Iterator" per
+	// call, not a live view that would see a later append/delete.
+	entriesFn := func(goja.FunctionCall) goja.Value {
+		keys := sortedKeys()
+		pairs := make([]goja.Value, len(keys))
+		for i, k := range keys {
+			pairs[i] = b.vm.NewArray(k, m[k])
+		}
+		return b.newArrayIterator(pairs)
+	}
+	o.Set("entries", entriesFn)
+	o.Set("keys", func(goja.FunctionCall) goja.Value {
+		keys := sortedKeys()
+		vals := make([]goja.Value, len(keys))
+		for i, k := range keys {
+			vals[i] = b.vm.ToValue(k)
+		}
+		return b.newArrayIterator(vals)
+	})
+	o.Set("values", func(goja.FunctionCall) goja.Value {
+		keys := sortedKeys()
+		vals := make([]goja.Value, len(keys))
+		for i, k := range keys {
+			vals[i] = b.vm.ToValue(m[k])
+		}
+		return b.newArrayIterator(vals)
+	})
+	_ = o.DefineDataPropertySymbol(goja.SymIterator, b.vm.ToValue(entriesFn), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
 	return o
+}
+
+// newArrayIterator builds a JS iterator object (the `next()` ->
+// `{done, value}` protocol every `for...of` loop and manual `.next()`
+// call alike rely on) over a pre-materialized slice of values — the one
+// path Headers' own entries()/keys()/values() all share. Also self-
+// iterable (`[Symbol.iterator]` returns itself), matching what a real
+// iterator object returned by entries()/keys()/values() does, so
+// `for (const x of headers.entries())` works too, not just a bare
+// `.next()` call.
+func (b *binder) newArrayIterator(values []goja.Value) *goja.Object {
+	i := 0
+	it := b.vm.NewObject()
+	it.Set("next", func(goja.FunctionCall) goja.Value {
+		res := b.vm.NewObject()
+		if i >= len(values) {
+			res.Set("done", true)
+			res.Set("value", goja.Undefined())
+		} else {
+			res.Set("done", false)
+			res.Set("value", values[i])
+			i++
+		}
+		return res
+	})
+	_ = it.DefineDataPropertySymbol(goja.SymIterator, b.vm.ToValue(func(goja.FunctionCall) goja.Value { return it }), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+	return it
+}
+
+// newAbortController builds a real AbortController/AbortSignal pair (DOM
+// Standard §3.1) — confirmed directly needed by go-wasmcontainers: Go's
+// own js/wasm net/http transport calls `new AbortController()` before
+// EVERY fetch and passes its `.signal` in the fetch init object, so the
+// global's mere absence threw "AbortController is not defined" before any
+// fetch could even start. This engine's own fetch() always completes
+// synchronously (the real I/O already happened inline by the time fetch()
+// returns — see fetch's own doc comment), so there is no genuinely
+// in-flight request for abort() to interrupt; `signal.aborted`/`.reason`
+// are still real and checked by fetch() itself (requestInit/fetch below)
+// for the one case that IS meaningful here: a signal already aborted
+// BEFORE fetch() is even called must reject immediately, not be silently
+// ignored.
+func (b *binder) newAbortController() *goja.Object {
+	ctrl := b.vm.NewObject()
+	signal := b.vm.NewObject()
+	signal.Set("aborted", false)
+	signal.Set("reason", goja.Undefined())
+	signal.Set("onabort", goja.Null())
+	signal.Set("addEventListener", func(call goja.FunctionCall) goja.Value {
+		if call.Argument(0).String() == "abort" {
+			signal.Set("onabort", call.Argument(1))
+		}
+		return goja.Undefined()
+	})
+	signal.Set("removeEventListener", func(goja.FunctionCall) goja.Value { return goja.Undefined() })
+	signal.Set("throwIfAborted", func(goja.FunctionCall) goja.Value {
+		if signal.Get("aborted").ToBoolean() {
+			panic(signal.Get("reason"))
+		}
+		return goja.Undefined()
+	})
+	ctrl.Set("signal", signal)
+	ctrl.Set("abort", func(call goja.FunctionCall) goja.Value {
+		if signal.Get("aborted").ToBoolean() {
+			return goja.Undefined()
+		}
+		reason := call.Argument(0)
+		if reason == nil || goja.IsUndefined(reason) {
+			reason = b.domException("AbortError", "signal is aborted without reason")
+		}
+		signal.Set("aborted", true)
+		signal.Set("reason", reason)
+		ev := b.newEvent("abort")
+		ev.Set("target", signal)
+		if fn := b.handlerFunc(signal.Get("onabort")); fn != nil {
+			b.callSafely(fn, signal, ev)
+		}
+		return goja.Undefined()
+	})
+	return ctrl
 }
 
 // resolved / rejected build already-settled promises.
