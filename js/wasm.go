@@ -12,6 +12,7 @@ import (
 	"github.com/dop251/goja"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 )
 
 // Requested directly by the user (not a corpus-found gap): go-webengine ran a
@@ -160,9 +161,29 @@ func (b *binder) maxWasmMemoryPages() uint32 {
 // wasmRT returns this render's WebAssembly runtime, creating it lazily on
 // first use so a page that never touches WebAssembly pays nothing for it.
 // Released by Session.Close.
+//
+// The WASM threads proposal's CoreFeaturesThreads is enabled ONLY when
+// Options.CrossOriginIsolated — confirmed directly needed by
+// go-wasmcontainers: their guest modules declare their OWN memory (never
+// import it) with the threads proposal's `shared` flag set, which wazero's
+// own decoder (confirmed by reading internal/wasm/binary/memory.go)
+// otherwise rejects outright with "shared memory requested but threads
+// feature not enabled" — a CompileError this binding's existing error
+// handling already surfaces correctly, with no separate pre-check needed.
+// Gating it on cross-origin isolation, rather than enabling it
+// unconditionally, matches the SAME restriction a real browser enforces
+// for shared memory, and keeps this one consistent with the EXISTING
+// SharedArrayBuffer/Atomics gate (atomics.go/window.go) — a module that
+// could read/write memory a Worker then shares via postMessage is exactly
+// the capability that gate exists to withhold outside an isolated context.
 func (b *binder) wasmRT() wazero.Runtime {
 	if b.wasmRuntime == nil {
+		features := api.CoreFeaturesV2
+		if b.opt.CrossOriginIsolated {
+			features = features.SetEnabled(experimental.CoreFeaturesThreads, true)
+		}
 		cfg := wazero.NewRuntimeConfig().
+			WithCoreFeatures(features).
 			WithMemoryLimitPages(b.maxWasmMemoryPages()).
 			WithCloseOnContextDone(true)
 		b.wasmRuntime = wazero.NewRuntimeWithConfig(context.Background(), cfg)
@@ -210,12 +231,12 @@ func (b *binder) newWebAssembly() *goja.Object {
 		if err != nil {
 			return b.rejected(b.wasmError("CompileError", err.Error()))
 		}
-		return b.resolved(b.wrapWasmModule(compiled))
+		return b.resolved(b.wrapWasmModule(compiled, moduleHasSharedMemory(data)))
 	})
 	o.Set("instantiate", func(call goja.FunctionCall) goja.Value {
 		importsArg := call.Argument(1)
-		if compiled, ok := b.wasmModuleOf(call.Argument(0)); ok {
-			inst, err := b.instantiateWasm(compiled, importsArg)
+		if compiled, isShared, ok := b.wasmModuleOf(call.Argument(0)); ok {
+			inst, err := b.instantiateWasm(compiled, importsArg, isShared)
 			if err != nil {
 				return b.rejected(err)
 			}
@@ -231,12 +252,13 @@ func (b *binder) newWebAssembly() *goja.Object {
 		if err != nil {
 			return b.rejected(b.wasmError("CompileError", err.Error()))
 		}
-		inst, wErr := b.instantiateWasm(compiled, importsArg)
+		isShared := moduleHasSharedMemory(data)
+		inst, wErr := b.instantiateWasm(compiled, importsArg, isShared)
 		if wErr != nil {
 			return b.rejected(wErr)
 		}
 		result := b.vm.NewObject()
-		result.Set("module", b.wrapWasmModule(compiled))
+		result.Set("module", b.wrapWasmModule(compiled, isShared))
 		result.Set("instance", inst)
 		return b.resolved(result)
 	})
@@ -251,7 +273,7 @@ func (b *binder) newWebAssembly() *goja.Object {
 		if err != nil {
 			return b.rejected(b.wasmError("CompileError", err.Error()))
 		}
-		return b.resolved(b.wrapWasmModule(compiled))
+		return b.resolved(b.wrapWasmModule(compiled, moduleHasSharedMemory(data)))
 	})
 	o.Set("instantiateStreaming", func(call goja.FunctionCall) goja.Value {
 		importsArg := call.Argument(1)
@@ -265,12 +287,13 @@ func (b *binder) newWebAssembly() *goja.Object {
 		if err != nil {
 			return b.rejected(b.wasmError("CompileError", err.Error()))
 		}
-		inst, wErr := b.instantiateWasm(compiled, importsArg)
+		isShared := moduleHasSharedMemory(data)
+		inst, wErr := b.instantiateWasm(compiled, importsArg, isShared)
 		if wErr != nil {
 			return b.rejected(wErr)
 		}
 		result := b.vm.NewObject()
-		result.Set("module", b.wrapWasmModule(compiled))
+		result.Set("module", b.wrapWasmModule(compiled, isShared))
 		result.Set("instance", inst)
 		return b.resolved(result)
 	})
@@ -359,32 +382,125 @@ func (b *binder) wasmError(name, msg string) goja.Value {
 	return e
 }
 
-// wasmModules caches each WebAssembly.Module JS wrapper's underlying
-// wazero.CompiledModule by JS object identity, mirroring b.cache's own
-// node<->wrapper identity role.
-func (b *binder) wrapWasmModule(compiled wazero.CompiledModule) *goja.Object {
+// moduleHasSharedMemory reports whether raw's own FIRST locally-declared
+// memory (this engine never supports a memory IMPORT — see this file's own
+// top doc comment) sets the WASM threads proposal's `shared` limits flag.
+// wazero's own public API (confirmed by direct inspection: api.
+// MemoryDefinition only exposes Min/Max, api.Memory has no Shared method
+// at all, v1.8.2) has no way to ask this once a module has compiled
+// successfully, so this engine answers it itself by walking the RAW module
+// bytes directly — using the EXACT rule wazero's own internal decoder
+// applies (confirmed by reading internal/wasm/binary/limits.go, not
+// guessed from the spec text alone): a limits value's leading flag byte is
+// 0x02 (shared, no max — rejected elsewhere, see wasmRT's own
+// CoreFeaturesThreads gate, but still decodes) or 0x03 (shared, with max);
+// 0x00/0x01 are not shared. A module with no memory section, a memory
+// section declaring zero memories, a decode error (CompileModule will
+// already have rejected genuinely malformed bytes before this is ever
+// called), or any memory section this walk cannot fully parse all report
+// false rather than guessing or panicking — this is a best-effort read of
+// an input CompileModule has ALREADY validated by the time this runs, not
+// a second validator.
+func moduleHasSharedMemory(raw []byte) bool {
+	const headerLen = 8 // "\0asm" + a 4-byte version, before the first section
+	const sectionIDMemory = 5
+	if len(raw) < headerLen {
+		return false
+	}
+	r := raw[headerLen:]
+	for len(r) > 0 {
+		id := r[0]
+		r = r[1:]
+		size, n, ok := decodeULEB32(r)
+		if !ok || n > len(r) || uint64(size) > uint64(len(r)-n) {
+			return false
+		}
+		r = r[n:]
+		content := r[:size]
+		r = r[size:]
+		if id != sectionIDMemory {
+			continue
+		}
+		count, n, ok := decodeULEB32(content)
+		if !ok || count == 0 || n >= len(content) {
+			return false
+		}
+		// Only the first declared memory is inspected — this engine's own
+		// wasmExports already only ever models a SINGLE exported memory
+		// (ExportedMemories' own doc comment: a module may have at most
+		// one memory before the multi-memory proposal, which this binding
+		// does not otherwise support), so a second entry could never be
+		// reached through instance.exports.memory anyway.
+		flag := content[n]
+		return flag == 0x02 || flag == 0x03
+	}
+	return false
+}
+
+// decodeULEB32 decodes an unsigned LEB128-encoded uint32 from the start of
+// b — the exact integer encoding every WASM section id's size, vector
+// count, and limits field uses. Returns the value, how many bytes it
+// consumed, and false if b ends before a terminating byte (continuation
+// bit clear) within the first 5 bytes (the most a valid uint32 LEB128
+// encoding ever needs) — a bounded loop, never unbounded, over an input
+// slice of fixed length.
+func decodeULEB32(b []byte) (v uint32, n int, ok bool) {
+	var shift uint
+	for n = 0; n < len(b) && n < 5; n++ {
+		byt := b[n]
+		v |= uint32(byt&0x7f) << shift
+		if byt&0x80 == 0 {
+			return v, n + 1, true
+		}
+		shift += 7
+	}
+	return 0, 0, false
+}
+
+// wasmModuleState pairs a compiled module with whether this engine detected
+// — from the RAW module bytes, via moduleHasSharedMemory — that its own
+// LOCALLY DECLARED memory (this engine does not support a memory import at
+// all; see this file's own top doc comment) sets the WASM threads
+// proposal's shared flag. Needed again at instantiate time, including the
+// two-step `WebAssembly.compile(bytes).then(m => WebAssembly.instantiate(m,
+// imports))` path where the raw bytes are no longer available — only the
+// already-compiled module is — so it must be captured once, here, rather
+// than re-derived from bytes that may no longer be in scope.
+type wasmModuleState struct {
+	compiled wazero.CompiledModule
+	isShared bool
+}
+
+// wasmModules caches each WebAssembly.Module JS wrapper's underlying state
+// by JS object identity, mirroring b.cache's own node<->wrapper identity
+// role.
+func (b *binder) wrapWasmModule(compiled wazero.CompiledModule, isShared bool) *goja.Object {
 	o := b.vm.NewObject()
 	if b.wasmModules == nil {
-		b.wasmModules = map[*goja.Object]wazero.CompiledModule{}
+		b.wasmModules = map[*goja.Object]wasmModuleState{}
 	}
-	b.wasmModules[o] = compiled
+	b.wasmModules[o] = wasmModuleState{compiled: compiled, isShared: isShared}
 	return o
 }
 
-// wasmModuleOf returns the wazero.CompiledModule a WebAssembly.Module JS
-// wrapper carries, or false if v is not one.
-func (b *binder) wasmModuleOf(v goja.Value) (wazero.CompiledModule, bool) {
-	obj, ok := v.(*goja.Object)
-	if !ok {
-		return nil, false
+// wasmModuleOf returns the wazero.CompiledModule and isShared bit a
+// WebAssembly.Module JS wrapper carries, or false if v is not one.
+func (b *binder) wasmModuleOf(v goja.Value) (compiled wazero.CompiledModule, isShared bool, ok bool) {
+	obj, isObj := v.(*goja.Object)
+	if !isObj {
+		return nil, false, false
 	}
-	c, ok := b.wasmModules[obj]
-	return c, ok
+	st, found := b.wasmModules[obj]
+	return st.compiled, st.isShared, found
 }
 
 // instantiateWasm wires importsArg's functions as host imports, instantiates
-// compiled, and returns the resulting instance's exports object.
-func (b *binder) instantiateWasm(compiled wazero.CompiledModule, importsArg goja.Value) (*goja.Object, goja.Value) {
+// compiled, and returns the resulting instance's exports object. isShared
+// (from moduleHasSharedMemory/wasmModuleOf) decides whether
+// instance.exports.memory, if the module declares one, is wrapped as a
+// SharedArrayBuffer-classed, postMessage-able Memory (wasmExports/
+// wrapWasmMemory).
+func (b *binder) instantiateWasm(compiled wazero.CompiledModule, importsArg goja.Value, isShared bool) (*goja.Object, goja.Value) {
 	ctx, cancel := b.wasmCtx()
 	defer cancel()
 	if err := b.buildHostImports(ctx, compiled, importsArg); err != nil {
@@ -395,7 +511,7 @@ func (b *binder) instantiateWasm(compiled wazero.CompiledModule, importsArg goja
 		return nil, b.wasmError("LinkError", err.Error())
 	}
 	inst := b.vm.NewObject()
-	inst.Set("exports", b.wasmExports(mod, compiled))
+	inst.Set("exports", b.wasmExports(mod, compiled, isShared))
 	return inst, nil
 }
 
@@ -475,9 +591,13 @@ func (b *binder) hostImportFunc(fn goja.Callable, def api.FunctionDefinition) ap
 
 // wasmExports builds mod's exports object: every exported function is a
 // callable (see wrapExportedFunction), and a module's own exported memory
-// (if it declares exactly one) is a live WebAssembly.Memory wrapper. Table
-// and Global exports are omitted — see this file's own top doc comment.
-func (b *binder) wasmExports(mod api.Module, compiled wazero.CompiledModule) *goja.Object {
+// (if it declares exactly one) is a live WebAssembly.Memory wrapper —
+// SharedArrayBuffer-classed and postMessage-able when isShared, confirmed
+// directly needed by go-wasmcontainers' own guest containers (they declare
+// shared memory locally, read it back via instance.exports.memory, and
+// postMessage THAT to a second worker). Table and Global exports are
+// omitted — see this file's own top doc comment.
+func (b *binder) wasmExports(mod api.Module, compiled wazero.CompiledModule, isShared bool) *goja.Object {
 	exp := b.vm.NewObject()
 	for name := range compiled.ExportedFunctions() {
 		fn := mod.ExportedFunction(name)
@@ -488,7 +608,7 @@ func (b *binder) wasmExports(mod api.Module, compiled wazero.CompiledModule) *go
 	}
 	for name := range compiled.ExportedMemories() {
 		if mem := mod.Memory(); mem != nil {
-			exp.Set(name, b.wrapWasmMemory(mem))
+			exp.Set(name, b.wrapWasmMemory(mem, isShared))
 		}
 	}
 	return exp
@@ -529,26 +649,48 @@ func (b *binder) wrapWasmFunction(fn api.Function) goja.Value {
 }
 
 // wrapWasmMemory wraps a module's own linear memory as a WebAssembly.Memory:
-// `.buffer` is a REAL, zero-copy ArrayBuffer view over wazero's own backing
-// bytes (NewArrayBuffer wraps the slice directly, no copy — see its own doc
+// `.buffer` is a REAL, zero-copy view over wazero's own backing bytes
+// (NewArrayBuffer wraps the slice directly, no copy — see its own doc
 // comment), re-fetched whenever the memory's size no longer matches the
 // cached view's own length, since a successful memory.grow can relocate
-// wazero's backing array (Memory.Read's own doc comment: "any shared views
-// from Read must be refreshed" after growing).
-func (b *binder) wrapWasmMemory(mem api.Memory) *goja.Object {
+// wazero's backing array for a NON-shared memory (Memory.Read's own doc
+// comment: "any shared views from Read must be refreshed" after growing —
+// for a SHARED memory wazero itself never relocates on grow, confirmed by
+// reading internal/wasm/memory.go directly: it pre-allocates to the
+// declared maximum up front for exactly this reason, but refreshing on
+// every size change is harmless and keeps one code path for both kinds).
+//
+// isShared (from moduleHasSharedMemory, via wasmExports) decides the
+// WRAPPING of those same bytes, not whether grow() itself works — a
+// shared memory's `.buffer` is stamped SharedArrayBuffer-classed and
+// registered (wrapSharedArrayBuffer/wasmMemoryRegistry) so it reports
+// `instanceof SharedArrayBuffer` correctly and is postMessage-able, the
+// SAME treatment the standalone constructor's own shared path gets
+// (newWasmMemory). Every Memory wrapper this function builds — shared or
+// not — is also registered in wasmMemoryRegistry (nil for non-shared) so
+// clone.go's postMessage(memory) path recognizes BOTH this module-exported
+// kind and the standalone constructor's kind identically.
+func (b *binder) wrapWasmMemory(mem api.Memory, isShared bool) *goja.Object {
 	o := b.vm.NewObject()
+	_ = o.DefineDataPropertySymbol(goja.SymToStringTag, b.vm.ToValue("WebAssembly.Memory"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	var cachedSize uint32 = 0xffffffff // force a fetch on first access
-	var cachedBuf goja.ArrayBuffer
-	refresh := func() goja.ArrayBuffer {
+	var cachedBuf goja.Value
+	var cachedSB *sharedBuffer
+	refresh := func() goja.Value {
 		size := mem.Size()
 		if size != cachedSize {
 			raw, _ := mem.Read(0, size)
-			cachedBuf = b.vm.NewArrayBuffer(raw)
+			if isShared {
+				cachedSB = &sharedBuffer{data: raw}
+				cachedBuf = b.vm.ToValue(b.wrapSharedArrayBuffer(cachedSB))
+			} else {
+				cachedBuf = b.vm.ToValue(b.vm.NewArrayBuffer(raw))
+			}
 			cachedSize = size
 		}
 		return cachedBuf
 	}
-	b.accessor(o, "buffer", func() goja.Value { return b.vm.ToValue(refresh()) }, nil)
+	b.accessor(o, "buffer", func() goja.Value { return refresh() }, nil)
 	o.Set("grow", func(call goja.FunctionCall) goja.Value {
 		delta := uint32(call.Argument(0).ToInteger())
 		prev, ok := mem.Grow(delta)
@@ -557,6 +699,15 @@ func (b *binder) wrapWasmMemory(mem api.Memory) *goja.Object {
 		}
 		return b.vm.ToValue(prev)
 	})
+	if isShared {
+		// Force one refresh now, even if no script has read `.buffer`
+		// yet, so cachedSB is populated before this Memory could possibly
+		// be postMessage'd — nothing should depend on `.buffer` having
+		// been read first.
+		refresh()
+	}
+	registerWasmMemory(o, cachedSB)
+	b.ownedWasmMemories = append(b.ownedWasmMemories, o)
 	return o
 }
 

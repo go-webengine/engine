@@ -404,6 +404,22 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **A module's own DECLARED shared memory** (2026-11-07, round 5, engine#342
+  follow-up): resolves round 4's one open question below — asked
+  go-wasmcontainers directly whether their guest modules import memory or
+  declare it locally, and confirmed it's the latter (`wasmbin.LimitMemory`
+  rewrites the module's own memory section to set `maximum` + the threads
+  proposal's `shared` flag before compiling; the worker then reads
+  `instance.exports.memory` and posts THAT). wazero's own public API has no
+  way to ask whether a compiled module's memory is shared, so this engine
+  answers it itself — `moduleHasSharedMemory` walks the raw module bytes
+  using the exact limits-flag rule wazero's own internal decoder applies
+  (confirmed by reading its source, not guessed). `wasmRT` enables wazero's
+  `experimental.CoreFeaturesThreads` only when cross-origin isolated —
+  without it, wazero's own decoder rejects a shared-memory module outright,
+  the SAME restriction a real browser enforces. `instance.exports.memory`
+  for such a module now gets the identical `SharedArrayBuffer`-classed,
+  postMessage-able treatment round 4's standalone constructor already has.
 - **Standalone `new WebAssembly.Memory(descriptor)`, including
   `shared: true`** (2026-11-07, round 4, engine#342 follow-up): the one
   still-failing line in go-wasmcontainers' own worker-globals probe, and
@@ -611,10 +627,12 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   forms, Table and Global imports/exports, and standalone `Table` objects
   are not implemented — no confirmed container needs any of them yet.
   Standalone `new WebAssembly.Memory(descriptor)` (including `shared:
-  true`) IS implemented (2026-11-07, round 4) — but passing one as a
-  module's own memory IMPORT is not: wazero's public API has no way to
-  satisfy that, a real upstream limitation (see round 4's own entry
-  above). `compileStreaming`/`instantiateStreaming`
+  true`) IS implemented (2026-11-07, round 4), and so is a module's own
+  LOCALLY DECLARED shared memory, read back via `instance.exports.memory`
+  (2026-11-07, round 5) — but passing a `Memory` as a module's own memory
+  IMPORT is not: wazero's public API has no way to satisfy that, a real
+  upstream limitation (see round 4's own entry above), confirmed NOT to be
+  on go-wasmcontainers' own critical path (round 5). `compileStreaming`/`instantiateStreaming`
   ARE implemented (2026-11-03) but not via genuine incremental streaming —
   this engine's own `fetch()` has no streaming body to begin with, so the
   Response argument is fully read before compiling, same as the plain

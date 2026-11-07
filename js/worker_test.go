@@ -363,6 +363,65 @@ func TestWorkerReceivedWasmMemoryIsTrulyShared(t *testing.T) {
 	}
 }
 
+// TestWorkerReceivedModuleDeclaredSharedMemoryIsTrulyShared is
+// TestWorkerReceivedWasmMemoryIsTrulyShared's own counterpart for
+// go-wasmcontainers' ACTUAL confirmed shape: a module DECLARES its own
+// shared memory (never a standalone `new WebAssembly.Memory(...)`), and
+// the resulting instance.exports.memory is read back and posted to a
+// second worker — exactly runtime/browser/worker.js's own flow as they
+// described it. Proves wrapWasmMemory's isShared path produces a genuinely
+// shared object through this SAME code path, not just the standalone
+// constructor's.
+func TestWorkerReceivedModuleDeclaredSharedMemoryIsTrulyShared(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			onmessage = (e) => {
+				const mem = e.data;
+				const view = new Int32Array(mem.buffer);
+				view[0] = 1234;
+				postMessage('tag=' + Object.prototype.toString.call(mem) + ' isSAB=' + (mem.buffer instanceof SharedArrayBuffer));
+			};
+		`))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		` + uint8ArrayLiteral("bytes", memoryOnlyModuleBytes(1, 2, true)) + `
+		WebAssembly.instantiate(bytes, {}).then(function(result) {
+			var mem = result.instance.exports.memory;
+			var view = new Int32Array(mem.buffer);
+			var w = new Worker('` + srv.URL + `/mem-worker.js');
+			w.onmessage = function(e) {
+				document.body.setAttribute('data-reply', e.data);
+				document.body.setAttribute('data-view0', String(view[0]));
+			};
+			w.postMessage(mem);
+		});
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-reply"); got != "tag=[object WebAssembly.Memory] isSAB=true" {
+		t.Fatalf("data-reply = %q, want %q", got, "tag=[object WebAssembly.Memory] isSAB=true")
+	}
+	if got, _ := body.Attribute("data-view0"); got != "1234" {
+		t.Fatalf("data-view0 = %q, want %q (the worker's write through its own reconstructed Memory should be visible through main's original one)", got, "1234")
+	}
+}
+
 // TestNonSharedWasmMemoryCannotBePostMessaged proves the documented
 // restriction (clone.go's own lookupWasmMemory check): postMessage-ing a
 // NON-shared Memory is logged and dropped with a clear, specific reason —
