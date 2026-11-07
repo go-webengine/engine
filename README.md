@@ -404,6 +404,17 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **go-macos/metal bumped to v0.6.1** (dependency, 2026-11-08, round 12):
+  closes an `objc.AutoreleasePool` gap in 8 functions
+  (`Default`/`Device.Close`/`Device.Compile`/`Library.Close`/
+  `Library.Pipeline`/`Pipeline.Close`/`Device.NewBuffer`/`Buffer.Close`)
+  matching the exact signature of a native SIGSEGV go-wasmcontainers
+  reported from concurrent per-Worker WebGPU calls — a goroutine migrating
+  OS threads mid-Objective-C-call, the same documented bug class the
+  SAME file's own `submit`/`Wait` already guard against. Not reproduced
+  locally despite a dedicated 96,000-op concurrent stress test (consistent
+  with the race being machine-dependent); the gap itself was real and is
+  now closed at the library layer. See go-macos/metal#17.
 - **`Options.MaxRequests`/`Engine.MaxRequests`** (feature, 2026-11-08,
   round 11): go-wasmcontainers' own real workload fetches on the order of
   123 ONNX models plus their inputs/outputs per render — several hundred
