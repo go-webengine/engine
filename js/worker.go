@@ -101,6 +101,40 @@ func (w *jsWorker) installWorkerGlobals() {
 	// (createSyncAccessHandle itself is only ever reachable from a
 	// FileSystemFileHandle built by THIS binder, gated on wb.isWorker).
 	g.Set("navigator", wb.newNavigator())
+	// Crypto (WebCryptoAPI §10, Exposed=(Window, Worker)): another piece of
+	// general-purpose plumbing that rode along with the DOM-specific
+	// install() a Worker correctly skips, even though crypto itself has
+	// nothing to do with the DOM — the same shape of gap
+	// installDOMExceptionOnly already fixed for DOMException. Confirmed
+	// needed directly by go-wasmcontainers: Go's own wasm_exec.js calls
+	// crypto.getRandomValues at startup, inside the worker, before anything
+	// else in their own script runs.
+	wb.installCrypto(g)
+	// The rest of this block is the SAME gap, audited exhaustively against
+	// every remaining install() call rather than waiting for each to surface
+	// as its own go-wasmcontainers blocker in turn: TextEncoder/TextDecoder
+	// (installEncoding), fetch/XMLHttpRequest/Headers/Request/MessageChannel
+	// (installNet — and now correctly resolves a worker's own relative
+	// fetch() URLs against the worker's OWN script URL, not the creating
+	// document's, thanks to newWorker's own PageURL fix), the plain URL
+	// constructor (installConstructors' own OTHER registrations —
+	// MutationObserver, IntersectionObserver/ResizeObserver/
+	// PerformanceObserver, Image — are real DOM/layout concepts a Worker
+	// correctly has none of, so only URL is pulled out here, not the whole
+	// function), URLSearchParams, Intl, and performance (a plain stub
+	// object even for the main document — see newPerformance's own body —
+	// so there is nothing document-specific to lose by sharing it). Each
+	// confirmed, by reading its own body, to touch nothing but b.vm/Go
+	// stdlib — no document, no DOM node, no layout/paint feedback — before
+	// being added here, the same bar installCrypto's own fix was held to.
+	wb.installEncoding(g)
+	wb.installNet(g)
+	g.Set("URL", func(call goja.ConstructorCall) *goja.Object {
+		return wb.buildURL(call.Argument(0).String(), call.Argument(1))
+	})
+	wb.installURLSearchParams(g)
+	wb.installIntl(g)
+	g.Set("performance", wb.newPerformance())
 	wb.installTimers(g)
 	// crossOriginIsolated + SharedArrayBuffer + Atomics (atomics.go): a
 	// worker's own global scope needs these every bit as much as the main

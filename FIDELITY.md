@@ -18,6 +18,14 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-11-07 — `crypto`/WebCryptoAPI reachable from a Worker's own global scope (fix, engine#342 follow-up)
+
+go-wasmcontainers' lane cleared the `importScripts` blocker, then hit the next one in the same file: `Error: globalThis.crypto is not available ... at wasm_exec.js:85:9` — Go's own `wasm_exec.js` calls `crypto.getRandomValues` at startup, inside the worker, before anything else in their script runs.
+
+- **The same recurring shape as `DOMException`'s own earlier gap**: `installCrypto` (`getRandomValues`, `randomUUID`, `subtle`) was only ever called from the main document's DOM-specific `install()`, which a Worker correctly never calls (no DOM in a Worker) — but `Crypto` itself is `[Exposed=(Window, Worker)]` per the WebCryptoAPI spec, general-purpose plumbing with no DOM dependency of its own (confirmed by reading `installCrypto`'s own body: it only ever touches `b.vm` and Go's `crypto/rand`), so it had no business being gated behind that call either. Fixed the same way `installDOMExceptionOnly` fixed the earlier case: `installWorkerGlobals` now calls `wb.installCrypto(g)` directly.
+- Test: `js/worker_test.go`'s new `TestWorkerHasCrypto` — a real Worker calling `crypto.getRandomValues` (checking the filled bytes are not all still zero) and `crypto.randomUUID()` (checking the real 36-character UUID shape), both from inside the worker's own top-level script. `go build`/`go vet`/`go test ./...`/`go test -race ./...` clean.
+- This is the second time this exact shape of gap (general-purpose spec surface accidentally scoped to the DOM-specific install path) has been found via a real go-wasmcontainers workload rather than a synthetic test — see the memory lesson this session already recorded after the first one; worth a quick audit of `install()`'s own remaining calls (`installNet`, `installEncoding`, `installURLSearchParams`, `installIntl`) for the same pattern before the THIRD one surfaces the same way.
+
 ## 2026-11-05 — `WorkerGlobalScope.importScripts()`, and a worker's own relative-URL base fixed to its OWN script URL (feature + fix, engine#342 follow-up)
 
 go-wasmcontainers' own compute lane on v0.34.0 blocked at `importScripts("wasm_exec.js")` — their worker's literal first statement — with `ReferenceError: importScripts is not defined`. M2's own Worker support never implemented it.

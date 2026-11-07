@@ -455,3 +455,118 @@ func TestDOMExceptionAvailableInWorkerForImportScripts(t *testing.T) {
 		t.Fatalf("data-reply = %q, want caught:SyntaxError (or caught:TypeError, if this Go version's net/url accepts the NUL byte)", got)
 	}
 }
+
+// TestWorkerHasCrypto proves crypto.getRandomValues (and the rest of
+// WebCryptoAPI's own [Exposed=(Window, Worker)] surface) is reachable from
+// a Worker's own global scope — confirmed needed directly by
+// go-wasmcontainers: Go's own wasm_exec.js calls it at startup, inside the
+// worker, before anything else in their script runs, the same way
+// DOMException's own absence from a Worker (installDOMExceptionOnly) was
+// found: general-purpose plumbing riding along with the DOM-specific
+// install() a Worker correctly skips.
+func TestWorkerHasCrypto(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/worker.js" {
+			w.Write([]byte(`
+				var a = new Uint8Array(16);
+				crypto.getRandomValues(a);
+				var allZero = a.every(function(v) { return v === 0; });
+				postMessage('hasCrypto=' + (typeof crypto) + ' allZero=' + allZero + ' uuidLen=' + crypto.randomUUID().length);
+			`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	want := "hasCrypto=object allZero=false uuidLen=36"
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != want {
+		t.Fatalf("data-reply = %q, want %q", got, want)
+	}
+}
+
+// TestWorkerHasGeneralPurposeGlobals is the exhaustive audit's own
+// regression test: every general-purpose (non-DOM) global the main
+// document's install() has, that the WebCryptoAPI-shaped gap could equally
+// have hidden from a Worker, is reachable — TextEncoder/TextDecoder, URL,
+// URLSearchParams, Intl, and performance.now() (a plain stub even for the
+// main document, so nothing is lost by sharing it).
+func TestWorkerHasGeneralPurposeGlobals(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/worker.js" {
+			w.Write([]byte(`
+				var bytes = new TextEncoder().encode('hi');
+				var text = new TextDecoder().decode(bytes);
+				var u = new URL('/foo?x=1', 'https://ex.com/a/');
+				var sp = new URLSearchParams('a=1&b=2');
+				var intlOk = (typeof Intl === 'object') && (typeof Intl.NumberFormat === 'function');
+				var perfOk = typeof performance.now() === 'number';
+				postMessage([
+					'bytesLen=' + bytes.length,
+					'text=' + text,
+					'url=' + u.href,
+					'sp=' + sp.get('a') + ',' + sp.get('b'),
+					'intlOk=' + intlOk,
+					'perfOk=' + perfOk,
+				].join(' '));
+			`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	want := "bytesLen=2 text=hi url=https://ex.com/foo?x=1 sp=1,2 intlOk=true perfOk=true"
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != want {
+		t.Fatalf("data-reply = %q, want %q", got, want)
+	}
+}
+
+// TestWorkerFetchResolvesAgainstTheWorkersOwnURL proves installNet's own
+// fetch() inside a Worker benefits from the SAME base-URL fix
+// importScripts needed (newWorker's own PageURL override): a relative
+// fetch('./data.json') resolves against the WORKER's own script location,
+// not the creating document's — the shape a GPU-compute worker fetching
+// its own sibling model-weight file needs.
+func TestWorkerFetchResolvesAgainstTheWorkersOwnURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sub/data.json":
+			w.Write([]byte(`{"ok":true}`))
+		case "/sub/worker.js":
+			w.Write([]byte(`
+				fetch('./data.json').then(function(r) { return r.json(); }).then(function(j) {
+					postMessage('ok=' + j.ok);
+				});
+			`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/sub/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "ok=true" {
+		t.Fatalf("data-reply = %q, want %q", got, "ok=true")
+	}
+}

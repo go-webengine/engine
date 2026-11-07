@@ -390,6 +390,20 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   creating document's `PageURL`, not the worker's own script URL — found
   writing this feature's own test (a worker not co-located with the main
   page, exactly `importScripts("wasm_exec.js")`'s real shape), not assumed.
+- **A Worker's own global scope now has the full general-purpose (non-DOM)
+  surface the main document has** (2026-11-07, engine#342 follow-up):
+  `crypto`/WebCryptoAPI, `TextEncoder`/`TextDecoder`, `fetch`/
+  `XMLHttpRequest`/`Headers`/`Request`/`MessageChannel`, `URL`,
+  `URLSearchParams`, `Intl`, and `performance.now()`. Found by auditing
+  every remaining call in the main document's own `install()` after
+  `crypto.getRandomValues` turned out to be missing from a Worker for the
+  SAME reason `DOMException` was (engine#342's own first follow-up): each
+  rode along with a DOM-specific install path a Worker correctly never
+  runs, despite having no DOM dependency of its own — confirmed by reading
+  each one's own body, not assumed, before being added here. `fetch()`
+  inside a Worker also benefits from the relative-URL base fix above: a
+  worker's own `fetch('./sibling.json')` resolves against the WORKER's own
+  script location, not the creating document's.
 - **`SharedArrayBuffer` + `Atomics`** (2026-11-04, engine#343): real
   cross-VM shared memory for Worker's own `postMessage` boundary, gated on
   real cross-origin isolation (below) exactly like a real browser —
