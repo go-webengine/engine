@@ -6,6 +6,7 @@ package js
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -568,5 +569,132 @@ func TestWorkerFetchResolvesAgainstTheWorkersOwnURL(t *testing.T) {
 	}
 	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "ok=true" {
 		t.Fatalf("data-reply = %q, want %q", got, "ok=true")
+	}
+}
+
+// TestWorkerHasWebAssembly proves WebAssembly is reachable from a Worker's
+// own global scope — confirmed missing live by go-wasmcontainers' own
+// worker-side capability probe ("WebAssembly is not defined"): Go's own
+// wasm_exec.js calls WebAssembly.instantiateStreaming at startup, inside
+// the worker. Reuses the SAME real compiled module (testdata/add.wasm,
+// wasmFixtureScript) the main-document WebAssembly tests already exercise.
+func TestWorkerHasWebAssembly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/worker.js" {
+			w.Write([]byte(
+				wasmFixtureScript(t) + `
+				WebAssembly.instantiate(bytes, {env: {host_offset: function(x) { return x + 1000; }}}).then(function(result) {
+					postMessage('add=' + result.instance.exports.add(2, 3));
+				}, function(e) {
+					postMessage('REJECTED:' + e);
+				});
+			`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "add=1005" {
+		t.Fatalf("data-reply = %q, want %q", got, "add=1005")
+	}
+}
+
+// TestWorkerHasLocation proves location (WorkerLocation) is reachable from
+// a Worker's own global scope and reflects the WORKER's own script URL —
+// confirmed missing live by the same probe ("location is not defined"),
+// which reads location.search/location.hostname.
+func TestWorkerHasLocation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/sub/worker.js" {
+			w.Write([]byte(`
+				postMessage('hostname=' + location.hostname + ' search=' + location.search + ' pathname=' + location.pathname);
+			`))
+			return
+		}
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/sub/worker.js?x=1');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	srvURL, _ := url.Parse(srv.URL)
+	want := "hostname=" + srvURL.Hostname() + " search=?x=1 pathname=/sub/worker.js"
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != want {
+		t.Fatalf("data-reply = %q, want %q (location must reflect the WORKER's own script URL, not the main page's)", got, want)
+	}
+}
+
+// TestNestedWorkerAndCleanupCascade proves a worker can itself create a
+// worker (HTML Standard §10.2.6 permits it; confirmed needed directly by
+// go-wasmcontainers: their own engine spawns workers from within a
+// worker), that the round trip through the grandchild works, AND that
+// Session.Close's own cleanup cascades all the way down — the real fix
+// stopWorkers' own doc comment describes: without it, a grandchild
+// worker's goroutine would leak past the session's lifetime.
+func TestNestedWorkerAndCleanupCascade(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/child.js":
+			w.Write([]byte(`onmessage = function(e) { postMessage('grandchild got: ' + e.data); };`))
+		case "/parent.js":
+			w.Write([]byte(`
+				var child = new Worker('child.js');
+				child.onmessage = function(e) { postMessage(e.data); };
+				child.postMessage('ping');
+			`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var w = new Worker('` + srv.URL + `/parent.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := Begin(root, Options{PageURL: testURL, Client: http.DefaultClient, Timeout: 3 * time.Second})
+	sess.RunInitial()
+	if sess.res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v", sess.res)
+	}
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "grandchild got: ping" {
+		t.Fatalf("data-reply = %q, want %q", got, "grandchild got: ping")
+	}
+	if len(sess.b.workers) != 1 {
+		t.Fatalf("want 1 top-level worker, got %d", len(sess.b.workers))
+	}
+	parent := sess.b.workers[0]
+	if len(parent.wb.workers) != 1 {
+		t.Fatalf("want 1 nested (grandchild) worker, got %d", len(parent.wb.workers))
+	}
+	grandchild := parent.wb.workers[0]
+
+	sess.Close()
+
+	select {
+	case <-parent.stopCh:
+	default:
+		t.Fatal("Session.Close() should stop the top-level worker")
+	}
+	select {
+	case <-grandchild.stopCh:
+	default:
+		t.Fatal("Session.Close() should cascade into stopping the nested (grandchild) worker too")
 	}
 }

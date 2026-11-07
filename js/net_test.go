@@ -347,3 +347,29 @@ func TestXHRAccessorsAndMethods(t *testing.T) {
 	mustHave(t, logs, "rt=text to=0 wc=false onload=function", "grh=null gah=\"\"",
 		"disp=true", "jsonresp=go", "blob=string")
 }
+
+// TestResponseConstructor proves `new Response(body, init)` (Fetch
+// Standard §6.3) exists as a real constructor, not just the internal
+// shape fetch() itself returns — confirmed missing live by
+// go-wasmcontainers' own worker-side capability probe, which checks
+// `typeof Response === "function"`.
+func TestResponseConstructor(t *testing.T) {
+	_, logs, res := runJS(t, page(`
+		var r = new Response('hello', { status: 201, statusText: 'Created', headers: { 'X-Test': 'v1' } });
+		console.log('ok=' + r.ok + ' status=' + r.status + ' statusText=' + r.statusText);
+		console.log('header=' + r.headers.get('x-test'));
+		r.text().then(function(t) { console.log('text=' + t); });
+
+		var r2 = new Response();
+		console.log('defaultStatus=' + r2.status + ' defaultOk=' + r2.ok);
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs,
+		"ok=true status=201 statusText=Created",
+		"header=v1",
+		"text=hello",
+		"defaultStatus=200 defaultOk=true",
+	)
+}

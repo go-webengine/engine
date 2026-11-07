@@ -404,6 +404,21 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`WebAssembly`, `location`, nested `Worker`, and a global `Response`
+  constructor** (2026-11-07, round 3, engine#342 follow-up): go-wasmcontainers'
+  own rewritten capability probe (checking every worker global at once
+  rather than stopping at the first `ReferenceError`) named these
+  precisely. `WebAssembly`/`location` are the same recurring gap shape as
+  `crypto` before them — no DOM dependency, now wired into a Worker's own
+  scope; `location` correctly reflects the WORKER's own script URL.
+  Nested `Worker` (a worker creating its own child workers, confirmed
+  needed by their engine) needed one real fix: `stopWorkers`' own cleanup
+  now recurses, so `Session.Close()` stops a grandchild worker too, not
+  just the immediate child — without it, a nested worker's own goroutine
+  would leak past the session's lifetime. `Response` was genuinely missing
+  as a global constructor everywhere, not just in workers (`fetch()`
+  always built one internally, but `new Response(...)` never existed) —
+  fixed once, so both the main document and every Worker get it.
 - **`SharedArrayBuffer` + `Atomics`** (2026-11-04, engine#343): real
   cross-VM shared memory for Worker's own `postMessage` boundary, gated on
   real cross-origin isolation (below) exactly like a real browser —
