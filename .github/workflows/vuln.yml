@@ -87,4 +87,4 @@ jobs:
           BIN="$(go env GOPATH)/bin"
           "$BIN/govulncheck" -format json ./... > /tmp/vuln.json || true
           test -s /tmp/vuln.json || { echo "::error::govulncheck wrote nothing at all"; exit 1; }
-          "$BIN/vulngate" -go "$(go env GOVERSION)" /tmp/vuln.json
+          "$BIN/vulngate" --go "$(go env GOVERSION)" /tmp/vuln.json
