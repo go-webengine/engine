@@ -277,8 +277,9 @@ type binder struct {
 	// pays nothing for it — see wasm.go.
 	wasmRuntime wazero.Runtime
 	// wasmModules caches each WebAssembly.Module JS wrapper's underlying
-	// compiled form by object identity — see wrapWasmModule in wasm.go.
-	wasmModules map[*goja.Object]wazero.CompiledModule
+	// state (compiled form + isShared) by object identity — see
+	// wasmModuleState/wrapWasmModule in wasm.go.
+	wasmModules map[*goja.Object]wasmModuleState
 
 	// workers holds every live `new Worker(url)` this binder created — see
 	// worker.go. Nil for the overwhelming majority of pages that never touch

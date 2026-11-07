@@ -36,6 +36,44 @@ func wasmFixtureScript(t *testing.T) string {
 	return "var bytes = new Uint8Array([" + strings.Join(parts, ",") + "]);"
 }
 
+// uint8ArrayLiteral renders data as a JS `new Uint8Array([...])` literal
+// assigned to varName — the same decimal-byte-list style wasmFixtureScript
+// uses, factored out for a hand-built module's own bytes rather than a
+// committed .wasm file.
+func uint8ArrayLiteral(varName string, data []byte) string {
+	parts := make([]string, len(data))
+	for i, b := range data {
+		parts[i] = strconv.Itoa(int(b))
+	}
+	return "var " + varName + " = new Uint8Array([" + strings.Join(parts, ",") + "]);"
+}
+
+// memoryOnlyModuleBytes hand-builds the smallest valid WASM module that
+// declares and exports exactly one memory and nothing else — no functions
+// needed to exercise moduleHasSharedMemory or the resulting
+// instance.exports.memory wrapper, since this round's own confirmed need
+// (go-wasmcontainers) is entirely about the Memory object itself, read and
+// written through plain JS typed arrays. Encodes exactly the two sections
+// a real module needs for this (Memory id=5, Export id=7), per the
+// WebAssembly binary format and its threads-proposal limits extension
+// (confirmed by reading wazero's own decoder, internal/wasm/binary/
+// limits.go, directly — flag byte 0x03 = {min,max,shared}, 0x01 =
+// {min,max}, not shared).
+func memoryOnlyModuleBytes(min, max byte, shared bool) []byte {
+	flag := byte(0x01)
+	if shared {
+		flag = 0x03
+	}
+	memSection := []byte{0x01, flag, min, max} // count=1, memtype
+	exportSection := []byte{0x01, 0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00}
+	out := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00} // \0asm + version 1
+	out = append(out, 0x05, byte(len(memSection)))
+	out = append(out, memSection...)
+	out = append(out, 0x07, byte(len(exportSection)))
+	out = append(out, exportSection...)
+	return out
+}
+
 // TestWebAssemblyInstantiateRoundTrip is the confirmed real need (requested
 // directly, not corpus-found): go-webengine ran a page's JavaScript but
 // could not run a page's own WebAssembly at all — the global was absent
@@ -405,4 +443,107 @@ func TestWasmMemorySharedBasics(t *testing.T) {
 		"preservedAfterGrow=777",
 		"sameBacking=true",
 	)
+}
+
+// TestModuleHasSharedMemoryDetection is a direct, JS-free unit test of
+// moduleHasSharedMemory against hand-built module bytes — confirming it
+// reads the EXACT flag byte wazero's own decoder does (0x02/0x03 shared,
+// 0x00/0x01 not), rather than assuming the encoding from the spec text
+// alone. Includes the REAL add.wasm fixture (confirmed, by
+// TestWebAssemblyInstantiateRoundTrip, to declare a plain non-shared
+// memory) and deliberately-truncated/empty inputs, which must report
+// false rather than panic — this function runs on bytes CompileModule
+// will separately validate, but must never be the one to crash on bad
+// input.
+func TestModuleHasSharedMemoryDetection(t *testing.T) {
+	addWasm, err := os.ReadFile("testdata/add.wasm")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	cases := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"shared with max", memoryOnlyModuleBytes(1, 2, true), true},
+		{"not shared", memoryOnlyModuleBytes(1, 2, false), false},
+		{"real add.wasm fixture (non-shared)", addWasm, false},
+		{"empty", nil, false},
+		{"only the header, no sections", []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00}, false},
+		{"header truncated", []byte{0x00, 0x61, 0x73}, false},
+		{"memory section truncated mid-content", []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x04, 0x01, 0x03}, false},
+	}
+	for _, c := range cases {
+		if got := moduleHasSharedMemory(c.data); got != c.want {
+			t.Errorf("%s: moduleHasSharedMemory() = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// TestWasmModuleDeclaredSharedMemoryEndToEnd covers go-wasmcontainers' own
+// exact confirmed shape: a guest module DECLARES (never imports) its own
+// memory with the threads-proposal shared flag set, and
+// instance.exports.memory must come back as a real, SharedArrayBuffer-
+// classed, growable Memory — not the plain-ArrayBuffer wrapping a
+// non-shared module's own memory already gets.
+func TestWasmModuleDeclaredSharedMemoryEndToEnd(t *testing.T) {
+	html := `<html><body><script>
+		` + uint8ArrayLiteral("bytes", memoryOnlyModuleBytes(1, 2, true)) + `
+		WebAssembly.instantiate(bytes, {}).then(function(result) {
+			var mem = result.instance.exports.memory;
+			console.log('tag=' + Object.prototype.toString.call(mem));
+			console.log('isSAB=' + (mem.buffer instanceof SharedArrayBuffer));
+			console.log('byteLength=' + mem.buffer.byteLength);
+			var view = new Int32Array(mem.buffer);
+			view[0] = 999;
+			console.log('prev=' + mem.grow(1));
+			var grownView = new Int32Array(mem.buffer);
+			console.log('grownByteLength=' + mem.buffer.byteLength);
+			console.log('preserved=' + grownView[0]);
+		}, function(err) { console.log('unexpected-rejection=' + err); });
+	</script></body></html>`
+	root, err := dom.Parse(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs,
+		"tag=[object WebAssembly.Memory]",
+		"isSAB=true",
+		"byteLength=65536",
+		"prev=1",
+		"grownByteLength=131072",
+		"preserved=999",
+	)
+}
+
+// TestWasmModuleSharedMemoryRequiresCrossOriginIsolation proves the gate
+// wasmRT applies: the SAME shared-memory module instantiated WITHOUT
+// CrossOriginIsolated fails — wazero's own decoder rejects the module's
+// shared memory type outright once CoreFeaturesThreads is left disabled,
+// surfacing through this binding's existing CompileError handling, the
+// same denial shape a real browser gives rather than a more permissive
+// shortcut.
+func TestWasmModuleSharedMemoryRequiresCrossOriginIsolation(t *testing.T) {
+	html := `<html><body><script>
+		` + uint8ArrayLiteral("bytes", memoryOnlyModuleBytes(1, 2, true)) + `
+		WebAssembly.instantiate(bytes, {}).then(function(result) {
+			console.log('unexpected-resolution');
+		}, function(err) { console.log('rejected:' + err.name); });
+	</script></body></html>`
+	_, logs, res := runJS(t, html)
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "rejected:CompileError")
 }
