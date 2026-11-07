@@ -313,3 +313,96 @@ func TestStreamingWasmBytesRejectsVariousShapes(t *testing.T) {
 		"arrayBufferMethodThrows=rejected:TypeError",
 		"arrayBufferReturnsRejected=rejected:TypeError")
 }
+
+// TestWasmMemoryNonSharedBasics covers the standalone `new
+// WebAssembly.Memory(...)` constructor's non-shared path: no
+// cross-origin-isolation needed, .buffer is a real, growable ArrayBuffer,
+// and grow() both returns the previous page count and enforces `maximum`.
+func TestWasmMemoryNonSharedBasics(t *testing.T) {
+	_, logs, res := runJS(t, page(`
+		var mem = new WebAssembly.Memory({initial: 1, maximum: 2});
+		console.log('tag=' + Object.prototype.toString.call(mem));
+		console.log('byteLength=' + mem.buffer.byteLength);
+		var view = new Uint8Array(mem.buffer);
+		view[0] = 42;
+		console.log('prev=' + mem.grow(1));
+		console.log('grownByteLength=' + mem.buffer.byteLength);
+		try {
+			mem.grow(1);
+			console.log('overgrow=did-not-throw');
+		} catch (e) {
+			console.log('overgrow=' + e.name);
+		}
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs,
+		"tag=[object WebAssembly.Memory]",
+		"byteLength=65536",
+		"prev=1",
+		"grownByteLength=131072",
+		"overgrow=RangeError",
+	)
+}
+
+// TestWasmMemorySharedRequiresMaximumAndCrossOriginIsolation covers the two
+// preconditions a shared Memory's descriptor must satisfy — both throw
+// TypeError, matching a real browser: no maximum at all (a growable
+// SharedArrayBuffer's full capacity must be known up front), and shared
+// without cross-origin isolation (the SAME gate SharedArrayBuffer/Atomics
+// are already behind — see atomics_test.go).
+func TestWasmMemorySharedRequiresMaximumAndCrossOriginIsolation(t *testing.T) {
+	_, logs, res := runJS(t, page(`
+		try {
+			new WebAssembly.Memory({initial: 1, shared: true});
+			console.log('noMax=did-not-throw');
+		} catch (e) { console.log('noMax=' + e.name); }
+		try {
+			new WebAssembly.Memory({initial: 1, maximum: 2, shared: true});
+			console.log('noCOI=did-not-throw');
+		} catch (e) { console.log('noCOI=' + e.name); }
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "noMax=TypeError", "noCOI=TypeError")
+}
+
+// TestWasmMemorySharedBasics covers the shared path under cross-origin
+// isolation: .buffer reports as a genuine SharedArrayBuffer (confirmed
+// needed directly — go-wasmcontainers' own code branches on `instanceof
+// SharedArrayBuffer`, exactly as atomics_test.go's
+// TestSharedArrayBufferHasItsOwnIdentity already proves for the bare
+// constructor), and grow is visible through a FRESH `.buffer` read without
+// losing previously-written bytes — the in-place, pre-allocated-capacity
+// re-slice sharedBuffer.grow implements, not a realloc-and-copy that would
+// break sharing with another agent.
+func TestWasmMemorySharedBasics(t *testing.T) {
+	_, logs, res := runJSCOI(t, page(`
+		var mem = new WebAssembly.Memory({initial: 1, maximum: 2, shared: true});
+		console.log('tag=' + Object.prototype.toString.call(mem));
+		console.log('isSAB=' + (mem.buffer instanceof SharedArrayBuffer));
+		console.log('byteLength=' + mem.buffer.byteLength);
+		var view = new Int32Array(mem.buffer);
+		view[0] = 777;
+		console.log('prev=' + mem.grow(1));
+		var grownBuf = mem.buffer; // MUST re-read after grow (documented limitation)
+		console.log('grownByteLength=' + grownBuf.byteLength);
+		var grownView = new Int32Array(grownBuf);
+		console.log('preservedAfterGrow=' + grownView[0]);
+		console.log('sameBacking=' + (Atomics.load(grownView, 0) === 777));
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs,
+		"tag=[object WebAssembly.Memory]",
+		"isSAB=true",
+		"byteLength=65536",
+		"prev=1",
+		"grownByteLength=131072",
+		"preservedAfterGrow=777",
+		"sameBacking=true",
+	)
+}

@@ -404,6 +404,25 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **Standalone `new WebAssembly.Memory(descriptor)`, including
+  `shared: true`** (2026-11-07, round 4, engine#342 follow-up): the one
+  still-failing line in go-wasmcontainers' own worker-globals probe, and
+  confirmed by them as blocking every one of their guest containers (each
+  constructs a shared `Memory` before instantiating anything, then posts
+  that SAME object to a second worker that reads/writes it directly while
+  the guest blocks in `Atomics.wait`). Built on the existing
+  `SharedArrayBuffer` machinery below: a growable shared buffer
+  pre-allocates its full `maximum` up front and only ever RE-SLICES on
+  `grow` (never reallocates), so a write made through one agent's wrapper
+  stays visible through another's — goja's own `ArrayBuffer` has no
+  resize primitive, so a realloc-and-copy grow would have silently broken
+  sharing for anyone already holding a reference. Gated on cross-origin
+  isolation exactly like `SharedArrayBuffer`/`Atomics`; postMessage-able as
+  the `Memory` object itself (not just its `.buffer`). **Not solved**:
+  wazero's own public API (confirmed by direct inspection) has no way to
+  satisfy a module's memory IMPORT with host-provided bytes, so an actual
+  guest `.wasm` module cannot yet use this Memory as its own linear memory
+  that way — a real upstream limitation, stated rather than routed around.
 - **`WebAssembly`, `location`, nested `Worker`, and a global `Response`
   constructor** (2026-11-07, round 3, engine#342 follow-up): go-wasmcontainers'
   own rewritten capability probe (checking every worker global at once
@@ -589,9 +608,13 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   Go build, as opposed to `GOOS=js`) fails to instantiate with a LinkError
   naming the missing import. The synchronous
   `new WebAssembly.Module(...)`/`new WebAssembly.Instance(...)` constructor
-  forms, Table and Global imports/exports, and standalone `Memory`/`Table`
-  objects (not tied to a module) are not implemented — no confirmed
-  container needs any of them yet. `compileStreaming`/`instantiateStreaming`
+  forms, Table and Global imports/exports, and standalone `Table` objects
+  are not implemented — no confirmed container needs any of them yet.
+  Standalone `new WebAssembly.Memory(descriptor)` (including `shared:
+  true`) IS implemented (2026-11-07, round 4) — but passing one as a
+  module's own memory IMPORT is not: wazero's public API has no way to
+  satisfy that, a real upstream limitation (see round 4's own entry
+  above). `compileStreaming`/`instantiateStreaming`
   ARE implemented (2026-11-03) but not via genuine incremental streaming —
   this engine's own `fetch()` has no streaming body to begin with, so the
   Response argument is fully read before compiling, same as the plain

@@ -37,10 +37,54 @@ const maxSharedBufferBytes = 64 << 20
 // a real engine (this is precisely what Atomics/SharedArrayBuffer exist to
 // let a correct script avoid).
 type sharedBuffer struct {
-	mu      sync.Mutex
-	data    []byte
+	mu   sync.Mutex
+	data []byte
+	// max is the full byte capacity a GROWABLE sharedBuffer was allocated
+	// with up front (0 for a plain `new SharedArrayBuffer(n)`, which this
+	// binding never grows — see installSharedArrayBuffer). Pre-allocating
+	// the whole capacity at construction, then only ever RE-SLICING data
+	// from it (see grow), is what makes growth safe to share across VMs:
+	// goja's own ArrayBuffer has no resize/grow primitive (confirmed
+	// directly against this pinned build — only Detach/Detached/Bytes
+	// exist), so every JS-visible wrapper is a snapshot of data's slice
+	// header at the moment it was wrapped. Re-slicing from the SAME backing
+	// array (never reallocating) means any wrapper built AFTER a grow sees
+	// the larger view, and critically, bytes written through an OLDER,
+	// smaller wrapper remain visible to a newer, larger one — the one
+	// property an actual reallocate-and-copy grow would silently break for
+	// a buffer other agents already hold a reference to. The documented
+	// trade-off: a wrapper built BEFORE a grow keeps reporting the OLD,
+	// smaller byteLength forever (no live-updating byteLength, unlike a
+	// real engine's growable SharedArrayBuffer) — a reader must re-fetch
+	// `.buffer` after being notified a grow happened, exactly as
+	// wrapWasmMemory (wasm.go) already requires for the non-shared case.
+	max     int
 	waiters map[int]map[int]chan struct{} // byte offset -> waiter id -> wake channel
 	nextID  int
+}
+
+// newGrowableSharedBuffer allocates capBytes once (the full WebAssembly.Memory
+// `maximum`) and exposes only the first lenBytes of it — see sharedBuffer's
+// own max field doc comment for why growth is a re-slice, never a realloc.
+func newGrowableSharedBuffer(lenBytes, capBytes int) *sharedBuffer {
+	full := make([]byte, capBytes)
+	return &sharedBuffer{data: full[:lenBytes], max: capBytes}
+}
+
+// grow re-slices data to newLenBytes, the SAME underlying array widened (or
+// unchanged) — never reallocated. Returns false, changing nothing, if sb is
+// not growable (max == 0) or newLenBytes falls outside [len(data), max].
+// Caller must NOT hold sb.mu (grow takes it itself, matching every other
+// sharedBuffer method here being self-locking).
+func (sb *sharedBuffer) grow(newLenBytes int) bool {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	if sb.max == 0 || newLenBytes < len(sb.data) || newLenBytes > sb.max {
+		return false
+	}
+	full := sb.data[:cap(sb.data)]
+	sb.data = full[:newLenBytes]
+	return true
 }
 
 // addWaiter registers a new waiter at byte offset off. Caller must hold sb.mu.

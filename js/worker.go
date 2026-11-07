@@ -554,6 +554,7 @@ func (b *binder) stopWorkers() {
 		w.stop.Do(func() { close(w.stopCh) })
 		w.wb.stopWorkers()
 		w.wb.forgetSharedBuffers()
+		w.wb.forgetWasmMemories()
 		w.wb.closeGPUDevices()
 	}
 }

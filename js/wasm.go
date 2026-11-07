@@ -7,6 +7,7 @@ import (
 	"context"
 	"math/big"
 	"strconv"
+	"sync"
 
 	"github.com/dop251/goja"
 	"github.com/tetratelabs/wazero"
@@ -47,11 +48,30 @@ import (
 //     Table and Global imports/exports are NOT — wazero's own table/global
 //     API would need its own separate marshaling layer, and no confirmed
 //     container needs them yet.
-//   - `new WebAssembly.Memory(...)`/`new WebAssembly.Table(...)` (standalone,
-//     not tied to any module) are NOT implemented — wazero has no API to
-//     allocate a bare memory/table outside a module context; only a
-//     module's OWN declared memory, reached through `instance.exports`, is
-//     modelled.
+//   - `new WebAssembly.Memory(descriptor)` (standalone, not tied to any
+//     module) IS implemented — confirmed directly needed by
+//     go-wasmcontainers: every one of their guest containers
+//     constructs a shared Memory in one Worker before instantiating
+//     anything, then posts that SAME object to a second, plain-JS worker
+//     that services host calls by reading/writing its bytes directly while
+//     the guest blocks in Atomics.wait. See newWasmMemory's own doc
+//     comment for the implementation (it does not go through wazero at
+//     all — a standalone Memory has no module to belong to).
+//   - `new WebAssembly.Table(...)` is NOT implemented — no confirmed need.
+//   - Passing a standalone `WebAssembly.Memory` as a module's memory
+//     IMPORT (the common toolchain pattern for a module compiled with
+//     `--import-memory`, e.g. Emscripten with pthreads) is NOT supported:
+//     wazero's public API (confirmed by direct inspection of
+//     wazero.HostModuleBuilder and api.MemoryDefinition/api.Memory,
+//     v1.8.2) has no way to tell whether a module's own declared memory is
+//     imported vs. local, no way to supply host-owned bytes to satisfy a
+//     memory import, and no public method to detect the WASM threads
+//     proposal's `shared` flag on a memory type at all — only a module's
+//     OWN locally-declared, exported memory is modelled (wasmExports/
+//     wrapWasmMemory below). A module that imports memory fails today with
+//     whatever LinkError wazero's own InstantiateModule produces for an
+//     unresolved import; this is a real upstream wazero limitation, not a
+//     binding gap this file's own code can route around.
 //   - WASI (`wasi_snapshot_preview1` — stdio, filesystem, clocks) is NOT
 //     wired. A module compiled assuming a WASI host fails to instantiate
 //     with a LinkError naming the missing import — the honest outcome for a
@@ -254,6 +274,7 @@ func (b *binder) newWebAssembly() *goja.Object {
 		result.Set("instance", inst)
 		return b.resolved(result)
 	})
+	o.Set("Memory", func(call goja.ConstructorCall) *goja.Object { return b.newWasmMemory(call) })
 	return o
 }
 
@@ -536,6 +557,211 @@ func (b *binder) wrapWasmMemory(mem api.Memory) *goja.Object {
 		}
 		return b.vm.ToValue(prev)
 	})
+	return o
+}
+
+// wasmMemoryRegistry maps each `new WebAssembly.Memory(...)` wrapper object
+// (in ANY binder's VM) to the Go-level *sharedBuffer behind it, mirroring
+// sharedBufferRegistry's (atomics.go) own by-object-identity design and for
+// the same reason: a *goja.Object pointer is already globally unique for
+// the life of the process, so one package-level map correctly serves every
+// binder's own objects. The value is nil for a registered but NON-shared
+// Memory — still present so clone.go can tell "a Memory wrapper this
+// binding does not know how to clone" apart from "not a Memory wrapper at
+// all" and report the precise reason (construct with shared:true) rather
+// than a generic "unsupported object" error.
+var (
+	wasmMemoryRegistryMu sync.Mutex
+	wasmMemoryRegistry   = map[*goja.Object]*sharedBuffer{}
+)
+
+func registerWasmMemory(obj *goja.Object, sb *sharedBuffer) {
+	wasmMemoryRegistryMu.Lock()
+	wasmMemoryRegistry[obj] = sb
+	wasmMemoryRegistryMu.Unlock()
+}
+
+// lookupWasmMemory reports whether obj is a registered Memory wrapper at
+// all (ok), and if so, its backing *sharedBuffer (nil for a non-shared one).
+func lookupWasmMemory(obj *goja.Object) (sb *sharedBuffer, ok bool) {
+	wasmMemoryRegistryMu.Lock()
+	sb, ok = wasmMemoryRegistry[obj]
+	wasmMemoryRegistryMu.Unlock()
+	return sb, ok
+}
+
+// forgetWasmMemories removes every object this binder ever registered from
+// the global registry — mirrors forgetSharedBuffers exactly, called from
+// the same two places (Session.Close, stopWorkers).
+func (b *binder) forgetWasmMemories() {
+	if len(b.ownedWasmMemories) == 0 {
+		return
+	}
+	wasmMemoryRegistryMu.Lock()
+	for _, obj := range b.ownedWasmMemories {
+		delete(wasmMemoryRegistry, obj)
+	}
+	wasmMemoryRegistryMu.Unlock()
+	b.ownedWasmMemories = nil
+}
+
+// newWasmMemory implements the standalone `new WebAssembly.Memory(descriptor)`
+// constructor (webassembly.github.io/spec/js-api/#dom-memory-memory, extended
+// by the threads proposal's own `shared` field — webassembly.github.io/
+// threads/js-api/#memories). Confirmed directly needed by
+// go-wasmcontainers: every one of their guest containers constructs a
+// shared Memory in one Worker before instantiating anything, then posts
+// that SAME object to a second, plain-JS "engine worker" that services
+// host calls by reading/writing its bytes directly while the guest blocks
+// in Atomics.wait — without this constructor existing at all, every one of
+// their containers fails before its first syscall. Deliberately does NOT
+// go through wazero: a standalone Memory has no module to belong to (see
+// this file's own top doc comment for wazero's confirmed lack of a
+// memory-import API, which is the separate, NOT-yet-solved half of making
+// an actual guest module use this Memory as its own linear memory).
+func (b *binder) newWasmMemory(call goja.ConstructorCall) *goja.Object {
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("WebAssembly.Memory: descriptor must be an object"))
+	}
+	initialV := desc.Get("initial")
+	if initialV == nil || goja.IsUndefined(initialV) {
+		panic(b.vm.NewTypeError("WebAssembly.Memory: descriptor.initial is required"))
+	}
+	initial := int(initialV.ToInteger())
+	if initial < 0 || uint32(initial) > maxWasmMemoryPages {
+		panic(b.wasmError("RangeError", "WebAssembly.Memory: initial is out of range"))
+	}
+	maxV := desc.Get("maximum")
+	hasMax := maxV != nil && !goja.IsUndefined(maxV)
+	maximum := initial
+	if hasMax {
+		maximum = int(maxV.ToInteger())
+		if maximum < initial || uint32(maximum) > maxWasmMemoryPages {
+			panic(b.wasmError("RangeError", "WebAssembly.Memory: maximum is out of range"))
+		}
+	}
+	sharedV := desc.Get("shared")
+	shared := sharedV != nil && sharedV.ToBoolean()
+	if shared && !b.opt.CrossOriginIsolated {
+		// Matches the SAME gate SharedArrayBuffer/Atomics are already
+		// behind (atomics.go/window.go) — a real browser denies a shared
+		// Memory exactly as it denies a bare SharedArrayBuffer without
+		// COOP/COEP, and go-wasmcontainers' own confirmed usage expects
+		// this engine to behave the same way, not as a more permissive
+		// shortcut.
+		panic(b.vm.NewTypeError("WebAssembly.Memory: shared memory requires a cross-origin isolated context"))
+	}
+	if shared && !hasMax {
+		// Per spec, a shared memory's descriptor must declare a maximum —
+		// and this binding's own reason agrees: a growable SharedArrayBuffer
+		// here pre-allocates its full capacity up front (sharedBuffer's own
+		// max field doc comment explains why), which requires knowing that
+		// capacity at construction time.
+		panic(b.vm.NewTypeError("WebAssembly.Memory: a shared memory requires descriptor.maximum"))
+	}
+	capPages := initial
+	if hasMax {
+		capPages = maximum
+	}
+	// Bound by the SAME configurable quota as a module's own linear memory
+	// (Options.MaxWasmMemoryBytes) — a standalone Memory is no less able to
+	// exhaust the host than a module-declared one.
+	if uint32(capPages) > b.maxWasmMemoryPages() {
+		panic(b.wasmError("RangeError", "WebAssembly.Memory: maximum exceeds this engine's configured memory quota"))
+	}
+	if shared {
+		sb := newGrowableSharedBuffer(initial*wasmPageSize, maximum*wasmPageSize)
+		return b.wrapSharedWasmMemory(sb)
+	}
+	return b.wrapNonSharedWasmMemory(initial*wasmPageSize, hasMax, maximum*wasmPageSize)
+}
+
+// wrapSharedWasmMemory builds a Memory wrapper around an EXISTING
+// *sharedBuffer — the path both newWasmMemory (a freshly allocated sb) and
+// reconstructValue (clone.go, an sb arriving via postMessage) share, so a
+// Memory posted to a Worker and one constructed directly in it behave
+// identically. `.buffer` is cached and re-wrapped only when sb's own
+// length changed (sb.grow was called, by any binder, since the last
+// read) — the same refresh-on-size-change idiom wrapWasmMemory already
+// uses above, needed for the same reason: a fresh read must reflect a
+// grow that happened elsewhere, but re-wrapping on every single read
+// would otherwise leave an unbounded number of now-useless objects in
+// sharedBufferRegistry for the life of the render.
+func (b *binder) wrapSharedWasmMemory(sb *sharedBuffer) *goja.Object {
+	o := b.vm.NewObject()
+	_ = o.DefineDataPropertySymbol(goja.SymToStringTag, b.vm.ToValue("WebAssembly.Memory"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	cachedLen := -1
+	var cachedBuf *goja.Object
+	refresh := func() *goja.Object {
+		sb.mu.Lock()
+		n := len(sb.data)
+		sb.mu.Unlock()
+		if n != cachedLen {
+			cachedBuf = b.wrapSharedArrayBuffer(sb)
+			cachedLen = n
+		}
+		return cachedBuf
+	}
+	b.accessor(o, "buffer", func() goja.Value { return refresh() }, nil)
+	o.Set("grow", func(call goja.FunctionCall) goja.Value {
+		delta := int(call.Argument(0).ToInteger())
+		if delta < 0 {
+			panic(b.wasmError("RangeError", "WebAssembly.Memory.grow: delta must not be negative"))
+		}
+		sb.mu.Lock()
+		prevPages := len(sb.data) / wasmPageSize
+		sb.mu.Unlock()
+		if !sb.grow((prevPages + delta) * wasmPageSize) {
+			panic(b.wasmError("RangeError", "WebAssembly.Memory.grow: would exceed the memory's maximum"))
+		}
+		return b.vm.ToValue(prevPages)
+	})
+	registerWasmMemory(o, sb)
+	b.ownedWasmMemories = append(b.ownedWasmMemories, o)
+	return o
+}
+
+// wrapNonSharedWasmMemory builds a standalone, non-shared Memory wrapper:
+// `.buffer` is a REAL, zero-copy ArrayBuffer (the same wrapWasmMemory
+// pattern above), replaced wholesale (realloc + copy) on grow — safe here
+// specifically because a non-shared memory's bytes are never registered
+// for postMessage (lookupWasmMemory reports sb==nil for this object), so
+// no OTHER VM can hold a reference that reallocating would invalidate.
+func (b *binder) wrapNonSharedWasmMemory(initialLen int, hasMax bool, maxLen int) *goja.Object {
+	o := b.vm.NewObject()
+	_ = o.DefineDataPropertySymbol(goja.SymToStringTag, b.vm.ToValue("WebAssembly.Memory"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
+	data := make([]byte, initialLen)
+	cachedLen := -1
+	var cachedBuf goja.ArrayBuffer
+	refresh := func() goja.ArrayBuffer {
+		if len(data) != cachedLen {
+			cachedBuf = b.vm.NewArrayBuffer(data)
+			cachedLen = len(data)
+		}
+		return cachedBuf
+	}
+	b.accessor(o, "buffer", func() goja.Value { return b.vm.ToValue(refresh()) }, nil)
+	o.Set("grow", func(call goja.FunctionCall) goja.Value {
+		delta := int(call.Argument(0).ToInteger())
+		if delta < 0 {
+			panic(b.wasmError("RangeError", "WebAssembly.Memory.grow: delta must not be negative"))
+		}
+		prevPages := len(data) / wasmPageSize
+		newLen := (prevPages + delta) * wasmPageSize
+		if hasMax && newLen > maxLen {
+			panic(b.wasmError("RangeError", "WebAssembly.Memory.grow: would exceed the memory's maximum"))
+		}
+		if uint32(newLen/wasmPageSize) > b.maxWasmMemoryPages() {
+			panic(b.wasmError("RangeError", "WebAssembly.Memory.grow: would exceed this engine's configured memory quota"))
+		}
+		grown := make([]byte, newLen)
+		copy(grown, data)
+		data = grown
+		return b.vm.ToValue(prevPages)
+	})
+	registerWasmMemory(o, nil)
+	b.ownedWasmMemories = append(b.ownedWasmMemories, o)
 	return o
 }
 
