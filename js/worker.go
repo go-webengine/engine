@@ -168,9 +168,11 @@ func (w *jsWorker) installWorkerGlobals() {
 		wb.installSharedArrayBuffer(g)
 		wb.installAtomics(g)
 	}
-	// navigator.gpu + GPUBufferUsage/GPUMapMode (WebGPU, Exposed=(Window,
-	// Worker)): same opt-in gate as the main document's own install().
+	// navigator.gpu + GPUBufferUsage/GPUMapMode/GPUShaderStage (WebGPU,
+	// Exposed=(Window, Worker)): same opt-in gate as the main document's
+	// own install().
 	if wb.opt.EnableWebGPU {
+		g.Set("GPUShaderStage", wb.newGPUShaderStage())
 		g.Set("GPUBufferUsage", wb.newGPUBufferUsage())
 		g.Set("GPUMapMode", wb.newGPUMapMode())
 	}

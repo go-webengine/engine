@@ -348,6 +348,10 @@ type binder struct {
 	gpuBindGroupLayouts map[*goja.Object]*gpuBindGroupLayoutInfo
 	gpuBindGroups       map[*goja.Object]*gpuBindGroupInfo
 	gpuCommandBuffers   map[*goja.Object]*gpuCommandEncoderState
+	// gpuPipelineLayouts maps a device.createPipelineLayout() object to
+	// its own ordered bindGroupLayouts — see gpuCreatePipelineLayout's own
+	// doc comment (webgpu.go).
+	gpuPipelineLayouts map[*goja.Object][]*goja.Object
 
 	// isWorker marks a binder built by newWorkerBinder (worker.go) rather
 	// than the main document's own Begin — the one thing opfs.go needs to
