@@ -514,6 +514,28 @@ func (b *binder) newWorker(call goja.ConstructorCall) *goja.Object {
 // It then delivers anything the worker queued back in that same call, so a
 // request/reply script (the common case, and this round's own verification
 // shape) sees the reply before postMessage returns.
+//
+// The wait is a poll loop, not one flat blocking select, so THIS goroutine
+// keeps draining its OWN worker inboxes (drainWorkerInboxes) the whole time
+// it waits — required for a worker that creates its own child Worker and
+// posts it a setup message (go-wasmcontainers' own confirmed shape: an
+// "engine worker" spawning one container Worker per guest, engine#342
+// fallout). A real browser's postMessage is asynchronous — the sender is
+// never blocked — so spec-compliant code is free to have the RECEIVER's own
+// onmessage handler synchronously call Atomics.wait, trusting the sender to
+// still be free to answer with Atomics.notify. This engine's postMessage is
+// deliberately synchronous instead (M2, for a deterministic, testable round
+// trip), which turns that exact valid pattern into a real deadlock unless
+// the sender, while blocked here, can still reach and dispatch its OWN
+// children's queued messages — e.g. the container's own "wake me, I'm
+// waiting" postMessage back to this same binder — rather than being
+// unable to do anything at all until the worker call returns. Confirmed
+// directly: TestWorkerPostMessageDoesNotBlockItsOwnWakeUp hangs out its full
+// deadman with a single flat select, and resolves in native time once this
+// loop drains on every tick instead. A worker with no such nested
+// dependency sees no behavior change: drainWorkerInboxes on an empty
+// b.workers, or one with nothing queued yet, is a plain no-op, exactly as
+// before.
 func (b *binder) postToWorker(w *jsWorker, data goja.Value) {
 	cv, err := cloneValue(data)
 	if err != nil {
@@ -532,10 +554,21 @@ func (b *binder) postToWorker(w *jsWorker, data goja.Value) {
 		b.logf("Worker.postMessage: inbox full, message dropped")
 		return
 	}
-	select {
-	case <-done:
-	case <-w.stopCh:
-	case <-time.After(time.Until(b.deadman)):
+	ticker := time.NewTicker(workerTickInterval)
+	defer ticker.Stop()
+loop:
+	for {
+		select {
+		case <-done:
+			break loop
+		case <-w.stopCh:
+			break loop
+		case <-ticker.C:
+			b.drainWorkerInboxes()
+			if !time.Now().Before(b.deadman) {
+				break loop
+			}
+		}
 	}
 	b.drainWorkerInboxes()
 }
