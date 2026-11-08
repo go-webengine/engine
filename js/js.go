@@ -317,6 +317,21 @@ type binder struct {
 	// reaches the true root in one hop regardless of nesting depth) —
 	// see wasmRT's own doc comment for why this exists.
 	rootBinder *binder
+	// blobs caches each Blob JS wrapper's own content bytes by object
+	// identity — see newBlob (blob.go). blobURLs is the File API's own
+	// "blob URL store" (§8): a blob: URL string minted by
+	// URL.createObjectURL maps to the SAME bytes, consumed by
+	// importScripts (worker.go) or fetch (net.go). Both are per-binder,
+	// never a package-level registry like wasmModuleRegistry/
+	// wasmMemoryRegistry — a blob: URL is only ever valid in the
+	// environment that minted it (confirmed directly: a real browser's
+	// own blob URL store is per-environment too), so a Worker's own
+	// store is never shared with its creator or any sibling, matching
+	// go-wasmcontainers' own confirmed shape (go-gfx/webgpu's
+	// record_js.go creates and consumes its own Blob entirely inside one
+	// Worker).
+	blobs    map[*goja.Object][]byte
+	blobURLs map[string][]byte
 	// wasmModules caches each WebAssembly.Module JS wrapper's underlying
 	// state (compiled form + isShared) by object identity — see
 	// wasmModuleState/wrapWasmModule in wasm.go.

@@ -404,6 +404,26 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`Blob`, `URL.createObjectURL`/`revokeObjectURL`, and `importScripts`
+  resolving a `blob:` URL** (feature, 2026-11-08, round 22, engine#342
+  fallout): round 21's fix got go-wasmcontainers their first fully green
+  container case — the whole chain running end to end, a guest starting,
+  making its WASI calls, and exiting with its real code. The other five
+  cases stop earlier, in their GPU host: `go-gfx/webgpu`'s own
+  `record_js.go` loads its replay script inside a Worker as `new
+  Blob([source], {type: "text/javascript"})` -> `URL.createObjectURL(blob)`
+  -> `importScripts(thatBlobURL)` -> `URL.revokeObjectURL(url)`, and none
+  of `Blob`/`createObjectURL`/a `blob:`-aware `importScripts` existed in
+  this engine at all. Scope, confirmed by their own report: a `Blob` built
+  from an array of STRING parts with a `type` option, and the File API's
+  own "blob URL store" — not `BufferSource`/`Blob` parts or any other Blob
+  method, none of which any confirmed caller touches. `Blob`'s own content
+  and `URL`'s own static methods are scoped PER-BINDER (never a
+  package-level registry) — a `blob:` URL is only ever valid in the
+  environment that minted it, matching both a real browser and
+  go-wasmcontainers' own shape (one Worker creates and consumes its own
+  Blob entirely by itself). `importScripts` now resolves a `blob:` URL
+  against that store directly, never through the HTTP fetch path.
 - **A module's own shared memory now stays live for every agent even when
   grown by the wasm `memory.grow` INSTRUCTION, not just the JS-level
   grow() method** (fix, 2026-11-08, round 21, engine#342 fallout): round

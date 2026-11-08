@@ -1528,3 +1528,57 @@ func TestWorkerExportedSharedMemoryGrownByInstructionIsVisibleAcrossAgents(t *te
 		t.Fatalf("data-byte70000 = %q, want %q, logs=%v", got, "77", logs)
 	}
 }
+
+// TestWorkerBlobCreateObjectURLImportScripts reproduces go-gfx/webgpu
+// v0.15.0's own confirmed shape (engine#342 fallout, go-wasmcontainers'
+// GPU host initialization): record_js.go loads its replay script inside a
+// Worker as `new Blob([source], {type: "text/javascript"})` ->
+// `URL.createObjectURL(blob)` -> `importScripts(thatBlobURL)` ->
+// `URL.revokeObjectURL(url)`. Proves the FULL round trip: the Blob's own
+// `.size`/`.type`, a real `blob:`-prefixed URL, the imported script
+// actually running (observable through a global it sets), and
+// revokeObjectURL leaving that same URL unusable afterward.
+func TestWorkerBlobCreateObjectURLImportScripts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			var blob = new Blob(['globalThis.IMPORTED_VALUE = 42;'], {type: 'text/javascript'});
+			var isBlob = Object.prototype.toString.call(blob) === '[object Blob]';
+			var url = URL.createObjectURL(blob);
+			importScripts(url);
+			var revokedOk = false;
+			URL.revokeObjectURL(url);
+			try {
+				importScripts(url);
+			} catch (e) {
+				revokedOk = true;
+			}
+			postMessage('isBlob=' + isBlob + ' size=' + blob.size + ' type=' + blob.type +
+				' isBlobURL=' + (url.indexOf('blob:') === 0) +
+				' imported=' + globalThis.IMPORTED_VALUE +
+				' revokedOk=' + revokedOk);
+		`))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var w = new Worker('` + srv.URL + `');
+		w.onmessage = function(e) { document.body.setAttribute('data-result', e.data); };
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL: testURL,
+		Client:  http.DefaultClient,
+		Timeout: 3 * time.Second,
+		Log:     func(s string) { logs = append(logs, s) },
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	want := "isBlob=true size=31 type=text/javascript isBlobURL=true imported=42 revokedOk=true"
+	if got, _ := dom.Find(root, "body").Attribute("data-result"); got != want {
+		t.Fatalf("data-result = %q, want %q, logs=%v", got, want, logs)
+	}
+}
