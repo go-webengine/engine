@@ -169,6 +169,11 @@ type timerJob struct {
 	// looks at it", unchanged from this package's existing, documented
 	// "not a real clock" behaviour for every job's own FIRST firing.
 	readyAt time.Time
+	// skipped counts the sweeps this job was due but NOT chosen — see
+	// drainTimers' own doc comment for why raw delay alone can starve an
+	// older job forever, and why ageing by sweep count rather than
+	// wall-clock time keeps that fix deterministic.
+	skipped int64
 }
 
 // binder holds the runtime and all live state for one page execution.
@@ -548,6 +553,20 @@ func (b *binder) dispatchLifecycle(res *Result) {
 // When nothing is due yet, this returns immediately rather than busy-waiting
 // — a later call (the next real tick, for a page using EnableWorkerStreaming)
 // catches it once its time arrives.
+//
+// "Ascending delay" is by an effective priority (delay minus skipped), not
+// delay alone: without RealTimeTimers, a fresh (non-repeat) job's readyAt is
+// always zero, so a short-delay job that keeps re-queueing a fresh copy of
+// itself (confirmed with a page that reschedules a 1ms-doubling-to-8ms chain
+// forever) would otherwise starve an older, larger-delay job indefinitely —
+// its own delay never grows, so raw-delay comparison alone always prefers
+// it. Every sweep that passes a due job over for a smaller-priority one
+// ages it by incrementing skipped, so a persistently-starved job's priority
+// strictly falls, sweep by sweep, until it wins — bounded and deterministic,
+// not dependent on real wall-clock time (which a tight, no-delay drain loop
+// may barely advance between sweeps). Jobs that all run within a few sweeps
+// of being enqueued (this package's delay-ordering tests) never accrue
+// enough skips to change their relative order.
 func (b *binder) drainTimers(res *Result) {
 	// A worker's own top-level script may have posted to main before any
 	// main->worker message gave postToWorker a chance to deliver it (see
@@ -568,16 +587,23 @@ func (b *binder) drainTimers(res *Result) {
 		}
 		now := time.Now()
 		best := -1
+		var bestPriority int64
 		for i := range b.jobs {
 			if !b.jobs[i].readyAt.IsZero() && b.jobs[i].readyAt.After(now) {
 				continue // a repeating interval's own next firing isn't due yet
 			}
-			if best == -1 || b.jobs[i].delay < b.jobs[best].delay {
-				best = i
+			priority := b.jobs[i].delay - b.jobs[i].skipped
+			if best == -1 || priority < bestPriority {
+				best, bestPriority = i, priority
 			}
 		}
 		if best == -1 {
 			return // every remaining job is a not-yet-due interval repeat
+		}
+		for i := range b.jobs {
+			if i != best && (b.jobs[i].readyAt.IsZero() || !b.jobs[i].readyAt.After(now)) {
+				b.jobs[i].skipped++
+			}
 		}
 		job := b.jobs[best]
 		b.jobs = append(b.jobs[:best], b.jobs[best+1:]...)
