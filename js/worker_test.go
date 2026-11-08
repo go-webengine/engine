@@ -1363,3 +1363,79 @@ func TestWasmModulePostMessageWithSharedMemoryInstantiatesWithMemoryIntact(t *te
 		t.Fatalf("data-result = %q, want %q, logs=%v", got, want, logs)
 	}
 }
+
+// TestWorkerExportedSharedMemoryGrowIsVisibleAcrossAgents reproduces
+// go-wasmcontainers' own follow-up probe (engine#342 fallout): a worker
+// instantiates a module whose EXPORTED memory is shared (min 1, max 2
+// pages), grows it by one page, writes a byte past the ORIGINAL size, and
+// posts the Memory to its creator — which must see BOTH the grown
+// byteLength and that write without ever having called grow() itself (the
+// WebAssembly JS API: a growable SharedArrayBuffer's byteLength is the
+// CURRENT length in every agent, not a snapshot from whenever it happened
+// to be read). The creator then writes its OWN byte and posts the SAME
+// Memory back, so the worker — which never re-read `.buffer` on its own
+// after the grow — must also see the creator's write through its own,
+// separately-held reference to the identical Go-level sharedBuffer.
+func TestWorkerExportedSharedMemoryGrowIsVisibleAcrossAgents(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(
+			uint8ArrayLiteral("bytes", memoryOnlyModuleBytes(1, 2, true)) + `
+			var mem;
+			WebAssembly.instantiate(bytes, {}).then(function(result) {
+				mem = result.instance.exports.memory;
+				mem.grow(1);
+				var view = new Uint8Array(mem.buffer);
+				view[70000] = 77;
+				postMessage(mem);
+			});
+			onmessage = function(e) {
+				var view = new Uint8Array(mem.buffer);
+				postMessage('byteLength=' + mem.buffer.byteLength + ' byte70000=' + view[70000] + ' byte70001fromMain=' + view[70001]);
+			};
+		`))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var w = new Worker('` + srv.URL + `');
+		var step = 0;
+		w.onmessage = function(e) {
+			if (step === 0) {
+				step = 1;
+				var mem = e.data;
+				document.body.setAttribute('data-bytelength', String(mem.buffer.byteLength));
+				var view = new Uint8Array(mem.buffer);
+				document.body.setAttribute('data-byte70000', String(view[70000]));
+				view[70001] = 88;
+				w.postMessage(mem);
+			} else {
+				document.body.setAttribute('data-roundtrip', e.data);
+			}
+		};
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-bytelength"); got != "131072" {
+		t.Fatalf("data-bytelength = %q, want %q (2 grown pages, visible through the posted Memory without the creator ever calling grow)", got, "131072")
+	}
+	if got, _ := body.Attribute("data-byte70000"); got != "77" {
+		t.Fatalf("data-byte70000 = %q, want %q", got, "77")
+	}
+	want := "byteLength=131072 byte70000=77 byte70001fromMain=88"
+	if got, _ := body.Attribute("data-roundtrip"); got != want {
+		t.Fatalf("data-roundtrip = %q, want %q, logs=%v", got, want, logs)
+	}
+}

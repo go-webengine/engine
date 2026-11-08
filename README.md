@@ -404,6 +404,33 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **A host import's own thrown exception propagates unchanged again, and a
+  module's exported shared memory now grows visibly across every agent
+  holding it** (fix, 2026-11-08, round 20, engine#342 fallout): with round
+  19's fix, go-wasmcontainers' container guest fully RAN for the first
+  time — instantiated, memory accepted, `_start` entered, `fd_write`
+  working — then stopped, on two independent findings. First: their own
+  `worker.js` throws `new Exit(code)` from a host import when the guest
+  calls `proc_exit`, expecting it (per the WebAssembly JS API: a host
+  function's exception unwinds the wasm frames UNCHANGED, rethrown to the
+  caller as the SAME value) to arrive intact for their own `instanceof
+  Exit` check — instead it arrived as a generic, wrapped `RuntimeError`,
+  since `hostImportFunc` panicked with a brand-new Go error wrapping only
+  the original exception's STRING, discarding the real value before
+  wazero's own panic recovery (confirmed by reading it directly) ever got
+  a chance to preserve it via `%w`. Fixed by panicking with the original
+  error unchanged on the way in, and unwinding back to the original JS
+  value (`errors.As` + `exc.Value()`, the SAME pattern `importScripts`
+  already uses for a script-level exception) on the way out. Second,
+  found the same round: a worker that grows its module's own exported
+  shared memory and posts it to its creator — the creator saw the
+  ORIGINAL byteLength, not the grown one, because the Go-level
+  `*sharedBuffer` identity `clone.go` hands to other agents was rebuilt
+  from scratch on every local size change instead of being updated in
+  place, and `grow()` never touched it at all. Fixed by creating it once
+  and updating its own `.data` field in place — a fresh, zero-copy view
+  over wazero's own backing array, confirmed never relocated for a shared
+  memory — eagerly, right when `grow()` succeeds.
 - **`WebAssembly.Memory` never satisfied `instanceof WebAssembly.Memory`**
   (fix, 2026-11-08, round 19, engine#342 fallout): round 18's fix cleared
   the `_start` double-run, and go-wasmcontainers' next run still failed
