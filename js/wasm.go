@@ -182,7 +182,7 @@ func (b *binder) wasmRT() wazero.Runtime {
 		if b.opt.CrossOriginIsolated {
 			features = features.SetEnabled(experimental.CoreFeaturesThreads, true)
 		}
-		cfg := wazero.NewRuntimeConfig().
+		cfg := wazero.NewRuntimeConfigInterpreter().
 			WithCoreFeatures(features).
 			WithMemoryLimitPages(b.maxWasmMemoryPages()).
 			WithCloseOnContextDone(true)

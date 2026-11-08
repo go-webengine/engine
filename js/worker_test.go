@@ -7,6 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1058,4 +1062,117 @@ func TestNestedWorkerAndCleanupCascade(t *testing.T) {
 	default:
 		t.Fatal("Session.Close() should cascade into stopping the nested (grandchild) worker too")
 	}
+}
+
+// buildWasmFixture compiles js/testdata/<pkg> (a real GOOS=js GOARCH=wasm
+// Go program, with Go's own runtime/scheduler on top of it) and returns
+// its bytes alongside the real wasm_exec.js glue from THIS toolchain's
+// own GOROOT — the full Go-runtime-on-wasm shape, unlike
+// wasmFixtureScript's add.wasm (a bare, runtime-less wasm module with no
+// Go scheduler at all, which cannot exercise anything about go.run/
+// go._resume).
+func buildWasmFixture(t *testing.T, pkg string) (wasmBytes, wasmExecJS []byte) {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "fixture.wasm")
+	cmd := exec.Command("go", "build", "-o", out, "./testdata/"+pkg)
+	cmd.Env = append(os.Environ(), "GOOS=js", "GOARCH=wasm", "CGO_ENABLED=0")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build testdata/%s: %v\n%s", pkg, err, b)
+	}
+	wasmBytes, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read built fixture: %v", err)
+	}
+	wasmExecJS, err = os.ReadFile(filepath.Join(runtime.GOROOT(), "lib", "wasm", "wasm_exec.js"))
+	if err != nil {
+		t.Fatalf("read wasm_exec.js: %v", err)
+	}
+	return wasmBytes, wasmExecJS
+}
+
+// TestReentrantResumeAfterEventLoopResume is a regression test for the
+// actual root cause behind a native SIGSEGV go-wasmcontainers reported —
+// found by their own bisection down to a GPU-free, ~20-line reproduction,
+// after two earlier real-but-insufficient fixes (an objc.AutoreleasePool
+// gap, a worker-GPU-teardown race) and one real-but-unconfirmed fix
+// (GPUDevice.destroy() leaking the native device) all turned out not to
+// be their crash.
+//
+// wasm_exec.js's own fs.write shim (behind every fmt.Println/os.Stdout
+// write in a guest program) invokes its JS callback SYNCHRONOUSLY,
+// re-entering the guest's wasm instance (go._resume) from INSIDE an
+// active host-import call. That nested reentry is harmless the FIRST
+// time, before the guest has ever been suspended-and-resumed via the
+// event loop (a Promise .then callback firing asynchronously) — but
+// corrupts the running goroutine's own stack bookkeeping the FIRST time
+// it happens AFTER such a resume, producing exactly the "split stack
+// overflow" / hexdumpWords crash signature seen throughout this
+// investigation.
+//
+// Root cause, confirmed directly in wazero's own documentation (not
+// inferred): wazero's default "Compiler" engine
+// (github.com/tetratelabs/wazero's NewRuntimeConfigCompiler, which plain
+// NewRuntimeConfig picks automatically on amd64/arm64) JIT-compiles a
+// module to native machine code that "uses the different stack than the
+// calling Goroutine" (wazero's own doc comment, on exactly this failure
+// mode) — exactly the condition needed for Go's own runtime, which
+// always assumes it is looking at a real goroutine stack, to compute
+// nonsensical stack bounds once execution re-enters that native code
+// reentrantly after an earlier suspend/resume has already moved the
+// calling context around.
+//
+// Fix: wasmRT (js/wasm.go) now builds its wazero.RuntimeConfig via
+// NewRuntimeConfigInterpreter instead of the Compiler-by-default
+// NewRuntimeConfig. The Interpreter engine is pure Go, with no native
+// code generation and hence no separate stack to desynchronize from the
+// calling goroutine's own — a real, measurable performance cost (WASM
+// execution is interpreted, not JIT-compiled) traded directly for
+// removing an entire class of native-process crash.
+//
+// Verified directly against go-wasmcontainers' own exact minimal
+// reproduction (their own probe harness, against a locally-patched copy
+// of this engine) before writing this test: crashed under the Compiler
+// engine, passed cleanly under the Interpreter engine, in both their
+// single-promise case and their 20-round real-WebGPU case. This test
+// cannot safely assert the same thing by reverting the fix here (that
+// would crash THIS test binary, by design — a real native memory-safety
+// failure, not a graceful error) — the same reasoning
+// TestDeviceDestroyReleasesTheNativeDevice and
+// TestSessionCloseWaitsForWorkerBeforeClosingGPUDevices already state
+// for why their own fixes are verified by comparison outside the shipped
+// test, not by an automated revert-and-fail step.
+func TestReentrantResumeAfterEventLoopResume(t *testing.T) {
+	wasmBytes, wasmExecJS := buildWasmFixture(t, "reentry")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/reentry.wasm":
+			w.Write(wasmBytes)
+		case "/wasm_exec.js":
+			w.Write(wasmExecJS)
+		case "/worker.js":
+			w.Write([]byte(`
+				importScripts("wasm_exec.js");
+				var go = new Go();
+				WebAssembly.instantiateStreaming(fetch("reentry.wasm"), go.importObject)
+					.then(function(r) { return go.run(r.instance); })
+					.then(function() { postMessage("done"); })
+					.catch(function(e) { postMessage("failed: " + e); });
+			`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var w = new Worker('`+srv.URL+`/worker.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "done" {
+		t.Fatalf("data-reply = %q, want %q, logs=%v", got, "done", logs)
+	}
+	mustHave(t, logs, "REENTRY-OK")
 }

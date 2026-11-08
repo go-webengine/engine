@@ -404,8 +404,37 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
-- **THE actual cause: `GPUDevice.destroy()` never released the native
-  Metal device** (fix, 2026-11-08, round 14): round 13's fix below was
+- **THE actual cause, independently confirmed against go-wasmcontainers'
+  own exact reproduction** (fix, 2026-11-08, round 15): rounds 12-14
+  (below) were all real, independently-justified fixes, but none was
+  the crash — go-wasmcontainers eventually bisected it themselves to a
+  GPU-free, ~20-line repro and shared it, pointing at nested JS→wasm
+  reentry. Confirmed directly (not just by reasoning): copied their own
+  probe program and ran it against a locally-patched copy of this
+  engine — crashed under the current code, passed cleanly (20/20 rounds,
+  including real WebGPU calls) once `js/wasm.go`'s wazero
+  `RuntimeConfig` was switched from the default `NewRuntimeConfig()` to
+  `NewRuntimeConfigInterpreter()`. Root cause, found in wazero's own
+  documentation: its default "Compiler" engine (active on amd64/arm64,
+  the only two architectures this crash was ever seen on) JIT-compiles a
+  module to native code that "uses the different stack than the calling
+  Goroutine," and wazero's own doc comment names the exact consequence —
+  "the signal handler might get invoked on the wazero's stack, which may
+  cause a stack overflow," the literal "split stack overflow" signature
+  seen throughout this whole investigation. The pure-Go Interpreter
+  engine generates no native code and hence has no separate stack to
+  desynchronize, removing the entire crash class. Measured, not just
+  asserted: a 200M-iteration compute loop took 3.3s under the Compiler
+  engine and 52.7s under the Interpreter engine (~16x), a real cost
+  accepted directly in exchange for the crash. New test
+  `TestReentrantResumeAfterEventLoopResume` reproduces the peer's own
+  minimal pattern as a real Go-compiled-to-WASM fixture (this repo's
+  first test to exercise the full `wasm_exec.js`/`go.run` shape, not
+  just a bare WASM module) — verified in both directions, including
+  reproducing the EXACT same crash signature inside this repo's own
+  `go test` process when the fix was temporarily reverted.
+- **A real device-leak fix, independently real but not THE crash either**
+  (fix, 2026-11-08, round 14): round 13's fix below was
   also real, but go-wasmcontainers' own retest proved it wasn't their
   crash either — same signatures, deterministic 6/6, and happening 8-12s
   into the render, well before any `Session.Close`. `destroy()`
