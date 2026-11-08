@@ -584,6 +584,40 @@ func TestWasmInstanceAndModuleInstanceofHold(t *testing.T) {
 	)
 }
 
+// TestWasmMemoryInstanceofHolds covers WebAssembly.Memory's own identity —
+// the SAME gap TestWasmInstanceAndModuleInstanceofHold already covers for
+// Instance/Module, but Memory never got the matching treatment: every
+// Memory wrapper this file builds (the standalone constructor, shared or
+// not, and a module's own exported memory) was stamped with
+// Symbol.toStringTag only, never a real prototype, so `instanceof
+// WebAssembly.Memory` was always false — masked because every existing
+// test checked Object.prototype.toString.call() instead. Confirmed needed
+// directly: go-wasmcontainers' own runtime/browser/worker.js validates a
+// guest's exported memory with exactly `!(memory instanceof
+// WebAssembly.Memory)`, which always fired, reported as "the module
+// exports no memory" even though instance.exports.memory was a real,
+// present object.
+func TestWasmMemoryInstanceofHolds(t *testing.T) {
+	html := `<html><body><script>
+		` + uint8ArrayLiteral("bytes", memoryOnlyModuleBytes(1, 2, false)) + `
+		var nonShared = new WebAssembly.Memory({initial: 1});
+		console.log('standaloneNonShared=' + (nonShared instanceof WebAssembly.Memory));
+		console.log('ctorName=' + WebAssembly.Memory.name);
+		WebAssembly.instantiate(bytes, {}).then(function(result) {
+			console.log('moduleExported=' + (result.instance.exports.memory instanceof WebAssembly.Memory));
+		}, function(err) { console.log('unexpected-rejection=' + err); });
+	</script></body></html>`
+	_, logs, res := runJS(t, html)
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs,
+		"standaloneNonShared=true",
+		"ctorName=Memory",
+		"moduleExported=true",
+	)
+}
+
 // TestWasmCompileThenInstantiateModuleInstanceofHolds is the two-step
 // `WebAssembly.compile(bytes).then(m => WebAssembly.instantiate(m,
 // imports))` path's own counterpart, kept as its own test (rather than

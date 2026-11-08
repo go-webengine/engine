@@ -321,13 +321,17 @@ type binder struct {
 	// state (compiled form + isShared) by object identity — see
 	// wasmModuleState/wrapWasmModule in wasm.go.
 	wasmModules map[*goja.Object]wasmModuleState
-	// wasmModuleProto/wasmInstanceProto cache this VM's own
-	// WebAssembly.Module.prototype / WebAssembly.Instance.prototype (built
-	// once, lazily, by installWasmClassIdentity in wasm.go) so every
-	// object compile()/instantiate() return is stamped with it —
-	// confirmed directly needed by go-wasmcontainers: Go's own
-	// wasm_exec.js does `instance instanceof WebAssembly.Instance`.
-	wasmModuleProto, wasmInstanceProto *goja.Object
+	// wasmModuleProto/wasmInstanceProto/wasmMemoryProto cache this VM's own
+	// WebAssembly.Module.prototype / WebAssembly.Instance.prototype /
+	// WebAssembly.Memory.prototype (built once, lazily, by
+	// installWasmClassIdentity in wasm.go) so every object
+	// compile()/instantiate() return, or any Memory wrapper this file
+	// builds (wrapWasmMemory/wrapSharedWasmMemory/wrapNonSharedWasmMemory),
+	// is stamped with it — confirmed directly needed by go-wasmcontainers:
+	// Go's own wasm_exec.js does `instance instanceof WebAssembly.Instance`,
+	// and their own runtime/browser/worker.js does `!(memory instanceof
+	// WebAssembly.Memory)` to validate a guest's exported memory.
+	wasmModuleProto, wasmInstanceProto, wasmMemoryProto *goja.Object
 
 	// workers holds every live `new Worker(url)` this binder created — see
 	// worker.go. Nil for the overwhelming majority of pages that never touch
