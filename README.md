@@ -404,6 +404,20 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`bitcast<T>(e)` reinterprets bits, and a helper function may touch a
+  resource directly** (two fixes, 2026-11-08, round 27, go-wasmcontainers
+  report): reported on their v0.45.4 retest (26 → 57 of 123 ONNX cases).
+  `bitcast<f32>(1u)` was translated as a numeric conversion (`float(x)`,
+  giving `1.0`) instead of a bit reinterpretation (WGSL §17.2: the float
+  whose bits equal 1, a tiny subnormal) — their Gemm/MatMul kernels decode
+  an f32 alpha stored as raw bits in a u32 uniform this way, so every
+  result came back ~1e9 too large. Fixed with Metal's own `as_type<T>(e)`,
+  one emission covering scalar and same-arity vector bitcasts alike. A
+  helper that directly touches a resource (round 26's own stated, bounded
+  scope gap) is now threaded through as an extra MSL parameter — its own
+  direct touches UNION every function it calls already needs, computed
+  callee-before-caller — at both its own signature and every call site
+  that reaches it, however many levels away.
 - **wgslmsl translates calls to WGSL helper functions** (fix, 2026-11-08,
   round 26, go-wasmcontainers report, engine#391 follow-up): reported on
   97 of their 123 ONNX cases — their nn kernels call small WGSL helpers for

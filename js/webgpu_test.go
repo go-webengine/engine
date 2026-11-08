@@ -933,6 +933,85 @@ func TestComputePipelineWithUniformAtomicAndMultipleGroups(t *testing.T) {
 	}
 }
 
+// TestComputePipelineWithHelperFunctionReadingAResource is the real,
+// dispatched end-to-end for go-wasmcontainers' own exact reported shape
+// (kernels.go:96's `wm`): a WGSL helper function (wm) reads a SEPARATE
+// module-scope storage buffer (prm) directly — not through its own WGSL
+// parameter list — and the entry point calls it. wgslmsl's own structural
+// test (TestHelperFunctionThreadsResourceTransitively) already checks the
+// generated MSL text directly; this one proves the real value comes back
+// right through the full navigator.gpu surface, on real Metal hardware.
+func TestComputePipelineWithHelperFunctionReadingAResource(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read> prm: array<u32>;
+				@group(0) @binding(1) var<storage, read_write> data: array<f32>;
+
+				fn wm(f: u32, d: u32) -> u32 {
+					return prm[f * 3u + d];
+				}
+
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+					data[id.x] = f32(wm(id.x, 0u));
+				}
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+
+			var prmBuf = dev.createBuffer({ size: 24, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_DST });
+			var dataBuf = dev.createBuffer({ size: 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+
+			return prmBuf.mapAsync(GPUMapMode.WRITE).then(function() {
+				new Uint32Array(prmBuf.getMappedRange()).set([10, 20, 30, 40, 50, 60]);
+				prmBuf.unmap();
+
+				var bindGroup = dev.createBindGroup({
+					layout: pipeline.getBindGroupLayout(0),
+					entries: [
+						{ binding: 0, resource: { buffer: prmBuf } },
+						{ binding: 1, resource: { buffer: dataBuf } },
+					],
+				});
+
+				var encoder = dev.createCommandEncoder();
+				var pass = encoder.beginComputePass();
+				pass.setPipeline(pipeline);
+				pass.setBindGroup(0, bindGroup);
+				pass.dispatchWorkgroups(2);
+				pass.end();
+				dev.queue.submit([encoder.finish()]);
+
+				return dataBuf.mapAsync(GPUMapMode.READ);
+			}).then(function() {
+				var out = Array.from(new Float32Array(dataBuf.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				prmBuf.destroy();
+				dataBuf.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := "10,40" // prm[0*3+0]=10, prm[1*3+0]=40
+	if got, _ := body.Attribute("data-out"); got != want {
+		t.Fatalf("data-out = %q, want %q logs=%v", got, want, logs)
+	}
+}
+
 // TestCreateBindGroupSubRangeHonoursOffsetAndItsOwnLength is the decisive
 // positive for go-wasmcontainers' own reported gap (createBindGroup used to
 // reject any GPUBufferBinding whose offset/size did not cover the WHOLE
