@@ -33,8 +33,8 @@ github.com/go-images/jpeg2000 v0.14.0 h1:/nH3l5r95E7OkNZCfq7gmoDQvJzVAhmSw6rd2If
 github.com/go-images/jpeg2000 v0.14.0/go.mod h1:4/Pp3Jp2es5lA8/Ema8F7dFwl0vZprCj9MyznIz9Gdc=
 github.com/go-images/png v0.2.0 h1:RFPkHPuRYRvrDJol/Mmn9P1DSaLV8VPmEQ8BkZoCpL0=
 github.com/go-images/png v0.2.0/go.mod h1:g1qayDmWLClHo9R5KQ+RrcUNTBcaA4c1thaIfEoS3vg=
-github.com/go-macos/metal v0.6.1 h1:OSsbs3HFScp8x8GPrURoB6ntEp7I77TF1YxZcGbl2Ls=
-github.com/go-macos/metal v0.6.1/go.mod h1:BiclSGJgONDekug12CQtlINic9zMmXF7m/iA7bQn4hM=
+github.com/go-macos/metal v0.7.0 h1:c/ymPqCzoLcDxcZ3i6cNSgOScsOlIz4yVbik5asVp+w=
+github.com/go-macos/metal v0.7.0/go.mod h1:BiclSGJgONDekug12CQtlINic9zMmXF7m/iA7bQn4hM=
 github.com/go-macos/objc v0.12.0 h1:/WmB4C1CQd5RkqBRvnHNljEFtOTvytPA9fkD87xuJVQ=
 github.com/go-macos/objc v0.12.0/go.mod h1:ao+SmTFBrkZdP+488hFTrSFvCtJ36McKKhNNOlcFXrQ=
 github.com/go-opentype/fonts v0.14.0 h1:WHw7k9gkHT1pu9B2yyvd0FWyQqn/4NKFQoKhvMYt3Mo=

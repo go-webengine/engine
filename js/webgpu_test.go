@@ -932,3 +932,189 @@ func TestComputePipelineWithUniformAtomicAndMultipleGroups(t *testing.T) {
 		t.Fatalf("data-flag = %q, want 1", got)
 	}
 }
+
+// TestCreateBindGroupSubRangeHonoursOffsetAndItsOwnLength is the decisive
+// positive for go-wasmcontainers' own reported gap (createBindGroup used to
+// reject any GPUBufferBinding whose offset/size did not cover the WHOLE
+// buffer). The shader writes to a fixed, deliberately out-of-range LOCAL
+// index (7) with a single invocation — no concurrent writer ever touches
+// the same element, so the result is bit-for-bit deterministic regardless
+// of wgslmsl's own out-of-bounds CLAMPING (expr.go's `metal::min(uint(i),
+// max(_sizes.sN, 1u) - 1u)`): clamping always lands on this binding's own
+// LAST valid local index, never on some other binding's or the whole
+// buffer's.
+//
+// The bind group covers bytes [256, 272) of a 512-byte (128-float) buffer
+// — offset 256 (float index 64, the smallest offset that honours
+// minStorageBufferOffsetAlignment=256), size 16 (4 floats, local indices
+// 0-3). Two things must both be right for the write to land on GLOBAL
+// float index 67 (local index 3, this binding's own last valid index):
+//   - the offset (256) is actually applied when binding the Metal buffer
+//     (go-macos/metal's own Encoder.BufferAt, not always-0 Buffer) — get
+//     this wrong and the write lands near global index 7 instead;
+//   - the bounds-check sizes buffer carries THIS BINDING's own length (4),
+//     not the whole buffer's (128) — get this wrong and local index 7 is
+//     never clamped at all, landing on global index 71 instead.
+func TestCreateBindGroupSubRangeHonoursOffsetAndItsOwnLength(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@compute @workgroup_size(1)
+				fn main() {
+					data[7] = 99.0;
+				}
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+
+			var buf = dev.createBuffer({
+				size: 512,
+				usage: GPUBufferUsage.STORAGE | GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_DST,
+			});
+
+			return buf.mapAsync(GPUMapMode.WRITE).then(function() {
+				new Float32Array(buf.getMappedRange()).fill(-1);
+				buf.unmap();
+
+				var bindGroup = dev.createBindGroup({
+					layout: pipeline.getBindGroupLayout(0),
+					entries: [{ binding: 0, resource: { buffer: buf, offset: 256, size: 16 } }],
+				});
+
+				var encoder = dev.createCommandEncoder();
+				var pass = encoder.beginComputePass();
+				pass.setPipeline(pipeline);
+				pass.setBindGroup(0, bindGroup);
+				pass.dispatchWorkgroups(1);
+				pass.end();
+				dev.queue.submit([encoder.finish()]);
+
+				return buf.mapAsync(GPUMapMode.READ);
+			}).then(function() {
+				var out = Array.from(new Float32Array(buf.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				buf.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := make([]string, 128)
+	for i := range want {
+		want[i] = "-1"
+	}
+	want[67] = "99" // offset 256 (float 64) + this binding's own last valid local index (3)
+	got, _ := body.Attribute("data-out")
+	if got != strings.Join(want, ",") {
+		t.Fatalf("data-out = %q, want %q logs=%v (float 67 written, float 71 untouched: wrong offset or wrong per-binding length would move the write)", got, strings.Join(want, ","), logs)
+	}
+}
+
+// TestCreateBindGroupSubRangeBindsDisjointRegionsOfOneBuffer is the
+// realistic shape go-wasmcontainers' own batch/ONNX cases need: several
+// logical buffers packed into one real allocation, each bound as its own
+// sub-range. Two dispatches, in the SAME compute pass, each over a
+// DIFFERENT region of one 512-byte buffer (offsets 0 and 256 — both
+// multiples of minStorageBufferOffsetAlignment), each adding a DIFFERENT
+// uniform constant — identical writes from both regions would hide a bug
+// where one binding's offset silently fell back to 0 and overwrote the
+// other's.
+func TestCreateBindGroupSubRangeBindsDisjointRegionsOfOneBuffer(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@group(0) @binding(1) var<uniform> k: f32;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+					data[id.x] = f32(id.x) + k;
+				}
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+
+			var buf = dev.createBuffer({
+				size: 512,
+				usage: GPUBufferUsage.STORAGE | GPUBufferUsage.MAP_READ | GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_DST,
+			});
+			var kBufA = dev.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_DST });
+			var kBufB = dev.createBuffer({ size: 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.MAP_WRITE | GPUBufferUsage.COPY_DST });
+
+			return Promise.all([
+				buf.mapAsync(GPUMapMode.WRITE).then(function() { new Float32Array(buf.getMappedRange()).fill(-1); buf.unmap(); }),
+				kBufA.mapAsync(GPUMapMode.WRITE).then(function() { new Float32Array(kBufA.getMappedRange())[0] = 100; kBufA.unmap(); }),
+				kBufB.mapAsync(GPUMapMode.WRITE).then(function() { new Float32Array(kBufB.getMappedRange())[0] = 200; kBufB.unmap(); }),
+			]).then(function() {
+				var groupA = dev.createBindGroup({
+					layout: pipeline.getBindGroupLayout(0),
+					entries: [
+						{ binding: 0, resource: { buffer: buf, offset: 0, size: 16 } },
+						{ binding: 1, resource: { buffer: kBufA } },
+					],
+				});
+				var groupB = dev.createBindGroup({
+					layout: pipeline.getBindGroupLayout(0),
+					entries: [
+						{ binding: 0, resource: { buffer: buf, offset: 256, size: 16 } },
+						{ binding: 1, resource: { buffer: kBufB } },
+					],
+				});
+
+				var encoder = dev.createCommandEncoder();
+				var pass = encoder.beginComputePass();
+				pass.setPipeline(pipeline);
+				pass.setBindGroup(0, groupA);
+				pass.dispatchWorkgroups(4);
+				pass.setBindGroup(0, groupB);
+				pass.dispatchWorkgroups(4);
+				pass.end();
+				dev.queue.submit([encoder.finish()]);
+
+				return buf.mapAsync(GPUMapMode.READ);
+			}).then(function() {
+				var out = Array.from(new Float32Array(buf.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				buf.destroy();
+				kBufA.destroy();
+				kBufB.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := make([]string, 128)
+	for i := range want {
+		want[i] = "-1"
+	}
+	want[0], want[1], want[2], want[3] = "100", "101", "102", "103"
+	want[64], want[65], want[66], want[67] = "200", "201", "202", "203"
+	got, _ := body.Attribute("data-out")
+	if got != strings.Join(want, ",") {
+		t.Fatalf("data-out = %q, want %q logs=%v (each region written only by its own bind group's own offset and constant, everything else untouched)", got, strings.Join(want, ","), logs)
+	}
+}
