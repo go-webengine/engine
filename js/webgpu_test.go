@@ -528,6 +528,105 @@ func TestCreateComputePipelineBadWGSLCapturedByErrorScope(t *testing.T) {
 	}
 }
 
+// TestCreateShaderModuleGenuinelyInvalidWGSLCapturedAtCreationTime
+// reproduces go-wasmcontainers' own exact reported gap (batch-shaders,
+// their last red case after arrayLength support shipped): a module using
+// a reserved word (`meta`) as an identifier is genuinely invalid WGSL by
+// spec — every real engine refuses it right at createShaderModule, not
+// only later when a pipeline first tries to use it. Also checks
+// getCompilationInfo() reports the real line/column go-gfx/wgsl's own
+// Validate found, not an unpositioned placeholder.
+func TestCreateShaderModuleGenuinelyInvalidWGSLCapturedAtCreationTime(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			dev.pushErrorScope('validation');
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> meta: array<f32>;
+				@compute @workgroup_size(1)
+				fn main() {
+					meta[0] = 1.0;
+				}
+			`+"`"+` });
+			return Promise.all([dev.popErrorScope(), module.getCompilationInfo()]).then(function(r) {
+				var err = r[0], info = r[1];
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				document.body.setAttribute('data-message-count', String(info.messages.length));
+				if (info.messages.length > 0) {
+					document.body.setAttribute('data-line', String(info.messages[0].lineNum));
+					document.body.setAttribute('data-has-reserved-word', String(info.messages[0].message.indexOf('meta') !== -1));
+				}
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q (a reserved word must be captured AT createShaderModule, not deferred) logs=%v", got, "GPUValidationError", logs)
+	}
+	if got, _ := body.Attribute("data-message-count"); got != "1" {
+		t.Fatalf("data-message-count = %q, want %q", got, "1")
+	}
+	if got, _ := body.Attribute("data-line"); got != "2" {
+		t.Fatalf("data-line = %q, want %q (the real line go-gfx/wgsl's own Validate found, not an unpositioned 0)", got, "2")
+	}
+	if got, _ := body.Attribute("data-has-reserved-word"); got != "true" {
+		t.Fatalf("data-has-reserved-word = %q, want %q", got, "true")
+	}
+}
+
+// TestCreateShaderModuleUnsupportedButValidWGSLNotCapturedAtCreationTime
+// is the decisive contrast: a switch statement is genuinely VALID WGSL (a
+// real browser compiles it fine) that this translator's own deliberately
+// bounded backend does not support yet — that is THIS implementation's
+// own limitation, never a spec-level shader-creation error, so it must
+// NOT be captured by an open error scope at createShaderModule — only the
+// category TestCreateShaderModuleGenuinelyInvalidWGSLCapturedAtCreationTime
+// covers (genuinely invalid WGSL) is. Reporting this one the same way
+// would wrongly tell real page content its own valid WGSL is broken.
+func TestCreateShaderModuleUnsupportedButValidWGSLNotCapturedAtCreationTime(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			dev.pushErrorScope('validation');
+			dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+					switch (id.x) {
+						case 0u: { data[0] = 1.0; }
+						default: { data[0] = 2.0; }
+					}
+				}
+			`+"`"+` });
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "null" {
+		t.Fatalf("data-captured-name = %q, want %q (genuinely valid WGSL this translator merely doesn't support yet must NOT be reported as a shader-creation error) logs=%v", got, "null", logs)
+	}
+}
+
 // TestQueueWriteBufferOutOfRangeCapturedByErrorScope reproduces
 // go-wasmcontainers' own exact third confirmed scenario: an out-of-range
 // queue.writeBuffer() is GPU content validation, captured by an open

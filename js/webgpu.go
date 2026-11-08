@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/dop251/goja"
+	"github.com/go-gfx/wgsl"
 	"github.com/go-macos/metal"
 
 	"github.com/go-webengine/engine/wgslmsl"
@@ -126,20 +127,48 @@ func (b *binder) panicOutOfMemory(message string) {
 	panic(gpuValidationPanic{err: b.newGPUError("GPUOutOfMemoryError", message), class: "out-of-memory"})
 }
 
+// gpuDeliverError is gpuGuard's own scope-walking core, factored out so
+// createShaderModule can reuse it directly: per WebGPU's own error model
+// (§22 "Errors & Debugging"), caught is handed to the INNERMOST open
+// error scope whose own filter matches class (walking outward — a scope
+// with a non-matching filter lets it pass through to the next one),
+// captured there only if that scope does not already hold an error; if no
+// open scope matches at all, it fires "uncapturederror" on the device
+// instead. Unlike gpuGuard's own caller, createShaderModule never panics
+// to reach this — it calls it directly, since shader module creation must
+// still return a real (if invalid) module object either way, never an
+// invalidResult substitute (gpuCreateShaderModule's own doc comment).
+func (b *binder) gpuDeliverError(st *gpuErrorScopeState, caught *goja.Object, class string) {
+	if st == nil {
+		return
+	}
+	for i := len(st.scopes) - 1; i >= 0; i-- {
+		sc := st.scopes[i]
+		if sc.filter != class {
+			continue
+		}
+		if sc.captured == nil {
+			sc.captured = caught
+		}
+		return
+	}
+	if st.onUncapturedError != nil {
+		if fn, ok := goja.AssertFunction(st.onUncapturedError); ok {
+			ev := b.newEvent("uncapturederror")
+			ev.Set("error", caught)
+			b.callSafely(fn, goja.Undefined(), ev)
+		}
+	}
+}
+
 // gpuGuard runs fn, catching ONLY a panicValidation-raised error (see its
 // own doc comment for why that is the one panic shape this intercepts,
 // never an ordinary TypeError or an unrelated Go panic, both of which
-// propagate through unchanged — a real bug must still crash). Per
-// WebGPU's own error model (§22 "Errors & Debugging"): a caught error is
-// handed to the INNERMOST open error scope whose own filter matches it
-// (walking outward — a scope with a non-matching filter lets it pass
-// through to the next one), captured there only if that scope does not
-// already hold an error; if no open scope matches at all, it fires
-// "uncapturederror" on the device instead. Either way, fn's own call
-// still "succeeds" as far as the script can tell — invalidResult stands
-// in for whatever the real result would have been, matching spec's own
-// "return an invalid object" contract (never a throw, never a rejected
-// promise, for this error class specifically).
+// propagate through unchanged — a real bug must still crash). Either way,
+// fn's own call still "succeeds" as far as the script can tell —
+// invalidResult stands in for whatever the real result would have been,
+// matching spec's own "return an invalid object" contract (never a
+// throw, never a rejected promise, for this error class specifically).
 func (b *binder) gpuGuard(dev *metal.Device, invalidResult goja.Value, fn func() goja.Value) goja.Value {
 	st := b.gpuErrorScopes[dev]
 	var result goja.Value
@@ -162,25 +191,7 @@ func (b *binder) gpuGuard(dev *metal.Device, invalidResult goja.Value, fn func()
 	if caught == nil {
 		return result
 	}
-	if st != nil {
-		for i := len(st.scopes) - 1; i >= 0; i-- {
-			sc := st.scopes[i]
-			if sc.filter != class {
-				continue
-			}
-			if sc.captured == nil {
-				sc.captured = caught
-			}
-			return invalidResult
-		}
-		if st.onUncapturedError != nil {
-			if fn, ok := goja.AssertFunction(st.onUncapturedError); ok {
-				ev := b.newEvent("uncapturederror")
-				ev.Set("error", caught)
-				b.callSafely(fn, goja.Undefined(), ev)
-			}
-		}
-	}
+	b.gpuDeliverError(st, caught, class)
 	return invalidResult
 }
 
@@ -473,7 +484,7 @@ func (b *binder) newGPUDevice(dev *metal.Device) *goja.Object {
 	})
 
 	o.Set("createShaderModule", func(call goja.FunctionCall) goja.Value {
-		return b.gpuCreateShaderModule(call)
+		return b.gpuCreateShaderModule(dev, call)
 	})
 	o.Set("createComputePipeline", func(call goja.FunctionCall) goja.Value {
 		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
@@ -714,38 +725,95 @@ func (b *binder) gpuQueueWriteBuffer(call goja.FunctionCall) goja.Value {
 // gpuShaderModuleState is the Go-level state behind one GPUShaderModule:
 // the WGSL source (kept, not just the translation, so createComputePipeline
 // can re-translate selecting a DIFFERENT entry point — see its own doc
-// comment) and the translation this binder already ran eagerly at
+// comment), the translation this binder already ran eagerly at
 // createShaderModule time against the module's own default entry-point
-// selection.
+// selection, and — separately — whether the WGSL itself is genuinely
+// invalid per spec (wgslErr; gpuCreateShaderModule's own doc comment for
+// why that is NOT the same question as "did this translator's own
+// narrower backend accept it").
 type gpuShaderModuleState struct {
-	src    string
-	result *wgslmsl.Result
-	err    error
+	src     string
+	result  *wgslmsl.Result
+	err     error
+	wgslErr error
 }
 
 // gpuCreateShaderModule implements GPUDevice.createShaderModule(descriptor).
 // Translation happens eagerly, right here — this binding settles everything
-// synchronously — but a translation failure does NOT reject or throw: per
-// spec, shader module creation always succeeds with a USABLE (if invalid)
-// module object, and the error surfaces later, via getCompilationInfo() or
-// (in this binding's own simplified, synchronous model, which has no
-// device-timeline validation-error/device-lost event stream to report it
-// through otherwise) a clear throw from createComputePipeline.
-func (b *binder) gpuCreateShaderModule(call goja.FunctionCall) goja.Value {
+// synchronously — but per spec, shader module creation always succeeds
+// with a USABLE (if invalid) module object; it never rejects or throws.
+//
+// Two genuinely different questions, kept separate (confirmed directly
+// needed: go-wasmcontainers' own batch-shaders case feeds a module with a
+// reserved word, `meta`, used as an identifier — real, invalid WGSL by
+// spec, which every other engine refuses right here, not later):
+//   - "Is this real WGSL at all?" — go-gfx/wgsl's own Validate (the CTS-
+//     conformant frontend wgslmsl itself consumes, confirmed zero CTS
+//     false rejects) answers this. A genuine WGSL error (a reserved word,
+//     a syntax error, a type error) is a real WebGPU shader-creation
+//     error — WebGPU §9.3: reported through the device's error scopes
+//     (gpuDeliverError, same mechanism gpuGuard uses elsewhere) AT THIS
+//     CALL, with the real line/column getCompilationInfo() needs, not
+//     deferred to whenever a pipeline first tries to use this module.
+//   - "Can THIS translator's own deliberately bounded backend run it?" —
+//     wgslmsl.Translate answers this, independently. A module this
+//     package doesn't support (a switch statement, a pointer parameter)
+//     is genuinely valid WGSL a real browser would compile fine — so its
+//     own failure here is NOT reported as a spec-level shader-creation
+//     error; it stays exactly as before, surfaced only via
+//     getCompilationInfo() (as a best-effort diagnostic, unpositioned)
+//     or a later createComputePipeline throw.
+func (b *binder) gpuCreateShaderModule(dev *metal.Device, call goja.FunctionCall) goja.Value {
 	desc, _ := call.Argument(0).(*goja.Object)
 	if desc == nil {
 		panic(b.vm.NewTypeError("createShaderModule: a GPUShaderModuleDescriptor is required"))
 	}
 	src := desc.Get("code").String()
+	var wgslErr error
+	if err := wgsl.Validate(src); err != nil {
+		wgslErr = err
+		b.gpuDeliverError(b.gpuErrorScopes[dev], b.newGPUValidationError("createShaderModule: "+err.Error()), "validation")
+	}
 	res, err := wgslmsl.Translate(src, wgslmsl.Options{})
-	return b.wrapGPUShaderModule(&gpuShaderModuleState{src: src, result: res, err: err})
+	return b.wrapGPUShaderModule(&gpuShaderModuleState{src: src, result: res, err: err, wgslErr: wgslErr})
+}
+
+// wgslCompilationMessages builds getCompilationInfo()'s own messages array
+// from a go-gfx/wgsl error (always *wgsl.Error or wgsl.ErrorList — Parse
+// and Check's own only two failure shapes), each with the real source
+// position Validate's own error already carries, rather than the
+// unpositioned, best-effort single message a wgslmsl.Translate failure
+// gets (gpuCreateShaderModule's own doc comment).
+func (b *binder) wgslCompilationMessages(err error) []interface{} {
+	var errs []*wgsl.Error
+	switch e := err.(type) {
+	case wgsl.ErrorList:
+		errs = e
+	case *wgsl.Error:
+		errs = []*wgsl.Error{e}
+	}
+	messages := make([]interface{}, len(errs))
+	for i, e := range errs {
+		msg := b.vm.NewObject()
+		msg.Set("message", e.Msg)
+		msg.Set("type", "error")
+		msg.Set("lineNum", e.Pos.Line)
+		msg.Set("linePos", e.Pos.Col)
+		msg.Set("offset", e.Pos.Offset)
+		msg.Set("length", 0)
+		messages[i] = msg
+	}
+	return messages
 }
 
 func (b *binder) wrapGPUShaderModule(st *gpuShaderModuleState) *goja.Object {
 	o := b.vm.NewObject()
 	o.Set("getCompilationInfo", func(call goja.FunctionCall) goja.Value {
 		var messages []interface{}
-		if st.err != nil {
+		switch {
+		case st.wgslErr != nil:
+			messages = b.wgslCompilationMessages(st.wgslErr)
+		case st.err != nil:
 			msg := b.vm.NewObject()
 			msg.Set("message", st.err.Error())
 			msg.Set("type", "error")
