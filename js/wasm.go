@@ -888,20 +888,27 @@ func (b *binder) wrapWasmFunction(fn api.Function) goja.Value {
 // clone.go's postMessage(memory) path recognizes BOTH this module-exported
 // kind and the standalone constructor's kind identically.
 //
-// For the shared case, cachedSB is created exactly ONCE and its own .data
-// field is updated in place on every grow — never replaced with a new
-// *sharedBuffer — because a DIFFERENT agent that already postMessage'd
-// this Memory out (clone.go's clonedWasmMemory, reconstructed via
-// wrapSharedWasmMemory in atomics.go) holds a reference to this EXACT Go
-// object and has no other way to learn its length changed. Confirmed
-// directly needed by go-wasmcontainers: growing in one worker, writing
-// past the old size, then posting the Memory to its creator — the
-// creator's own reconstructed wrapper must see the grown length without
-// ever having called grow() itself. grow() ALSO eagerly re-syncs
-// cachedSB.data right away, rather than waiting for the next `.buffer`
-// read: a receiving agent may read `.buffer.byteLength` immediately after
-// being notified a grow happened, with no guarantee the growing agent
-// ever reads its own `.buffer` again first.
+// For the shared case, cachedSB's own liveMem field is set to mem, so
+// EVERY read of it — by this binder's own `.buffer` accessor below, by
+// Atomics.* (atomics.go), and by every OTHER agent's own reconstructed
+// wrapper holding the SAME *sharedBuffer after a postMessage
+// (clone.go's clonedWasmMemory, via wrapSharedWasmMemory) — re-fetches
+// the CURRENT bytes straight from wazero rather than relying on a cached
+// snapshot from the last point something happened to call back in.
+// Required because a wasm `memory.grow` INSTRUCTION (as opposed to this
+// engine's own JS-level grow() method below, or a local `.buffer` read)
+// never calls back into any Go code of this engine's own at all — the
+// ONLY way any agent, including this one, can ever observe its effect is
+// to read wazero's own live state directly on every access. Confirmed
+// directly needed by go-wasmcontainers: a guest growing its OWN memory
+// via that instruction during Go runtime start-up, inside wazero, with
+// the Worker that ran it never touching `.buffer` itself again
+// afterward (it's blocked in Atomics.wait inside a host import) — their
+// own creator, and even that SAME worker checking its own Atomics
+// target later, must still see the grown size. See resyncLocked's own
+// doc comment (atomics.go) for the empirical confirmation that reading a
+// shared memory's Size()/Read() from a goroutine other than the one
+// that grew it is race-free.
 func (b *binder) wrapWasmMemory(mem api.Memory, isShared bool) *goja.Object {
 	o := b.vm.NewObject()
 	_ = o.SetPrototype(b.wasmMemoryProto)
@@ -910,24 +917,21 @@ func (b *binder) wrapWasmMemory(mem api.Memory, isShared bool) *goja.Object {
 	var cachedBuf goja.Value
 	var cachedSB *sharedBuffer
 	if isShared {
-		cachedSB = &sharedBuffer{}
-	}
-	resync := func(size uint32) {
-		raw, _ := mem.Read(0, size)
-		if isShared {
-			cachedSB.mu.Lock()
-			cachedSB.data = raw
-			cachedSB.mu.Unlock()
-			cachedBuf = b.vm.ToValue(b.wrapSharedArrayBuffer(cachedSB))
-		} else {
-			cachedBuf = b.vm.ToValue(b.vm.NewArrayBuffer(raw))
-		}
-		cachedSize = size
+		cachedSB = &sharedBuffer{liveMem: mem}
 	}
 	refresh := func() goja.Value {
 		size := mem.Size()
 		if size != cachedSize {
-			resync(size)
+			if isShared {
+				cachedSB.mu.Lock()
+				cachedSB.resyncLocked()
+				cachedSB.mu.Unlock()
+				cachedBuf = b.vm.ToValue(b.wrapSharedArrayBuffer(cachedSB))
+			} else {
+				raw, _ := mem.Read(0, size)
+				cachedBuf = b.vm.ToValue(b.vm.NewArrayBuffer(raw))
+			}
+			cachedSize = size
 		}
 		return cachedBuf
 	}
@@ -938,7 +942,6 @@ func (b *binder) wrapWasmMemory(mem api.Memory, isShared bool) *goja.Object {
 		if !ok {
 			panic(b.wasmError("RangeError", "WebAssembly.Memory.grow: would exceed the memory's maximum"))
 		}
-		resync(mem.Size())
 		return b.vm.ToValue(prev)
 	})
 	if isShared {
@@ -1089,6 +1092,7 @@ func (b *binder) wrapSharedWasmMemory(sb *sharedBuffer) *goja.Object {
 	var cachedBuf *goja.Object
 	refresh := func() *goja.Object {
 		sb.mu.Lock()
+		sb.resyncLocked() // live, if sb carries a module's own exported memory (wrapWasmMemory's own doc comment)
 		n := len(sb.data)
 		sb.mu.Unlock()
 		if n != cachedLen {

@@ -61,6 +61,52 @@ type sharedBuffer struct {
 	max     int
 	waiters map[int]map[int]chan struct{} // byte offset -> waiter id -> wake channel
 	nextID  int
+	// liveMem, when set, is a module's own exported SHARED memory's live
+	// wazero backing (wasm.go's wrapWasmMemory) — see resyncLocked's own
+	// doc comment for why this exists: a wasm `memory.grow` INSTRUCTION
+	// (as opposed to this engine's own JS-level grow() method, or a local
+	// `.buffer` read) never calls back into any Go code of this engine's
+	// own at all, so the only way any agent can ever see its effect is to
+	// read wazero's own current state directly, here, rather than relying
+	// on a cached snapshot from the last point something DID call back
+	// in. nil for every other sharedBuffer (a plain SharedArrayBuffer, or
+	// the standalone `new WebAssembly.Memory({shared:true})` constructor's
+	// own re-slice-based growth below), which keeps this field's own cost
+	// — one extra nil check before every access — at zero for the
+	// overwhelmingly common case.
+	liveMem liveMemory
+}
+
+// liveMemory is the minimal wazero api.Memory surface sharedBuffer needs
+// (Size, Read) to stay live — defined as a local interface rather than
+// importing github.com/tetratelabs/wazero/api directly, so this file
+// stays wasm-agnostic; wasm.go's own api.Memory already satisfies it
+// structurally.
+type liveMemory interface {
+	Size() uint32
+	Read(offset, byteCount uint32) ([]byte, bool)
+}
+
+// resyncLocked refreshes sb.data from sb.liveMem, if set, before any
+// caller reads or writes it — go-wasmcontainers' own confirmed shape: a
+// guest grows its OWN memory via the wasm `memory.grow` instruction
+// during Go runtime start-up, inside wazero, while the Worker that ran it
+// never touches `.buffer` again afterward (it is blocked in Atomics.wait
+// inside a host import). Confirmed directly, with an isolated
+// race-detector-checked program against wazero itself (not assumed),
+// that reading a SHARED memory's current Size()/Read() from a goroutine
+// OTHER than the one driving its growth is race-free: wazero's own Grow,
+// for a shared memory specifically, stores the new length atomically "to
+// make the new length visible across threads" (its own doc comment,
+// internal/wasm/memory.go) — exactly the cross-agent visibility every
+// caller of this method needs. Caller must already hold sb.mu.
+func (sb *sharedBuffer) resyncLocked() {
+	if sb.liveMem == nil {
+		return
+	}
+	if raw, ok := sb.liveMem.Read(0, sb.liveMem.Size()); ok {
+		sb.data = raw
+	}
 }
 
 // newGrowableSharedBuffer allocates capBytes once (the full WebAssembly.Memory
@@ -385,6 +431,7 @@ func (b *binder) installAtomics(g *goja.Object) {
 			return b.atomicsTypeError()
 		}
 		sb.mu.Lock()
+		sb.resyncLocked()
 		v := readElem(sb.data, off, size, signed)
 		sb.mu.Unlock()
 		return b.vm.ToValue(v)
@@ -396,6 +443,7 @@ func (b *binder) installAtomics(g *goja.Object) {
 		}
 		v := call.Argument(2).ToInteger()
 		sb.mu.Lock()
+		sb.resyncLocked()
 		writeElem(sb.data, off, size, v)
 		sb.mu.Unlock()
 		return call.Argument(2)
@@ -407,6 +455,7 @@ func (b *binder) installAtomics(g *goja.Object) {
 		}
 		delta := call.Argument(2).ToInteger()
 		sb.mu.Lock()
+		sb.resyncLocked()
 		old := readElem(sb.data, off, size, signed)
 		writeElem(sb.data, off, size, old+delta)
 		sb.mu.Unlock()
@@ -420,6 +469,7 @@ func (b *binder) installAtomics(g *goja.Object) {
 		expect := call.Argument(2).ToInteger()
 		replacement := call.Argument(3).ToInteger()
 		sb.mu.Lock()
+		sb.resyncLocked()
 		old := readElem(sb.data, off, size, signed)
 		if old == expect {
 			writeElem(sb.data, off, size, replacement)
@@ -473,6 +523,7 @@ func (b *binder) atomicsWait(call goja.FunctionCall) goja.Value {
 	}
 
 	sb.mu.Lock()
+	sb.resyncLocked()
 	if readElem(sb.data, off, 4, true) != int64(expect) {
 		sb.mu.Unlock()
 		return b.vm.ToValue("not-equal")
