@@ -426,6 +426,70 @@ func TestDevicePushPopErrorScopeAndUncapturedError(t *testing.T) {
 	}
 }
 
+// TestDeviceDestroyReleasesTheNativeDevice is a regression test for the
+// REAL root cause behind a native SIGSEGV go-wasmcontainers reported —
+// which TWO earlier, independently-real fixes (an objc.AutoreleasePool
+// gap in go-macos/metal v0.6.1, a worker-GPU-teardown race in
+// stopWorkers) did NOT resolve, because neither was this bug: their own
+// retest on both fixes showed the crash was unaffected, deterministic
+// (6/6), and happening mid-render — well before any Session.Close or
+// worker teardown — ruling out both prior hypotheses directly.
+//
+// device.destroy() used to only resolve the `lost` promise — a purely
+// JS-visible, cosmetic signal nothing else in this file ever checked. It
+// never released the underlying *metal.Device (a real MTLDevice +
+// MTLCommandQueue, allocated fresh by every requestAdapter/requestDevice
+// call per gpuRequestAdapter's own doc comment, never cached or shared).
+// A workload that creates and "destroys" many short-lived devices in
+// sequence — go-wasmcontainers' own confirmed shape: a fresh graph and
+// device per ONNX model, ~123 of them in one page — leaked that many
+// live native devices simultaneously, crashing deep inside Apple's own
+// Metal/Foundation frameworks once some OS-level resource ceiling was
+// crossed (a real native-process crash no Go-level safety net can catch).
+//
+// This test cannot safely reproduce the exhaustion itself (that would
+// crash the test binary, by design — it's a real native memory-safety
+// failure, not a graceful error). Instead it proves the MECHANISM the
+// fix relies on: destroy() must make the native device genuinely
+// unusable, observable here via createBuffer's own EXISTING "closed
+// device" error path (go-macos/metal's Device.NewBuffer already refuses
+// a device whose id is 0) now actually firing, captured through an
+// out-of-memory error scope exactly as any other createBuffer failure
+// already is (see gpuCreateBuffer: every NewBuffer error routes through
+// panicOutOfMemory). Before the fix, createBuffer succeeded right after
+// destroy(), proving nothing was actually released.
+func TestDeviceDestroyReleasesTheNativeDevice(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			dev.destroy();
+			dev.pushErrorScope('out-of-memory');
+			dev.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE });
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-after-destroy', err ? ('captured:' + err.constructor.name) : 'no-error-captured');
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty", got)
+	}
+	want := "captured:GPUOutOfMemoryError"
+	if got, _ := body.Attribute("data-after-destroy"); got != want {
+		t.Fatalf("data-after-destroy = %q, want %q — createBuffer succeeded against a device that was supposed to be destroyed, meaning destroy() did not actually release the native device", got, want)
+	}
+}
+
 // TestCreateComputePipelineBadWGSLCapturedByErrorScope reproduces
 // go-wasmcontainers' own exact first confirmed scenario: bad WGSL must
 // come back as a captured, positioned GPUValidationError, not a thrown
