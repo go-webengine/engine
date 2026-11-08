@@ -404,6 +404,27 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **A module's own shared memory now stays live for every agent even when
+  grown by the wasm `memory.grow` INSTRUCTION, not just the JS-level
+  grow() method** (fix, 2026-11-08, round 21, engine#342 fallout): round
+  20's fix cleared the exception-identity failure, and go-wasmcontainers'
+  `clock_time_get` failure from the SAME report turned out to be the exact
+  same grow-visibility class of bug, one layer deeper — their real guest
+  grows its OWN memory with the `memory.grow` instruction during Go
+  runtime start-up, inside wazero, and the container worker that ran it
+  never touches `.buffer` itself again afterward (it's blocked in
+  `Atomics.wait` inside a host import), so round 20's "sync on grow() or a
+  local read" fix never fired at all. wazero exposes no public "memory
+  grew" hook, but its own `Grow`, for a shared memory specifically, stores
+  the new length with an ATOMIC operation explicitly to make it visible
+  across threads — confirmed not just by reading that comment but by an
+  isolated program hammering `Size()`/`Read()` from one goroutine while
+  another grows the SAME shared memory 200,000 times, clean under
+  `go test -race`. Fixed by giving the registered buffer a live reference
+  to wazero's own memory and re-syncing from it, live, on every access —
+  by this binder's own `.buffer` accessor, by every OTHER agent's own
+  reconstructed wrapper after a postMessage, and by every `Atomics.*` op —
+  rather than ever caching a snapshot.
 - **A host import's own thrown exception propagates unchanged again, and a
   module's exported shared memory now grows visibly across every agent
   holding it** (fix, 2026-11-08, round 20, engine#342 fallout): with round

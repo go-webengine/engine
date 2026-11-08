@@ -1439,3 +1439,92 @@ func TestWorkerExportedSharedMemoryGrowIsVisibleAcrossAgents(t *testing.T) {
 		t.Fatalf("data-roundtrip = %q, want %q, logs=%v", got, want, logs)
 	}
 }
+
+// growViaInstructionModuleBytes hand-builds a module with a declared
+// shared memory (min 1, max 2 pages, exported as "memory") and one other
+// export, "growIt", whose body grows memory by one page using the wasm
+// `memory.grow` INSTRUCTION itself (opcode 0x40) — never a JS-level call
+// — then writes the byte 77 at offset 70000 (only valid once grown).
+// go-wasmcontainers' own refined probe: their guest grows via this exact
+// instruction during Go runtime start-up, inside wazero, and the
+// container worker that ran it never reads `.buffer` itself again
+// afterward (it's blocked in Atomics.wait on a host import) before
+// posting the Memory to its creator.
+func growViaInstructionModuleBytes() []byte {
+	return []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type: () -> ()
+		0x03, 0x02, 0x01, 0x00, // function section: 1 func, type0
+		0x05, 0x04, 0x01, 0x03, 0x01, 0x02, // memory: shared, min1 max2
+		0x07, 0x13, 0x02, 0x06, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x02, 0x00, // export "memory" (memory 0)
+		0x06, 0x67, 0x72, 0x6f, 0x77, 0x49, 0x74, 0x00, 0x00, // export "growIt" (func 0)
+		0x0a, 0x13, 0x01, 0x11, 0x00, // code section: 1 func, bodysize17, 0 locals
+		0x41, 0x01, // i32.const 1
+		0x40, 0x00, // memory.grow 0
+		0x1a,       // drop
+		0x41, 0xf0, 0xa2, 0x04, // i32.const 70000
+		0x41, 0xcd, 0x00, // i32.const 77
+		0x3a, 0x00, 0x00, // i32.store8 align=0 offset=0
+		0x0b, // end
+	}
+}
+
+// TestWorkerExportedSharedMemoryGrownByInstructionIsVisibleAcrossAgents
+// is TestWorkerExportedSharedMemoryGrowIsVisibleAcrossAgents's own
+// follow-up (engine#342 fallout): round 20's fix synced the registered
+// *sharedBuffer only when something called the JS-level grow() method or
+// read `.buffer` locally — neither of which a wasm `memory.grow`
+// INSTRUCTION ever triggers, since it never calls back into any Go code
+// of this engine's own at all. Here the worker calls `growIt()` (growing
+// and writing entirely inside wasm) and posts the Memory WITHOUT ever
+// touching `.buffer` itself — the creator must still see both the grown
+// size and the write.
+func TestWorkerExportedSharedMemoryGrownByInstructionIsVisibleAcrossAgents(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(
+			uint8ArrayLiteral("bytes", growViaInstructionModuleBytes()) + `
+			WebAssembly.instantiate(bytes, {}).then(function(result) {
+				result.instance.exports.growIt();
+				postMessage(result.instance.exports.memory);
+			}, function(err) {
+				postMessage('REJECTED:' + err);
+			});
+		`))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var w = new Worker('` + srv.URL + `');
+		w.onmessage = function(e) {
+			if (typeof e.data === 'string') {
+				document.body.setAttribute('data-error', e.data);
+				return;
+			}
+			var mem = e.data;
+			document.body.setAttribute('data-bytelength', String(mem.buffer.byteLength));
+			var view = new Uint8Array(mem.buffer);
+			document.body.setAttribute('data-byte70000', String(view[70000]));
+		};
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-bytelength"); got != "131072" {
+		t.Fatalf("data-bytelength = %q, want %q (grown via the wasm instruction alone, no JS grow()/.buffer read on the worker side), logs=%v", got, "131072", logs)
+	}
+	if got, _ := body.Attribute("data-byte70000"); got != "77" {
+		t.Fatalf("data-byte70000 = %q, want %q, logs=%v", got, "77", logs)
+	}
+}
