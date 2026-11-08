@@ -47,3 +47,13 @@ func TestGradientTiles(t *testing.T) {
 		t.Errorf("tile cap exceeded: %d", len(got))
 	}
 }
+
+// A positive size under half a pixel rounds up to a 1px tile, not to nothing.
+func TestGradientTilesSubPixel(t *testing.T) {
+	bx := image.Rect(0, 0, 3, 2)
+	size := css.BgSize{Kind: css.SizeExplicit, W: css.Length{Px: 0.3}, H: css.Length{Px: 0.2}}
+	got := gradientTiles(bx, size, css.BgPosition{}, css.RepeatBoth)
+	if len(got) != 6 || got[0].Dx() != 1 || got[0].Dy() != 1 {
+		t.Errorf("tiles = %v", got)
+	}
+}
