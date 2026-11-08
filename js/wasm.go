@@ -5,6 +5,7 @@ package js
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	"strconv"
 	"sync"
@@ -758,6 +759,23 @@ func (b *binder) buildHostImports(ctx context.Context, compiled wazero.CompiledM
 // host here), the JS call's result goes back via ToWebAssemblyValue. fn is
 // guaranteed non-nil here — buildHostImports already rejects a missing/
 // non-callable import with a LinkError before ever registering it.
+//
+// A real exception the import itself THREW (fn returning a non-nil err, as
+// opposed to a normal return value) panics with err UNCHANGED, never
+// wrapped in a Go-side error type — confirmed directly needed by
+// go-wasmcontainers: their own worker.js throws `new Exit(code)` from a
+// host import when the guest calls proc_exit, expecting (per the
+// WebAssembly JS API: a host function's own exception unwinds the wasm
+// frames and is rethrown to the exported function's caller AS THE SAME
+// VALUE, not wrapped — only a genuine trap becomes a RuntimeError) to catch
+// that exact Exit instance via `instanceof` once it propagates back out.
+// wazero's own panic recovery (internal/wasmdebug, confirmed by reading it
+// directly) always intercepts whatever this panics with and re-wraps it
+// into a returned Go error — using Go's own %w (preserving, not
+// stringifying, an error value) only when what panicked already satisfies
+// the error interface, which err (goja's own *goja.Exception, when fn
+// threw) already does. wrapWasmFunction's own matching errors.As unwinds
+// that same chain back to the original JS value on the way out.
 func (b *binder) hostImportFunc(fn goja.Callable, def api.FunctionDefinition) api.GoModuleFunc {
 	params := def.ParamTypes()
 	results := def.ResultTypes()
@@ -768,7 +786,7 @@ func (b *binder) hostImportFunc(fn goja.Callable, def api.FunctionDefinition) ap
 		}
 		ret, err := fn(goja.Undefined(), args...)
 		if err != nil {
-			panic(b.vm.NewGoError(err))
+			panic(err)
 		}
 		b.toWasmResults(stack, ret, results)
 	}
@@ -803,6 +821,16 @@ func (b *binder) wasmExports(mod api.Module, compiled wazero.CompiledModule, isS
 // arguments convert to WASM parameter types via ToWebAssemblyValue, and the
 // call's results convert back via ToJSValue — zero results is undefined,
 // one result is that value, more than one is an array (per spec).
+//
+// A host import's own thrown exception, having survived wazero's own
+// recover-and-wrap (hostImportFunc's own doc comment) as an error whose
+// chain still carries the original *goja.Exception, is unwound back to
+// that EXACT original value here — matching the WebAssembly JS API's own
+// contract (a host function's exception unwinds the wasm frames unchanged;
+// only a genuine trap becomes a new RuntimeError) and letting the calling
+// script's own `instanceof` checks against whatever it threw still hold,
+// the same way importScripts' own rethrow (worker.go) already does for a
+// script-level exception.
 func (b *binder) wrapWasmFunction(fn api.Function) goja.Value {
 	def := fn.Definition()
 	params := def.ParamTypes()
@@ -816,6 +844,10 @@ func (b *binder) wrapWasmFunction(fn api.Function) goja.Value {
 		defer cancel()
 		out, err := fn.Call(ctx, args...)
 		if err != nil {
+			var exc *goja.Exception
+			if errors.As(err, &exc) {
+				panic(exc.Value())
+			}
 			panic(b.wasmError("RuntimeError", err.Error()))
 		}
 		switch len(results) {
@@ -855,6 +887,21 @@ func (b *binder) wrapWasmFunction(fn api.Function) goja.Value {
 // not — is also registered in wasmMemoryRegistry (nil for non-shared) so
 // clone.go's postMessage(memory) path recognizes BOTH this module-exported
 // kind and the standalone constructor's kind identically.
+//
+// For the shared case, cachedSB is created exactly ONCE and its own .data
+// field is updated in place on every grow — never replaced with a new
+// *sharedBuffer — because a DIFFERENT agent that already postMessage'd
+// this Memory out (clone.go's clonedWasmMemory, reconstructed via
+// wrapSharedWasmMemory in atomics.go) holds a reference to this EXACT Go
+// object and has no other way to learn its length changed. Confirmed
+// directly needed by go-wasmcontainers: growing in one worker, writing
+// past the old size, then posting the Memory to its creator — the
+// creator's own reconstructed wrapper must see the grown length without
+// ever having called grow() itself. grow() ALSO eagerly re-syncs
+// cachedSB.data right away, rather than waiting for the next `.buffer`
+// read: a receiving agent may read `.buffer.byteLength` immediately after
+// being notified a grow happened, with no guarantee the growing agent
+// ever reads its own `.buffer` again first.
 func (b *binder) wrapWasmMemory(mem api.Memory, isShared bool) *goja.Object {
 	o := b.vm.NewObject()
 	_ = o.SetPrototype(b.wasmMemoryProto)
@@ -862,17 +909,25 @@ func (b *binder) wrapWasmMemory(mem api.Memory, isShared bool) *goja.Object {
 	var cachedSize uint32 = 0xffffffff // force a fetch on first access
 	var cachedBuf goja.Value
 	var cachedSB *sharedBuffer
+	if isShared {
+		cachedSB = &sharedBuffer{}
+	}
+	resync := func(size uint32) {
+		raw, _ := mem.Read(0, size)
+		if isShared {
+			cachedSB.mu.Lock()
+			cachedSB.data = raw
+			cachedSB.mu.Unlock()
+			cachedBuf = b.vm.ToValue(b.wrapSharedArrayBuffer(cachedSB))
+		} else {
+			cachedBuf = b.vm.ToValue(b.vm.NewArrayBuffer(raw))
+		}
+		cachedSize = size
+	}
 	refresh := func() goja.Value {
 		size := mem.Size()
 		if size != cachedSize {
-			raw, _ := mem.Read(0, size)
-			if isShared {
-				cachedSB = &sharedBuffer{data: raw}
-				cachedBuf = b.vm.ToValue(b.wrapSharedArrayBuffer(cachedSB))
-			} else {
-				cachedBuf = b.vm.ToValue(b.vm.NewArrayBuffer(raw))
-			}
-			cachedSize = size
+			resync(size)
 		}
 		return cachedBuf
 	}
@@ -883,6 +938,7 @@ func (b *binder) wrapWasmMemory(mem api.Memory, isShared bool) *goja.Object {
 		if !ok {
 			panic(b.wasmError("RangeError", "WebAssembly.Memory.grow: would exceed the memory's maximum"))
 		}
+		resync(mem.Size())
 		return b.vm.ToValue(prev)
 	})
 	if isShared {

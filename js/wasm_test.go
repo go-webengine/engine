@@ -618,6 +618,53 @@ func TestWasmMemoryInstanceofHolds(t *testing.T) {
 	)
 }
 
+// explodingImportModuleBytes hand-builds a module that imports env.explode
+// () -> () and exports "run" () -> (), whose only instruction calls the
+// import — the smallest shape that lets a host import's own thrown
+// exception unwind through a real wasm call.
+func explodingImportModuleBytes() []byte {
+	return []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type section: () -> ()
+		0x02, 0x0f, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x07, 0x65, 0x78, 0x70, 0x6c, 0x6f, 0x64, 0x65, 0x00, 0x00, // import env.explode func type0
+		0x03, 0x02, 0x01, 0x00, // function section: 1 func, type0
+		0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e, 0x00, 0x01, // export "run" func idx1
+		0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b, // code: call func0 (explode); end
+	}
+}
+
+// TestHostImportExceptionPropagatesUnchanged proves go-wasmcontainers' own
+// confirmed need (engine#342 fallout): a host import that THROWS a JS
+// exception must unwind the wasm frames and reach the exported function's
+// own caller as the EXACT SAME value, not wrapped — per the WebAssembly JS
+// API's own contract (only a genuine trap becomes a new RuntimeError).
+// Their own real worker.js throws `new Exit(code)` from a host import when
+// the guest calls proc_exit, and catches it back with `instanceof Exit`
+// once `start()` rethrows it — before this fix, wazero's own panic
+// recovery (which always intercepts a host import's panic, confirmed by
+// reading wasmdebug.FromRecovered directly) left only a generic wrapped
+// error reaching the caller, so `instanceof` against the ORIGINAL class
+// always failed.
+func TestHostImportExceptionPropagatesUnchanged(t *testing.T) {
+	html := `<html><body><script>
+		` + uint8ArrayLiteral("bytes", explodingImportModuleBytes()) + `
+		function Boom(code) { this.code = code; }
+		WebAssembly.instantiate(bytes, {env: {explode: function() { throw new Boom(42); }}}).then(function(result) {
+			try {
+				result.instance.exports.run();
+				console.log('no-throw');
+			} catch (e) {
+				console.log('caught=' + (e instanceof Boom) + ' code=' + e.code);
+			}
+		}, function(err) { console.log('unexpected-rejection=' + err); });
+	</script></body></html>`
+	_, logs, res := runJS(t, html)
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "caught=true code=42")
+}
+
 // TestWasmCompileThenInstantiateModuleInstanceofHolds is the two-step
 // `WebAssembly.compile(bytes).then(m => WebAssembly.instantiate(m,
 // imports))` path's own counterpart, kept as its own test (rather than
