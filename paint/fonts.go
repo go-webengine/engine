@@ -70,6 +70,14 @@ type Fonts struct {
 	// render", so no cross-render staleness is possible) turns every repeat
 	// into a plain map lookup.
 	measureCache map[measureKey]float64
+
+	// axes caches each font's weight axis range (see wghtAxis).
+	axes map[*opentype.Font]weightAxis
+	// styleAxes caches, per style, the weight axis of the font font() answers
+	// with ({min, max, 1} when it has one); register clears it.
+	styleAxes map[styleKey]weightAxis
+	// instances caches the static instances glyphFont builds.
+	instances map[instanceKey]*opentype.Font
 }
 
 // measureKey identifies one Measure call's exact inputs. sizePx is a plain
@@ -106,6 +114,48 @@ type fallbackKey struct {
 type faceKey struct {
 	style styleKey
 	size  int
+	// wght is the weight a variable font is instanced at (OpenType fvar axis
+	// "wght"), 0 for a static font, whose face does not depend on it.
+	wght int
+}
+
+// weightAxis is a font's wght axis (OpenType fvar): ok is false for a font
+// without one, a static font or a variable one with other axes only.
+type weightAxis struct {
+	lo, def, hi float64
+	ok          bool
+}
+
+// weight returns the whole-number axis position CSS weight asks for, clamped to
+// the axis range; 0 for a font without the axis.
+func (a weightAxis) weight(weight int) int {
+	if !a.ok {
+		return 0
+	}
+	return clampWeight(weight, a.lo, a.hi)
+}
+
+// atDefault reports whether w is the font's own default master, which needs no
+// variation applied (and so keeps the fast static outline path).
+func (a weightAxis) atDefault(w int) bool { return w == int(a.def+0.5) }
+
+// wghtAxis returns ft's weight axis, cached per font: Axes allocates.
+func (f *Fonts) wghtAxis(ft *opentype.Font) weightAxis {
+	if r, hit := f.axes[ft]; hit {
+		return r
+	}
+	var r weightAxis
+	for _, a := range ft.Axes() {
+		if a.Tag == "wght" {
+			r = weightAxis{a.Min, a.Default, a.Max, true}
+			break
+		}
+	}
+	if f.axes == nil {
+		f.axes = map[*opentype.Font]weightAxis{}
+	}
+	f.axes[ft] = r
+	return r
 }
 
 // NewFonts parses the bundled families in all four styles: sans = Inter, serif =
@@ -267,6 +317,7 @@ func (f *Fonts) register(family string, weight int, italic bool, ft *lazyFont) e
 	}
 	f.named[k], f.namedWeight[k] = ft, weight
 	f.faces = map[faceKey]*opentype.Face{}
+	f.styleAxes = nil // font() may now answer with this face
 	// A measurement cached before this registration may have measured with
 	// whatever font() resolved to before — the bundled fallback, or a
 	// lower-priority named face this one just displaced (see the
@@ -297,23 +348,78 @@ func weightDistance(weight, canonical int) int {
 }
 
 // face returns a cached Face for a family + style at an integer pixel size (>=1).
-func (f *Fonts) face(fam css.FontFamily, sizePx float64, bold, italic bool) *opentype.Face {
+//
+// A variable font with a weight axis is instanced at the CSS weight (clamped to
+// the axis range, OpenType fvar/gvar via opentype.Face.SetVariation), so one
+// file serves every weight a page asks of it; any other font ignores weight
+// beyond the bold slot.
+func (f *Fonts) face(fam css.FontFamily, sizePx float64, weight int, italic bool) *opentype.Face {
 	size := int(sizePx + 0.5)
 	if size < 1 {
 		size = 1
 	}
-	key := faceKey{styleKey{fam, bold, italic}, size}
+	style := styleKey{fam, weight >= 600, italic}
+	// Whether the style's font is variable is asked of font() once per style
+	// (it splits the family list, which allocates), not on every call.
+	ax, seen := f.styleAxes[style]
+	if !seen {
+		ax = f.wghtAxis(f.font(style))
+		if f.styleAxes == nil {
+			f.styleAxes = map[styleKey]weightAxis{}
+		}
+		f.styleAxes[style] = ax
+	}
+	w := ax.weight(weight)
+	key := faceKey{style, size, w}
 	if fc, ok := f.faces[key]; ok {
 		return fc
 	}
-	fc := f.font(key.style).NewFace(size)
+	fc := f.font(style).NewFace(size)
+	if w != 0 && !ax.atDefault(w) {
+		fc.SetVariation(map[string]float64{"wght": float64(w)})
+	}
 	f.faces[key] = fc
 	return fc
 }
 
-// styleFace maps a CSS weight/italic to the concrete face (bold at weight >=600).
+// glyphFont is the font a vector consumer (a PDF embedding the outlines) must
+// use for text set at weight: the static instance of a variable font at that
+// weight, the font itself otherwise. The raster painter does not need it, since
+// face applies the variation to the face; an exporter has only the font.
+func (f *Fonts) glyphFont(style styleKey, weight int) *opentype.Font {
+	ft := f.font(style)
+	ax := f.wghtAxis(ft)
+	w := ax.weight(weight)
+	if w == 0 || ax.atDefault(w) {
+		return ft
+	}
+	key := instanceKey{ft, w}
+	if inst, hit := f.instances[key]; hit {
+		return inst
+	}
+	inst, err := instantiate(ft, map[string]float64{"wght": float64(w)})
+	if err != nil {
+		inst = ft // an instance that cannot be built draws as the default master
+	}
+	if f.instances == nil {
+		f.instances = map[instanceKey]*opentype.Font{}
+	}
+	f.instances[key] = inst
+	return inst
+}
+
+// instantiate builds a static instance of a variable font; a variable so a test
+// can make it fail.
+var instantiate = (*opentype.Font).Instance
+
+type instanceKey struct {
+	font *opentype.Font
+	wght int
+}
+
+// styleFace maps a CSS weight/italic to the concrete face.
 func (f *Fonts) styleFace(fam css.FontFamily, sizePx float64, weight int, italic bool) *opentype.Face {
-	return f.face(fam, sizePx, weight >= 600, italic)
+	return f.face(fam, sizePx, weight, italic)
 }
 
 // requiredLigatureFeature is the one GSUB feature Measure and drawText always
@@ -494,4 +600,17 @@ func (f *Fonts) Metrics(fam css.FontFamily, sizePx float64, weight int, italic b
 		lh = min
 	}
 	return float64(m.Ascent), lh
+}
+
+// clampWeight is the CSS weight limited to a font's weight axis range, as the
+// whole number the face and instance caches key on.
+func clampWeight(weight int, lo, hi float64) int {
+	w := float64(weight)
+	if w < lo {
+		w = lo
+	}
+	if w > hi {
+		w = hi
+	}
+	return int(w + 0.5)
 }

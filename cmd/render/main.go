@@ -12,9 +12,12 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	neturl "net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	"github.com/go-webengine/engine"
@@ -60,6 +63,20 @@ func run(args []string, stderr *os.File) int {
 	defer cancel()
 
 	e := engine.New()
+	if *file != "" {
+		// A local file is rendered with its own directory as the base, and as
+		// the only place file: URLs may be read from (Engine.FileRoot): its
+		// @font-face fonts and images sit beside it. Without this a relative
+		// font URL resolved to nothing and the text fell back to a serif
+		// (go-webengine/engine#399). An explicit http(s) -base is left alone:
+		// a remote base must not reach local files.
+		if dir, err := filepath.Abs(filepath.Dir(*file)); err == nil && (*base == "" || strings.HasPrefix(*base, "file:")) {
+			if *base == "" {
+				*base = (&neturl.URL{Scheme: "file", Path: dir + "/"}).String()
+			}
+			e.FileRoot = dir
+		}
+	}
 	var (
 		img  *image.RGBA
 		info *engine.RenderInfo
