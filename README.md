@@ -404,6 +404,21 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **A `continue` inside `for`/`loop` skipped the update/continuing block,
+  hanging the kernel** (fix, 2026-11-08, round 28, go-wasmcontainers
+  report): reported after v0.45.5 (57 → 100 of 123 ONNX cases) — every
+  remaining failure was a padded conv/pool/mnist-12 case hitting their
+  host's own loop-budget guard. `for`'s own lowering ran `update` AFTER
+  the body, so a bare MSL `continue` (jumping straight back to the
+  `while(true)` wrapper) skipped it outright — the loop variable never
+  advanced, an infinite loop the instant that branch fired. Tried
+  goto+labels first, confirmed wrong directly: Metal's own compiler
+  refuses labeled statements outright. Fixed with `do { } while (false)` +
+  a per-loop flag instead: `continue` becomes a bare `break` (exits only
+  the wrapper, falls through to update); a real `break` sets the flag
+  first, so the line after the wrapper also breaks the real, outer loop —
+  without it, every `break` would silently become a continue. `loop {
+  continuing { } }` had the identical shape and got the identical fix.
 - **`bitcast<T>(e)` reinterprets bits, and a helper function may touch a
   resource directly** (two fixes, 2026-11-08, round 27, go-wasmcontainers
   report): reported on their v0.45.4 retest (26 → 57 of 123 ONNX cases).

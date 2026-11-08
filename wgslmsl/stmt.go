@@ -4,6 +4,8 @@
 package wgslmsl
 
 import (
+	"fmt"
+
 	"github.com/go-gfx/wgsl"
 )
 
@@ -54,7 +56,10 @@ func (tr *translator) stmt(s wgsl.Stmt) error {
 		}
 		tr.line("while (%s) {", cond)
 		tr.indent++
+		saved := tr.loopFlag
+		tr.loopFlag = "" // WGSL's while has no continuing clause; MSL's own break/continue are already correct
 		err = tr.stmtBlock(st.Body)
+		tr.loopFlag = saved
 		tr.indent--
 		tr.line("}")
 		return err
@@ -72,10 +77,27 @@ func (tr *translator) stmt(s wgsl.Stmt) error {
 		tr.line("return %s;", x)
 		return nil
 	case *wgsl.Break:
+		// Inside forStmt's/loopStmt's own do{}while(false) wrapper, a bare
+		// MSL break would only exit THAT wrapper, not the real loop — set
+		// the flag first so the code right after the wrapper also breaks
+		// the real (outer) loop. See forStmt's own doc comment.
+		if tr.loopFlag != "" {
+			tr.line("%s = true;", tr.loopFlag)
+		}
 		tr.line("break;")
 		return nil
 	case *wgsl.Continue:
-		tr.line("continue;")
+		if tr.loopFlag != "" {
+			// A bare MSL continue would skip the for-loop's own update (or
+			// the loop statement's own continuing block) outright — Metal
+			// has no goto/labels to jump there instead, so forStmt/loopStmt
+			// wrap the body in do{}while(false) and this break just exits
+			// THAT, falling through to update/continuing normally. See
+			// forStmt's own doc comment.
+			tr.line("break;")
+		} else {
+			tr.line("continue;")
+		}
 		return nil
 	case *wgsl.CallStmt:
 		c, err := tr.callExpr(st.Call)
@@ -184,13 +206,36 @@ func (tr *translator) ifStmt(i *wgsl.If) error {
 	return nil
 }
 
+// forStmt emits WGSL's for (init; cond; update) body as a while loop, not
+// MSL's own native for(;;) — WGSL's Init/Update are full statements
+// (potentially a DeclStmt or Assign), while C's for-header wants bare
+// clauses, and this package's own bounded scope only ever needs a simple
+// counting loop.
+//
+// A bare `continue` inside body must still run update before the next
+// condition check (WGSL spec §9.4.6: a for-loop's update IS its own
+// continuing block, and "a continue statement... executes the continuing
+// statement" — MSL's native for(;;update) already has this built in,
+// which plain `while(true){ if(!cond) break; body; update; }` does not: a
+// bare MSL `continue` there jumps straight back to `while(true)`, skipping
+// update entirely — an infinite loop whenever body's own continue fires
+// before the loop variable would otherwise advance (confirmed directly:
+// go-wasmcontainers' own padded conv/pool kernels skip out-of-range input
+// positions this way, and hit their host's own loop-budget guard instead
+// of advancing).
+//
+// Fixed WITHOUT goto: Metal has no labeled statements at all (confirmed
+// directly — "error: labeled statements are not supported in Metal" from
+// the real compiler, on an earlier version of this fix that tried one).
+// body is wrapped in `do { ... } while (false)`: a continue inside it
+// (rewritten to a bare `break`, stmt.go's own Continue case) exits only
+// that inner wrapper, falling through to update as if nothing happened —
+// exactly a for-loop's own continue semantics. A real break (rewritten to
+// set loopFlag's own flag variable, then break) ALSO only exits the inner
+// wrapper on its own, so the line right after it tests the flag and
+// breaks the real, outer loop too — without it, every `break` inside body
+// would wrongly become a continue instead.
 func (tr *translator) forStmt(f *wgsl.For) error {
-	// MSL's own for-statement grammar matches WGSL's closely enough to emit
-	// init/cond/update inline, except WGSL's Init/Update are full statements
-	// (potentially a DeclStmt or Assign) while C's for-header wants bare
-	// clauses — since this package's own bounded scope only ever needs a
-	// simple counting loop, a nested block with an explicit break covers
-	// every WGSL `for` without needing to special-case the header's syntax.
 	tr.line("{")
 	tr.indent++
 	if f.Init != nil {
@@ -207,9 +252,20 @@ func (tr *translator) forStmt(f *wgsl.For) error {
 		}
 		tr.line("if (!(%s)) break;", cond)
 	}
-	if err := tr.stmtBlock(f.Body); err != nil {
+	flag := tr.newLoopFlag()
+	tr.line("bool %s = false;", flag)
+	tr.line("do {")
+	tr.indent++
+	saved := tr.loopFlag
+	tr.loopFlag = flag
+	err := tr.stmtBlock(f.Body)
+	tr.loopFlag = saved
+	tr.indent--
+	tr.line("} while (false);")
+	if err != nil {
 		return err
 	}
+	tr.line("if (%s) break;", flag)
 	if f.Update != nil {
 		if err := tr.stmt(f.Update); err != nil {
 			return err
@@ -222,20 +278,51 @@ func (tr *translator) forStmt(f *wgsl.For) error {
 	return nil
 }
 
+// newLoopFlag returns a fresh, unique break-flag variable name for one
+// for/loop construct's own break/continue rewriting (loopFlag's own doc
+// comment) — unique across the WHOLE translation, not just this function,
+// since a sibling loop elsewhere in the same kernel must never collide
+// with one still in scope (nested) when this one was allocated.
+func (tr *translator) newLoopFlag() string {
+	tr.flagCounter++
+	return fmt.Sprintf("_brk%d", tr.flagCounter)
+}
+
 // loopStmt emits WGSL's `loop { … continuing { … } }` as an unconditional
 // while with the continuing block's statements appended at the bottom of
 // each iteration (and its own `break if`, when present, translated to a
 // plain conditional break) — exactly WGSL's own defined semantics (spec
 // "loop Statement": the continuing block runs every iteration, after the
 // body, before testing any break-if).
+//
+// A bare `continue` inside Body must still run the continuing block first
+// — the identical reason, and the identical do{}while(false)+flag fix
+// (Metal has no goto/labels at all), as forStmt's own doc comment: a
+// plain MSL continue would jump straight back to `while(true)`, skipping
+// Cont (and its own break-if) entirely.
 func (tr *translator) loopStmt(l *wgsl.Loop) error {
 	tr.line("while (true) {")
 	tr.indent++
+	flag := tr.newLoopFlag()
+	tr.line("bool %s = false;", flag)
+	tr.line("do {")
+	tr.indent++
+	saved := tr.loopFlag
+	tr.loopFlag = flag
+	var bodyErr error
 	for _, s := range l.Body {
 		if err := tr.stmt(s); err != nil {
-			return err
+			bodyErr = err
+			break
 		}
 	}
+	tr.loopFlag = saved
+	tr.indent--
+	tr.line("} while (false);")
+	if bodyErr != nil {
+		return bodyErr
+	}
+	tr.line("if (%s) break;", flag)
 	if l.Cont != nil {
 		for _, s := range l.Cont.Stmts {
 			if bi, ok := s.(*wgsl.BreakIf); ok {
