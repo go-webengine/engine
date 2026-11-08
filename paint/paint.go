@@ -407,7 +407,9 @@ func paintBackgroundLayers(dst *image.RGBA, st *css.Style, bx image.Rectangle, r
 		layer := st.BackgroundImages[i]
 		switch layer.Kind {
 		case css.BgGradient:
-			paintGradient(dst, bx, rad, layer.Grad, clip)
+			for _, tile := range gradientTiles(bx, nthSize(st.BackgroundSize, i), nthPosition(st.BackgroundPosition, i), nthRepeat(st.BackgroundRepeat, i)) {
+				paintGradientIn(dst, tile, bx, rad, layer.Grad, clip)
+			}
 		case css.BgURL:
 			src := bgImgs[layer.URL]
 			if src == nil {
@@ -424,18 +426,85 @@ func paintBackgroundLayers(dst *image.RGBA, st *css.Style, bx image.Rectangle, r
 // paintGradient fills the box rect with a gradient, clipped to the rounded rect
 // and to clip (an ancestor's overflow clip).
 func paintGradient(dst *image.RGBA, bx image.Rectangle, rad int, g *css.Gradient, clip image.Rectangle) {
+	paintGradientIn(dst, bx, bx, rad, g, clip)
+}
+
+// maxGradientTiles bounds the tiles one gradient layer may stamp: a 1x1
+// background-size on a large box would otherwise ask for millions.
+const maxGradientTiles = 1 << 16
+
+// gradientTiles returns the rectangles one gradient layer is painted into.
+// A gradient has no natural size or ratio, so (CSS Images 3 §4.3.1) `auto`,
+// `cover` and `contain` all resolve to the background positioning area, and
+// an `auto` side of an explicit size does too; only explicit lengths and
+// percentages (relative to that area, CSS Backgrounds 3 §2.9) shrink the
+// tile. The tiles are then placed by background-position and repeated per
+// background-repeat, exactly as a bitmap's are (paintBgBitmap).
+func gradientTiles(bx image.Rectangle, size css.BgSize, pos css.BgPosition, rep css.BgRepeat) []image.Rectangle {
+	if size.Kind != css.SizeExplicit {
+		return []image.Rectangle{bx}
+	}
+	bw, bh := float64(bx.Dx()), float64(bx.Dy())
+	dw, dh := bw, bh
+	if !size.W.Auto {
+		dw = size.W.Resolve(bw)
+	}
+	if !size.H.Auto {
+		dh = size.H.Resolve(bh)
+	}
+	if dw <= 0 || dh <= 0 || bw <= 0 || bh <= 0 {
+		return nil
+	}
+	tw, th := int(math.Round(dw)), int(math.Round(dh))
+	if tw < 1 {
+		tw = 1
+	}
+	if th < 1 {
+		th = 1
+	}
+	ox := resolvePos(pos.X, bw-float64(tw))
+	oy := resolvePos(pos.Y, bh-float64(th))
+	iMin, iMax, jMin, jMax := 0, 0, 0, 0
+	if rep == css.RepeatBoth || rep == css.RepeatX {
+		iMin = int(math.Floor((0 - ox) / float64(tw)))
+		iMax = int(math.Ceil((bw - ox) / float64(tw)))
+	}
+	if rep == css.RepeatBoth || rep == css.RepeatY {
+		jMin = int(math.Floor((0 - oy) / float64(th)))
+		jMax = int(math.Ceil((bh - oy) / float64(th)))
+	}
+	var out []image.Rectangle
+	for j := jMin; j <= jMax; j++ {
+		for i := iMin; i <= iMax; i++ {
+			x := int(math.Round(float64(bx.Min.X) + ox + float64(i*tw)))
+			y := int(math.Round(float64(bx.Min.Y) + oy + float64(j*th)))
+			t := image.Rect(x, y, x+tw, y+th)
+			if t.Overlaps(bx) {
+				if len(out) >= maxGradientTiles {
+					return out
+				}
+				out = append(out, t)
+			}
+		}
+	}
+	return out
+}
+
+// paintGradientIn paints g sized to the tile rectangle, clipped to the
+// rounded box bx and to clip.
+func paintGradientIn(dst *image.RGBA, tile, bx image.Rectangle, rad int, g *css.Gradient, clip image.Rectangle) {
 	if g == nil {
 		return
 	}
-	w, h := float64(bx.Dx()), float64(bx.Dy())
+	w, h := float64(tile.Dx()), float64(tile.Dy())
 	s := g.Sampler(w, h)
-	region := bx.Intersect(dst.Rect).Intersect(clip)
+	region := tile.Intersect(bx).Intersect(dst.Rect).Intersect(clip)
 	for y := region.Min.Y; y < region.Max.Y; y++ {
 		for x := region.Min.X; x < region.Max.X; x++ {
 			if !insideRoundRect(x, y, bx, rad) {
 				continue
 			}
-			c := s.At(float64(x-bx.Min.X)+0.5, float64(y-bx.Min.Y)+0.5)
+			c := s.At(float64(x-tile.Min.X)+0.5, float64(y-tile.Min.Y)+0.5)
 			if c.A == 0 {
 				continue
 			}
