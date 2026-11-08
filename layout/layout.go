@@ -821,9 +821,6 @@ func (l *layouter) resolveSizingKeyword(node *dom.Node, st *css.Style, cw float6
 		bw := c.Border.Widths()
 		w -= bw.Left + bw.Right + c.Padding.Left + c.Padding.Right
 	}
-	if w < 0 {
-		w = 0
-	}
 	c.Width, c.WidthSizing = css.Length{Px: w}, css.SizeNone
 	return &c
 }
