@@ -15,6 +15,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"image"
 	"image/png"
 	"io"
@@ -653,6 +654,14 @@ func (e *Engine) heapGuardedContext(parent context.Context) (context.Context, fu
 				var m runtime.MemStats
 				runtime.ReadMemStats(&m)
 				if m.HeapAlloc > ceiling {
+					// Logged, not silent: a render that "completes" with no
+					// error after this fires looks identical to one that
+					// finished normally — go-wasmcontainers lost three
+					// rounds to exactly that ambiguity (ctx.Err() nil on
+					// their own side, since this cancels a context derived
+					// here, never the caller's own) before the real cause
+					// was traced back to this guard tripping.
+					e.jslog(fmt.Sprintf("heap guard: HeapAlloc %d > start+MaxJSHeapBytes %d: render cancelled", m.HeapAlloc, ceiling))
 					cancel() // heap ballooned: abort the settle stage
 					return
 				}
