@@ -96,10 +96,21 @@ func TestHeapGuardedContextStop(t *testing.T) {
 // transient baseline could otherwise sit above a small post-GC live+alloc), and
 // the allocation is an order of magnitude over the cap so it trips regardless of
 // GC timing.
+//
+// Also covers that the trip is LOGGED (engine#342 follow-up): the guard
+// cancels a context it derives itself, never the caller's own — so a caller
+// watching only its own ctx.Err() sees nothing, and before this fix neither
+// did anyone else. go-wasmcontainers lost three rounds of investigation to
+// exactly that silence (the render "completed" with no error, its own
+// context stayed nil, and the real cause — this guard tripping on the
+// Interpreter engine's heavier memory footprint — was invisible from either
+// side) before it was traced back here by reading the source directly.
 func TestHeapGuardedContextTripsOnGrowth(t *testing.T) {
 	e := New()
 	e.MaxJSHeapBytes = 8 << 20 // 8MB cap
-	runtime.GC()               // settle the baseline the guard is about to capture
+	var logs []string
+	e.JSLog = func(s string) { logs = append(logs, s) }
+	runtime.GC() // settle the baseline the guard is about to capture
 	ctx, stop := e.heapGuardedContext(context.Background())
 	defer stop()
 	// Allocate ~96MB and keep it live so HeapAlloc stays well above base+8MB.
@@ -114,4 +125,15 @@ func TestHeapGuardedContextTripsOnGrowth(t *testing.T) {
 		t.Error("heap guard did not cancel after heap growth")
 	}
 	runtime.KeepAlive(blob)
+
+	var found bool
+	for _, l := range logs {
+		if strings.Contains(l, "heap guard") && strings.Contains(l, "render cancelled") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("heap guard tripped silently: want a JSLog line naming the heap guard, got %v", logs)
+	}
 }
