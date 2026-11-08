@@ -1018,19 +1018,35 @@ func (b *binder) gpuCreatePipelineLayout(call goja.FunctionCall) goja.Value {
 	return pipelineLayoutObj
 }
 
+// gpuBoundBuffer is the resolved resource behind one GPUBindGroupEntry: the
+// real buffer plus the byte range this particular binding covers — its own
+// GPUBufferBinding.offset/size, defaulted and bounds-checked against the
+// buffer's own size per WebGPU §8.2.1's "resides inside the buffer" rule,
+// never the buffer's whole size by assumption. size is what
+// gpuDispatchWorkgroups' own bounds-check sizes buffer must divide by
+// bnd.ElemBytes — the whole reason this is its own type and not still
+// *gpuBufferState: two bindings of the SAME buffer at different sub-ranges
+// must report different sizes there.
+type gpuBoundBuffer struct {
+	buf    *metal.Buffer
+	offset int
+	size   int
+}
+
 // gpuBindGroupInfo is the Go-level state behind one GPUBindGroup: which
-// @group(N) it was built for, and the real buffer bound at each WGSL
-// `binding` index within it.
+// @group(N) it was built for, and the real buffer (sub-)range bound at
+// each WGSL `binding` index within it.
 type gpuBindGroupInfo struct {
 	group    int
-	bindings map[int]*gpuBufferState
+	bindings map[int]gpuBoundBuffer
 }
 
 // gpuCreateBindGroup implements GPUDevice.createBindGroup(descriptor).
-// Every entry's resource must be a plain `{buffer}` GPUBufferBinding over
-// the WHOLE buffer (no offset/size, no sampler/texture/external-texture
-// resources yet) — the one shape wgslmsl's own storage-array-only resource
-// scope ever needs.
+// Every entry's resource must be a `{buffer}` GPUBufferBinding (no
+// sampler/texture/external-texture resources yet — the one resource kind
+// wgslmsl's own storage-array-only scope ever needs); offset/size may now
+// describe any sub-range that resides inside the buffer (WebGPU §8.2.1),
+// not only the whole thing.
 func (b *binder) gpuCreateBindGroup(call goja.FunctionCall) goja.Value {
 	desc, _ := call.Argument(0).(*goja.Object)
 	if desc == nil {
@@ -1046,7 +1062,7 @@ func (b *binder) gpuCreateBindGroup(call goja.FunctionCall) goja.Value {
 		panic(b.vm.NewTypeError("createBindGroup: entries is required"))
 	}
 	n := int(entriesObj.Get("length").ToInteger())
-	bindings := map[int]*gpuBufferState{}
+	bindings := map[int]gpuBoundBuffer{}
 	for i := 0; i < n; i++ {
 		entry, _ := entriesObj.Get(strconv.Itoa(i)).(*goja.Object)
 		if entry == nil {
@@ -1062,13 +1078,29 @@ func (b *binder) gpuCreateBindGroup(call goja.FunctionCall) goja.Value {
 		if st == nil {
 			panic(b.vm.NewTypeError("createBindGroup: entry.resource.buffer must be a GPUBuffer"))
 		}
-		if off := resObj.Get("offset"); off != nil && !goja.IsUndefined(off) && off.ToInteger() != 0 {
-			panic(unsupportedJS(b, "createBindGroup: a non-zero GPUBufferBinding offset is not supported"))
+		offset := 0
+		if off := resObj.Get("offset"); off != nil && !goja.IsUndefined(off) {
+			offset = int(off.ToInteger())
 		}
-		if sz := resObj.Get("size"); sz != nil && !goja.IsUndefined(sz) && int(sz.ToInteger()) != st.size {
-			panic(unsupportedJS(b, "createBindGroup: a GPUBufferBinding size other than the whole buffer is not supported"))
+		size := st.size - offset
+		if sz := resObj.Get("size"); sz != nil && !goja.IsUndefined(sz) {
+			size = int(sz.ToInteger())
 		}
-		bindings[bindingIdx] = st
+		if offset < 0 || size <= 0 || offset+size > st.size {
+			panic(b.vm.NewTypeError("createBindGroup: entry.resource.offset/size must describe a non-empty range that resides inside the buffer"))
+		}
+		// WebGPU §4.2.1: every storage-buffer binding's offset must be a
+		// multiple of minStorageBufferOffsetAlignment, and its effective
+		// size a multiple of 4 — this binding's only buffer-resource kind
+		// is a storage array (createBindGroup's own doc comment), so both
+		// apply unconditionally here.
+		if align := int(gpuLimitDefaults["minStorageBufferOffsetAlignment"]); offset%align != 0 {
+			panic(unsupportedJS(b, fmt.Sprintf("createBindGroup: entry.resource.offset must be a multiple of %d (minStorageBufferOffsetAlignment)", align)))
+		}
+		if size%4 != 0 {
+			panic(unsupportedJS(b, "createBindGroup: entry.resource.size must be a multiple of 4"))
+		}
+		bindings[bindingIdx] = gpuBoundBuffer{buf: st.buf, offset: offset, size: size}
 	}
 	bgObj := b.vm.NewObject()
 	if b.gpuBindGroups == nil {
@@ -1109,14 +1141,15 @@ type gpuRecordedCommand struct {
 
 // gpuRecordedDispatch is one dispatchWorkgroups() call, fully resolved at
 // the moment it was recorded: every WGSL resource binding the pipeline
-// needs is already mapped to its real *metal.Buffer (including the
-// synthesised bounds-checking sizes buffer, sizesBuf, freed once
-// gpuQueueSubmit's own dev.Run has finished using it), and the workgroup
-// count has already been converted to the TOTAL thread count
+// needs is already mapped to its real *metal.Buffer and byte offset
+// (including the synthesised bounds-checking sizes buffer, sizesBuf, freed
+// once gpuQueueSubmit's own dev.Run has finished using it, always at
+// offset 0 since it is allocated fresh here, never user-visible), and the
+// workgroup count has already been converted to the TOTAL thread count
 // go-macos/metal's own Dispatch expects.
 type gpuRecordedDispatch struct {
 	pipeline *gpuComputePipelineState
-	buffers  map[int]*metal.Buffer
+	buffers  map[int]gpuBoundBuffer
 	sizesBuf *metal.Buffer
 	x, y, z  int
 }
@@ -1242,7 +1275,7 @@ func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gp
 	}
 	ws := pipeline.result.WorkgroupSize
 
-	buffers := map[int]*metal.Buffer{}
+	buffers := map[int]gpuBoundBuffer{}
 	for _, bnd := range pipeline.result.Bindings {
 		bg, ok := bindGroups[bnd.Group]
 		if !ok {
@@ -1252,7 +1285,7 @@ func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gp
 		if !ok {
 			b.panicValidation(fmt.Sprintf("dispatchWorkgroups: bind group for @group(%d) has no binding for @binding(%d)", bnd.Group, bnd.BindingIndex))
 		}
-		buffers[bnd.MetalIndex] = bst.buf
+		buffers[bnd.MetalIndex] = bst
 	}
 	var sizesBuf *metal.Buffer
 	if pipeline.result.SizeMetalIndex >= 0 {
@@ -1268,7 +1301,7 @@ func (b *binder) gpuDispatchWorkgroups(enc *gpuCommandEncoderState, pipeline *gp
 			count := uint32(bst.size / bnd.ElemBytes)
 			binary.LittleEndian.PutUint32(sb.Bytes()[bnd.SizesIndex*4:], count)
 		}
-		buffers[pipeline.result.SizeMetalIndex] = sb
+		buffers[pipeline.result.SizeMetalIndex] = gpuBoundBuffer{buf: sb, size: 4 * pipeline.result.SizesCount}
 		sizesBuf = sb
 	}
 	enc.commands = append(enc.commands, gpuRecordedCommand{dispatch: &gpuRecordedDispatch{
@@ -1355,8 +1388,8 @@ func (b *binder) gpuQueueSubmit(dev *metal.Device, call goja.FunctionCall) goja.
 		err := dev.Run(func(e *metal.Encoder) {
 			for _, d := range pending {
 				e.Use(d.pipeline.pipe)
-				for idx, buf := range d.buffers {
-					e.Buffer(idx, buf)
+				for idx, bb := range d.buffers {
+					e.BufferAt(idx, bb.buf, bb.offset)
 				}
 				e.Dispatch(d.x, d.y, d.z)
 			}

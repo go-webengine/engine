@@ -404,6 +404,22 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`createBindGroup` accepts a GPUBufferBinding sub-range, not only the
+  whole buffer** (fix, 2026-11-08, round 25, go-wasmcontainers report):
+  reported after v0.45.2 fixed their GPU hang — `createBindGroup: a
+  GPUBufferBinding size other than the whole buffer is not supported`,
+  blocking several of their batch/ONNX cases, all of which pack several
+  logical buffers into one real allocation and bind each as its own
+  sub-range. Two independent gaps, both confirmed needed by sabotaging
+  each in isolation: go-macos/metal's own `Encoder.Buffer` always bound at
+  offset 0 (fixed upstream, new `Encoder.BufferAt`, v0.7.0), and the
+  bounds-check sizes buffer (wgslmsl's own per-binding array-length
+  mechanism, since Metal performs no bounds checking of its own) was
+  computed from the bound buffer's WHOLE size, not this binding's own
+  sub-range. Fixed via a new `gpuBoundBuffer{buf, offset, size}`, validated
+  against WebGPU §8.2.1/§4.2.1 (resides inside the buffer,
+  `minStorageBufferOffsetAlignment`, size a multiple of 4) using the limits
+  this binding already advertises.
 - **`Worker.postMessage` is genuinely asynchronous now, not a blocking round
   trip** (fix, 2026-11-08, round 24, engine#388, M2/M3 follow-up): diagnosed
   jointly with go-wasmcontainers via a `SIGQUIT` goroutine dump on their own
