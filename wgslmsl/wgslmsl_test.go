@@ -207,6 +207,90 @@ func TestHelperFunctionCalledFromInsideAForLoop(t *testing.T) {
 	}
 }
 
+// TestForLoopContinueStillRunsUpdate is the decisive proof for the silent
+// infinite-loop bug go-wasmcontainers' own host-side loop-budget guard
+// caught (never a hang on THEIR side, since that guard forcibly truncates
+// — but every one of their padded conv/pool kernels, which skip
+// out-of-range input positions with `continue`, came back wrong instead of
+// timing out, which is what first pointed at this): forStmt used to lower
+// `continue` to a bare MSL `continue`, which jumps straight back to the
+// `while(true)` wrapper WITHOUT running update — the loop variable never
+// advances past the first `continue`, hanging forever (bounded, on real
+// hardware, only by whatever watchdog is watching the GPU — never
+// something this test should rely on). Exercises continue AND break
+// together, in the same loop, proving the do{}while(false)+flag fix (no
+// goto: Metal has no labeled statements) keeps each one's own distinct
+// meaning — continue still advances i, break still exits without running
+// update one more time.
+func TestForLoopContinueStillRunsUpdate(t *testing.T) {
+	const src = `
+		@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+		@compute @workgroup_size(1)
+		fn main() {
+			var sum: f32 = 0.0;
+			for (var i: u32 = 0u; i < 10u; i = i + 1u) {
+				if (i == 3u) {
+					continue;
+				}
+				if (i == 7u) {
+					break;
+				}
+				sum = sum + 1.0;
+			}
+			data[0] = sum;
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	got := runOnMetal(t, res, []float32{0})
+	want := float32(6) // i=0,1,2,4,5,6 increment sum (3 skipped, 7 breaks first)
+	if got[0] != want {
+		t.Fatalf("got %v, want %v (bit-for-bit)", got[0], want)
+	}
+}
+
+// TestLoopContinueStillRunsContinuingBlock is forStmt's own decisive proof
+// (TestForLoopContinueStillRunsUpdate), but for `loop { … continuing { … }
+// }` instead of `for` — go-wasmcontainers' own report flagged this as the
+// identical risk ("same issue would hit loop... if continuing is inlined
+// at the body end"), confirmed directly: loopStmt had the exact same
+// bare-continue-skips-cleanup shape before this fix, for the identical
+// reason.
+func TestLoopContinueStillRunsContinuingBlock(t *testing.T) {
+	const src = `
+		@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+		@compute @workgroup_size(1)
+		fn main() {
+			var sum: f32 = 0.0;
+			var i: u32 = 0u;
+			loop {
+				if (i >= 10u) {
+					break;
+				}
+				if (i == 3u) {
+					continue;
+				}
+				sum = sum + 1.0;
+				continuing {
+					i = i + 1u;
+				}
+			}
+			data[0] = sum;
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	got := runOnMetal(t, res, []float32{0})
+	want := float32(9) // i=0..9 except i=3 increment sum (9 increments)
+	if got[0] != want {
+		t.Fatalf("got %v, want %v (bit-for-bit)", got[0], want)
+	}
+}
+
 // TestBitcastReinterpretsBitsNotNumericValue is the decisive proof for a
 // silent-correctness bug go-wasmcontainers' own oracle caught on v0.45.4:
 // bitcast<f32>(u32) was translated as a numeric conversion (float(x)) —

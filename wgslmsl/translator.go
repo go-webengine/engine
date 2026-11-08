@@ -72,6 +72,17 @@ type translator struct {
 	userFuncs   map[*wgsl.FuncObj]bool
 	helperExtra map[*wgsl.FuncObj]*helperExtraParams
 	sizesCount  int // number of BindingStorageArray resources seen so far
+	// loopFlag names the `bool` variable forStmt/loopStmt declare to tell a
+	// real break (WGSL's own) apart from a continue inside the do{}while(false)
+	// wrapper both constructs use — see forStmt's own doc comment for why.
+	// Empty inside a `while` (WGSL's own while has no continuing/update
+	// clause for a continue to skip, so MSL's native continue/break are
+	// already correct there) or outside any loop at all. Scoped exactly
+	// like break/continue's own WGSL semantics: saved and restored around
+	// each loop construct's own body, so a break/continue inside a NESTED
+	// loop still targets that nested loop, never an outer one.
+	loopFlag    string
+	flagCounter int
 	indent      int
 	buf         strings.Builder
 }
