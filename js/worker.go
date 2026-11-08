@@ -62,8 +62,11 @@ type workerTask struct {
 // reuses just the fields that machinery needs (the vm, the sentinel-node
 // event dispatch maps windowNode/docNode already prove generic, the timer
 // queue). deadline is shared with the creating binder: a worker cannot
-// outlive the render's own overall budget.
-func newWorkerBinder(opt Options, deadline time.Time) *binder {
+// outlive the render's own overall budget. root is the true top-level
+// binder every worker's own wasmRT() delegates to (see that function's own
+// doc comment) — always the actual root, never just the immediate parent,
+// so a grandchild worker reaches it in one hop regardless of nesting depth.
+func newWorkerBinder(opt Options, deadline time.Time, root *binder) *binder {
 	self := &dom.Node{Type: dom.Element, Tag: "#worker-self"}
 	return &binder{
 		vm:         goja.New(),
@@ -77,6 +80,7 @@ func newWorkerBinder(opt Options, deadline time.Time) *binder {
 		deadman:    deadline,
 		timeOrigin: time.Now(),
 		isWorker:   true,
+		rootBinder: root,
 	}
 }
 
@@ -460,8 +464,12 @@ func (b *binder) newWorker(call goja.ConstructorCall) *goja.Object {
 	if abs, ok := resolveURL(b.opt.PageURL, scriptArg); ok {
 		workerOpt.PageURL = abs
 	}
+	root := b.rootBinder
+	if root == nil {
+		root = b
+	}
 	w := &jsWorker{
-		wb:          newWorkerBinder(workerOpt, b.deadman),
+		wb:          newWorkerBinder(workerOpt, b.deadman, root),
 		wrapperNode: wrapperNode,
 		inbox:       make(chan workerTask, workerInboxCap),
 		stopCh:      make(chan struct{}),

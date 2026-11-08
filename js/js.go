@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dop251/goja"
@@ -292,8 +293,30 @@ type binder struct {
 
 	// wasmRuntime is created lazily (see wasmRT) on the first WebAssembly
 	// call a page actually makes, so a page that never touches WebAssembly
-	// pays nothing for it — see wasm.go.
+	// pays nothing for it — see wasm.go. Only ever populated on the ROOT
+	// binder (root == nil): every worker, however deeply nested, shares
+	// the SAME Runtime via wasmRT's own delegation, never creating one of
+	// its own — required for a WebAssembly.Module posted between workers
+	// (postMessage, clone.go's clonedWasmModule) to be instantiable at
+	// all: wazero's own CompiledModule is tied to the specific Runtime
+	// that compiled it (confirmed directly: instantiating one under a
+	// DIFFERENT Runtime fails with "source module must be compiled
+	// before instantiation") — a per-worker Runtime would make a posted
+	// Module permanently unusable on the receiving side.
 	wasmRuntime wazero.Runtime
+	// wasmInstantiateLock is the real mutex wasmInstantiateMu's own
+	// delegation (mirroring wasmRT's rootBinder delegation above)
+	// returns a pointer to — only ever populated on the ROOT binder,
+	// never meaningfully used directly via this field. See
+	// wasmInstantiateMu's own doc comment in wasm.go for why every
+	// worker needs the SAME lock, not one of its own.
+	wasmInstantiateLock sync.Mutex
+	// rootBinder is nil for the main document's own binder, and for
+	// every worker it is the main binder itself (set once at
+	// construction, never the immediate parent, so a grandchild worker
+	// reaches the true root in one hop regardless of nesting depth) —
+	// see wasmRT's own doc comment for why this exists.
+	rootBinder *binder
 	// wasmModules caches each WebAssembly.Module JS wrapper's underlying
 	// state (compiled form + isShared) by object identity — see
 	// wasmModuleState/wrapWasmModule in wasm.go.

@@ -177,6 +177,9 @@ func (b *binder) maxWasmMemoryPages() uint32 {
 // could read/write memory a Worker then shares via postMessage is exactly
 // the capability that gate exists to withhold outside an isolated context.
 func (b *binder) wasmRT() wazero.Runtime {
+	if b.rootBinder != nil {
+		return b.rootBinder.wasmRT()
+	}
 	if b.wasmRuntime == nil {
 		features := api.CoreFeaturesV2
 		if b.opt.CrossOriginIsolated {
@@ -189,6 +192,30 @@ func (b *binder) wasmRT() wazero.Runtime {
 		b.wasmRuntime = wazero.NewRuntimeWithConfig(context.Background(), cfg)
 	}
 	return b.wasmRuntime
+}
+
+// wasmInstantiateMu delegates to the root binder exactly like wasmRT,
+// and guards the import-binding window every instantiateWasm call opens:
+// register a temporary host module under the GUEST's own required
+// import-namespace name (e.g. "env"), instantiate the guest against it,
+// then immediately close that host module again to free the name. On a
+// Runtime now shared by every worker (see wasmRT's own doc comment),
+// two guest modules that both import from "env" — go-wasmcontainers'
+// own confirmed shape, one compiled guest instantiated many times
+// concurrently — would otherwise collide on that name even though
+// neither guest instance cares what the host module was called.
+// Confirmed directly (scratchpad, not assumed): wazero binds an
+// import's host function into the guest at InstantiateModule time, not
+// by a live name re-lookup on every call, so closing the host module
+// right after the guest instantiates does not disturb that guest's own
+// already-bound calls — only the lock's own critical section needs to
+// stay serialized against a second goroutine's host-module registration
+// racing in under the same name before the first guest is bound.
+func (b *binder) wasmInstantiateMu() *sync.Mutex {
+	if b.rootBinder != nil {
+		return b.rootBinder.wasmInstantiateMu()
+	}
+	return &b.wasmInstantiateLock
 }
 
 // wasmCtx derives a context deadlined at b.deadman — the SAME wall-clock
@@ -522,6 +549,7 @@ func (b *binder) wrapWasmModule(compiled wazero.CompiledModule, isShared bool) *
 		b.wasmModules = map[*goja.Object]wasmModuleState{}
 	}
 	b.wasmModules[o] = wasmModuleState{compiled: compiled, isShared: isShared}
+	registerWasmModule(o, compiled, isShared)
 	return o
 }
 
@@ -536,19 +564,82 @@ func (b *binder) wasmModuleOf(v goja.Value) (compiled wazero.CompiledModule, isS
 	return st.compiled, st.isShared, found
 }
 
+// wasmModuleRegistry mirrors wasmMemoryRegistry's own package-level,
+// by-object-identity design — needed for the identical reason: cloneAt
+// (clone.go) has no *binder to consult b.wasmModules with, and a
+// WebAssembly.Module posted via postMessage must be recognized as one
+// regardless of which binder's VM it was built in. Confirmed directly
+// needed by go-wasmcontainers: their engine worker compiles a guest once
+// and posts the resulting Module to a container worker, which must still
+// recognize and instantiate it (WebAssembly JS API's own "Module is
+// Serializable" contract, HTML's structured clone within one agent
+// cluster).
+var (
+	wasmModuleRegistryMu sync.Mutex
+	wasmModuleRegistry   = map[*goja.Object]wasmModuleState{}
+)
+
+func registerWasmModule(obj *goja.Object, compiled wazero.CompiledModule, isShared bool) {
+	wasmModuleRegistryMu.Lock()
+	wasmModuleRegistry[obj] = wasmModuleState{compiled: compiled, isShared: isShared}
+	wasmModuleRegistryMu.Unlock()
+}
+
+// lookupWasmModule reports whether obj is a registered WebAssembly.Module
+// wrapper (any binder's own), mirroring lookupWasmMemory's own shape.
+func lookupWasmModule(obj *goja.Object) (compiled wazero.CompiledModule, isShared bool, ok bool) {
+	wasmModuleRegistryMu.Lock()
+	st, found := wasmModuleRegistry[obj]
+	wasmModuleRegistryMu.Unlock()
+	return st.compiled, st.isShared, found
+}
+
 // instantiateWasm wires importsArg's functions as host imports, instantiates
 // compiled, and returns the resulting instance's exports object. isShared
 // (from moduleHasSharedMemory/wasmModuleOf) decides whether
 // instance.exports.memory, if the module declares one, is wrapped as a
 // SharedArrayBuffer-classed, postMessage-able Memory (wasmExports/
 // wrapWasmMemory).
+//
+// Always anonymous (WithName("")), never the module's own default/
+// custom-section name: wazero's Runtime namespaces instances by name and
+// refuses a second one under a name already live ("module[...] has
+// already been instantiated") — confirmed directly. Harmless for the
+// ordinary one-instance-per-module case this always was, but REQUIRED
+// now that every worker (however many) shares ONE Runtime (see wasmRT's
+// own doc comment): go-wasmcontainers' own confirmed shape instantiates
+// the SAME compiled guest many times concurrently, one per container,
+// every one sharing the same custom-section name — a second, named
+// instance of the identical module on a shared Runtime would otherwise
+// fail outright. Confirmed directly that repeated anonymous
+// instantiation of the same CompiledModule on one Runtime works, and
+// that closing one such instance does not affect a sibling instance of
+// the same module.
 func (b *binder) instantiateWasm(compiled wazero.CompiledModule, importsArg goja.Value, isShared bool) (*goja.Object, goja.Value) {
 	ctx, cancel := b.wasmCtx()
 	defer cancel()
-	if err := b.buildHostImports(ctx, compiled, importsArg); err != nil {
-		return nil, err
+
+	// Serialized across every worker sharing this Runtime (see
+	// wasmInstantiateMu's own doc comment): the host-import module(s)
+	// built below occupy their guest-required name only for this
+	// critical section, then are closed again before the lock is
+	// released, so two guests that both import e.g. "env" never
+	// collide even though their host bindings are never visible to
+	// each other.
+	mu := b.wasmInstantiateMu()
+	mu.Lock()
+	defer mu.Unlock()
+
+	hostMods, errv := b.buildHostImports(ctx, compiled, importsArg)
+	defer func() {
+		for _, hm := range hostMods {
+			_ = hm.Close(ctx)
+		}
+	}()
+	if errv != nil {
+		return nil, errv
 	}
-	mod, err := b.wasmRT().InstantiateModule(ctx, compiled, wazero.NewModuleConfig())
+	mod, err := b.wasmRT().InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName(""))
 	if err != nil {
 		return nil, b.wasmError("LinkError", err.Error())
 	}
@@ -562,11 +653,15 @@ func (b *binder) instantiateWasm(compiled wazero.CompiledModule, importsArg goja
 // namespace and registers each as a wazero host function that calls the
 // matching JS function (importsArg[moduleName][name]), instantiating each
 // host namespace before the caller instantiates compiled itself (wazero's
-// own required ordering).
-func (b *binder) buildHostImports(ctx context.Context, compiled wazero.CompiledModule, importsArg goja.Value) goja.Value {
+// own required ordering). The returned host modules are already
+// instantiated and live on the shared Runtime under the guest's required
+// import name; the caller closes each one (freeing that name again) right
+// after compiled itself is instantiated, whether or not instantiation
+// succeeded, while still holding wasmInstantiateMu.
+func (b *binder) buildHostImports(ctx context.Context, compiled wazero.CompiledModule, importsArg goja.Value) ([]api.Module, goja.Value) {
 	imports := compiled.ImportedFunctions()
 	if len(imports) == 0 {
-		return nil
+		return nil, nil
 	}
 	importsObj, _ := importsArg.(*goja.Object)
 	byModule := map[string][]api.FunctionDefinition{}
@@ -578,6 +673,7 @@ func (b *binder) buildHostImports(ctx context.Context, compiled wazero.CompiledM
 		}
 		byModule[mn] = append(byModule[mn], def)
 	}
+	var hostMods []api.Module
 	for _, moduleName := range order {
 		var nsObj *goja.Object
 		if importsObj != nil {
@@ -597,17 +693,19 @@ func (b *binder) buildHostImports(ctx context.Context, compiled wazero.CompiledM
 				// call, the same way a genuinely missing import (no WASI,
 				// or the page's own importObject is incomplete) should
 				// fail loudly rather than silently.
-				return b.wasmError("LinkError", "import "+moduleName+"."+name+" is not a function")
+				return hostMods, b.wasmError("LinkError", "import "+moduleName+"."+name+" is not a function")
 			}
 			builder.NewFunctionBuilder().
 				WithGoModuleFunction(b.hostImportFunc(fn, def), def.ParamTypes(), def.ResultTypes()).
 				Export(name)
 		}
-		if _, err := builder.Instantiate(ctx); err != nil {
-			return b.wasmError("LinkError", err.Error())
+		hm, err := builder.Instantiate(ctx)
+		if err != nil {
+			return hostMods, b.wasmError("LinkError", err.Error())
 		}
+		hostMods = append(hostMods, hm)
 	}
-	return nil
+	return hostMods, nil
 }
 
 // hostImportFunc adapts a JS function into the wazero Go-module-function
