@@ -127,6 +127,86 @@ func TestVectorAddEndToEnd(t *testing.T) {
 	}
 }
 
+// TestHelperFunctionsEndToEnd reproduces go-wasmcontainers' own reported
+// shape (go-webengine/engine#391 follow-up): a compute kernel's own
+// "index math, activation" helper functions, called from the entry point
+// and from EACH OTHER — a two-level chain (main -> scaleAndRelu -> relu),
+// proving both that a call works at all and that emitHelperFuncs' own
+// callee-before-caller ordering is right (get it wrong and Metal's
+// compiler itself refuses the MSL: a function used before its own
+// declaration). relu also calls a built-in (max) from INSIDE a helper, not
+// just the entry body, since mslBuiltinFn's own callExpr path must work
+// there too.
+func TestHelperFunctionsEndToEnd(t *testing.T) {
+	const src = `
+		fn relu(x: f32) -> f32 {
+			return max(x, 0.0);
+		}
+		fn scaleAndRelu(x: f32, scale: f32) -> f32 {
+			return relu(x * scale);
+		}
+		@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+		@compute @workgroup_size(64)
+		fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+			data[id.x] = scaleAndRelu(data[id.x], 2.0);
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if i, j := strings.Index(res.MSL, "float relu("), strings.Index(res.MSL, "float scaleAndRelu("); i < 0 || j < 0 || i > j {
+		t.Fatalf("relu must be emitted before scaleAndRelu (its own caller):\n%s", res.MSL)
+	}
+	if k := strings.Index(res.MSL, "kernel void"); k < strings.Index(res.MSL, "float relu(") || k < strings.Index(res.MSL, "float scaleAndRelu(") {
+		t.Fatalf("the kernel itself must be emitted after both helpers:\n%s", res.MSL)
+	}
+
+	got := runOnMetal(t, res, []float32{-3, -1, 0, 1, 2, 5})
+	want := []float32{0, 0, 0, 2, 4, 10} // max(x*2, 0)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v (bit-for-bit)", got, want)
+		}
+	}
+}
+
+// TestHelperFunctionCalledFromInsideAForLoop proves funcCallees' own walk
+// (walkFuncBody/walkFuncStmt) finds a call nested inside a for-loop body,
+// not only at a helper's own top level — the one shape TestHelperFunctions-
+// EndToEnd's straight-line bodies do not exercise. square is also declared
+// AFTER its own caller, sumSquares, in the source: WGSL allows calling a
+// function declared later (unlike MSL/C++), the exact reason emitHelperFuncs
+// cannot just emit functions in source order.
+func TestHelperFunctionCalledFromInsideAForLoop(t *testing.T) {
+	const src = `
+		fn sumSquares(n: u32) -> f32 {
+			var total: f32 = 0.0;
+			for (var i: u32 = 0u; i < n; i = i + 1u) {
+				total = total + square(f32(i) + 1.0);
+			}
+			return total;
+		}
+		fn square(x: f32) -> f32 {
+			return x * x;
+		}
+		@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+		@compute @workgroup_size(1)
+		fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+			data[id.x] = sumSquares(4u);
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	got := runOnMetal(t, res, []float32{0})
+	want := float32(1*1 + 2*2 + 3*3 + 4*4) // 30
+	if got[0] != want {
+		t.Fatalf("got %v, want %v (bit-for-bit)", got[0], want)
+	}
+}
+
 // TestOutOfBoundsIndexIsClamped is the security proof: a kernel that reads
 // at an index far past its own buffer's length must not fault or read
 // adjacent GPU memory — it must read the one real, defined value this
@@ -355,12 +435,14 @@ func TestUnsupportedConstructsAreRejected(t *testing.T) {
 				return vec4<f32>(0.0, 0.0, 0.0, 1.0);
 			}
 		`,
-		"helper function call": `
-			fn helper(x: f32) -> f32 { return x + 1.0; }
+		"helper function touching a resource directly": `
 			@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+			fn helper(i: u32) {
+				data[i] = data[i] + 1.0;
+			}
 			@compute @workgroup_size(1)
 			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-				data[id.x] = helper(data[id.x]);
+				helper(id.x);
 			}
 		`,
 		"struct-typed uniform buffer resource": `

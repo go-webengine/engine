@@ -404,6 +404,22 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **wgslmsl translates calls to WGSL helper functions** (fix, 2026-11-08,
+  round 26, go-wasmcontainers report, engine#391 follow-up): reported on
+  97 of their 123 ONNX cases — their nn kernels call small WGSL helpers for
+  index math and activation, and `Translate` refused any entry point
+  reaching more than its own body. Every function the entry point
+  transitively calls is now emitted as a real MSL function, callee-before-
+  caller order (found along the way: go-gfx/wgsl's own `FuncObj.Calls`/
+  `.Globals` are not populated outside an entry point — its own newer `msl`
+  package hits the identical gap and writes its own AST walker instead of
+  trusting the field; wgslmsl now does the same). Scoped to pure value
+  functions: a helper touching a `<storage>`/`<uniform>` resource directly
+  is rejected, clear and named — resources are wired to the entry kernel's
+  own buffer parameters and nowhere else. Considered and rejected:
+  delegating to go-gfx/wgsl's own new `msl` package for WGSL-exact
+  arithmetic semantics — real advantage, but splits helper-function math
+  from entry-body math onto two correctness bars for no reported need.
 - **`createBindGroup` accepts a GPUBufferBinding sub-range, not only the
   whole buffer** (fix, 2026-11-08, round 25, go-wasmcontainers report):
   reported after v0.45.2 fixed their GPU hang — `createBindGroup: a

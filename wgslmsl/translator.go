@@ -68,7 +68,8 @@ type translator struct {
 	info       *wgsl.Info
 	bindings   []Binding
 	resources  map[*wgsl.VarObj]int // VarObj -> index into bindings
-	sizesCount int                  // number of BindingStorageArray resources seen so far
+	userFuncs  map[*wgsl.FuncObj]bool
+	sizesCount int // number of BindingStorageArray resources seen so far
 	indent     int
 	buf        strings.Builder
 }
@@ -104,6 +105,10 @@ func (tr *translator) translateEntryPoint(ep *wgsl.EntryPoint) (*Result, error) 
 		tr.indent--
 		tr.line("};")
 		tr.buf.WriteByte('\n')
+	}
+
+	if err := tr.emitHelperFuncs(ep); err != nil {
+		return nil, err
 	}
 
 	entryName := identMSL(ep.Name)
@@ -145,6 +150,215 @@ func (tr *translator) translateEntryPoint(ep *wgsl.EntryPoint) (*Result, error) 
 		SizeMetalIndex: sizeIndex,
 		SizesCount:     tr.sizesCount,
 	}, nil
+}
+
+// emitHelperFuncs emits, as real MSL functions, every WGSL function the
+// entry point (transitively) calls — in callee-before-caller order, since
+// MSL/C++ requires a function be declared above any call to it, unlike
+// WGSL, which has no such restriction (a function may call one declared
+// later in the source). Scoped to pure value functions: a helper that
+// directly touches a resource variable is rejected, clear and named — a
+// resource is wired to the entry kernel's OWN buffer parameter list
+// (entryParams) and nowhere else; threading it through a helper's own
+// parameter list is a real feature this package does not implement yet,
+// never something silently dropped. Populates tr.userFuncs so callExpr can
+// recognize a call to one of these, rather than rejecting it as unknown.
+func (tr *translator) emitHelperFuncs(ep *wgsl.EntryPoint) error {
+	tr.userFuncs = map[*wgsl.FuncObj]bool{}
+	for _, f := range orderedHelperFuncs(tr.info, ep) {
+		var resourceErr error
+		walkFuncBody(f.Decl.Body, func(e wgsl.Expr) {
+			if resourceErr != nil {
+				return
+			}
+			id, ok := e.(*wgsl.Ident)
+			if !ok {
+				return
+			}
+			vo, ok := tr.info.Objects[id].(*wgsl.VarObj)
+			if !ok {
+				return
+			}
+			if _, tracked := tr.resources[vo]; tracked {
+				resourceErr = unsupported("helper function %q accesses resource %q directly (only the entry point itself may touch a resource; pass the value through a parameter instead)", f.Name, vo.Name)
+			}
+		})
+		if resourceErr != nil {
+			return resourceErr
+		}
+		retMSL := "void"
+		if f.Ret != wgsl.Void {
+			m, err := mslType(f.Ret)
+			if err != nil {
+				return err
+			}
+			retMSL = m
+		}
+		params := make([]string, len(f.Params))
+		for i, p := range f.Params {
+			m, err := mslType(p.Type)
+			if err != nil {
+				return err
+			}
+			params[i] = fmt.Sprintf("%s %s", m, identMSL(p.Name))
+		}
+		tr.line("%s %s(%s) {", retMSL, identMSL(f.Name), strings.Join(params, ", "))
+		tr.indent++
+		if err := tr.stmtBlock(f.Decl.Body); err != nil {
+			return err
+		}
+		tr.indent--
+		tr.line("}")
+		tr.buf.WriteByte('\n')
+		tr.userFuncs[f] = true
+	}
+	return nil
+}
+
+// orderedHelperFuncs returns every non-entry function ep's entry point
+// (transitively) calls, each AFTER every function it itself calls — a
+// postorder walk of the call graph, dropping the entry function itself
+// (never called, by go-gfx/wgsl's own "entry points must not be called"
+// rule, so it is always the walk's own last, outermost frame). Built from
+// funcCallees, not FuncObj.Calls: go-gfx/wgsl's own msl package (the
+// upstream, non-entry-point MSL emitter for a library of plain functions)
+// documents, at its own equivalent call site, that "the checker fills
+// FuncObj.Calls only for the functions of an entry point" — confirmed
+// directly here too (a *wgsl.FuncObj's own .Calls is empty even for a
+// function this package's own entry point actually calls).
+func orderedHelperFuncs(info *wgsl.Info, ep *wgsl.EntryPoint) []*wgsl.FuncObj {
+	var order []*wgsl.FuncObj
+	seen := map[*wgsl.FuncObj]bool{}
+	var visit func(f *wgsl.FuncObj)
+	visit = func(f *wgsl.FuncObj) {
+		if seen[f] {
+			return
+		}
+		seen[f] = true
+		for _, callee := range funcCallees(info, f) {
+			visit(callee)
+		}
+		order = append(order, f)
+	}
+	visit(ep.Func)
+	return order[:len(order)-1]
+}
+
+// funcCallees returns the FuncObjs f's body directly calls, deduplicated,
+// in the order first encountered — found by walking the body (see
+// orderedHelperFuncs's own doc comment for why FuncObj.Calls cannot be
+// trusted here).
+func funcCallees(info *wgsl.Info, f *wgsl.FuncObj) []*wgsl.FuncObj {
+	var callees []*wgsl.FuncObj
+	seen := map[*wgsl.FuncObj]bool{}
+	walkFuncBody(f.Decl.Body, func(e wgsl.Expr) {
+		c, ok := e.(*wgsl.Call)
+		if !ok {
+			return
+		}
+		g, ok := info.Objects[c.Fn].(*wgsl.FuncObj)
+		if !ok || seen[g] {
+			return
+		}
+		seen[g] = true
+		callees = append(callees, g)
+	})
+	return callees
+}
+
+// walkFuncBody calls visit on every expression reachable from b, however
+// deeply nested in a statement or another expression — mirroring stmt.go's
+// and expr.go's own recursion exactly (every statement and expression kind
+// either file's own switch recognizes), since this package's bounded scope
+// means anything NOT covered here is already rejected by stmt/expr before
+// the result could matter: a construct added to either file's own switch
+// should be added here too.
+func walkFuncBody(b *wgsl.Block, visit func(wgsl.Expr)) {
+	for _, s := range b.Stmts {
+		walkFuncStmt(s, visit)
+	}
+}
+
+func walkFuncStmt(s wgsl.Stmt, visit func(wgsl.Expr)) {
+	switch st := s.(type) {
+	case *wgsl.Block:
+		walkFuncBody(st, visit)
+	case *wgsl.DeclStmt:
+		switch d := st.Decl.(type) {
+		case *wgsl.Var:
+			walkFuncExpr(d.Init, visit)
+		case *wgsl.Value:
+			walkFuncExpr(d.Init, visit)
+		}
+	case *wgsl.Assign:
+		walkFuncExpr(st.LHS, visit)
+		walkFuncExpr(st.RHS, visit)
+	case *wgsl.IncDec:
+		walkFuncExpr(st.X, visit)
+	case *wgsl.If:
+		walkFuncExpr(st.Cond, visit)
+		walkFuncStmt(st.Then, visit)
+		if st.Else != nil {
+			walkFuncStmt(st.Else, visit)
+		}
+	case *wgsl.For:
+		if st.Init != nil {
+			walkFuncStmt(st.Init, visit)
+		}
+		walkFuncExpr(st.Cond, visit)
+		if st.Update != nil {
+			walkFuncStmt(st.Update, visit)
+		}
+		walkFuncBody(st.Body, visit)
+	case *wgsl.While:
+		walkFuncExpr(st.Cond, visit)
+		walkFuncBody(st.Body, visit)
+	case *wgsl.Loop:
+		for _, s := range st.Body {
+			walkFuncStmt(s, visit)
+		}
+		if st.Cont != nil {
+			for _, s := range st.Cont.Stmts {
+				if bi, ok := s.(*wgsl.BreakIf); ok {
+					walkFuncExpr(bi.Cond, visit)
+					continue
+				}
+				walkFuncStmt(s, visit)
+			}
+		}
+	case *wgsl.Return:
+		walkFuncExpr(st.X, visit)
+	case *wgsl.CallStmt:
+		walkFuncExpr(st.Call, visit)
+	}
+	// *wgsl.Empty, *wgsl.AssertStmt, *wgsl.Break, *wgsl.Continue: no
+	// expression of interest (const_assert is compile-time-only, matching
+	// stmt.go's own treatment).
+}
+
+func walkFuncExpr(e wgsl.Expr, visit func(wgsl.Expr)) {
+	if e == nil {
+		return
+	}
+	visit(e)
+	switch x := e.(type) {
+	case *wgsl.Paren:
+		walkFuncExpr(x.X, visit)
+	case *wgsl.Unary:
+		walkFuncExpr(x.X, visit)
+	case *wgsl.Binary:
+		walkFuncExpr(x.X, visit)
+		walkFuncExpr(x.Y, visit)
+	case *wgsl.Index:
+		walkFuncExpr(x.X, visit)
+		walkFuncExpr(x.I, visit)
+	case *wgsl.Member:
+		walkFuncExpr(x.X, visit)
+	case *wgsl.Call:
+		for _, a := range x.Args {
+			walkFuncExpr(a, visit)
+		}
+	}
 }
 
 // resolveResources walks ep.Resources (already sorted by group then binding
