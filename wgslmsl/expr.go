@@ -78,14 +78,41 @@ func (tr *translator) expr(e wgsl.Expr) (string, error) {
 	}
 }
 
+// stripOneSuffix removes EXACTLY one trailing occurrence of suffix from
+// text, never more — the one safe way to strip a WGSL numeric literal's
+// own optional single-character type suffix (spec: at most one of i/u/f/h
+// ever follows the digits). TrimRight's own whole-cutset removal is NOT
+// safe here: a hex literal's digits run through a-f/A-F, which overlaps
+// the suffix alphabet itself (confirmed directly: go-wasmcontainers'
+// loop-budget rewrite injects 0xFFFFFFFFu, and TrimRight(text,
+// "iuhfIUHF") used to strip the trailing "u" AND then kept eating every
+// trailing "F" hex digit too, leaving bare "0x" — strconv then refused
+// it outright, rather than silently misreading the value, which is the
+// one reason this surfaced as a hard failure instead of a quieter wrong
+// answer).
+func stripOneSuffix(text, suffix string) string {
+	if strings.HasSuffix(text, suffix) {
+		return text[:len(text)-len(suffix)]
+	}
+	return text
+}
+
 // litMSL formats an integer or float literal's exact MSL spelling, honouring
 // the CONCRETE type Check resolved it to (tr.exprType), never the literal's
 // own source-text suffix alone: the same unsuffixed `0` can mean i32, u32 or
 // f32 depending entirely on where it is used (WGSL's abstract-numeric
 // concretization), and getting this wrong would silently change arithmetic
 // (integer vs. floating-point division, in particular).
+//
+// Each branch strips only the ONE suffix letter ITS OWN kind could ever
+// have (i/u for an integer, f/h for a float — stripOneSuffix's own doc
+// comment for why this must be per-kind, not one shared, greedy trim run
+// before the kind is even known): an "f"/"F" at the end of a hex INTEGER
+// literal (no i/u suffix exists for floats, and a hex float always needs
+// its own mandatory `p` exponent marker first — WGSL §15.6.1) is always a
+// hex DIGIT, never a type suffix, so the integer branches must never
+// strip it.
 func (tr *translator) litMSL(e wgsl.Expr, text string) (string, error) {
-	digits := strings.TrimRight(text, "iuhfIUHF")
 	t := tr.exprType(e)
 	scalar, ok := t.(*wgsl.ScalarType)
 	if !ok {
@@ -93,12 +120,14 @@ func (tr *translator) litMSL(e wgsl.Expr, text string) (string, error) {
 	}
 	switch scalar.Kind {
 	case wgsl.KI32, wgsl.KAbstractInt:
+		digits := stripOneSuffix(stripOneSuffix(text, "i"), "I")
 		n, err := strconv.ParseInt(digits, 0, 64)
 		if err != nil {
 			return "", fmt.Errorf("wgslmsl: literal %q: %w", text, err)
 		}
 		return strconv.FormatInt(n, 10), nil
 	case wgsl.KU32:
+		digits := stripOneSuffix(stripOneSuffix(text, "u"), "U")
 		n, err := strconv.ParseUint(digits, 0, 64)
 		if err != nil {
 			// A float-looking literal (e.g. "2.0") concretized to u32 would
@@ -109,6 +138,10 @@ func (tr *translator) litMSL(e wgsl.Expr, text string) (string, error) {
 		}
 		return strconv.FormatUint(n, 10) + "u", nil
 	case wgsl.KF32, wgsl.KAbstractFloat:
+		digits := text
+		for _, suf := range []string{"f", "F", "h", "H"} {
+			digits = stripOneSuffix(digits, suf)
+		}
 		f, err := strconv.ParseFloat(digits, 64)
 		if err != nil {
 			// An integer-looking literal (e.g. "2") concretized to f32 is

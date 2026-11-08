@@ -336,6 +336,45 @@ func TestArrayLengthReturnsRealElementCount(t *testing.T) {
 	}
 }
 
+// TestHexLiteralsSurviveTheirOwnTrailingHexDigits is the decisive proof
+// for a silent-wrong-then-hard-failure bug go-wasmcontainers' own CI
+// runner caught on v0.45.8: litMSL used to strip a literal's type suffix
+// with strings.TrimRight(text, "iuhfIUHF") — a whole CUTSET, repeatedly
+// removed from the end, not one character. A hex literal's own digits run
+// through a-f/A-F, which overlaps that very cutset: `0xFFFFFFFFu` lost
+// its "u" suffix correctly, then kept losing every trailing "F" hex digit
+// too (F is ALSO in the cutset), down to bare "0x" — which strconv then
+// refused outright (go-wasmcontainers' own loop-budget rewrite, go-gfx/
+// webgpu, injects exactly this literal into every rewritten module,
+// refusing every one of them). Covers a suffixed, an unsuffixed, and a
+// signed hex literal in one kernel — an unsuffixed one ending in a real
+// hex digit "F" is the one shape a single blind TrimRight (even fixed to
+// stop after one character) could still get wrong by assuming that
+// trailing character must be a suffix.
+func TestHexLiteralsSurviveTheirOwnTrailingHexDigits(t *testing.T) {
+	const src = `
+		@group(0) @binding(0) var<storage, read_write> data: array<u32>;
+		@compute @workgroup_size(1)
+		fn main() {
+			data[0] = 0xFFFFFFFFu;
+			data[1] = 0x1Fu;
+			data[2] = 0x1F;
+			data[3] = u32(0x7Fi);
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	got := runOnMetal(t, res, make([]float32, 4))
+	want := []uint32{0xFFFFFFFF, 0x1F, 0x1F, 0x7F}
+	for i, w := range want {
+		if g := math.Float32bits(got[i]); g != w {
+			t.Fatalf("data[%d] = %#x, want %#x", i, g, w)
+		}
+	}
+}
+
 // TestBitcastReinterpretsBitsNotNumericValue is the decisive proof for a
 // silent-correctness bug go-wasmcontainers' own oracle caught on v0.45.4:
 // bitcast<f32>(u32) was translated as a numeric conversion (float(x)) —

@@ -313,7 +313,7 @@ func (b *binder) newGPUShaderStage() *goja.Object {
 func (b *binder) newGPU() goja.Value {
 	o := b.vm.NewObject()
 	o.Set("requestAdapter", func(call goja.FunctionCall) goja.Value {
-		return b.gpuRequestAdapter()
+		return b.gpuRequestAdapter(call)
 	})
 	o.Set("getPreferredCanvasFormat", func(goja.FunctionCall) goja.Value {
 		return b.vm.ToValue("bgra8unorm")
@@ -328,14 +328,27 @@ func (b *binder) newGPU() goja.Value {
 	return o
 }
 
-// gpuRequestAdapter implements GPU.requestAdapter(): per spec, this NEVER
-// rejects — it resolves with null when no adapter is available (no usable
-// GPU, or go-macos/metal's own ErrUnsupported on a non-darwin host, which
-// it reports on every platform so this engine cross-builds without a
-// build tag of its own — confirmed directly by cross-building this package
-// for every GOARCH this repo's CI already checks).
-func (b *binder) gpuRequestAdapter() goja.Value {
+// gpuRequestAdapter implements GPU.requestAdapter(options): per spec,
+// this NEVER rejects — it resolves with null when no adapter is available
+// (no usable GPU, or go-macos/metal's own ErrUnsupported on a non-darwin
+// host, which it reports on every platform so this engine cross-builds
+// without a build tag of its own — confirmed directly by cross-building
+// this package for every GOARCH this repo's CI already checks), OR when
+// options.forceFallbackAdapter is true: WebGPU §4.4.1 requires THAT to
+// resolve with a software adapter "if one exists, else null" — never the
+// hardware adapter instead. This binding has no software adapter at all
+// (go-macos/metal only ever wraps the real device), so the answer is
+// always null (confirmed directly needed: go-wasmcontainers' own
+// TestBatchFallbackRefused expects null here, to then correctly observe
+// "no adapter" rather than treating the real GPU as the forced fallback).
+func (b *binder) gpuRequestAdapter(call goja.FunctionCall) goja.Value {
 	promise, resolve, _ := b.vm.NewPromise()
+	if opts, ok := call.Argument(0).(*goja.Object); ok {
+		if ff := opts.Get("forceFallbackAdapter"); ff != nil && ff.ToBoolean() {
+			_ = resolve(goja.Null())
+			return b.vm.ToValue(promise)
+		}
+	}
 	dev, err := metal.Default()
 	if err != nil {
 		_ = resolve(goja.Null())
