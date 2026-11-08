@@ -291,6 +291,51 @@ func TestLoopContinueStillRunsContinuingBlock(t *testing.T) {
 	}
 }
 
+// TestArrayLengthReturnsRealElementCount is go-wasmcontainers' own exact
+// reported shape — their batch/batch-grant kernel's ONLY use of `&`, the
+// narrow slice of pointer support confirmed actually needed (general
+// `&`/ptr<function,T> can wait until a real kernel needs it): a
+// runtime-sized storage array's own real element count via
+// `arrayLength(&out)`, gating which threads may write at all.
+//
+// Dispatched with n=37 — NOT a multiple of the kernel's own
+// @workgroup_size(64) — so go-macos/metal's own Dispatch necessarily runs
+// extra "overhang" threads with id.x in [37, 63] too (confirmed directly:
+// this is how go-macos/metal picks a threadgroup shape for a thread count
+// that isn't a whole multiple of it). Every element starts at a sentinel
+// bit pattern; a correct arrayLength gates every overhang thread's own
+// write out via the kernel's own `if (id.x < arrayLength(&out))`, so ANY
+// sentinel surviving in the readback (not just a wrong formula result)
+// would mean arrayLength returned something other than the real count.
+func TestArrayLengthReturnsRealElementCount(t *testing.T) {
+	const src = `
+		@group(0) @binding(0) var<storage, read_write> out: array<u32>;
+		@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+			if (id.x < arrayLength(&out)) { out[id.x] = id.x * 2654435761u + 7u; }
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if !strings.Contains(res.MSL, "_sizes.s0") {
+		t.Fatalf("generated MSL does not read the bounds-check sizes buffer for arrayLength:\n%s", res.MSL)
+	}
+	const n = 37
+	const sentinel = 0xDEADBEEF
+	input := make([]float32, n)
+	for i := range input {
+		input[i] = math.Float32frombits(sentinel)
+	}
+	got := runOnMetal(t, res, input)
+	for i := range got {
+		want := math.Float32frombits(uint32(i)*2654435761 + 7)
+		if got[i] != want {
+			t.Fatalf("out[%d] (bits %#x) = %v, want %v (bits %#x) — a wrong arrayLength would leave this at the sentinel or race with an overhang thread", i, math.Float32bits(input[i]), got[i], want, math.Float32bits(want))
+		}
+	}
+}
+
 // TestBitcastReinterpretsBitsNotNumericValue is the decisive proof for a
 // silent-correctness bug go-wasmcontainers' own oracle caught on v0.45.4:
 // bitcast<f32>(u32) was translated as a numeric conversion (float(x)) —

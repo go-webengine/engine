@@ -336,9 +336,47 @@ func (tr *translator) bitcastExpr(c *wgsl.Call) (string, error) {
 	return fmt.Sprintf("as_type<%s>(%s)", typeMSL, arg), nil
 }
 
+// arrayLengthExpr implements WGSL's arrayLength(p: ptr<storage, array<T>>)
+// -> u32 (spec §17.6): the runtime-sized storage array's own element
+// count. General `&`/pointer support is deliberately out of this
+// package's own bounded scope (confirmed directly needed only for this
+// ONE shape: go-wasmcontainers' own batch/batch-grant kernel,
+// `if (id.x < arrayLength(&out)) { ... }`, has no atomics and no
+// ptr<function, T> parameters at all) — so `&` is recognized ONLY as
+// arrayLength's own first argument, never as a generally-evaluable unary
+// expression (unaryExpr's own default case still rejects it, matching
+// atomicCallExpr's identical precedent for `&resource` inside an atomic
+// built-in). The count is already sitting in the bounds-check sizes
+// buffer this binding's own entry allocates (Result.SizeMetalIndex's own
+// doc comment) — the SAME count `indexExpr`'s own clamp reads, correctly
+// the bound SUB-RANGE's element count (go-webengine/engine#391), never
+// the whole buffer's — so this is a direct field read, not a new
+// mechanism.
+func (tr *translator) arrayLengthExpr(c *wgsl.Call) (string, error) {
+	if len(c.Args) != 1 {
+		return "", unsupported("arrayLength: exactly one argument is required")
+	}
+	ptrExpr, ok := c.Args[0].(*wgsl.Unary)
+	if !ok || ptrExpr.Op != "&" {
+		return "", unsupported("arrayLength: the argument must be &resource (a pointer to a runtime-sized storage array)")
+	}
+	vo, tracked := tr.resourceOf(ptrExpr.X)
+	if !tracked {
+		return "", unsupported("arrayLength: the argument must be a tracked runtime-sized storage array resource")
+	}
+	b := tr.bindings[tr.resources[vo]]
+	if b.Kind != BindingStorageArray {
+		return "", unsupported("arrayLength: resource %q is not a runtime-sized storage array", vo.Name)
+	}
+	return fmt.Sprintf("_sizes.s%d", b.SizesIndex), nil
+}
+
 func (tr *translator) callExpr(c *wgsl.Call) (string, error) {
 	if mslName, ok := atomicBuiltinFn[c.Fn.Name]; ok {
 		return tr.atomicCallExpr(mslName, c)
+	}
+	if c.Fn.Name == "arrayLength" {
+		return tr.arrayLengthExpr(c)
 	}
 	if c.Fn.Name == "bitcast" {
 		return tr.bitcastExpr(c)
