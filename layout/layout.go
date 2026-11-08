@@ -292,6 +292,7 @@ func (l *layouter) place(node *dom.Node, st *css.Style, cx, cw float64, b *bfc) 
 	// A percentage padding, margin-top or margin-bottom is of the containing
 	// block's width (CSS Box 3 §5): cw, for a box placed in it.
 	st = resolvePercentEdges(st, cw)
+	st = l.resolveSizingKeyword(node, st, cw)
 	box := &Box{Node: node, Style: st}
 
 	bw := st.Border.Widths()
@@ -514,6 +515,19 @@ func (l *layouter) contents(box *Box, node *dom.Node, st *css.Style, cx, cw, top
 		return bottom
 	case css.DisplayTable:
 		bottom := l.table(box, node, st, cx, cw, top, b)
+		b.y = bottom
+		return bottom
+	}
+
+	// A display:block <table> (or any block box whose children are table rows)
+	// keeps table layout for them: CSS 2.1 §17.2.1 wraps the misparented rows
+	// in an anonymous table, which is shrink-to-fit, not as wide as the block.
+	if l.isAnonTableParent(node, st) {
+		tw := l.tableMaxContent(node, st)
+		if tw > cw || tw == 0 {
+			tw = cw
+		}
+		bottom := l.table(box, node, st, cx, tw, top, b)
 		b.y = bottom
 		return bottom
 	}
@@ -775,6 +789,39 @@ func resolvePercentEdges(st *css.Style, cw float64) *css.Style {
 		}
 	}
 	c.PaddingPct, c.MarginVPct = css.Pct4{}, css.Pct4{}
+	return &c
+}
+
+// resolveSizingKeyword turns `width: min-content | max-content | fit-content`
+// (CSS Sizing 3 §4) on an in-flow block box into a definite width, measured by
+// the same preferredWidth/minContentWidth the shrink-to-fit paths use. The
+// returned style is a copy; max-width/min-width still clamp it afterwards.
+func (l *layouter) resolveSizingKeyword(node *dom.Node, st *css.Style, cw float64) *css.Style {
+	if st.WidthSizing == css.SizeNone || node == nil || node.Type != dom.Element {
+		return st
+	}
+	var w float64
+	switch st.WidthSizing {
+	case css.SizeMinContent:
+		w = l.minContentWidth(node, st)
+	case css.SizeMaxContent:
+		w = l.preferredWidth(node, st)
+	default: // fit-content: min(max-content, max(min-content, available))
+		w = l.preferredWidth(node, st)
+		avail := cw - st.Margin.Left - st.Margin.Right
+		if m := l.minContentWidth(node, st); avail < m {
+			avail = m
+		}
+		if w > avail {
+			w = avail
+		}
+	}
+	c := *st
+	if c.BoxSizing != css.BorderBox {
+		bw := c.Border.Widths()
+		w -= bw.Left + bw.Right + c.Padding.Left + c.Padding.Right
+	}
+	c.Width, c.WidthSizing = css.Length{Px: w}, css.SizeNone
 	return &c
 }
 
