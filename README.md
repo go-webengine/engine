@@ -404,6 +404,22 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **Hex literals survive their own trailing hex digits; `forceFallback-
+  Adapter` resolves null** (two fixes, 2026-11-08, round 31,
+  go-wasmcontainers report): reported from their real CI lane (GitHub's
+  macOS runner) after v0.45.8. `litMSL` stripped a numeric literal's own
+  type suffix with `TrimRight(text, "iuhfIUHF")` — a whole cutset,
+  repeatedly removed, not one character; a hex literal's digits run
+  through a-f/A-F, overlapping that cutset, so `0xFFFFFFFFu` lost its
+  real `u` suffix correctly then kept eating every trailing `F` hex
+  digit too, down to bare `0x`, which `strconv` refused outright. Fixed
+  with a `stripOneSuffix` that removes exactly one trailing occurrence of
+  the ONE suffix letter each numeric kind could ever have — an integer
+  branch never strips `f`/`F`, since a hex integer literal has no float
+  suffix at all. Separately, `requestAdapter({forceFallbackAdapter:
+  true})` ignored its own argument, handing back the real hardware
+  adapter; it now always resolves `null` (this binding has no software
+  adapter, and WebGPU §4.4.1 never allows hardware as a substitute).
 - **A shader-creation error now surfaces at `createShaderModule`, not
   later** (fix, 2026-11-08, round 30, go-wasmcontainers report): reported
   on batch-shaders, their last red container case — a module using the

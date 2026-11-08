@@ -110,6 +110,35 @@ func TestRequestAdapterNeverRejects(t *testing.T) {
 	}
 }
 
+// TestRequestAdapterForceFallbackResolvesNull is go-wasmcontainers' own
+// exact reported gap (TestBatchFallbackRefused, their CI runner only —
+// "the browser still offers a hardware adapter: the flag did not force
+// SwiftShader"): requestAdapter({forceFallbackAdapter: true}) used to
+// ignore its own argument entirely and hand back the real hardware
+// adapter regardless. WebGPU §4.4.1 requires forceFallbackAdapter to
+// resolve with a SOFTWARE adapter "if one exists, else null" — never the
+// hardware one as a substitute. This binding has no software adapter at
+// all, so the only spec-correct answer, with or without a real GPU on
+// this machine, is null — the one requestAdapter() case this test does
+// NOT skip when there is no usable GPU, since null is also exactly what
+// a real GPU machine must see.
+func TestRequestAdapterForceFallbackResolvesNull(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter({ forceFallbackAdapter: true }).then(function(a) {
+			document.body.setAttribute('data-adapter', a === null ? 'null' : 'ok');
+		}, function(e) {
+			document.body.setAttribute('data-adapter', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-adapter"); got != "null" {
+		t.Fatalf("data-adapter = %q, want %q (forceFallbackAdapter must resolve null — this binding has no software adapter to hand back instead) logs=%v", got, "null", logs)
+	}
+}
+
 // TestRequestDeviceIsOneTimePerAdapter proves the spec's own one-time rule:
 // a second requestDevice() call on the SAME adapter rejects.
 func TestRequestDeviceIsOneTimePerAdapter(t *testing.T) {
