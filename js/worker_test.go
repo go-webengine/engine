@@ -1176,3 +1176,121 @@ func TestReentrantResumeAfterEventLoopResume(t *testing.T) {
 	}
 	mustHave(t, logs, "REENTRY-OK")
 }
+
+// TestWasmModulePostMessageBetweenWorkers reproduces go-wasmcontainers'
+// own exact confirmed shape (their engine worker compiles each guest
+// once and posts the resulting WebAssembly.Module to a container
+// worker, which instantiates it there): one worker compiles a module and
+// posts the Module object itself (not its bytes) through the main
+// document to a SECOND, SEPARATE worker, which instantiates it and
+// calls its exported function — proving the posted Module is recognized
+// as a real WebAssembly.Module (not silently cloned as an empty plain
+// object) and is genuinely instantiable on the receiving side, which
+// requires wasmRT's own shared-Runtime-across-workers fix: wazero's own
+// CompiledModule cannot be instantiated under a Runtime other than the
+// one that compiled it.
+func TestWasmModulePostMessageBetweenWorkers(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/compiler.js":
+			w.Write([]byte(
+				wasmFixtureScript(t) + `
+				WebAssembly.compile(bytes).then(function(mod) {
+					postMessage(mod);
+				});
+			`))
+		case "/instantiator.js":
+			w.Write([]byte(`
+				onmessage = function(e) {
+					WebAssembly.instantiate(e.data, {env: {host_offset: function(x) { return x + 1000; }}}).then(function(instance) {
+						postMessage('add=' + instance.exports.add(2, 3) + ' isModule=' + (e.data instanceof WebAssembly.Module));
+					}, function(err) {
+						postMessage('REJECTED:' + err);
+					});
+				};
+			`))
+			return
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var instantiator = new Worker('`+srv.URL+`/instantiator.js');
+		instantiator.onmessage = function(e) { document.body.setAttribute('data-result', e.data); };
+		var compiler = new Worker('`+srv.URL+`/compiler.js');
+		compiler.onmessage = function(e) { instantiator.postMessage(e.data); };
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	want := "add=1005 isModule=true"
+	if got, _ := dom.Find(root, "body").Attribute("data-result"); got != want {
+		t.Fatalf("data-result = %q, want %q, logs=%v", got, want, logs)
+	}
+}
+
+// TestWasmModulePostMessageSiblingInstancesAreIndependent covers
+// go-wasmcontainers' own second confirmed concern: their engine
+// instantiates the SAME compiled guest many times concurrently (one per
+// container), every instance sharing the module's own default/custom-
+// section name — which a shared Runtime (required for the postMessage
+// support above) would otherwise reject with "module[...] has already
+// been instantiated" on the second instantiation (confirmed directly,
+// against wazero itself, before writing this fix: instantiateWasm now
+// always instantiates anonymously). This proves two SEPARATE workers,
+// each receiving the SAME posted Module and each instantiating it
+// independently, both succeed — and that one worker finishing (closing)
+// does not disturb the other's own already-running instance of the
+// identical module.
+func TestWasmModulePostMessageSiblingInstancesAreIndependent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/compiler.js":
+			w.Write([]byte(
+				wasmFixtureScript(t) + `
+				WebAssembly.compile(bytes).then(function(mod) {
+					postMessage(mod);
+				});
+			`))
+		case "/instantiator.js":
+			w.Write([]byte(`
+				onmessage = function(e) {
+					WebAssembly.instantiate(e.data, {env: {host_offset: function(x) { return x + 1000; }}}).then(function(instance) {
+						postMessage('add=' + instance.exports.add(2, 3));
+						close();
+					}, function(err) {
+						postMessage('REJECTED:' + err);
+					});
+				};
+			`))
+			return
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	root, logs, res := runJS(t, page(`
+		var i1 = new Worker('`+srv.URL+`/instantiator.js');
+		var i2 = new Worker('`+srv.URL+`/instantiator.js');
+		i1.onmessage = function(e) { document.body.setAttribute('data-r1', e.data); };
+		i2.onmessage = function(e) { document.body.setAttribute('data-r2', e.data); };
+		var compiler = new Worker('`+srv.URL+`/compiler.js');
+		compiler.onmessage = function(e) {
+			i1.postMessage(e.data);
+			i2.postMessage(e.data);
+		};
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	want := "add=1005"
+	if got, _ := dom.Find(root, "body").Attribute("data-r1"); got != want {
+		t.Fatalf("data-r1 = %q, want %q, logs=%v", got, want, logs)
+	}
+	if got, _ := dom.Find(root, "body").Attribute("data-r2"); got != want {
+		t.Fatalf("data-r2 = %q, want %q (sibling instance of the same module, closing one must not affect the other), logs=%v", got, want, logs)
+	}
+}

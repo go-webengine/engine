@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/dop251/goja"
+	"github.com/tetratelabs/wazero"
 )
 
 // cloneMaxDepth / cloneMaxValues bound a structured-clone walk so a
@@ -79,6 +80,25 @@ type clonedSharedView struct {
 // worker posts the Memory object itself (not just its .buffer) to a second,
 // plain-JS worker.
 type clonedWasmMemory struct{ sb *sharedBuffer }
+
+// clonedWasmModule carries a WebAssembly.Module wrapper's own
+// wazero.CompiledModule through the clone — the compiled form, never
+// re-decoded or re-compiled, per the WebAssembly JS API's own "Module is
+// Serializable" contract (HTML's structured clone, within one agent
+// cluster, hands over the SAME compiled result, not a fresh compile of
+// the original bytes). Confirmed directly needed by go-wasmcontainers:
+// their engine worker compiles each guest once and posts the resulting
+// Module to a container worker, which instantiates it there. Requires
+// every binder in the render tree to share ONE wazero.Runtime
+// (wasm.go's wasmRT) — a CompiledModule is tied to the specific Runtime
+// that compiled it (confirmed directly: instantiating one under a
+// different Runtime fails with "source module must be compiled before
+// instantiation"), so without a shared Runtime a posted Module would be
+// unusable on the receiving side regardless of this clone support.
+type clonedWasmModule struct {
+	compiled wazero.CompiledModule
+	isShared bool
+}
 
 // typedArrayOrDataViewKinds names every TypedArray constructor plus DataView
 // — the full set this binding will reconstruct a shared VIEW as, broader
@@ -169,6 +189,16 @@ func cloneAt(v goja.Value, depth int, n *int) (clonedValue, error) {
 					return nil, &cloneErr{"structured clone: a non-shared WebAssembly.Memory cannot be cloned (construct it with shared: true to share it with a Worker)"}
 				}
 				return clonedWasmMemory{sb: sb}, nil
+			}
+			// A WebAssembly.Module wrapper (wasm.go) is checked right
+			// alongside Memory, for the identical reason: it is an equally
+			// bespoke, property-less Go-built object that would otherwise
+			// clone as an empty plain object (Export() on a goja object
+			// with no own properties returns an empty map, not an error —
+			// the same silent-wrong-clone class the comment below already
+			// documents for ArrayBuffer/Map/Set/TypedArray).
+			if compiled, isShared, isModule := lookupWasmModule(obj); isModule {
+				return clonedWasmModule{compiled: compiled, isShared: isShared}, nil
 			}
 			// ClassName()=="Object" is NOT reliable evidence this is a plain
 			// object in this goja version — confirmed directly (a small Go
@@ -275,6 +305,14 @@ func reconstructValue(b *binder, cv clonedValue) goja.Value {
 		return b.wrapSharedArrayBuffer(x.sb)
 	case clonedWasmMemory:
 		return b.wrapSharedWasmMemory(x.sb)
+	case clonedWasmModule:
+		// A fresh JS wrapper in THIS VM, stamped with b's own
+		// wasmModuleProto (so instanceof WebAssembly.Module holds here
+		// too) and registered in both b's own per-VM map and the shared
+		// package-level registry (wrapWasmModule, wasm.go) — but the
+		// SAME underlying wazero.CompiledModule, never re-decoded or
+		// re-compiled, matching the spec's own Serializable contract.
+		return b.wrapWasmModule(x.compiled, x.isShared)
 	case clonedSharedView:
 		// Builds a FRESH ArrayBuffer wrapper for x.sb in this VM (the same
 		// shared []byte, a new JS-level object) rather than trying to find

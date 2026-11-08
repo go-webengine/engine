@@ -404,6 +404,31 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`WebAssembly.Module` survives `postMessage` across workers** (feature,
+  2026-11-08, round 16, engine#342 fallout): go-wasmcontainers compile
+  each guest module ONCE in an engine worker and post the resulting
+  `Module` to a container worker, which instantiates it there — never the
+  bytes, recompiling per-container at their scale being wasted work.
+  Required sharing one `wazero.Runtime` across every worker (a
+  `CompiledModule` cannot be instantiated under a different Runtime than
+  the one that compiled it, confirmed directly), which in turn exposed
+  two real collision pitfalls go-wasmcontainers flagged in advance and
+  both confirmed directly, isolated, before touching production code:
+  wazero refuses a second instance under a module name already live on
+  a shared Runtime (fixed: `instantiateWasm` always instantiates
+  anonymously), and the temporary host-import module `buildHostImports`
+  registers under the guest's own required namespace (e.g. `"env"`)
+  collides the SAME way when two guests importing from `"env"`
+  instantiate concurrently on the shared Runtime — confirmed that wazero
+  binds an import at instantiate time, not by live name lookup, so
+  closing that host module immediately after and reusing the freed name
+  for the next guest doesn't disturb either guest's own already-bound
+  calls; fixed with a new mutex (`wasmInstantiateMu`) serializing just
+  that narrow window. New tests post a compiled `Module` through the
+  main document to a second worker and confirm it instantiates and
+  satisfies `instanceof WebAssembly.Module` there, and confirm two
+  SEPARATE workers instantiating the SAME posted Module concurrently
+  both succeed independently.
 - **THE actual cause, independently confirmed against go-wasmcontainers'
   own exact reproduction** (fix, 2026-11-08, round 15): rounds 12-14
   (below) were all real, independently-justified fixes, but none was
