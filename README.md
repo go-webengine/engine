@@ -432,7 +432,17 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   first test to exercise the full `wasm_exec.js`/`go.run` shape, not
   just a bare WASM module) — verified in both directions, including
   reproducing the EXACT same crash signature inside this repo's own
-  `go test` process when the fix was temporarily reverted.
+  `go test` process when the fix was temporarily reverted. Follow-up
+  found by reading, not a new bug: a heavier, nested-WASM-in-WASM
+  workload started tripping the EXISTING heap-safety guard
+  (`heapGuardedContext`, default ceiling `baseline + 768 MiB`, from
+  round 172's own real memory-exhaustion defect) — the Interpreter
+  engine's own execution state needs more Go-heap for the same work
+  than the Compiler engine's JIT-compiled code did. The guard cancels
+  its OWN derived child context, not the caller's, which is why the
+  caller's own `ctx.Err()` stayed nil throughout despite scripts being
+  interrupted — resolved by raising `Engine.MaxJSHeapBytes` on the
+  caller's side for workloads this heavy, not a code change here.
 - **A real device-leak fix, independently real but not THE crash either**
   (fix, 2026-11-08, round 14): round 13's fix below was
   also real, but go-wasmcontainers' own retest proved it wasn't their
