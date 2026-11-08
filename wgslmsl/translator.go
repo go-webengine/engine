@@ -5,6 +5,7 @@ package wgslmsl
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/go-gfx/wgsl"
@@ -65,13 +66,14 @@ func builtinAttr(name string) (string, error) {
 // information go-gfx/wgsl's Check produced, the resource bindings
 // discovered so far (in Metal buffer index order), and the output buffer.
 type translator struct {
-	info       *wgsl.Info
-	bindings   []Binding
-	resources  map[*wgsl.VarObj]int // VarObj -> index into bindings
-	userFuncs  map[*wgsl.FuncObj]bool
-	sizesCount int // number of BindingStorageArray resources seen so far
-	indent     int
-	buf        strings.Builder
+	info        *wgsl.Info
+	bindings    []Binding
+	resources   map[*wgsl.VarObj]int // VarObj -> index into bindings
+	userFuncs   map[*wgsl.FuncObj]bool
+	helperExtra map[*wgsl.FuncObj]*helperExtraParams
+	sizesCount  int // number of BindingStorageArray resources seen so far
+	indent      int
+	buf         strings.Builder
 }
 
 func (tr *translator) line(format string, a ...interface{}) {
@@ -152,40 +154,46 @@ func (tr *translator) translateEntryPoint(ep *wgsl.EntryPoint) (*Result, error) 
 	}, nil
 }
 
+// helperExtraParams is what emitHelperFuncs threads into a helper's own MSL
+// signature, beyond its WGSL-declared parameters, so it can reach whatever
+// resource it (or anything it itself calls) touches — a resource is NEVER
+// visible to an ordinary MSL function just because it is in scope in WGSL
+// (module-scope there, but Metal only ever binds a buffer to an ENTRY
+// kernel's own [[buffer(N)]] parameter list; every other function sees one
+// only if it is handed one, like any other argument).
+type helperExtraParams struct {
+	// resources is every resource this function (or, transitively, a
+	// function it calls) needs, in tr.bindings order (a deterministic,
+	// binding-ordered parameter list, not source order).
+	resources []*wgsl.VarObj
+	// needsSizes is true when any entry of resources is BindingStorageArray
+	// — such a resource's own index clamp (indexExpr) always reads _sizes,
+	// so whatever function reaches it (directly, or only by passing the
+	// resource on to a callee) must receive _sizes too.
+	needsSizes bool
+}
+
 // emitHelperFuncs emits, as real MSL functions, every WGSL function the
 // entry point (transitively) calls — in callee-before-caller order, since
 // MSL/C++ requires a function be declared above any call to it, unlike
 // WGSL, which has no such restriction (a function may call one declared
-// later in the source). Scoped to pure value functions: a helper that
-// directly touches a resource variable is rejected, clear and named — a
-// resource is wired to the entry kernel's OWN buffer parameter list
-// (entryParams) and nowhere else; threading it through a helper's own
-// parameter list is a real feature this package does not implement yet,
-// never something silently dropped. Populates tr.userFuncs so callExpr can
-// recognize a call to one of these, rather than rejecting it as unknown.
+// later in the source). A helper that touches a resource (directly, or via
+// a callee that needs one) gets it threaded through as an extra parameter
+// (helperExtraParams) — go-wasmcontainers' own confirmed real shape: an
+// "index math" helper reading a module-scope storage/uniform buffer
+// directly, not through its own WGSL parameter list. Populates tr.userFuncs
+// so callExpr can recognize a call to one of these, rather than rejecting
+// it as unknown.
 func (tr *translator) emitHelperFuncs(ep *wgsl.EntryPoint) error {
 	tr.userFuncs = map[*wgsl.FuncObj]bool{}
+	tr.helperExtra = map[*wgsl.FuncObj]*helperExtraParams{}
 	for _, f := range orderedHelperFuncs(tr.info, ep) {
-		var resourceErr error
-		walkFuncBody(f.Decl.Body, func(e wgsl.Expr) {
-			if resourceErr != nil {
-				return
-			}
-			id, ok := e.(*wgsl.Ident)
-			if !ok {
-				return
-			}
-			vo, ok := tr.info.Objects[id].(*wgsl.VarObj)
-			if !ok {
-				return
-			}
-			if _, tracked := tr.resources[vo]; tracked {
-				resourceErr = unsupported("helper function %q accesses resource %q directly (only the entry point itself may touch a resource; pass the value through a parameter instead)", f.Name, vo.Name)
-			}
-		})
-		if resourceErr != nil {
-			return resourceErr
+		extra, err := tr.resolveHelperExtra(f)
+		if err != nil {
+			return err
 		}
+		tr.helperExtra[f] = extra
+
 		retMSL := "void"
 		if f.Ret != wgsl.Void {
 			m, err := mslType(f.Ret)
@@ -194,13 +202,23 @@ func (tr *translator) emitHelperFuncs(ep *wgsl.EntryPoint) error {
 			}
 			retMSL = m
 		}
-		params := make([]string, len(f.Params))
-		for i, p := range f.Params {
+		params := make([]string, 0, len(f.Params)+len(extra.resources)+1)
+		for _, p := range f.Params {
 			m, err := mslType(p.Type)
 			if err != nil {
 				return err
 			}
-			params[i] = fmt.Sprintf("%s %s", m, identMSL(p.Name))
+			params = append(params, fmt.Sprintf("%s %s", m, identMSL(p.Name)))
+		}
+		for _, vo := range extra.resources {
+			decl, err := tr.resourceParamDecl(vo)
+			if err != nil {
+				return err
+			}
+			params = append(params, fmt.Sprintf("%s %s", decl, identMSL(vo.Name)))
+		}
+		if extra.needsSizes {
+			params = append(params, "constant _Sizes& _sizes")
 		}
 		tr.line("%s %s(%s) {", retMSL, identMSL(f.Name), strings.Join(params, ", "))
 		tr.indent++
@@ -213,6 +231,65 @@ func (tr *translator) emitHelperFuncs(ep *wgsl.EntryPoint) error {
 		tr.userFuncs[f] = true
 	}
 	return nil
+}
+
+// resolveHelperExtra computes f's own helperExtraParams: the resources f
+// directly references by identifier, UNION the resources every function f
+// calls already needs (tr.helperExtra, already resolved — orderedHelperFuncs
+// guarantees every callee is processed before f). Ordered by tr.bindings
+// index (Metal buffer order), not encounter order, so two helpers needing
+// the same two resources always list them the same way — not meaningful on
+// its own, just a deterministic choice over an arbitrary one.
+func (tr *translator) resolveHelperExtra(f *wgsl.FuncObj) (*helperExtraParams, error) {
+	need := map[*wgsl.VarObj]bool{}
+	for _, vo := range tr.directResources(f) {
+		need[vo] = true
+	}
+	for _, callee := range funcCallees(tr.info, f) {
+		if ci := tr.helperExtra[callee]; ci != nil {
+			for _, vo := range ci.resources {
+				need[vo] = true
+			}
+		}
+	}
+	resources := make([]*wgsl.VarObj, 0, len(need))
+	for vo := range need {
+		resources = append(resources, vo)
+	}
+	sort.Slice(resources, func(i, j int) bool {
+		return tr.resources[resources[i]] < tr.resources[resources[j]]
+	})
+	needsSizes := false
+	for _, vo := range resources {
+		if tr.bindings[tr.resources[vo]].Kind == BindingStorageArray {
+			needsSizes = true
+		}
+	}
+	return &helperExtraParams{resources: resources, needsSizes: needsSizes}, nil
+}
+
+// directResources returns the distinct resource VarObjs f's own body
+// directly references by identifier (never transitively through a callee —
+// resolveHelperExtra's own job), in encounter order.
+func (tr *translator) directResources(f *wgsl.FuncObj) []*wgsl.VarObj {
+	var out []*wgsl.VarObj
+	seen := map[*wgsl.VarObj]bool{}
+	walkFuncBody(f.Decl.Body, func(e wgsl.Expr) {
+		id, ok := e.(*wgsl.Ident)
+		if !ok {
+			return
+		}
+		vo, ok := tr.info.Objects[id].(*wgsl.VarObj)
+		if !ok || seen[vo] {
+			return
+		}
+		if _, tracked := tr.resources[vo]; !tracked {
+			return
+		}
+		seen[vo] = true
+		out = append(out, vo)
+	})
+	return out
 }
 
 // orderedHelperFuncs returns every non-entry function ep's entry point
@@ -437,40 +514,56 @@ func intOr(p *int64, def int) int {
 	return int(*p)
 }
 
+// resourceParamDecl is r's own MSL parameter TYPE (qualifier, element type,
+// pointer/reference sigil — no name, no [[buffer(N)]] attribute, which only
+// ever belongs on the entry kernel's own top-level parameter list, never on
+// an ordinary MSL function): the one per-Kind shape every place that binds
+// r as a parameter needs (entryParams for the kernel itself, emitHelperFuncs
+// for a helper function that needs r threaded through to reach it).
+func (tr *translator) resourceParamDecl(r *wgsl.VarObj) (string, error) {
+	b := tr.bindings[tr.resources[r]]
+	switch b.Kind {
+	case BindingStorageArray:
+		arr := derefType(r.Store).(*wgsl.ArrayType)
+		elemMSL, err := mslType(arr.Elem)
+		if err != nil {
+			return "", err
+		}
+		qualifier := "device"
+		if !r.Access.Writable() {
+			qualifier = "const device"
+		}
+		return fmt.Sprintf("%s %s*", qualifier, elemMSL), nil
+	case BindingAtomic:
+		at := derefType(r.Store).(*wgsl.AtomicType)
+		atomicMSL, err := atomicMSLType(at)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("device %s*", atomicMSL), nil
+	case BindingUniform:
+		uMSL, err := mslType(derefType(r.Store))
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("constant %s&", uMSL), nil
+	}
+	return "", unsupported("resource %q: unknown binding kind", r.Name)
+}
+
 // entryParams builds the kernel function's own parameter list: one
-// `[[buffer(N)]]` parameter per resolved resource (its own MSL shape
-// depending on its Kind — see BindingKind's own doc comment), the `_Sizes`
-// struct if sizeIndex >= 0, then one builtin parameter per ep.Inputs entry.
+// `[[buffer(N)]]` parameter per resolved resource (its own MSL shape from
+// resourceParamDecl), the `_Sizes` struct if sizeIndex >= 0, then one
+// builtin parameter per ep.Inputs entry.
 func (tr *translator) entryParams(ep *wgsl.EntryPoint, sizeIndex int) ([]string, error) {
 	var params []string
 	for _, r := range ep.Resources {
-		b := tr.bindings[tr.resources[r]]
-		switch b.Kind {
-		case BindingStorageArray:
-			arr := derefType(r.Store).(*wgsl.ArrayType)
-			elemMSL, err := mslType(arr.Elem)
-			if err != nil {
-				return nil, err
-			}
-			qualifier := "device"
-			if !r.Access.Writable() {
-				qualifier = "const device"
-			}
-			params = append(params, fmt.Sprintf("%s %s* %s [[buffer(%d)]]", qualifier, elemMSL, identMSL(r.Name), b.MetalIndex))
-		case BindingAtomic:
-			at := derefType(r.Store).(*wgsl.AtomicType)
-			atomicMSL, err := atomicMSLType(at)
-			if err != nil {
-				return nil, err
-			}
-			params = append(params, fmt.Sprintf("device %s* %s [[buffer(%d)]]", atomicMSL, identMSL(r.Name), b.MetalIndex))
-		case BindingUniform:
-			uMSL, err := mslType(derefType(r.Store))
-			if err != nil {
-				return nil, err
-			}
-			params = append(params, fmt.Sprintf("constant %s& %s [[buffer(%d)]]", uMSL, identMSL(r.Name), b.MetalIndex))
+		decl, err := tr.resourceParamDecl(r)
+		if err != nil {
+			return nil, err
 		}
+		b := tr.bindings[tr.resources[r]]
+		params = append(params, fmt.Sprintf("%s %s [[buffer(%d)]]", decl, identMSL(r.Name), b.MetalIndex))
 	}
 	if sizeIndex >= 0 {
 		params = append(params, fmt.Sprintf("constant _Sizes& _sizes [[buffer(%d)]]", sizeIndex))

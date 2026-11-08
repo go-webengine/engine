@@ -310,9 +310,38 @@ func (tr *translator) atomicCallExpr(mslName string, c *wgsl.Call) (string, erro
 	return fmt.Sprintf("metal::%s(%s)", mslName, strings.Join(args, ", ")), nil
 }
 
+// bitcastExpr implements WGSL's bitcast<T>(e) (spec §17.2 Bit Reinterpretation
+// Built-in Functions): a REINTERPRETATION of e's bits as T, same size, never
+// a numeric conversion — bitcast<f32>(1u) is the float whose bits are the
+// integer 1 (a tiny subnormal), not 1.0. callExpr's own generic "callee is a
+// type name" branch would otherwise emit a C-style conversion (float(x)),
+// giving silently wrong values whenever real WGSL content relies on bitcast
+// (confirmed directly: go-wasmcontainers' own Gemm/MatMul kernels decode an
+// f32 alpha stored as raw bits in a u32 uniform buffer, reading ~1e9×
+// (0x3F800000, 1.0f's own bits read as an integer) too large before this
+// fix). Metal's own as_type<T> is exactly this bit reinterpretation, for a
+// scalar AND a same-arity vector alike, so one emission covers both.
+func (tr *translator) bitcastExpr(c *wgsl.Call) (string, error) {
+	if len(c.Args) != 1 {
+		return "", unsupported("bitcast: exactly one argument is required")
+	}
+	arg, err := tr.expr(c.Args[0])
+	if err != nil {
+		return "", err
+	}
+	typeMSL, err := mslType(tr.exprType(c))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("as_type<%s>(%s)", typeMSL, arg), nil
+}
+
 func (tr *translator) callExpr(c *wgsl.Call) (string, error) {
 	if mslName, ok := atomicBuiltinFn[c.Fn.Name]; ok {
 		return tr.atomicCallExpr(mslName, c)
+	}
+	if c.Fn.Name == "bitcast" {
+		return tr.bitcastExpr(c)
 	}
 	args := make([]string, len(c.Args))
 	for i, a := range c.Args {
@@ -338,7 +367,16 @@ func (tr *translator) callExpr(c *wgsl.Call) (string, error) {
 	}
 
 	if fo, ok := tr.info.Objects[c.Fn].(*wgsl.FuncObj); ok && tr.userFuncs[fo] {
-		return fmt.Sprintf("%s(%s)", identMSL(fo.Name), joined), nil
+		callArgs := append([]string{}, args...)
+		if extra := tr.helperExtra[fo]; extra != nil {
+			for _, vo := range extra.resources {
+				callArgs = append(callArgs, identMSL(vo.Name))
+			}
+			if extra.needsSizes {
+				callArgs = append(callArgs, "_sizes")
+			}
+		}
+		return fmt.Sprintf("%s(%s)", identMSL(fo.Name), strings.Join(callArgs, ", ")), nil
 	}
 
 	return "", unsupported("call to %q (not a supported built-in, and this helper function cannot be translated)", c.Fn.Name)

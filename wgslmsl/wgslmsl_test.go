@@ -207,6 +207,53 @@ func TestHelperFunctionCalledFromInsideAForLoop(t *testing.T) {
 	}
 }
 
+// TestBitcastReinterpretsBitsNotNumericValue is the decisive proof for a
+// silent-correctness bug go-wasmcontainers' own oracle caught on v0.45.4:
+// bitcast<f32>(u32) was translated as a numeric conversion (float(x)) —
+// 1u became 1.0f — instead of a bit reinterpretation (the actual bits of
+// 1u, 1.1754944e-38, a subnormal). Confirmed in their own Gemm/MatMul
+// kernels, which decode an f32 alpha stored as raw bits in a u32 uniform:
+// every result came back ~1e9 too large (0x3F800000, 1.0f's own bits, read
+// as an integer). Covers both scalar (f32<->u32) and vector
+// (vec4<f32><->vec4<u32>, go-wasmcontainers' own explicit ask) bitcasts in
+// one kernel, through a storage array declared array<u32> — the host-side
+// harness (runOnMetal) writes/reads raw IEEE-754 bit patterns regardless of
+// the WGSL-declared element type, so a correct answer here is only
+// possible if the GPU itself reinterpreted bits, never computed one.
+func TestBitcastReinterpretsBitsNotNumericValue(t *testing.T) {
+	const src = `
+		@group(0) @binding(0) var<storage, read_write> data: array<u32>;
+		@compute @workgroup_size(1)
+		fn main() {
+			let a = bitcast<f32>(data[0]);
+			let b = bitcast<f32>(data[1]);
+			data[0] = bitcast<u32>(a * b);
+
+			let v = bitcast<vec4<f32>>(vec4<u32>(data[2], data[3], data[4], data[5]));
+			let w = v * 2.0;
+			let wu = bitcast<vec4<u32>>(w);
+			data[2] = wu.x;
+			data[3] = wu.y;
+			data[4] = wu.z;
+			data[5] = wu.w;
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if !strings.Contains(res.MSL, "as_type<") {
+		t.Fatalf("generated MSL has no as_type<> bit reinterpretation:\n%s", res.MSL)
+	}
+	got := runOnMetal(t, res, []float32{3, 2, 1, 2, 3, 4})
+	want := []float32{6, 2, 2, 4, 6, 8} // data[0] = 3*2; data[2:6] = [1,2,3,4] * 2
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v (bit-for-bit) — a numeric conversion instead of a bit reinterpretation would give wildly different numbers, not merely imprecise ones", got, want)
+		}
+	}
+}
+
 // TestOutOfBoundsIndexIsClamped is the security proof: a kernel that reads
 // at an index far past its own buffer's length must not fault or read
 // adjacent GPU memory — it must read the one real, defined value this
@@ -422,6 +469,55 @@ func TestControlFlowAndBuiltinMath(t *testing.T) {
 	}
 }
 
+// TestHelperFunctionThreadsResourceTransitively is the structural proof for
+// go-wasmcontainers' own exact reported shape (kernels.go:96's `wm`): a
+// helper that reads a module-scope resource DIRECTLY (wm reads prm), called
+// from ANOTHER helper that never references prm itself (wmPlusOne only
+// calls wm) — wmPlusOne must still receive prm (and _sizes, since prm is a
+// storage array) as its own extra parameter, purely to pass it on, or wm's
+// own call inside it would reference an identifier nothing declared.
+// Checked on the generated MSL text, not dispatched: this is a claim about
+// which parameters exist and which names appear in which call, exactly
+// what a translation-level test should assert directly, matching this
+// file's own TestUniformBudgetAndAtomicFlag. A real, dispatched GPU
+// end-to-end of the same shape lives at js/webgpu_test.go's own level
+// (TestComputePipelineWithHelperFunctionReadingAResource), where a second
+// storage buffer can actually be bound.
+func TestHelperFunctionThreadsResourceTransitively(t *testing.T) {
+	const src = `
+		@group(0) @binding(0) var<storage, read> prm: array<u32>;
+		@group(0) @binding(1) var<storage, read_write> data: array<f32>;
+
+		fn wm(f: u32, d: u32) -> u32 {
+			return prm[f * 3u + d];
+		}
+		fn wmPlusOne(f: u32, d: u32) -> u32 {
+			return wm(f, d) + 1u;
+		}
+
+		@compute @workgroup_size(1)
+		fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+			data[id.x] = f32(wmPlusOne(id.x, 0u));
+		}
+	`
+	res, err := Translate(src, Options{})
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if !strings.Contains(res.MSL, "wm(uint f, uint d, const device uint* prm, constant _Sizes& _sizes)") {
+		t.Fatalf("wm's own signature is missing prm/_sizes:\n%s", res.MSL)
+	}
+	if !strings.Contains(res.MSL, "wmPlusOne(uint f, uint d, const device uint* prm, constant _Sizes& _sizes)") {
+		t.Fatalf("wmPlusOne's own signature is missing prm/_sizes (it never reads prm itself, only wm does — must still receive it to pass on):\n%s", res.MSL)
+	}
+	if !strings.Contains(res.MSL, "wm(f, d, prm, _sizes)") {
+		t.Fatalf("wmPlusOne's own call to wm is missing the forwarded prm/_sizes arguments:\n%s", res.MSL)
+	}
+	if !strings.Contains(res.MSL, "wmPlusOne(id.x, 0u, prm, _sizes)") {
+		t.Fatalf("main's own call to wmPlusOne is missing the forwarded prm/_sizes arguments:\n%s", res.MSL)
+	}
+}
+
 // TestUnsupportedConstructsAreRejected proves this package's own bounded
 // scope is enforced, not silently ignored: each of these is a real WGSL
 // construct outside the compute-subset this package supports, and each must
@@ -433,16 +529,6 @@ func TestUnsupportedConstructsAreRejected(t *testing.T) {
 			@vertex
 			fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 				return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-			}
-		`,
-		"helper function touching a resource directly": `
-			@group(0) @binding(0) var<storage, read_write> data: array<f32>;
-			fn helper(i: u32) {
-				data[i] = data[i] + 1.0;
-			}
-			@compute @workgroup_size(1)
-			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
-				helper(id.x);
 			}
 		`,
 		"struct-typed uniform buffer resource": `
