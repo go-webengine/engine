@@ -404,6 +404,27 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **A self-requeuing short-delay timer could starve an older, larger-delay
+  one indefinitely** (fix, 2026-11-08, round 23, engine#342 fallout): found
+  while investigating a new go-wasmcontainers hang on v0.45.0, via a minimal
+  `GOOS=js` program whose background goroutine keeps re-arming its own
+  `time.Timer` — exactly `go-gfx/webgpu`'s own `kickLoop` shape, which exists
+  so Go's "all goroutines asleep" deadlock detector doesn't fire while a
+  sibling goroutine awaits a promise. `drainTimers`' own "ascending delay,
+  ties FIFO" selection compared each due job's raw, static delay; a job that
+  keeps re-queueing a fresh copy of itself never grows that field, so it
+  always wins over an older job with a larger delay, for as many sweeps as
+  it keeps re-arming. This narrower defect does not, by itself, explain
+  go-wasmcontainers' own hang — their driver's `EnableWorkerStreaming` gates
+  every job's first firing by a real wall-clock `readyAt`, under which mode
+  a further reproduction points at the render's own live-loop/callback path
+  instead, still open. Each `timerJob` now ages via a `skipped` counter,
+  incremented whenever a sweep passes it over for a smaller-priority due
+  job; selection compares `delay - skipped`, so a persistently-starved job's
+  priority strictly falls until it wins — bounded and deterministic, not
+  dependent on real wall-clock time (a wall-clock-based attempt turned out
+  flaky: a tight unit-test loop doesn't reliably advance even one
+  millisecond between sweeps).
 - **`Blob`, `URL.createObjectURL`/`revokeObjectURL`, and `importScripts`
   resolving a `blob:` URL** (feature, 2026-11-08, round 22, engine#342
   fallout): round 21's fix got go-wasmcontainers their first fully green

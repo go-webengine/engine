@@ -1315,6 +1315,40 @@ func TestTimerDelayTiesAreFIFO(t *testing.T) {
 	}
 }
 
+// TestTimerSelfRequeuingChainDoesNotStarveAnOlderJob confirms a job that
+// keeps re-queueing a fresh, short-delay copy of itself (Go's own
+// wasm_exec.js does this for its goroutine-timer resume callback) cannot
+// starve an older, larger-delay job forever: delay-ascending selection must
+// compare a virtual deadline (when a job was queued, plus its delay), not
+// the raw delay alone, or a perpetually-refreshed short chain always wins
+// the comparison against a job that arrived earlier and has been waiting
+// longer. This reproduced go-wasmcontainers' own v0.45.0 GPU hang exactly:
+// an already-pending page-level setTimeout never fired for the engine's
+// entire JSTimeout, confirmed independent of WebGPU, Workers, or containers.
+func TestTimerSelfRequeuingChainDoesNotStarveAnOlderJob(t *testing.T) {
+	_, logs, _ := runJS(t, page(`
+		setTimeout(function(){console.log('slow')}, 10);
+		// Reschedules forever at a doubling, capped gap — go-gfx/webgpu's own
+		// kickLoop shape exactly (500us, doubling to 8ms, always < "slow"'s
+		// own 10ms delay, so a raw-delay comparison alone never lets "slow"
+		// through at all). A virtual deadline closes that 2ms gap within a
+		// handful of iterations instead of needing however many thousand it
+		// takes real wall-clock slippage alone to close a fixed, tiny gap
+		// (flaky on a fast machine). Only the engine's own maxTimerJobs cap
+		// bounds this, never the chain itself: starvation must be confirmed
+		// against an unbounded chain, since one that stops on its own would
+		// let "slow" through regardless.
+		var gap = 1;
+		(function tick(){
+			setTimeout(tick, gap);
+			gap = Math.min(gap * 2, 8);
+		})();
+	`))
+	if !has(logs, "slow") {
+		t.Fatalf("an older, larger-delay job was starved forever by a self-requeuing short-delay chain (logs=%v)", logs)
+	}
+}
+
 func TestConstructors(t *testing.T) {
 	_, logs, _ := runJS(t, page(`
 		var e=new Event('x',{bubbles:true,cancelable:true});
