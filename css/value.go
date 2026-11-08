@@ -774,11 +774,11 @@ type Style struct {
 	// Auto beside it, so every shrink-to-fit path (float, inline-block, flex
 	// item) is unchanged; only a block box placed in normal flow reads it.
 	WidthSizing IntrinsicSize
-	MinWidth   Length // Auto (== none) by default
-	MaxWidth   Length // Auto (== none) by default
-	Height     Length // Auto by default
-	MinHeight  Length // Auto (== none) by default
-	MaxHeight  Length // Auto (== none) by default
+	MinWidth    Length // Auto (== none) by default
+	MaxWidth    Length // Auto (== none) by default
+	Height      Length // Auto by default
+	MinHeight   Length // Auto (== none) by default
+	MaxHeight   Length // Auto (== none) by default
 	// AspectRatio is the preferred width/height ratio from `aspect-ratio:
 	// <W>/<H>` (0 means "auto", i.e. unset — no ratio constrains sizing).
 	// Confirmed load-bearing live (round 86): Next.js's own auto-generated

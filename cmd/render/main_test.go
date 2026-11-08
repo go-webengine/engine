@@ -4,6 +4,7 @@
 package main
 
 import (
+	"image/png"
 	"os"
 	"path/filepath"
 	"testing"
@@ -113,5 +114,60 @@ func TestRunMemProfileBadPath(t *testing.T) {
 		"-memprofile", filepath.Join(dir, "nonexistent-dir", "mem.prof")}, os.Stderr)
 	if code != 1 {
 		t.Errorf("bad memprofile path: code = %d, want 1", code)
+	}
+}
+
+// -file renders with the file's own directory as base and file root, so an
+// @font-face font beside it loads (go-webengine/engine#399): a variable font's
+// weight 900 line carries several times the ink of its weight 100 line, which
+// the serif fallback (Lora, 1.3x) cannot.
+func TestRunFileLoadsRelativeFont(t *testing.T) {
+	dir := t.TempDir()
+	font, err := os.ReadFile("../../testdata/fonts/Outfit-wght.ttf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "V.ttf"), font, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	html := `<!doctype html><style>@font-face{font-family:V;src:url(V.ttf);font-weight:100 900}
+body{margin:0;font-family:V,serif;font-size:32px;line-height:40px}p{margin:0;height:40px}</style>
+<p style="font-weight:100">Weight sample</p><p style="font-weight:900">Weight sample</p>`
+	src := filepath.Join(dir, "v.html")
+	if err := os.WriteFile(src, []byte(html), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "o.png")
+	if code := run([]string{"-file", src, "-out", out, "-w", "300", "-h", "80"}, os.Stderr); code != 0 {
+		t.Fatalf("run = %d", code)
+	}
+	f, err := os.Open(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ink [2]int
+	for y := 0; y < 80; y++ {
+		for x := 0; x < 300; x++ {
+			if r, _, _, _ := img.At(x, y).RGBA(); r>>8 < 128 {
+				ink[y/40]++
+			}
+		}
+	}
+	if ink[0] == 0 || ink[1] < 3*ink[0] {
+		t.Errorf("ink at weight 100/900 = %v, want a variable font drawn at each weight", ink)
+	}
+
+	// An http(s) -base keeps local files out of reach.
+	if code := run([]string{"-file", src, "-base", "https://example.invalid/", "-out", out, "-w", "300", "-h", "80"}, os.Stderr); code != 0 {
+		t.Fatalf("run with remote base = %d", code)
+	}
+	// An explicit file: -base is honoured.
+	if code := run([]string{"-file", src, "-base", "file://" + dir + "/", "-out", out, "-w", "300", "-h", "80"}, os.Stderr); code != 0 {
+		t.Fatalf("run with file base = %d", code)
 	}
 }

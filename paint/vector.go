@@ -705,7 +705,7 @@ func (v *vpainter) text(st *css.Style, s string, x, baseline float64, col css.Co
 	pen := x
 	bold := st.FontWeight >= 600
 	for _, run := range v.f.Runs(s, st.FontFamily, st.FontWeight, st.Italic) {
-		font := v.f.font(styleKey{st.FontFamily, bold, st.Italic})
+		font := v.f.glyphFont(styleKey{st.FontFamily, bold, st.Italic}, st.FontWeight)
 		if run.Fallback {
 			font = v.f.fallbackFont(bold, st.Italic)
 		}
