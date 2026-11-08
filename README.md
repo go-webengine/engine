@@ -404,6 +404,23 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **The REAL cause of the native crash** (fix, 2026-11-08, round 13):
+  round 12's go-macos/metal bump was real but go-wasmcontainers' own retest
+  proved it did not fix their crash — it made it deterministic (6/6). The
+  actual bug: `js/worker.go`'s `stopWorkers` (called from `Session.Close`)
+  signalled a worker to stop and IMMEDIATELY released its GPU devices on
+  the MAIN goroutine, with no wait for the worker's own goroutine (the
+  only one allowed to touch its binder, per `jsWorker`'s own struct doc
+  comment) to actually stop touching them — a worker whose own
+  autonomously-scheduled timer callback was mid-flight inside a real,
+  blocking Metal dispatch never even observed the stop signal, so
+  `Close()` freed objects the worker was still using: a genuine
+  concurrent use-after-free on native memory, invisible to `-race`.
+  `stopWorkers` now waits (bounded by the render's own deadman) for the
+  worker to genuinely finish before touching anything it owns. Verified
+  both directions: with the fix defeated, `Close()` returned in
+  microseconds regardless of an in-flight ~600ms dispatch; with it in
+  place, `Close()` correctly waited for the dispatch to finish.
 - **go-macos/metal bumped to v0.6.1** (dependency, 2026-11-08, round 12):
   closes an `objc.AutoreleasePool` gap in 8 functions
   (`Default`/`Device.Close`/`Device.Compile`/`Library.Close`/

@@ -194,6 +194,143 @@ func TestSessionCloseStopsWorkers(t *testing.T) {
 	}
 }
 
+// slowGPUDispatchWorkerSrc registers a self-rescheduling-free, ONE-shot
+// setTimeout whose callback runs a real, deliberately slow Metal compute
+// dispatch (a single invocation doing a large serial loop, not relying on
+// parallelism, so its wall-clock cost is controllable and repeatable). The
+// top-level script itself returns almost instantly — the dispatch only
+// starts once w.run's own ticker drains the timer, AUTONOMOUSLY, with no
+// main-side call (postMessage, or new Worker() itself) blocked on it. This
+// is the exact shape go-wasmcontainers' own "the worker runs for the
+// container's whole lifetime... posts unsolicited messages at any time"
+// describes, and the only way to get the worker's own goroutine genuinely
+// busy inside a long native call with nothing on the main side waiting for
+// it: both new Worker() and Worker.postMessage already block until the
+// worker goroutine finishes the work they triggered, so a race can only
+// start from timer-driven, truly unsolicited worker-side activity.
+const slowGPUDispatchWorkerSrc = `
+	setTimeout(function() {
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (!a) { return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) { return; }
+			var module = dev.createShaderModule({ code: ` + "`" + `
+				@group(0) @binding(0) var<storage, read_write> data: array<u32>;
+				@compute @workgroup_size(1)
+				fn main() {
+					// sqrt(), not a trivial increment: a closed-form-foldable
+					// loop body gets strength-reduced away by the shader
+					// compiler (measured: 1.6 BILLION plain increments took
+					// 48ms, LESS than 80 million of these), making the
+					// dispatch far too fast for this test's own purpose.
+					var x: f32 = 0.0;
+					for (var i: u32 = 0u; i < 80000000u; i = i + 1u) {
+						x = x + sqrt(f32(i) + 1.0);
+					}
+					data[0] = u32(x);
+				}
+			` + "`" + ` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+			var buf = dev.createBuffer({ size: 4, usage: GPUBufferUsage.STORAGE });
+			var bindGroup = dev.createBindGroup({
+				layout: pipeline.getBindGroupLayout(0),
+				entries: [{ binding: 0, resource: { buffer: buf } }],
+			});
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginComputePass();
+			pass.setPipeline(pipeline);
+			pass.setBindGroup(0, bindGroup);
+			pass.dispatchWorkgroups(1);
+			pass.end();
+			dev.queue.submit([encoder.finish()]);
+		});
+	}, 0);
+`
+
+// TestSessionCloseWaitsForWorkerBeforeClosingGPUDevices is a regression
+// test for the real root cause behind a native SIGSEGV go-wasmcontainers
+// reported — and which an earlier, independently-real go-macos/metal fix
+// (AutoreleasePool wrapping, v0.6.1) did NOT resolve, because it was a
+// DIFFERENT gap. stopWorkers used to signal a worker to stop and
+// IMMEDIATELY release its GPU devices, without waiting for the worker's
+// own goroutine (the only one jsWorker's own struct doc comment says may
+// touch its binder) to actually stop touching them first. A worker whose
+// own autonomously-scheduled timer callback is still inside a slow,
+// blocking real GPU dispatch is not observing the stop signal at all — it
+// is buried inside a native Metal call, deaf to anything but that call
+// returning.
+//
+// Deterministic, not timing-luck, by construction: both new Worker() and
+// Worker.postMessage already block the MAIN goroutine until the worker's
+// own goroutine finishes whatever they triggered (see their own doc
+// comments), so neither can create the race window this bug needs — only
+// genuinely unsolicited, timer-driven worker-side activity can (see
+// slowGPUDispatchWorkerSrc's own doc comment). This test waits past
+// workerTickInterval so the worker's ticker has started the slow dispatch,
+// then calls Close() WHILE it is still running and times how long Close()
+// itself takes: the old code returned in microseconds regardless (it
+// never waited on anything); the fix cannot return before w.run itself
+// returns, which cannot happen before the ~hundred-millisecond dispatch
+// does. A real elapsed-time floor, not a channel check, is the only
+// externally observable proof available here — the dispatch runs
+// autonomously, with nothing to synchronously await it against.
+func TestSessionCloseWaitsForWorkerBeforeClosingGPUDevices(t *testing.T) {
+	// Checked FIRST, and separately, exactly as webgpu_test.go's own
+	// TestRequestAdapterNeverRejects does: a GPU adapter may genuinely be
+	// unavailable on some machine/CI runner, in which case the dispatch
+	// below never happens at all and Close() returning instantly would be
+	// CORRECT, not a bug — that must not be confused with "Close() was
+	// fast because the race was lost," so GPU availability is settled as
+	// its own precondition, skipped on explicitly, before the timing
+	// assertion below is allowed to be a hard failure rather than an
+	// ambiguous one.
+	adapterRoot, _, adapterRes := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			document.body.setAttribute('data-adapter', a ? 'ok' : 'null');
+		});
+	`))
+	if adapterRes.ScriptsFailed != 0 {
+		t.Fatalf("adapter probe script failed: %+v", adapterRes)
+	}
+	if got, _ := dom.Find(adapterRoot, "body").Attribute("data-adapter"); got != "ok" {
+		t.Skip("no usable GPU on this machine/platform — nothing to test the race against")
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(slowGPUDispatchWorkerSrc))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`var w = new Worker('` + srv.URL + `/slowgpu.js');`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := Begin(root, Options{PageURL: testURL, Client: http.DefaultClient, Timeout: 3 * time.Second, EnableWebGPU: true})
+	sess.RunInitial()
+	if len(sess.b.workers) != 1 {
+		t.Fatalf("want 1 worker, got %d", len(sess.b.workers))
+	}
+
+	// Past workerTickInterval (15ms): the worker's own ticker has fired at
+	// least once, so its drainTimers call has already STARTED the slow
+	// dispatch on the worker's own goroutine by the time Close() runs.
+	time.Sleep(3 * workerTickInterval)
+
+	start := time.Now()
+	sess.Close()
+	elapsed := time.Since(start)
+
+	// With a confirmed real adapter above, the dispatch is genuinely
+	// running (measured independently at ~600ms for this exact shader) —
+	// Close() returning in under this generous floor, well below that,
+	// can only mean it raced ahead instead of waiting for w.run to return.
+	const floor = 150 * time.Millisecond
+	if elapsed < floor {
+		t.Fatalf("Session.Close() returned in %s, under the %s floor — it must block until the worker's in-flight GPU dispatch (and w.run itself) has finished before releasing anything the worker's binder owns", elapsed, floor)
+	}
+}
+
 // TestWorkerPostMessageSharesTypedArrayView proves M3's completeness item
 // confirmed directly by go-wasmcontainers: posting a typed-array VIEW
 // itself (not the raw SharedArrayBuffer) shares the underlying memory with

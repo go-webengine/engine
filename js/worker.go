@@ -41,6 +41,7 @@ type jsWorker struct {
 	inbox  chan workerTask
 	stopCh chan struct{}
 	ready  chan struct{} // closed once the top-level script has finished
+	done   chan struct{} // closed when w.run actually RETURNS, see stopWorkers
 	stop   sync.Once
 
 	mainMu    sync.Mutex
@@ -314,6 +315,14 @@ const workerTickInterval = 15 * time.Millisecond
 // synchronous burst and then going silent forever; ticking on a real
 // interval lets such a chain behave like genuine streaming instead.
 func (w *jsWorker) run(src, name string) {
+	// Closed on EVERY return path (including a panic that escapes the
+	// recover below, which there is no such path for today, but a future
+	// change must not get to silently reopen this race by adding one) —
+	// see stopWorkers' own doc comment for why this specific guarantee is
+	// load-bearing: it is the only thing that lets the main goroutine know
+	// this goroutine has genuinely stopped touching w.wb before anything
+	// else frees what w.wb owns.
+	defer close(w.done)
 	// Deliberately does NOT drain w.wb's timers here, before close(w.ready):
 	// the constructor (newWorker) blocks on w.ready and only then returns
 	// the Worker object, so the calling script's very next line is almost
@@ -457,6 +466,7 @@ func (b *binder) newWorker(call goja.ConstructorCall) *goja.Object {
 		inbox:       make(chan workerTask, workerInboxCap),
 		stopCh:      make(chan struct{}),
 		ready:       make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 	w.installWorkerGlobals()
 	b.workers = append(b.workers, w)
@@ -552,9 +562,36 @@ func (b *binder) drainWorkerInboxes() {
 // walk would stop only the direct children, leaking every grandchild's own
 // goroutine, GPU device and SharedArrayBuffer registry entries past the
 // session's lifetime.
+//
+// Waits for w.run to actually RETURN (bounded by the SAME deadman every
+// worker is already bound by) before touching anything w.wb owns — a real,
+// previously-shipped bug, not a hypothetical: closing w.stopCh is only a
+// SIGNAL, observed at the top of w.run's own select loop between units of
+// work; a worker whose top-level script is still inside a long synchronous
+// call (a real-hardware GPU dispatch's own blocking wait, in particular) is
+// not selecting on anything and does not react to it at all. The previous
+// code called w.wb.closeGPUDevices() (releasing live Objective-C Metal
+// objects) immediately after signalling, racing a worker goroutine that
+// might still be mid-flight inside a Metal call on those EXACT objects —
+// jsWorker's own struct doc comment already says "wb touched ONLY by
+// w.run's goroutine", a invariant this exact cleanup code was violating.
+// Confirmed as the real cause of a native SIGSEGV go-wasmcontainers
+// reported and made deterministic (6/6) once their workload's own GPU
+// dispatches ran long enough to reliably land inside this window; an
+// earlier go-macos/metal fix (AutoreleasePool wrapping) addressed a real
+// but DIFFERENT gap and did not touch this one.
 func (b *binder) stopWorkers() {
 	for _, w := range b.workers {
 		w.stop.Do(func() { close(w.stopCh) })
+		select {
+		case <-w.done:
+		case <-time.After(time.Until(b.deadman)):
+			// Past the render's own deadline with the worker still not
+			// having returned (stuck in an unbounded native call, not
+			// merely a slow one) — proceeding anyway matches every other
+			// deadman-bounded wait in this file; the alternative is an
+			// unkillable goroutine holding Session.Close open forever.
+		}
 		w.wb.stopWorkers()
 		w.wb.forgetSharedBuffers()
 		w.wb.forgetWasmMemories()
