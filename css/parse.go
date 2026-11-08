@@ -473,6 +473,10 @@ func ParseDeclarations(body string) []Declaration {
 		if prop == "" || (val == "" && !isCustomProperty(prop)) {
 			continue
 		}
+		if prop == "font" {
+			out = append(out, expandFont(val, important)...)
+			continue
+		}
 		out = append(out, Declaration{Property: prop, Value: val, Important: important})
 	}
 	return out

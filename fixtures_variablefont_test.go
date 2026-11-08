@@ -68,3 +68,19 @@ p{margin:0;height:40px}
 		}
 	}
 }
+
+// The same page written with the `font` shorthand (go-webengine/engine#404)
+// draws the same text: size, line height and the @font-face family all apply.
+func TestVariableFontViaFontShorthand(t *testing.T) {
+	html := `<!doctype html><meta charset="utf-8"><style>
+@font-face{font-family:V;src:url(Outfit-wght.ttf);font-weight:100 900}
+body{margin:0;font:32px/40px V,serif;color:#000}
+p{margin:0;height:40px}
+</style>
+<p style="font-weight:100">Weight sample</p>
+<p style="font-weight:900">Weight sample</p>`
+	ink := variableFontInk(t, html, 2, 40)
+	if ink[0] == 0 || ink[1] < 3*ink[0] {
+		t.Errorf("ink at weight 100/900 = %v: the shorthand's family or size did not apply", ink)
+	}
+}
