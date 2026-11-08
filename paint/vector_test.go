@@ -653,3 +653,19 @@ func TestPathShapes(t *testing.T) {
 		t.Error("radiusOf: no style, auto and negative are 0")
 	}
 }
+
+// A sized gradient is stamped per tile in the vector painter too, and agrees
+// with the raster painter (parity): 4x2 tiles of 25x25 in a 90x50 box.
+func TestVectorGradientBackgroundSize(t *testing.T) {
+	g := &css.Gradient{AngleDeg: 90, Stops: []css.ColorStop{stop(rgb(255, 0, 0)), stop(rgb(0, 0, 255))}}
+	st := &css.Style{
+		BackgroundImages: []css.BgImage{{Kind: css.BgGradient, Grad: g}},
+		BackgroundSize:   []css.BgSize{{Kind: css.SizeExplicit, W: css.Length{Px: 25}, H: css.Length{Px: 25}}},
+		BorderRadius:     css.Length{Px: 6},
+	}
+	box := &layout.Box{Node: div(), X: 4, Y: 4, W: 90, H: 50, Style: st}
+	c, _ := parity(t, box, 100, 60, nil, nil, 0.04)
+	if c.shades != 8 {
+		t.Errorf("shades = %d, want 8 tiles", c.shades)
+	}
+}

@@ -234,7 +234,22 @@ func (v *vpainter) backgroundLayers(st *css.Style, own Rect, rad float64, clip i
 		layer := st.BackgroundImages[i]
 		switch layer.Kind {
 		case css.BgGradient:
-			v.gradient(own, rad, layer.Grad, clip)
+			size := nthSize(st.BackgroundSize, i)
+			if size.Kind != css.SizeExplicit {
+				v.gradient(own, rad, layer.Grad, clip)
+				continue
+			}
+			// A sized gradient is stamped per tile (see gradientTiles), each
+			// drawn as its own shading inside the box's rounded clip.
+			bx := image.Rect(int(own.X), int(own.Y), int(own.X)+int(own.W), int(own.Y)+int(own.H))
+			v.c.Save()
+			var p Path
+			p.RoundRect(own, rad)
+			v.c.Clip(&p, false)
+			for _, t := range gradientTiles(bx, size, nthPosition(st.BackgroundPosition, i), nthRepeat(st.BackgroundRepeat, i)) {
+				v.gradient(Rect{X: float64(t.Min.X), Y: float64(t.Min.Y), W: float64(t.Dx()), H: float64(t.Dy())}, 0, layer.Grad, clip.Intersect(t))
+			}
+			v.c.Restore()
 		case css.BgURL:
 			if src := v.bgImgs[layer.URL]; src != nil {
 				v.bgBitmap(st, own, rad, src, nthSize(st.BackgroundSize, i), nthPosition(st.BackgroundPosition, i), nthRepeat(st.BackgroundRepeat, i), clip)
