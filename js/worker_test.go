@@ -43,20 +43,72 @@ func workerServer(t *testing.T) *httptest.Server {
 // TestWorkerPostMessageRoundTrip proves M2's own core contract (issue #342,
 // the roadmap's own verification plan): two independent binders on two
 // goroutines, a postMessage round trip observed via console.log on BOTH
-// sides, deterministic (no sleeps, no retries) because Worker.postMessage
-// blocks until the worker has fully handled the message and delivered
-// whatever it replied with.
+// sides — settled by polling RunPending (worker.go's own postToWorker is
+// genuinely async, per spec: it queues and returns immediately, never
+// waiting for the worker to handle the message or for its reply).
 func TestWorkerPostMessageRoundTrip(t *testing.T) {
 	srv := workerServer(t)
-	_, logs, res := runJS(t, page(`
+	root, err := dom.Parse(page(`
 		var w = new Worker('`+srv.URL+`/echo.js');
 		w.onmessage = function(e) { console.log('main got: ' + e.data); };
 		w.postMessage('ping');
 	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := settleUntil(t, root, Options{PageURL: testURL, UserAgent: "TestUA/1.0", Client: http.DefaultClient, Timeout: 3 * time.Second, Log: func(s string) { logs = append(logs, s) }}, 2*time.Second, func() bool {
+		return has(logs, "main got: pong:ping")
+	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
 	mustHave(t, logs, "worker got: ping", "main got: pong:ping")
+}
+
+// TestWorkerPostMessagePerPortFIFOOrder confirms postToWorker's own async
+// queueing (worker.go) preserves per-port FIFO order — a message posted
+// after another is never handled before it — one of go-wasmcontainers' own
+// four invariants for this redesign (go-webengine/engine#388), run against
+// every release on their own side. Posts several messages back to back,
+// before the worker's own run goroutine has had any chance to process the
+// first one, and checks the worker observed them in the exact order sent.
+func TestWorkerPostMessagePerPortFIFOOrder(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`
+			var seen = [];
+			onmessage = function(e) {
+				seen.push(e.data);
+				if (seen.length === 5) postMessage(seen.join(','));
+			};
+		`))
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var w = new Worker('`+srv.URL+`/order.js');
+		w.onmessage = function(e) { document.body.setAttribute('data-order', e.data); };
+		w.postMessage('1');
+		w.postMessage('2');
+		w.postMessage('3');
+		w.postMessage('4');
+		w.postMessage('5');
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{PageURL: testURL, UserAgent: "TestUA/1.0", Client: http.DefaultClient, Timeout: 3 * time.Second, Log: func(s string) { logs = append(logs, s) }}, 2*time.Second, func() bool {
+		got, _ := body.Attribute("data-order")
+		return got != ""
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	if got, _ := body.Attribute("data-order"); got != "1,2,3,4,5" {
+		t.Fatalf("data-order = %q, want %q (per-port FIFO order)", got, "1,2,3,4,5")
+	}
 }
 
 // TestWorkerFetchFailureDispatchesError mirrors runScripts' own failed-
@@ -133,7 +185,7 @@ func TestWorkerAddEventListenerRemoveListenerAndSelfClose(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	root, logs, res := runJS(t, page(`
+	root, err := dom.Parse(page(`
 		var w = new Worker('`+srv.URL+`/listener.js');
 		var extra = 0;
 		function extraHandler() { extra++; }
@@ -143,6 +195,13 @@ func TestWorkerAddEventListenerRemoveListenerAndSelfClose(t *testing.T) {
 		w.postMessage('x');
 		document.body.setAttribute('data-extra', String(extra));
 	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := settleUntil(t, root, Options{PageURL: testURL, UserAgent: "TestUA/1.0", Client: http.DefaultClient, Timeout: 3 * time.Second, Log: func(s string) { logs = append(logs, s) }}, 2*time.Second, func() bool {
+		return has(logs, "main got: ack:x")
+	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
@@ -162,11 +221,18 @@ func TestWorkerCloneUnsupportedValueFromWorkerLogged(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, logs, res := runJS(t, page(`
+	root, err := dom.Parse(page(`
 		var w = new Worker('`+srv.URL+`/w.js');
 		w.onmessage = function(e) { console.log('main got: ' + e.data); };
 		w.postMessage('go');
 	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := settleUntil(t, root, Options{PageURL: testURL, UserAgent: "TestUA/1.0", Client: http.DefaultClient, Timeout: 3 * time.Second, Log: func(s string) { logs = append(logs, s) }}, 2*time.Second, func() bool {
+		return has(logs, "main got: ok")
+	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
@@ -203,15 +269,16 @@ func TestSessionCloseStopsWorkers(t *testing.T) {
 // dispatch (a single invocation doing a large serial loop, not relying on
 // parallelism, so its wall-clock cost is controllable and repeatable). The
 // top-level script itself returns almost instantly — the dispatch only
-// starts once w.run's own ticker drains the timer, AUTONOMOUSLY, with no
-// main-side call (postMessage, or new Worker() itself) blocked on it. This
-// is the exact shape go-wasmcontainers' own "the worker runs for the
+// starts once w.run's own ticker drains the timer, AUTONOMOUSLY, with
+// nothing on the main side ever having triggered or waited on it directly.
+// This is the exact shape go-wasmcontainers' own "the worker runs for the
 // container's whole lifetime... posts unsolicited messages at any time"
-// describes, and the only way to get the worker's own goroutine genuinely
-// busy inside a long native call with nothing on the main side waiting for
-// it: both new Worker() and Worker.postMessage already block until the
-// worker goroutine finishes the work they triggered, so a race can only
-// start from timer-driven, truly unsolicited worker-side activity.
+// describes, and the one way this test can be SURE the dispatch starts
+// only after the worker's own goroutine is independently running: new
+// Worker() still blocks until the top-level script (which only REGISTERS
+// the timer, not runs the dispatch) returns, and nothing else in this test
+// ever posts to the worker, so the dispatch is reached purely through
+// w.run's own ticker, on its own schedule.
 const slowGPUDispatchWorkerSrc = `
 	setTimeout(function() {
 		navigator.gpu.requestAdapter().then(function(a) {
@@ -265,11 +332,11 @@ const slowGPUDispatchWorkerSrc = `
 // is buried inside a native Metal call, deaf to anything but that call
 // returning.
 //
-// Deterministic, not timing-luck, by construction: both new Worker() and
-// Worker.postMessage already block the MAIN goroutine until the worker's
-// own goroutine finishes whatever they triggered (see their own doc
-// comments), so neither can create the race window this bug needs — only
-// genuinely unsolicited, timer-driven worker-side activity can (see
+// Deterministic, not timing-luck, by construction: this test never calls
+// Worker.postMessage at all — new Worker() blocks the MAIN goroutine only
+// until the top-level script (which just registers a timer) returns, so
+// the slow dispatch itself is reached purely through the worker's own
+// autonomous ticker, independent of anything on the main side (see
 // slowGPUDispatchWorkerSrc's own doc comment). This test waits past
 // workerTickInterval so the worker's ticker has started the slow dispatch,
 // then calls Close() WHILE it is still running and times how long Close()
@@ -341,9 +408,10 @@ func TestSessionCloseWaitsForWorkerBeforeClosingGPUDevices(t *testing.T) {
 // a Worker. The worker writes through the view it receives, reads the SAME
 // byte back via a DIFFERENT view kind (DataView) over the identical
 // buffer — proving cross-view consistency within one VM, go-wasmcontainers'
-// item 1 — and main observes the write too, once its own (synchronous,
-// blocking) postMessage call returns, proving the memory is genuinely
-// shared across the VMs, not copied.
+// item 1 — and main observes the write too, once the worker's own async
+// reply is settled (postMessage itself is async: see postToWorker's own
+// doc comment), proving the memory is genuinely shared across the VMs, not
+// copied.
 func TestWorkerPostMessageSharesTypedArrayView(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`
@@ -372,18 +440,20 @@ func TestWorkerPostMessageSharesTypedArrayView(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs []string
-	res := Run(root, Options{
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{
 		PageURL:             testURL,
 		Client:              http.DefaultClient,
 		Timeout:             3 * time.Second,
 		Log:                 func(s string) { logs = append(logs, s) },
 		CrossOriginIsolated: true,
+	}, 2*time.Second, func() bool {
+		got, _ := body.Attribute("data-reply")
+		return got != ""
 	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-
-	body := dom.Find(root, "body")
 	if got, _ := body.Attribute("data-reply"); got != "ctor=Uint8Array len=4 dvByte0=200" {
 		t.Fatalf("data-reply = %q, want %q", got, "ctor=Uint8Array len=4 dvByte0=200")
 	}
@@ -430,18 +500,20 @@ func TestWorkerReceivedSharedArrayBufferReportsCorrectIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs []string
-	res := Run(root, Options{
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{
 		PageURL:             testURL,
 		Client:              http.DefaultClient,
 		Timeout:             3 * time.Second,
 		Log:                 func(s string) { logs = append(logs, s) },
 		CrossOriginIsolated: true,
+	}, 2*time.Second, func() bool {
+		got, _ := body.Attribute("data-reply")
+		return got != ""
 	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-
-	body := dom.Find(root, "body")
 	if got, _ := body.Attribute("data-reply"); got != "shared" {
 		t.Fatalf("data-reply = %q, want %q (the worker's own `d instanceof SharedArrayBuffer` check should be true)", got, "shared")
 	}
@@ -485,18 +557,20 @@ func TestWorkerReceivedWasmMemoryIsTrulyShared(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs []string
-	res := Run(root, Options{
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{
 		PageURL:             testURL,
 		Client:              http.DefaultClient,
 		Timeout:             3 * time.Second,
 		Log:                 func(s string) { logs = append(logs, s) },
 		CrossOriginIsolated: true,
+	}, 2*time.Second, func() bool {
+		got, _ := body.Attribute("data-reply")
+		return got != ""
 	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-
-	body := dom.Find(root, "body")
 	if got, _ := body.Attribute("data-reply"); got != "tag=[object WebAssembly.Memory] isSAB=true" {
 		t.Fatalf("data-reply = %q, want %q", got, "tag=[object WebAssembly.Memory] isSAB=true")
 	}
@@ -544,18 +618,20 @@ func TestWorkerReceivedModuleDeclaredSharedMemoryIsTrulyShared(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs []string
-	res := Run(root, Options{
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{
 		PageURL:             testURL,
 		Client:              http.DefaultClient,
 		Timeout:             3 * time.Second,
 		Log:                 func(s string) { logs = append(logs, s) },
 		CrossOriginIsolated: true,
+	}, 2*time.Second, func() bool {
+		got, _ := body.Attribute("data-reply")
+		return got != ""
 	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-
-	body := dom.Find(root, "body")
 	if got, _ := body.Attribute("data-reply"); got != "tag=[object WebAssembly.Memory] isSAB=true" {
 		t.Fatalf("data-reply = %q, want %q", got, "tag=[object WebAssembly.Memory] isSAB=true")
 	}
@@ -959,14 +1035,23 @@ func TestWorkerWasmInstanceofAndPerformanceNow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	root, logs, res := runJS(t, page(`
+	root, err := dom.Parse(page(`
 		var w = new Worker('`+srv.URL+`/worker.js');
 		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
 	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{PageURL: testURL, UserAgent: "TestUA/1.0", Client: http.DefaultClient, Timeout: 3 * time.Second, Log: func(s string) { logs = append(logs, s) }}, 2*time.Second, func() bool {
+		got, _ := body.Attribute("data-reply")
+		return got != ""
+	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-	got, _ := dom.Find(root, "body").Attribute("data-reply")
+	got, _ := body.Attribute("data-reply")
 	if !strings.Contains(got, "isInstance=true") || !strings.Contains(got, "advanced=true") {
 		t.Fatalf("data-reply = %q, want isInstance=true and advanced=true", got)
 	}
@@ -1033,12 +1118,27 @@ func TestNestedWorkerAndCleanupCascade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	body := dom.Find(root, "body")
 	sess := Begin(root, Options{PageURL: testURL, Client: http.DefaultClient, Timeout: 3 * time.Second})
 	sess.RunInitial()
 	if sess.res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v", sess.res)
 	}
-	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "grandchild got: ping" {
+	// postToWorker (worker.go) is async: child.postMessage('ping') and the
+	// grandchild's own reply, relayed back up through the parent, each take
+	// at least one more event-loop tick per hop than this initial run gives.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if got, _ := body.Attribute("data-reply"); got != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for data-reply")
+		}
+		sess.RunPending()
+		time.Sleep(workerTickInterval)
+	}
+	if got, _ := body.Attribute("data-reply"); got != "grandchild got: ping" {
 		t.Fatalf("data-reply = %q, want %q", got, "grandchild got: ping")
 	}
 	if len(sess.b.workers) != 1 {
@@ -1164,14 +1264,23 @@ func TestReentrantResumeAfterEventLoopResume(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	root, logs, res := runJS(t, page(`
+	root, err := dom.Parse(page(`
 		var w = new Worker('`+srv.URL+`/worker.js');
 		w.onmessage = function(e) { document.body.setAttribute('data-reply', e.data); };
 	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{PageURL: testURL, UserAgent: "TestUA/1.0", Client: http.DefaultClient, Timeout: 3 * time.Second, Log: func(s string) { logs = append(logs, s) }}, 2*time.Second, func() bool {
+		got, _ := body.Attribute("data-reply")
+		return got != ""
+	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-	if got, _ := dom.Find(root, "body").Attribute("data-reply"); got != "done" {
+	if got, _ := body.Attribute("data-reply"); got != "done" {
 		t.Fatalf("data-reply = %q, want %q, logs=%v", got, "done", logs)
 	}
 	mustHave(t, logs, "REENTRY-OK")
@@ -1216,17 +1325,29 @@ func TestWasmModulePostMessageBetweenWorkers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	root, logs, res := runJS(t, page(`
+	root, err := dom.Parse(page(`
 		var instantiator = new Worker('`+srv.URL+`/instantiator.js');
 		instantiator.onmessage = function(e) { document.body.setAttribute('data-result', e.data); };
 		var compiler = new Worker('`+srv.URL+`/compiler.js');
 		compiler.onmessage = function(e) { instantiator.postMessage(e.data); };
 	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	body := dom.Find(root, "body")
+	// Three postMessage hops (compiler->main, main->instantiator,
+	// instantiator->main), each async now (postToWorker's own doc comment):
+	// each needs at least one more event-loop tick than runJS's single pass.
+	res := settleUntil(t, root, Options{PageURL: testURL, UserAgent: "TestUA/1.0", Client: http.DefaultClient, Timeout: 3 * time.Second, Log: func(s string) { logs = append(logs, s) }}, 3*time.Second, func() bool {
+		got, _ := body.Attribute("data-result")
+		return got != ""
+	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
 	want := "add=1005 isModule=true"
-	if got, _ := dom.Find(root, "body").Attribute("data-result"); got != want {
+	if got, _ := body.Attribute("data-result"); got != want {
 		t.Fatalf("data-result = %q, want %q, logs=%v", got, want, logs)
 	}
 }
@@ -1272,7 +1393,7 @@ func TestWasmModulePostMessageSiblingInstancesAreIndependent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	root, logs, res := runJS(t, page(`
+	root, err := dom.Parse(page(`
 		var i1 = new Worker('`+srv.URL+`/instantiator.js');
 		var i2 = new Worker('`+srv.URL+`/instantiator.js');
 		i1.onmessage = function(e) { document.body.setAttribute('data-r1', e.data); };
@@ -1283,14 +1404,24 @@ func TestWasmModulePostMessageSiblingInstancesAreIndependent(t *testing.T) {
 			i2.postMessage(e.data);
 		};
 	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{PageURL: testURL, UserAgent: "TestUA/1.0", Client: http.DefaultClient, Timeout: 3 * time.Second, Log: func(s string) { logs = append(logs, s) }}, 3*time.Second, func() bool {
+		r1, _ := body.Attribute("data-r1")
+		r2, _ := body.Attribute("data-r2")
+		return r1 != "" && r2 != ""
+	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
 	want := "add=1005"
-	if got, _ := dom.Find(root, "body").Attribute("data-r1"); got != want {
+	if got, _ := body.Attribute("data-r1"); got != want {
 		t.Fatalf("data-r1 = %q, want %q, logs=%v", got, want, logs)
 	}
-	if got, _ := dom.Find(root, "body").Attribute("data-r2"); got != want {
+	if got, _ := body.Attribute("data-r2"); got != want {
 		t.Fatalf("data-r2 = %q, want %q (sibling instance of the same module, closing one must not affect the other), logs=%v", got, want, logs)
 	}
 }
@@ -1348,18 +1479,22 @@ func TestWasmModulePostMessageWithSharedMemoryInstantiatesWithMemoryIntact(t *te
 		t.Fatal(err)
 	}
 	var logs []string
-	res := Run(root, Options{
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{
 		PageURL:             testURL,
 		Client:              http.DefaultClient,
 		Timeout:             3 * time.Second,
 		Log:                 func(s string) { logs = append(logs, s) },
 		CrossOriginIsolated: true,
+	}, 3*time.Second, func() bool {
+		got, _ := body.Attribute("data-result")
+		return got != ""
 	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
 	want := "isMemory=true isSAB=true"
-	if got, _ := dom.Find(root, "body").Attribute("data-result"); got != want {
+	if got, _ := body.Attribute("data-result"); got != want {
 		t.Fatalf("data-result = %q, want %q, logs=%v", got, want, logs)
 	}
 }
@@ -1417,17 +1552,20 @@ func TestWorkerExportedSharedMemoryGrowIsVisibleAcrossAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	var logs []string
-	res := Run(root, Options{
+	body := dom.Find(root, "body")
+	res := settleUntil(t, root, Options{
 		PageURL:             testURL,
 		Client:              http.DefaultClient,
 		Timeout:             3 * time.Second,
 		Log:                 func(s string) { logs = append(logs, s) },
 		CrossOriginIsolated: true,
+	}, 3*time.Second, func() bool {
+		got, _ := body.Attribute("data-roundtrip")
+		return got != ""
 	})
 	if res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
-	body := dom.Find(root, "body")
 	if got, _ := body.Attribute("data-bytelength"); got != "131072" {
 		t.Fatalf("data-bytelength = %q, want %q (2 grown pages, visible through the posted Memory without the creator ever calling grow)", got, "131072")
 	}

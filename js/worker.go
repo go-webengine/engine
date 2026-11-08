@@ -27,14 +27,19 @@ const workerInboxCap = 64
 // everything crossing the main<->worker boundary goes through
 // cloneValue/reconstructValue (clone.go), never a raw goja.Value.
 //
-// The postMessage round-trip is deliberately synchronous/blocking rather
-// than truly async: this package has no background event loop of its own
-// (the main binder's timers/microtasks only drain when the engine's settle
-// loop or RunPending calls in) to deliver a worker's reply into, so
-// Worker.postMessage blocks the caller until the worker has fully processed
-// that one message (bounded by the render's own deadman budget) and then
-// delivers whatever the worker queued back in that same call — giving a
-// deterministic, testable round trip without inventing a second clock.
+// Worker.postMessage (postToWorker, below) is genuinely asynchronous, as
+// the spec requires: it clones the value and queues it, then returns
+// immediately, never waiting for the worker to process it. A reply, if
+// any, is observed later — this package has no background event loop of
+// its own (the main binder's timers/microtasks, and a worker's own mainInbox
+// deliveries, only drain when the engine's settle loop, RunPending, or a
+// worker's own ticker calls in), so a caller that needs to see a worker's
+// reply must drive one of those (directly in a test, or via
+// Engine.EnableWorkerStreaming's own live loop in a real render) rather
+// than assume postMessage's own return means anything was delivered.
+// postMessage was deliberately synchronous through M2 and part of M3
+// instead — go-webengine/engine#388 has the full story of why that was
+// backwards from the spec and the real deadlock it caused.
 type jsWorker struct {
 	wb          *binder   // the worker's own runtime, touched ONLY by w.run's goroutine
 	wrapperNode *dom.Node // sentinel key for the MAIN-side Worker object's own listeners
@@ -54,7 +59,6 @@ type jsWorker struct {
 // workerTask is one main->worker postMessage delivery.
 type workerTask struct {
 	data clonedValue
-	done chan struct{} // closed once the worker has finished handling this task
 }
 
 // newWorkerBinder builds the binder for a Worker's own dedicated runtime. It
@@ -394,28 +398,26 @@ func (w *jsWorker) run(src, name string) {
 	}
 }
 
-// deliver reconstructs one main->worker message into the worker's own VM,
-// dispatches it as a "message" event on the worker's self scope, then
-// signals the task done — the point at which the creating binder's blocked
-// postToWorker call unblocks.
+// deliver reconstructs one main->worker message into the worker's own VM
+// and dispatches it as a "message" event on the worker's self scope.
 //
 // Deliberately does NOT drain the worker's own queued timers here, unlike
-// the main binder's own dispatch paths: a handler may schedule a blocking
-// Atomics.wait via setTimeout(fn, 0) specifically to escape this very call
-// (see atomicsWait's own doc comment — calling it synchronously from inside
-// a message handler would hold the SENDER's blocked postToWorker hostage,
-// deadlocking against the sender's own later Atomics.notify). Draining here
-// too would inline that deferred call right back into this same stack,
-// defeating the escape. The ticker in run's own select loop drains every
-// queued timer — this handler's included — exactly once it actually ticks,
-// by which point this call (and the sender's blocked wait on task.done) has
-// already returned.
+// the main binder's own dispatch paths: this keeps the SAME pacing run's own
+// doc comment already establishes for the worker's top-level script (a
+// self-rescheduling setTimeout chain behaves like real streaming, paced by
+// the ticker, rather than running out its whole maxTimerJobs budget in one
+// synchronous burst the moment a message happens to arrive). The ticker in
+// run's own select loop drains every queued timer — this handler's included
+// — once it actually ticks. Since postToWorker (worker.go) no longer blocks
+// the sender on this call returning, a handler that calls Atomics.wait
+// synchronously here no longer needs to defer it via setTimeout(fn, 0) to
+// avoid deadlocking the sender — this goroutine blocking is now exactly as
+// safe as it is in a real browser's own worker.
 func (w *jsWorker) deliver(task workerTask) {
 	defer func() {
 		if r := recover(); r != nil {
 			w.wb.logf("worker panic: %v", r)
 		}
-		close(task.done)
 	}()
 	v := reconstructValue(w.wb, task.data)
 	ev := w.wb.newEvent("message")
@@ -531,35 +533,36 @@ func (b *binder) newWorker(call goja.ConstructorCall) *goja.Object {
 	return o
 }
 
-// postToWorker clones data on the MAIN vm (the caller's own goroutine),
-// hands it to the worker, and blocks until the worker has finished handling
-// it (or the render's remaining budget runs out, or the worker was already
-// stopped) — see jsWorker's own doc comment for why this is synchronous.
-// It then delivers anything the worker queued back in that same call, so a
-// request/reply script (the common case, and this round's own verification
-// shape) sees the reply before postMessage returns.
+// postToWorker clones data on the MAIN vm (the caller's own goroutine, per
+// the structured-clone algorithm's own timing: HTML Standard §9.4.3 step 1,
+// "a serialized value... using StructuredSerialize" happens as part of the
+// postMessage CALL itself, not later), hands it to the worker, and returns
+// immediately — matching a real browser: §9.4.3's own "queue a task" step
+// never waits for the receiver. The worker's own run goroutine delivers it
+// independently, on its own schedule; a reply, if any, arrives later via
+// drainWorkerInboxes, called from drainTimers (and, once EnableWorkerStreaming
+// is on, the engine's own liveLoop) — never synchronously from here.
 //
-// The wait is a poll loop, not one flat blocking select, so THIS goroutine
-// keeps draining its OWN worker inboxes (drainWorkerInboxes) the whole time
-// it waits — required for a worker that creates its own child Worker and
-// posts it a setup message (go-wasmcontainers' own confirmed shape: an
-// "engine worker" spawning one container Worker per guest, engine#342
-// fallout). A real browser's postMessage is asynchronous — the sender is
-// never blocked — so spec-compliant code is free to have the RECEIVER's own
-// onmessage handler synchronously call Atomics.wait, trusting the sender to
-// still be free to answer with Atomics.notify. This engine's postMessage is
-// deliberately synchronous instead (M2, for a deterministic, testable round
-// trip), which turns that exact valid pattern into a real deadlock unless
-// the sender, while blocked here, can still reach and dispatch its OWN
-// children's queued messages — e.g. the container's own "wake me, I'm
-// waiting" postMessage back to this same binder — rather than being
-// unable to do anything at all until the worker call returns. Confirmed
-// directly: TestWorkerPostMessageDoesNotBlockItsOwnWakeUp hangs out its full
-// deadman with a single flat select, and resolves in native time once this
-// loop drains on every tick instead. A worker with no such nested
-// dependency sees no behavior change: drainWorkerInboxes on an empty
-// b.workers, or one with nothing queued yet, is a plain no-op, exactly as
-// before.
+// This was deliberately synchronous instead through M2 and part of M3 ("a
+// deterministic, testable round trip" — the previous version of this
+// comment's own words), which is exactly backwards from the spec and turns
+// a spec-valid pattern — a worker's own onmessage handler synchronously
+// calling Atomics.wait, trusting the sender to remain free to answer with
+// Atomics.notify once its own event loop next runs — into an unbreakable
+// deadlock: go-wasmcontainers' own confirmed shape runs a container's
+// entire life inside handling its first message (onmessage calls _start()
+// synchronously, returns only once the guest exits), so "wait until the
+// receiver finishes handling it" became "wait until the container exits" —
+// and a GPU call blocking on that same sender's own event loop (a promise
+// it needs to resolve, to Atomics.notify the waiting container) could never
+// get it, because the sender was still waiting here. Confirmed directly via
+// a goroutine dump on go-wasmcontainers' own failing TestBatchComputeContainers
+// (go-webengine/engine#388). A narrower fix (keep blocking, but also drain
+// the sender's own timers/promise jobs while waiting, extending the inbox-
+// only drain round 17 already added) was tried and REJECTED, confirmed by a
+// direct test: it broke JS's own run-to-completion guarantee, letting a
+// setTimeout/Promise.then callback interleave into the MIDDLE of the
+// currently-running synchronous script that called postMessage.
 func (b *binder) postToWorker(w *jsWorker, data goja.Value) {
 	cv, err := cloneValue(data)
 	if err != nil {
@@ -571,30 +574,11 @@ func (b *binder) postToWorker(w *jsWorker, data goja.Value) {
 		return
 	default:
 	}
-	done := make(chan struct{})
 	select {
-	case w.inbox <- workerTask{data: cv, done: done}:
+	case w.inbox <- workerTask{data: cv}:
 	default:
 		b.logf("Worker.postMessage: inbox full, message dropped")
-		return
 	}
-	ticker := time.NewTicker(workerTickInterval)
-	defer ticker.Stop()
-loop:
-	for {
-		select {
-		case <-done:
-			break loop
-		case <-w.stopCh:
-			break loop
-		case <-ticker.C:
-			b.drainWorkerInboxes()
-			if !time.Now().Before(b.deadman) {
-				break loop
-			}
-		}
-	}
-	b.drainWorkerInboxes()
 }
 
 // drainWorkerInboxes delivers every worker->main message queued since the

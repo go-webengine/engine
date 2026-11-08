@@ -489,13 +489,13 @@ func (b *binder) installAtomics(g *goja.Object) {
 // matching Atomics.notify wakes it or timeout milliseconds elapse (undefined
 // timeout means wait forever, bounded only by the session's own JSTimeout
 // deadman via the watchdog's Interrupt, same as any other long-running
-// script). Must be called from the worker's own autonomous script/timer
-// execution, never synchronously from within an onmessage handler
-// delivering a main->worker postMessage — doing so would hold that
-// postMessage call's own blocking round trip (worker.go's postToWorker)
-// hostage waiting for a notify the blocked sender can no longer send. See
-// README's own documented interaction for the recommended pattern
-// (setTimeout(fn, 0) to yield before waiting).
+// script). Safe to call synchronously from within an onmessage handler
+// delivering a main->worker postMessage, exactly as a real browser allows:
+// postMessage (postToWorker, worker.go) is genuinely asynchronous and never
+// waits on this goroutine, so whatever other code answers with
+// Atomics.notify — on the sender's own event loop, a sibling worker, or
+// anywhere else — is always free to run regardless of how long this call
+// blocks.
 func (b *binder) atomicsWait(call goja.FunctionCall) goja.Value {
 	ta, _ := call.Argument(0).(*goja.Object)
 	var ctorName string
