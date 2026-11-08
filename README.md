@@ -404,6 +404,27 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`Worker.postMessage` no longer blocks its own wake-up** (fix, 2026-11-08,
+  round 17, engine#342 fallout): round 16's fix cleared one failure in
+  go-wasmcontainers' `TestBatchComputeContainers`, and the next run hung the
+  full 10-minute `JSTimeout` instead. Their own real `runtime/browser`
+  package spawns one container Worker per guest and posts it a setup
+  message; the container's own `worker.js` answers by posting a "wake me"
+  doorbell and then calling `Atomics.wait` SYNCHRONOUSLY, still inside that
+  same `onmessage` call — valid, spec-compliant code, since a real
+  browser's `postMessage` is asynchronous and never blocks the sender. This
+  engine's own `postToWorker` was, since round M2, deliberately
+  synchronous/blocking instead (a documented trade-off for a deterministic
+  test round trip) — which turned that exact valid pattern into a real
+  deadlock: the creator's `postMessage` call couldn't return until the
+  container finished, and the container could never finish without a
+  notify only the (blocked) creator could send. Confirmed fast, before
+  touching the real 10-minute repro: a new test reproducing the identical
+  shape hung out its own 2-second deadman with the original code, every
+  time. Fixed by turning `postToWorker`'s wait into a poll loop (the same
+  15ms cadence a worker's own event-loop ticker already uses) that keeps
+  draining the creator's own pending worker inboxes — including a child's
+  doorbell — the whole time it waits, instead of only once at the end.
 - **`WebAssembly.Module` survives `postMessage` across workers** (feature,
   2026-11-08, round 16, engine#342 fallout): go-wasmcontainers compile
   each guest module ONCE in an engine worker and post the resulting
