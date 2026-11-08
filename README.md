@@ -198,8 +198,11 @@ There is also a CLI:
 
 ```
 go run ./cmd/render -url https://example.com/ -out out.png -w 1024 -h 768
-# or render a local file offline:
-go run ./cmd/render -file page.html -base https://example.com/ -out out.png
+# or render a local file offline; its own directory is the base and the file
+# root, so a relative @font-face font or image beside it loads:
+go run ./cmd/render -file page.html -out out.png
+# (an explicit -base https://example.com/ resolves against that site instead,
+# and keeps local files out of reach)
 ```
 
 ## Pipeline
@@ -264,7 +267,8 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   implicit `list-item` counter shared with list markers.
 - **Colour & decoration**: named/`#rgb`/`#rrggbb`, modern `rgb()`/`hsl()`,
   **`oklab()`/`oklch()`**, `color-mix()` (srgb/srgb-linear/oklab/oklch/hsl),
-  `background-color`, **linear & radial gradients**, `background-image: url()`,
+  `background-color`, **linear & radial gradients** (sized, positioned and
+  tiled by `background-size`/`-position`/`-repeat`, v0.45.10), `background-image: url()`,
   **border** + **border-radius**, **box-shadow**, group **opacity**.
 - **Transforms and effects**: `translate`, `rotate` and `scale` (each the
   function and the standalone property, one at a time — no mixing), CSS
@@ -294,12 +298,18 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   install typefaces of its own with **`Engine.FontFaces`** (built with
   `ParseFontFace`), as a browser's system fonts; parsed fonts are shared
   across renders, so a page set in the same faces as the last one does not
-  parse them again.
+  parse them again. A **variable font** (an `fvar` `wght` axis) is drawn at each
+  `font-weight` the page asks for, in raster and PDF alike, and so are the
+  bundled Inter and Lora regulars (v0.45.10); the **`font` shorthand** expands
+  to its longhands (v0.45.11).
 - **Tables**: automatic table layout (CSS 2.1 §17.5.2.2) — every column keeps
   at least its longest unbreakable word, percentage and fixed cell widths are
   honoured, surplus goes to the auto columns; `colspan`, `border-spacing`,
   `vertical-align` on cells (with the UA `middle` default and the `valign`
-  attribute), and a row's own CSS `height` as its minimum.
+  attribute), and a row's own CSS `height` as its minimum. A `display:block`
+  table keeps its grid: rows under a non-table box are wrapped in an anonymous
+  table (CSS 2.1 §17.2.1, v0.45.10), and `width: min-content | max-content |
+  fit-content` sizes it.
 - **Form controls**: inputs and buttons with UA chrome, and checkboxes/radios
   honouring `appearance: none` (custom toggle switches).
 - **Containers and shadow DOM**: `@container` size queries, declarative
