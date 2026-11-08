@@ -316,6 +316,17 @@ type binder struct {
 	// wasmInstantiateMu's own doc comment in wasm.go for why every
 	// worker needs the SAME lock, not one of its own.
 	wasmInstantiateLock sync.Mutex
+	// logLock is the real mutex logMu's own delegation (mirroring
+	// wasmInstantiateMu's own pattern above) returns a pointer to — only
+	// ever populated on the ROOT binder. Needed because Options.Log is one
+	// func value shared by every worker's own binder (newWorkerBinder
+	// passes opt through unchanged), and postToWorker (worker.go) no
+	// longer blocks the sender while a worker handles a message — the two
+	// goroutines genuinely run concurrently now, so without this a
+	// console.log from a worker's own script racing a console.log on the
+	// main document is a real, confirmed data race on whatever slice or
+	// buffer a caller's own Log closure appends to.
+	logLock sync.Mutex
 	// rootBinder is nil for the main document's own binder, and for
 	// every worker it is the main binder itself (set once at
 	// construction, never the immediate parent, so a grandchild worker
@@ -640,9 +651,31 @@ func (b *binder) expired() bool { return !time.Now().Before(b.deadman) }
 
 // logf routes an internal diagnostic to the console sink, if any.
 func (b *binder) logf(format string, args ...any) {
-	if b.opt.Log != nil {
-		b.opt.Log("engine: " + fmt.Sprintf(format, args...))
+	b.emitLog("engine: " + fmt.Sprintf(format, args...))
+}
+
+// logMu delegates to the root binder exactly like wasmInstantiateMu — see
+// logLock's own doc comment for why every worker needs the SAME lock.
+func (b *binder) logMu() *sync.Mutex {
+	if b.rootBinder != nil {
+		return b.rootBinder.logMu()
 	}
+	return &b.logLock
+}
+
+// emitLog is the one path to Options.Log every caller in this package goes
+// through (console.* in window.go, and logf above) — serialized across
+// every binder sharing this session (main plus every worker, however
+// deeply nested), since each runs on its own goroutine and Options.Log is
+// one func value none of them owns exclusively.
+func (b *binder) emitLog(s string) {
+	if b.opt.Log == nil {
+		return
+	}
+	mu := b.logMu()
+	mu.Lock()
+	defer mu.Unlock()
+	b.opt.Log(s)
 }
 
 // setClientJS marks the document root as JS-enabled (client-js) and clears the

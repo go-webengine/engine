@@ -37,6 +37,32 @@ func runJS(t *testing.T, htmlSrc string) (*dom.Node, []string, Result) {
 	return root, logs, res
 }
 
+// settleUntil runs root's scripts via Begin/RunInitial using opt, then polls
+// RunPending (driving worker ticks, timers, and worker->main message
+// delivery) until check reports true or timeout elapses. Needed wherever a
+// test's expected result depends on a Worker's own reply: postToWorker
+// (worker.go) is genuinely async per spec — it clones and queues, then
+// returns immediately — so a reply posted back from a worker is never
+// visible right after the top-level script's own postMessage call returns,
+// only after at least one later event-loop tick, unlike every other fetch
+// in this package (which resolves synchronously, from JS's own
+// perspective). A single runJS/Run pass cannot observe that later tick.
+func settleUntil(t *testing.T, root *dom.Node, opt Options, timeout time.Duration, check func() bool) Result {
+	t.Helper()
+	sess := Begin(root, opt)
+	defer sess.Close()
+	sess.RunInitial()
+	deadline := time.Now().Add(timeout)
+	for !check() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %v waiting for condition", timeout)
+		}
+		sess.RunPending()
+		time.Sleep(workerTickInterval)
+	}
+	return sess.Result()
+}
+
 // script wraps a script body in a minimal JS-disabled document.
 func page(body string) string {
 	return `<html class="client-nojs"><head><title>T</title></head><body>` +

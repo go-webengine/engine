@@ -404,6 +404,36 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`Worker.postMessage` is genuinely asynchronous now, not a blocking round
+  trip** (fix, 2026-11-08, round 24, engine#388, M2/M3 follow-up): diagnosed
+  jointly with go-wasmcontainers via a `SIGQUIT` goroutine dump on their own
+  failing `TestBatchComputeContainers`. `postToWorker` blocked the sender
+  until the receiving Worker finished handling the posted message — a
+  deliberate M2 trade-off ("a deterministic, testable round trip"), and a
+  real deviation from the spec (`postMessage` must be async: HTML §9.4.3).
+  For a container whose entire life runs inside handling its first message,
+  "wait until handled" became "wait until the container exits" — and a GPU
+  call needing the sender's OWN event loop to run again (to resolve a
+  promise, then `Atomics.notify` the waiting container) could never get it.
+  A narrower fix (keep blocking, but also drain the sender's own timers
+  while it waits) was tried and rejected: confirmed by a direct test that it
+  breaks JS's own run-to-completion guarantee, letting a `setTimeout`/
+  `Promise.then` callback run in the middle of the currently-executing
+  script that called `postMessage`. The real fix: `postToWorker` clones (at
+  post time, unchanged) and queues, then returns immediately; a reply, if
+  any, arrives later through the same mechanism that already delivers a
+  worker's unsolicited messages. A genuinely new data race this exposed —
+  `Options.Log` is one func value every binder in a session shares, no
+  longer serialized by `postToWorker`'s own block once workers run truly
+  concurrently with main — is fixed with a new `emitLog` helper, serialized
+  by a session-wide mutex. go-wasmcontainers' own four required invariants
+  (per-port FIFO order, clone-at-post-time semantics, a child's
+  `Atomics.wait` not blocking its parent, unsolicited-message delivery while
+  a child runs) are each covered by a test. Every existing test that assumed
+  a worker's reply was visible immediately after `postMessage` returned is
+  restructured to poll instead — several of these were caught only by
+  running the suite repeatedly (`-count=25`, `-race -count=10`), since they
+  passed by scheduling luck on a single run.
 - **A self-requeuing short-delay timer could starve an older, larger-delay
   one indefinitely** (fix, 2026-11-08, round 23, engine#342 fallout): found
   while investigating a new go-wasmcontainers hang on v0.45.0, via a minimal

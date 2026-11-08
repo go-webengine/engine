@@ -226,6 +226,15 @@ func TestAtomicsWaitTimesOut(t *testing.T) {
 // valid pattern into a real deadlock: the creator's postMessage call blocks
 // waiting for the container to finish, but the container is itself blocked
 // waiting for a notify only the (blocked) creator could ever send.
+// TestWorkerPostMessageDoesNotBlockItsOwnWakeUp confirms a child blocked in
+// Atomics.wait inside its own onmessage handler does not stop its parent's
+// event loop: the parent's own answer (Atomics.notify, from ITS OWN
+// onmessage handler reacting to the child's "wake" doorbell) must still get
+// a chance to run and reach the child, entirely through the two workers'
+// own normal, independent event loops — postMessage itself is async now and
+// returns immediately, so this is driven by polling RunPending rather than
+// observed synchronously right after postMessage, as round 17's own version
+// of this test (written when postMessage still blocked the sender) did.
 func TestWorkerPostMessageDoesNotBlockItsOwnWakeUp(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`
@@ -233,10 +242,9 @@ func TestWorkerPostMessageDoesNotBlockItsOwnWakeUp(t *testing.T) {
 				var i32 = new Int32Array(e.data.sab);
 				// The "doorbell", posted BEFORE blocking (matching worker.js's
 				// own call(): write args, postMessage to wake the creator,
-				// THEN block) — this is the message the creator's own
-				// postToWorker must keep draining WHILE it waits, since the
-				// creator cannot otherwise ever reach the code that answers
-				// with Atomics.notify.
+				// THEN block) — the message the creator's own onmessage
+				// handler must answer with Atomics.notify, on its own event
+				// loop, independent of whatever this goroutine does next.
 				postMessage('wake');
 				var r = Atomics.wait(i32, 0, 1, 10000);
 				postMessage('child:' + r);
@@ -245,69 +253,63 @@ func TestWorkerPostMessageDoesNotBlockItsOwnWakeUp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	start := time.Now()
-	done := make(chan struct{})
-	var root *dom.Node
-	var logs []string
-	var res Result
-	go func() {
-		defer close(done)
-		r, err := dom.Parse(page(`
-			var sab = new SharedArrayBuffer(4);
-			var i32 = new Int32Array(sab);
-			Atomics.store(i32, 0, 1);
-			var w = new Worker('` + srv.URL + `');
-			var woke = false, lastChild = '';
-			w.onmessage = function(e) {
-				if (e.data === 'wake') {
-					// Dispatched from INSIDE the creator's own blocked
-					// postToWorker call (drainWorkerInboxes, on its poll
-					// loop) — exactly where go-wasmcontainers' real
-					// onMessage answers a container's "call" with
-					// Atomics.notify. If this handler never runs until
-					// postMessage itself has already returned, the
-					// notify below arrives too late to unblock the child
-					// from inside this same call.
-					woke = true;
-					Atomics.store(i32, 0, 2);
-					Atomics.notify(i32, 0);
-					return;
-				}
-				lastChild = e.data;
-			};
-			w.postMessage({sab: sab});
-			document.body.setAttribute('data-woke', woke ? 'yes' : 'no');
-			document.body.setAttribute('data-child', lastChild);
-		`))
-		if err != nil {
-			t.Errorf("parse: %v", err)
-			return
-		}
-		root = r
-		res = Run(root, Options{
-			PageURL:             testURL,
-			UserAgent:           "TestUA/1.0",
-			Client:              http.DefaultClient,
-			Timeout:             2 * time.Second,
-			Log:                 func(s string) { logs = append(logs, s) },
-			CrossOriginIsolated: true,
-		})
-	}()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("render never returned: both sides of the deadlock are stuck past every bounded wait")
+	root, err := dom.Parse(page(`
+		var sab = new SharedArrayBuffer(4);
+		var i32 = new Int32Array(sab);
+		Atomics.store(i32, 0, 1);
+		var w = new Worker('` + srv.URL + `');
+		w.onmessage = function(e) {
+			if (e.data === 'wake') {
+				// Dispatched from the creator's OWN event loop (a normal
+				// drainWorkerInboxes pass, via RunPending below), entirely
+				// independent of the child's own run goroutine — exactly
+				// where go-wasmcontainers' real onMessage answers a
+				// container's "call" with Atomics.notify.
+				document.body.setAttribute('data-woke', 'yes');
+				Atomics.store(i32, 0, 2);
+				Atomics.notify(i32, 0);
+				return;
+			}
+			document.body.setAttribute('data-child', e.data);
+		};
+		w.postMessage({sab: sab});
+	`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
 	}
-	if res.ScriptsFailed != 0 {
+	var logs []string
+	sess := Begin(root, Options{
+		PageURL:             testURL,
+		UserAgent:           "TestUA/1.0",
+		Client:              http.DefaultClient,
+		Timeout:             2 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	defer sess.Close()
+	sess.RunInitial()
+	if res := sess.Result(); res.ScriptsFailed != 0 {
 		t.Fatalf("script failed: %+v logs=%v", res, logs)
 	}
+
+	start := time.Now()
+	deadline := start.Add(2 * time.Second)
+	for {
+		if got, _ := dom.Find(root, "body").Attribute("data-child"); got == "child:ok" {
+			break
+		}
+		if time.Now().After(deadline) {
+			woke, _ := dom.Find(root, "body").Attribute("data-woke")
+			child, _ := dom.Find(root, "body").Attribute("data-child")
+			t.Fatalf("timed out waiting for data-child=%q: data-woke=%q data-child=%q (logs=%v)", "child:ok", woke, child, logs)
+		}
+		sess.RunPending()
+		time.Sleep(workerTickInterval)
+	}
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("round trip took %v, want well under the 2s deadman — postMessage should not have to wait out the whole budget to see its own child's wake-up", elapsed)
+		t.Fatalf("round trip took %v, want well under the 2s deadman — the doorbell/notify handshake should settle in a couple of worker ticks, not the whole budget", elapsed)
 	}
 	if got, _ := dom.Find(root, "body").Attribute("data-woke"); got != "yes" {
-		t.Fatalf("data-woke = %q, want %q: the creator's own blocked postMessage call never delivered its child's wake-up doorbell", got, "yes")
-	}
-	if got, _ := dom.Find(root, "body").Attribute("data-child"); got != "child:ok" {
-		t.Fatalf("data-child = %q, want %q", got, "child:ok")
+		t.Fatalf("data-woke = %q, want %q: the creator's own event loop never answered its child's wake-up doorbell", got, "yes")
 	}
 }

@@ -428,7 +428,7 @@ func (b *binder) newConsole() goja.Value {
 				for i, a := range call.Arguments {
 					parts[i] = b.consoleArg(a)
 				}
-				b.opt.Log(level + ": " + strings.Join(parts, " "))
+				b.emitLog(level + ": " + strings.Join(parts, " "))
 			}
 			return goja.Undefined()
 		}
