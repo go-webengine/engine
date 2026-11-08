@@ -608,3 +608,50 @@ func TestWasmCompileThenInstantiateModuleInstanceofHolds(t *testing.T) {
 	}
 	mustHave(t, logs, "compileModule=true", "twoStepInstance=true")
 }
+
+// startExportModuleBytes hand-builds the smallest valid module that imports
+// env.touch () -> () and exports it as "_start" — deliberately an ordinary
+// EXPORT, not the binary format's own internal start SECTION (an unrelated,
+// unnamed mechanism almost no real module uses), to isolate exactly the
+// distinction go-wasmcontainers flagged: the WebAssembly JS API's own
+// instantiate algorithm runs the start section, never an exported function
+// merely named "_start".
+func startExportModuleBytes() []byte {
+	return []byte{
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // magic + version
+		0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type section: () -> ()
+		0x02, 0x0d, 0x01, 0x03, 0x65, 0x6e, 0x76, 0x05, 0x74, 0x6f, 0x75, 0x63, 0x68, 0x00, 0x00, // import env.touch func type0
+		0x03, 0x02, 0x01, 0x00, // function section: 1 func, type0
+		0x07, 0x0a, 0x01, 0x06, 0x5f, 0x73, 0x74, 0x61, 0x72, 0x74, 0x00, 0x01, // export "_start" func idx1
+		0x0a, 0x06, 0x01, 0x04, 0x00, 0x10, 0x00, 0x0b, // code: call func0 (touch); end
+	}
+}
+
+// TestInstantiateDoesNotAutoRunAnExportNamedStart proves go-wasmcontainers'
+// own confirmed fix (engine#342 fallout): WebAssembly.instantiate() must not
+// call an exported "_start" itself — only the binary's own internal start
+// SECTION, which this module deliberately has none of. wazero's own
+// InstantiateModule defaults to calling an exported "_start" (confirmed by
+// reading wazero's config.go: startFunctions defaults to []string{"_start"}
+// — a WASI-CLI convenience, not a JS API behaviour), which this engine must
+// clear. Their own real worker.js instantiates, THEN explicitly calls
+// instance.exports._start() itself — running it a first time during
+// instantiate() reached their guest's own I/O before its shared memory had
+// even been posted to its creator, the exact cause of their reported
+// "runtime.write ← runtime.writeErrData ← ... (repeating)" trap.
+func TestInstantiateDoesNotAutoRunAnExportNamedStart(t *testing.T) {
+	html := `<html><body><script>
+		` + uint8ArrayLiteral("bytes", startExportModuleBytes()) + `
+		var touched = 0;
+		WebAssembly.instantiate(bytes, {env: {touch: function() { touched++; }}}).then(function(r) {
+			console.log('after-instantiate touched=' + touched);
+			r.instance.exports._start();
+			console.log('after-explicit-call touched=' + touched);
+		}, function(err) { console.log('unexpected-rejection=' + err); });
+	</script></body></html>`
+	_, logs, res := runJS(t, html)
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	mustHave(t, logs, "after-instantiate touched=0", "after-explicit-call touched=1")
+}
