@@ -404,6 +404,23 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`WebAssembly.Memory` never satisfied `instanceof WebAssembly.Memory`**
+  (fix, 2026-11-08, round 19, engine#342 fallout): round 18's fix cleared
+  the `_start` double-run, and go-wasmcontainers' next run still failed
+  every container — their own `worker.js` validates a guest's exported
+  memory with `!(memory instanceof WebAssembly.Memory)`, which always
+  fired even though the guest genuinely exported a real, present memory.
+  Every Memory wrapper this engine builds (a module's own exported memory,
+  and the standalone constructor, shared or not) stamped
+  `Symbol.toStringTag` so `Object.prototype.toString.call()` reported
+  correctly, but NONE of the three ever called `SetPrototype` — unlike
+  `WebAssembly.Module`/`.Instance`, which got a real prototype in round 7
+  specifically so `instanceof` would hold for THEM. Masked until now
+  because every existing test checked the toStringTag, never `instanceof`,
+  for Memory specifically. Fixed with a new `wasmMemoryProto` (mirroring
+  `wasmModuleProto`/`wasmInstanceProto`) stamped onto all three
+  construction sites, and a real `WebAssembly.Memory` constructor wired
+  with its own `.name`/`.prototype`.
 - **`WebAssembly.instantiate()` no longer auto-runs an export merely named
   `_start`** (fix, 2026-11-08, round 18, engine#342 fallout): round 17's fix
   cleared the hang, and go-wasmcontainers' very next run hit every container

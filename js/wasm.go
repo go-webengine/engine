@@ -325,7 +325,6 @@ func (b *binder) newWebAssembly() *goja.Object {
 		result.Set("instance", inst)
 		return b.resolved(result)
 	})
-	o.Set("Memory", func(call goja.ConstructorCall) *goja.Object { return b.newWasmMemory(call) })
 	return o
 }
 
@@ -516,8 +515,35 @@ type wasmModuleState struct {
 func (b *binder) installWasmClassIdentity(o *goja.Object) {
 	b.wasmModuleProto = b.vm.NewObject()
 	b.wasmInstanceProto = b.vm.NewObject()
+	b.wasmMemoryProto = b.vm.NewObject()
 	o.Set("Module", b.wasmClassCtor("Module", b.wasmModuleProto))
 	o.Set("Instance", b.wasmClassCtor("Instance", b.wasmInstanceProto))
+	o.Set("Memory", b.wasmMemoryCtor())
+}
+
+// wasmMemoryCtor builds the REAL WebAssembly.Memory constructor function —
+// unlike Module/Instance's panic-only stand-ins (wasmClassCtor), `new
+// WebAssembly.Memory(descriptor)` is a real, spec-required synchronous
+// constructor this engine already supports (newWasmMemory); this only adds
+// the SAME `.name`/`.prototype`/`.prototype.constructor` wiring
+// wasmClassCtor gives Module/Instance, so wasmMemoryProto — stamped onto
+// every Memory wrapper this file builds (wrapWasmMemory,
+// wrapSharedWasmMemory, wrapNonSharedWasmMemory) — makes `instanceof
+// WebAssembly.Memory` hold too. A real, confirmed gap until now (found by
+// go-wasmcontainers: their own runtime/browser/worker.js validates a
+// guest's exported memory with exactly `!(memory instanceof
+// WebAssembly.Memory)`), masked because every existing test here checked
+// Object.prototype.toString.call() instead of instanceof.
+func (b *binder) wasmMemoryCtor() goja.Value {
+	ctorVal := b.vm.ToValue(func(call goja.ConstructorCall) *goja.Object {
+		return b.newWasmMemory(call)
+	})
+	if ctorObj, ok := ctorVal.(*goja.Object); ok {
+		_ = ctorObj.DefineDataProperty("name", b.vm.ToValue("Memory"), goja.FLAG_FALSE, goja.FLAG_TRUE, goja.FLAG_FALSE)
+		_ = ctorObj.Set("prototype", b.wasmMemoryProto)
+		_ = b.wasmMemoryProto.DefineDataProperty("constructor", ctorVal, goja.FLAG_TRUE, goja.FLAG_FALSE, goja.FLAG_FALSE)
+	}
+	return ctorVal
 }
 
 // wasmClassCtor builds one WebAssembly.{Module,Instance} constructor
@@ -831,6 +857,7 @@ func (b *binder) wrapWasmFunction(fn api.Function) goja.Value {
 // kind and the standalone constructor's kind identically.
 func (b *binder) wrapWasmMemory(mem api.Memory, isShared bool) *goja.Object {
 	o := b.vm.NewObject()
+	_ = o.SetPrototype(b.wasmMemoryProto)
 	_ = o.DefineDataPropertySymbol(goja.SymToStringTag, b.vm.ToValue("WebAssembly.Memory"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	var cachedSize uint32 = 0xffffffff // force a fetch on first access
 	var cachedBuf goja.Value
@@ -1000,6 +1027,7 @@ func (b *binder) newWasmMemory(call goja.ConstructorCall) *goja.Object {
 // sharedBufferRegistry for the life of the render.
 func (b *binder) wrapSharedWasmMemory(sb *sharedBuffer) *goja.Object {
 	o := b.vm.NewObject()
+	_ = o.SetPrototype(b.wasmMemoryProto)
 	_ = o.DefineDataPropertySymbol(goja.SymToStringTag, b.vm.ToValue("WebAssembly.Memory"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	cachedLen := -1
 	var cachedBuf *goja.Object
@@ -1040,6 +1068,7 @@ func (b *binder) wrapSharedWasmMemory(sb *sharedBuffer) *goja.Object {
 // no OTHER VM can hold a reference that reallocating would invalidate.
 func (b *binder) wrapNonSharedWasmMemory(initialLen int, hasMax bool, maxLen int) *goja.Object {
 	o := b.vm.NewObject()
+	_ = o.SetPrototype(b.wasmMemoryProto)
 	_ = o.DefineDataPropertySymbol(goja.SymToStringTag, b.vm.ToValue("WebAssembly.Memory"), goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	data := make([]byte, initialLen)
 	cachedLen := -1

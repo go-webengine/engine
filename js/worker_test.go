@@ -1294,3 +1294,72 @@ func TestWasmModulePostMessageSiblingInstancesAreIndependent(t *testing.T) {
 		t.Fatalf("data-r2 = %q, want %q (sibling instance of the same module, closing one must not affect the other), logs=%v", got, want, logs)
 	}
 }
+
+// TestWasmModulePostMessageWithSharedMemoryInstantiatesWithMemoryIntact
+// reproduces go-wasmcontainers' own follow-up on round 16/17/18's fixes: a
+// module that declares its OWN shared, exported memory, compiled in one
+// worker and posted — NESTED inside a plain data object's own property
+// (`{module: mod}`), exactly runtime/browser/executor_js.go's own
+// `msg.Set("module", mod); worker.Call("postMessage", msg)` shape, not the
+// bare top-level postMessage(mod) round 16's own first tests used — to a
+// SECOND worker, which instantiates it. Confirmed directly before writing
+// this test that clone.go's own recursive cloneAt already walks into a
+// plain object's own properties (the "map[string]interface{}" case calls
+// cloneAt again for every key), so the isShared bit set at compile time
+// (moduleHasSharedMemory, wasm.go) must still reach wasmExports on the
+// RECEIVING side's own reconstructed Module the same way it does for a
+// directly-posted one.
+func TestWasmModulePostMessageWithSharedMemoryInstantiatesWithMemoryIntact(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/compiler.js":
+			w.Write([]byte(
+				uint8ArrayLiteral("bytes", memoryOnlyModuleBytes(1, 2, true)) + `
+				WebAssembly.compile(bytes).then(function(mod) {
+					postMessage({module: mod, tag: 'setup'});
+				});
+			`))
+		case "/instantiator.js":
+			w.Write([]byte(`
+				onmessage = function(e) {
+					WebAssembly.instantiate(e.data.module, {}).then(function(instance) {
+						var mem = instance.exports.memory;
+						postMessage('isMemory=' + (mem instanceof WebAssembly.Memory) +
+							' isSAB=' + (mem.buffer instanceof SharedArrayBuffer));
+					}, function(err) {
+						postMessage('REJECTED:' + err);
+					});
+				};
+			`))
+			return
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(page(`
+		var instantiator = new Worker('` + srv.URL + `/instantiator.js');
+		instantiator.onmessage = function(e) { document.body.setAttribute('data-result', e.data); };
+		var compiler = new Worker('` + srv.URL + `/compiler.js');
+		compiler.onmessage = function(e) { instantiator.postMessage(e.data); };
+	`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL:             testURL,
+		Client:              http.DefaultClient,
+		Timeout:             3 * time.Second,
+		Log:                 func(s string) { logs = append(logs, s) },
+		CrossOriginIsolated: true,
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	want := "isMemory=true isSAB=true"
+	if got, _ := dom.Find(root, "body").Attribute("data-result"); got != want {
+		t.Fatalf("data-result = %q, want %q, logs=%v", got, want, logs)
+	}
+}
