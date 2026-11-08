@@ -404,6 +404,17 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`arrayLength(&resource)`** (fix, 2026-11-08, round 29,
+  go-wasmcontainers report): reported after v0.45.6 cleared the entire
+  ONNX lane (123/123) — their batch/batch-grant kernel's own
+  `if (id.x < arrayLength(&out)) { ... }`, the ONLY use of `&` in it
+  (confirmed by reading their real source, not guessed — no atomics, no
+  `ptr<function, T>` parameters). `callExpr` now recognizes
+  `arrayLength(&X)` for a tracked runtime-sized storage resource and
+  emits its already-computed bounds-check element count directly — the
+  same one `indexExpr`'s own clamp reads, correctly the bound sub-range's
+  count. General `&`/pointer support stays out of scope until a real
+  kernel needs it.
 - **A `continue` inside `for`/`loop` skipped the update/continuing block,
   hanging the kernel** (fix, 2026-11-08, round 28, go-wasmcontainers
   report): reported after v0.45.5 (57 → 100 of 123 ONNX cases) — every
