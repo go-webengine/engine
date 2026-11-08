@@ -404,6 +404,19 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **A shader-creation error now surfaces at `createShaderModule`, not
+  later** (fix, 2026-11-08, round 30, go-wasmcontainers report): reported
+  on batch-shaders, their last red container case — a module using the
+  reserved word `meta` as an identifier is genuinely invalid WGSL by
+  spec, which every real engine refuses right at `createShaderModule`
+  (captured by an open error scope, reported by `getCompilationInfo()`
+  with its real line/column), not only once a pipeline first tries to
+  use it. Two questions kept separate: go-gfx/wgsl's own `Validate` (is
+  this real WGSL at all) runs independently of `wgslmsl.Translate` (can
+  THIS translator's own backend run it) — a construct this translator
+  doesn't support yet but is genuinely valid WGSL (a switch statement, a
+  pointer parameter) stays exactly as before, never reported as a
+  shader-creation error, since a real browser would compile it fine.
 - **`arrayLength(&resource)`** (fix, 2026-11-08, round 29,
   go-wasmcontainers report): reported after v0.45.6 cleared the entire
   ONNX lane (123/123) — their batch/batch-grant kernel's own
