@@ -166,9 +166,6 @@ func Translate(src string, opts Options) (*Result, error) {
 	if ep.Stage != wgsl.StageCompute {
 		return nil, unsupported("entry point %q is not a @compute shader", ep.Name)
 	}
-	if len(ep.Functions) != 1 {
-		return nil, unsupported("calls to helper functions (entry point %q reaches %d functions; only the entry point itself is supported)", ep.Name, len(ep.Functions))
-	}
 
 	tr := &translator{info: info}
 	return tr.translateEntryPoint(ep)

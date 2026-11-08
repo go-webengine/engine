@@ -337,5 +337,9 @@ func (tr *translator) callExpr(c *wgsl.Call) (string, error) {
 		return fmt.Sprintf("metal::%s(%s)", name, joined), nil
 	}
 
-	return "", unsupported("call to %q (not a supported built-in, and user-defined functions are out of scope)", c.Fn.Name)
+	if fo, ok := tr.info.Objects[c.Fn].(*wgsl.FuncObj); ok && tr.userFuncs[fo] {
+		return fmt.Sprintf("%s(%s)", identMSL(fo.Name), joined), nil
+	}
+
+	return "", unsupported("call to %q (not a supported built-in, and this helper function cannot be translated)", c.Fn.Name)
 }
