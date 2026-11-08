@@ -976,3 +976,19 @@ func TestDisplayContentsKeyword(t *testing.T) {
 		t.Errorf("display:contents = %v want DisplayContents", s.Display)
 	}
 }
+
+func TestWidthSizingKeywords(t *testing.T) {
+	for kw, want := range map[string]IntrinsicSize{
+		"min-content": SizeMinContent, "max-content": SizeMaxContent, "fit-content": SizeFitContent,
+	} {
+		s := &Style{Width: Length{Auto: true}}
+		applyOn(s, "width", kw, 16)
+		if s.WidthSizing != want || !s.Width.Auto {
+			t.Errorf("width:%s -> sizing %v auto %v", kw, s.WidthSizing, s.Width.Auto)
+		}
+		applyOn(s, "width", "10px", 16)
+		if s.WidthSizing != SizeNone || s.Width.Px != 10 {
+			t.Errorf("width:10px after %s kept sizing %v", kw, s.WidthSizing)
+		}
+	}
+}

@@ -669,6 +669,16 @@ func (p *Pct4) setSide(e *Edges, i int, l Length) {
 	*e.Side(i) = l.Px
 }
 
+// IntrinsicSize is a CSS Sizing 3 intrinsic size keyword used as a width.
+type IntrinsicSize uint8
+
+const (
+	SizeNone IntrinsicSize = iota
+	SizeMinContent
+	SizeMaxContent
+	SizeFitContent
+)
+
 // Length is a resolved CSS length. Percentages are kept separately so the
 // layout can resolve them against the containing block's width.
 type Length struct {
@@ -759,6 +769,11 @@ type Style struct {
 	MarginVPct Pct4
 	Border     Borders
 	Width      Length // Auto by default
+	// WidthSizing records an intrinsic-size keyword given as `width`
+	// (CSS Sizing 3 §4: min-content, max-content, fit-content). Width stays
+	// Auto beside it, so every shrink-to-fit path (float, inline-block, flex
+	// item) is unchanged; only a block box placed in normal flow reads it.
+	WidthSizing IntrinsicSize
 	MinWidth   Length // Auto (== none) by default
 	MaxWidth   Length // Auto (== none) by default
 	Height     Length // Auto by default

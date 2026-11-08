@@ -100,12 +100,36 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 		return top
 	}
 
-	// Width constraints per column. A colspan>1 cell is excluded —
-	// distributing its content need across the columns it spans is the full
-	// spec algorithm's job, past this table layout's scope — but it still
-	// OCCUPIES those columns (see the row-layout loop below), so it does not
-	// shift a later plain cell in the same row out of alignment with the
-	// other rows' columns.
+	cols := l.tableColumns(rows, ncols)
+	// border-spacing (see css.Style.BorderSpacingH/V's own doc comment for
+	// scope): a gap of BorderSpacingH BEFORE the first column, BETWEEN every
+	// pair of columns, and AFTER the last — ncols+1 gaps total, taken out of
+	// the width columns are distributed over, matching the separate-borders
+	// model's own box accounting. BorderSpacingV works identically down the
+	// rows. Zero for a table that never sets border-spacing, so this is a
+	// no-op reproducing the exact previous flush-column/row layout.
+	hs, vs := st.BorderSpacingH, st.BorderSpacingV
+	avail := cw - hs*float64(ncols+1)
+	if avail < 0 {
+		avail = 0
+	}
+	colW := distributeColumns(cols, avail)
+	colX := make([]float64, ncols)
+	acc := cx + hs
+	for j := range colW {
+		colX[j] = acc
+		acc += colW[j] + hs
+	}
+
+	return l.tableRows(box, rows, cx, cw, top, hs, vs, colW, colX)
+}
+
+// tableColumns gathers each column's width constraints. A colspan>1 cell is
+// excluded — distributing its content need across the columns it spans is the
+// full spec algorithm's job, past this table layout's scope — but it still
+// OCCUPIES those columns (see tableRows), so it does not shift a later plain
+// cell in the same row out of alignment with the other rows' columns.
+func (l *layouter) tableColumns(rows []tableRow, ncols int) []column {
 	cols := make([]column, ncols)
 	for _, r := range rows {
 		for j, cell := range r.cells {
@@ -147,26 +171,59 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 			}
 		}
 	}
-	// border-spacing (see css.Style.BorderSpacingH/V's own doc comment for
-	// scope): a gap of BorderSpacingH BEFORE the first column, BETWEEN every
-	// pair of columns, and AFTER the last — ncols+1 gaps total, taken out of
-	// the width columns are distributed over, matching the separate-borders
-	// model's own box accounting. BorderSpacingV works identically down the
-	// rows. Zero for a table that never sets border-spacing, so this is a
-	// no-op reproducing the exact previous flush-column/row layout.
-	hs, vs := st.BorderSpacingH, st.BorderSpacingV
-	avail := cw - hs*float64(ncols+1)
-	if avail < 0 {
-		avail = 0
-	}
-	colW := distributeColumns(cols, avail)
-	colX := make([]float64, ncols)
-	acc := cx + hs
-	for j := range colW {
-		colX[j] = acc
-		acc += colW[j] + hs
-	}
+	return cols
+}
 
+// tableMaxContent is the max-content width of the table formed by node's rows
+// (sum of the columns' maximum widths plus border-spacing), 0 when it has none.
+func (l *layouter) tableMaxContent(node *dom.Node, st *css.Style) float64 {
+	rows := l.collectRows(node)
+	ncols := 0
+	for _, r := range rows {
+		for j := range r.cells {
+			if end := r.colStart[j] + r.colSpan[j]; end > ncols {
+				ncols = end
+			}
+		}
+	}
+	if ncols == 0 {
+		return 0
+	}
+	w := st.BorderSpacingH * float64(ncols+1)
+	for _, c := range l.tableColumns(rows, ncols) {
+		w += c.max
+	}
+	return w
+}
+
+// isAnonTableParent reports whether node is a non-table box (display:block)
+// whose element children are all table rows or row groups, with no text of
+// its own: CSS 2.1 §17.2.1 wraps such misparented rows in an anonymous table,
+// so they keep table layout. Mixed content (other block children, text) is not
+// handled and stays ordinary block flow.
+func (l *layouter) isAnonTableParent(node *dom.Node, st *css.Style) bool {
+	if node.Type != dom.Element || st.Display != css.DisplayBlock {
+		return false
+	}
+	found := false
+	for _, c := range l.renderedChildren(node) {
+		if c.Type != dom.Element {
+			continue
+		}
+		cs := l.sm[c]
+		if cs == nil || cs.Display == css.DisplayNone {
+			continue
+		}
+		if cs.Display != css.DisplayTableRow && cs.Display != css.DisplayTableRowGroup {
+			return false
+		}
+		found = true
+	}
+	return found && !l.hasDirectText(node)
+}
+
+// tableRows places the rows of a table whose column widths are colW at colX.
+func (l *layouter) tableRows(box *Box, rows []tableRow, cx, cw, top, hs, vs float64, colW, colX []float64) float64 {
 	y := top + vs
 	for _, r := range rows {
 		rowBox := &Box{Node: r.node, Style: r.style, X: cx, Y: y, W: cw, ContentX: cx, ContentY: y, ContentW: cw}

@@ -935,6 +935,16 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style, vw ...float64
 	case "width":
 		if l, ok := parseLength(v, emRef); ok {
 			s.Width = l
+			s.WidthSizing = SizeNone
+		} else {
+			switch lv {
+			case "min-content":
+				s.Width, s.WidthSizing = Length{Auto: true}, SizeMinContent
+			case "max-content":
+				s.Width, s.WidthSizing = Length{Auto: true}, SizeMaxContent
+			case "fit-content":
+				s.Width, s.WidthSizing = Length{Auto: true}, SizeFitContent
+			}
 		}
 	case "min-width":
 		if l, ok := parseLength(v, emRef); ok {

@@ -258,6 +258,13 @@ func (l *layouter) preferredWidth(node *dom.Node, st *css.Style) float64 {
 		}
 		return st.Width.Px + edges
 	}
+	// A block box over table rows (anonymous table, CSS 2.1 §17.2.1): the
+	// columns side by side, not the widest row-as-block.
+	if l.isAnonTableParent(node, st) {
+		if w := l.tableMaxContent(node, st); w > 0 {
+			return w + edges
+		}
+	}
 	// A flex ROW lays its items side by side, so its max-content main size is the
 	// SUM of the items' outer main sizes plus the inter-item gaps — not the max of
 	// them (the block / flex-column case handled below). Without this a
