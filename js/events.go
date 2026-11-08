@@ -237,9 +237,7 @@ func (b *binder) installConstructors(g *goja.Object) {
 	g.Set("PerformanceObserver", observer)
 	b.installMutationObserver(g)
 
-	g.Set("URL", func(call goja.ConstructorCall) *goja.Object {
-		return b.buildURL(call.Argument(0).String(), call.Argument(1))
-	})
+	b.installURL(g)
 	g.Set("Image", func(call goja.ConstructorCall) *goja.Object {
 		return b.vm.NewObject()
 	})

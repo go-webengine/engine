@@ -5,6 +5,7 @@ package js
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -123,11 +124,15 @@ func (w *jsWorker) installWorkerGlobals() {
 	// (installNet — and now correctly resolves a worker's own relative
 	// fetch() URLs against the worker's OWN script URL, not the creating
 	// document's, thanks to newWorker's own PageURL fix), the plain URL
-	// constructor (installConstructors' own OTHER registrations —
+	// constructor plus Blob and its own blob: URL store (installURL,
+	// blob.go — confirmed needed by go-gfx/webgpu's own record_js.go,
+	// which loads its replay script inside a Worker via exactly
+	// `new Blob([source],...)` -> `URL.createObjectURL` ->
+	// `importScripts`) (installConstructors' own OTHER registrations —
 	// MutationObserver, IntersectionObserver/ResizeObserver/
 	// PerformanceObserver, Image — are real DOM/layout concepts a Worker
-	// correctly has none of, so only URL is pulled out here, not the whole
-	// function), URLSearchParams, Intl, and performance (a plain stub
+	// correctly has none of, so only URL/Blob are pulled out here, not the
+	// whole function), URLSearchParams, Intl, and performance (a plain stub
 	// object even for the main document — see newPerformance's own body —
 	// so there is nothing document-specific to lose by sharing it). Each
 	// confirmed, by reading its own body, to touch nothing but b.vm/Go
@@ -135,9 +140,7 @@ func (w *jsWorker) installWorkerGlobals() {
 	// being added here, the same bar installCrypto's own fix was held to.
 	wb.installEncoding(g)
 	wb.installNet(g)
-	g.Set("URL", func(call goja.ConstructorCall) *goja.Object {
-		return wb.buildURL(call.Argument(0).String(), call.Argument(1))
-	})
+	wb.installURL(g)
 	wb.installURLSearchParams(g)
 	wb.installIntl(g)
 	g.Set("performance", wb.newPerformance())
@@ -249,20 +252,41 @@ func (w *jsWorker) installWorkerGlobals() {
 // logged (see execute's own doc comment: "a script error never
 // propagates"). A script that already ran is not undone if a LATER url in
 // the same call fails.
+//
+// A `blob:` url is resolved against THIS binder's own blobURLs store
+// directly (File API §8), never through resolveURL/fetchScript's HTTP
+// path — it is an opaque identifier, not a path to resolve against
+// PageURL, and only ever valid in the environment that minted it.
+// Confirmed needed directly: go-gfx/webgpu's own record_js.go constructs
+// exactly this `new Blob(...)` -> `URL.createObjectURL` ->
+// `importScripts(thatBlobURL)` chain inside a Worker.
 func (b *binder) importScripts(call goja.FunctionCall) goja.Value {
 	urls := make([]string, len(call.Arguments))
 	for i, a := range call.Arguments {
 		urls[i] = a.String()
 	}
 	for _, u := range urls {
+		if strings.HasPrefix(u, "blob:") {
+			continue
+		}
 		if _, ok := resolveURL(b.opt.PageURL, u); !ok {
 			panic(b.domException("SyntaxError", "importScripts: cannot parse URL "+u))
 		}
 	}
 	for _, u := range urls {
-		src, ok := b.fetchScript(u)
-		if !ok {
-			panic(b.vm.NewTypeError("importScripts: failed to fetch " + u))
+		var src string
+		if strings.HasPrefix(u, "blob:") {
+			data, ok := b.blobURLs[u]
+			if !ok {
+				panic(b.vm.NewTypeError("importScripts: failed to fetch " + u))
+			}
+			src = string(data)
+		} else {
+			s, ok := b.fetchScript(u)
+			if !ok {
+				panic(b.vm.NewTypeError("importScripts: failed to fetch " + u))
+			}
+			src = s
 		}
 		if err := b.runRethrow(src, u); err != nil {
 			var exc *goja.Exception
