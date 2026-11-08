@@ -615,6 +615,24 @@ func lookupWasmModule(obj *goja.Object) (compiled wazero.CompiledModule, isShare
 // instantiation of the same CompiledModule on one Runtime works, and
 // that closing one such instance does not affect a sibling instance of
 // the same module.
+//
+// Also always WithStartFunctions() with NO arguments, clearing wazero's
+// own default ([]string{"_start"}, confirmed by reading wazero's own
+// config.go) — go-wasmcontainers flagged this precisely: the WebAssembly
+// JS API's own instantiate algorithm ("instantiate the core of a
+// WebAssembly module") only ever runs a module's internal, unexported
+// start SECTION (vanishingly rare in practice, and never present in a
+// WASI module), never an EXPORTED function merely named "_start" —
+// wazero's default is a WASI-CLI convenience this JS-facing binding must
+// not inherit. Their own worker.js (github.com/go-wasmcontainers/engine's
+// runtime/browser package) instantiates, posts the guest's shared memory
+// to its creator, THEN calls instance.exports._start() itself — exactly
+// the spec's own division of responsibility. Auto-running _start during
+// instantiate() ran it a first time before that memory message had even
+// been sent, so the guest's own first fd_write reached this engine with
+// no memory registered yet, failed, and its own panic/error-write path
+// recursed into the identical failure — the exact "runtime.write ←
+// runtime.writeErrData ← ... (repeating)" trap go-wasmcontainers reported.
 func (b *binder) instantiateWasm(compiled wazero.CompiledModule, importsArg goja.Value, isShared bool) (*goja.Object, goja.Value) {
 	ctx, cancel := b.wasmCtx()
 	defer cancel()
@@ -639,7 +657,7 @@ func (b *binder) instantiateWasm(compiled wazero.CompiledModule, importsArg goja
 	if errv != nil {
 		return nil, errv
 	}
-	mod, err := b.wasmRT().InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName(""))
+	mod, err := b.wasmRT().InstantiateModule(ctx, compiled, wazero.NewModuleConfig().WithName("").WithStartFunctions())
 	if err != nil {
 		return nil, b.wasmError("LinkError", err.Error())
 	}

@@ -404,6 +404,26 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
+- **`WebAssembly.instantiate()` no longer auto-runs an export merely named
+  `_start`** (fix, 2026-11-08, round 18, engine#342 fallout): round 17's fix
+  cleared the hang, and go-wasmcontainers' very next run hit every container
+  trapping 9 seconds in with `LinkError: module[] function[_start] failed:
+  wasm error: invalid table access`, a repeating `runtime.write ←
+  runtime.writeErrData ← ...` wasm stack trace. Their own diagnosis named
+  the mechanism precisely: wazero's `NewModuleConfig` defaults to running an
+  exported `_start` automatically (a WASI-CLI convenience, confirmed by
+  reading wazero's own config.go), but the WebAssembly JS API's own
+  `instantiate()` only ever runs a module's internal, unexported start
+  SECTION — never an exported function merely named `_start`. Their own real
+  `worker.js` instantiates, posts the guest's shared memory to its creator,
+  THEN calls `instance.exports._start()` itself — exactly that division of
+  responsibility. Running it a first time during `instantiate()`, before
+  the memory message had even been sent, reached the guest's own first
+  `fd_write` with no memory registered on the host side yet, and its own
+  panic/error-write path recursed into the identical failure. Fixed by
+  clearing wazero's default (`.WithStartFunctions()` with no arguments) on
+  the one `InstantiateModule` call every JS-facing instantiate path funnels
+  through.
 - **`Worker.postMessage` no longer blocks its own wake-up** (fix, 2026-11-08,
   round 17, engine#342 fallout): round 16's fix cleared one failure in
   go-wasmcontainers' `TestBatchComputeContainers`, and the next run hung the
