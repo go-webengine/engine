@@ -404,10 +404,31 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   inside a Worker also benefits from the relative-URL base fix above: a
   worker's own `fetch('./sibling.json')` resolves against the WORKER's own
   script location, not the creating document's.
-- **The REAL cause of the native crash** (fix, 2026-11-08, round 13):
-  round 12's go-macos/metal bump was real but go-wasmcontainers' own retest
-  proved it did not fix their crash — it made it deterministic (6/6). The
-  actual bug: `js/worker.go`'s `stopWorkers` (called from `Session.Close`)
+- **THE actual cause: `GPUDevice.destroy()` never released the native
+  Metal device** (fix, 2026-11-08, round 14): round 13's fix below was
+  also real, but go-wasmcontainers' own retest proved it wasn't their
+  crash either — same signatures, deterministic 6/6, and happening 8-12s
+  into the render, well before any `Session.Close`. `destroy()`
+  (`js/webgpu.go`) only resolved the JS-visible `lost` promise; it never
+  called `.Close()` on the underlying `*metal.Device`. Their own workload
+  loads ~123 ONNX models, each into its own fresh device, explicitly
+  "destroying" it between models — since `destroy()` did nothing
+  natively, all 123 stayed alive, crashing deep inside Apple's own
+  Metal/Foundation frameworks once some OS-level resource ceiling was
+  crossed. Live lldb debugging was attempted first but is fundamentally
+  stuck in this sandboxed environment (every `task_for_pid`-requiring
+  tool hangs at 0% CPU); found by direct code reading instead, armed with
+  the corrected "mid-render, not teardown" fact. Verified both directions
+  via a test that cannot safely reproduce the real exhaustion itself (that
+  would crash the test binary) but proves the mechanism: after `destroy()`,
+  a subsequent `createBuffer()` must come back as a captured
+  `GPUOutOfMemoryError` through the existing error-scope path, proving the
+  native device genuinely closed.
+- **A real worker-GPU-teardown race, independently fixed but not THE
+  crash** (fix, 2026-11-08, round 13): round 12's go-macos/metal bump was
+  real but go-wasmcontainers' own retest proved it did not fix their
+  crash — it made it deterministic (6/6). The actual bug found this
+  round: `js/worker.go`'s `stopWorkers` (called from `Session.Close`)
   signalled a worker to stop and IMMEDIATELY released its GPU devices on
   the MAIN goroutine, with no wait for the worker's own goroutine (the
   only one allowed to touch its binder, per `jsWorker`'s own struct doc

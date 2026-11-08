@@ -381,6 +381,36 @@ func (b *binder) newGPUDevice(dev *metal.Device) *goja.Object {
 			return goja.Undefined()
 		}
 		destroyed = true
+		// The real native resource, not just a JS-visible flag: per spec,
+		// destroy() must free every resource the device holds, and this
+		// device's own MTLDevice/MTLCommandQueue (allocated fresh by
+		// requestAdapter/requestDevice, never cached or shared, see
+		// gpuRequestAdapter's own doc comment) is the one unlike anything
+		// else this engine allocates — an OS-limited handle, not memory a
+		// GC will ever reclaim on its own. Before this fix, destroy() only
+		// resolved the `lost` promise, a purely cosmetic signal nothing
+		// else here ever checked (createBuffer/createShaderModule/etc. ran
+		// against the device exactly as before): every requestDevice()
+		// call leaked a full native device forever, bounded only by
+		// Session.Close's own end-of-render closeGPUDevices sweep. A
+		// workload issuing many short-lived devices in sequence (confirmed
+		// directly: go-wasmcontainers' own ~123 ONNX models, each loading
+		// a fresh graph/device and "destroying" it between models) leaked
+		// that many live native devices simultaneously, and crashed deep
+		// inside Apple's own Metal/Foundation frameworks once some
+		// internal, OS-level resource ceiling was crossed -- a real
+		// native-process crash this engine's own Go-level safety cannot
+		// catch or convert into a graceful error, confirmed root cause of
+		// a reported SIGSEGV two earlier, independently-real fixes (an
+		// objc.AutoreleasePool gap, a worker-teardown race) did not
+		// address because neither was this bug.
+		dev.Close()
+		for i, d := range b.gpuDevices {
+			if d == dev {
+				b.gpuDevices = append(b.gpuDevices[:i], b.gpuDevices[i+1:]...)
+				break
+			}
+		}
 		info := b.vm.NewObject()
 		info.Set("reason", "destroyed")
 		info.Set("message", "device was destroyed")
