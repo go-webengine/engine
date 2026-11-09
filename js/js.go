@@ -501,6 +501,22 @@ func (b *binder) runScripts(res *Result) {
 func (b *binder) execute(src, name string) (ok bool) {
 	prog, err := goja.Compile(name, src, false)
 	if err != nil {
+		// goja has no ES-module support and no modern-syntax coverage
+		// beyond its own parser (bitcast/arrayLength-style "clear, named
+		// rejection" doesn't apply here — this IS genuinely valid JS a
+		// real browser runs fine, e.g. a classic script's own bare
+		// dynamic import() expression, confirmed live on github.com's own
+		// Support app, engine#412/#413). Try re-emitting it as plain
+		// ES2017 via esbuild before giving up — see transpileModernJS's
+		// own doc comment for the full rationale and why this only ever
+		// engages for a script that ALREADY failed to compile.
+		if transformed, ok2 := b.transpileModernJS(src, name); ok2 {
+			if prog2, err2 := goja.Compile(name, transformed, false); err2 == nil {
+				prog, err = prog2, nil
+			}
+		}
+	}
+	if err != nil {
 		b.logf("compile %s: %v", name, err)
 		return false
 	}
