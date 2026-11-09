@@ -208,22 +208,20 @@ func bundled0() bundledFonts {
 	}
 	set(css.Sans, fileInter, fileInterBold, fileInterItalic, fileInterBoldItalic)
 	set(css.Serif, fileLora, fileLoraBold, fileLoraItalic, fileLoraBoldItalic)
-	// Go Mono ships a single upright regular; its bold/italic requests fall back
-	// to it through font() (the family ships no other styles).
-	b.fonts[styleKey{css.Mono, false, false}] = bundledFace(fileGoMono)
+	set(css.Mono, fileGoMono, fileGoMonoBold, fileGoMonoItalic, fileGoMonoBoldIt)
 	return b
 }
 
 // font resolves the parsed font for a (family, bold, italic) request, falling
-// back to the family's regular style and finally to the sans regular so a lookup
-// always yields a usable face.
+// back to the generic bucket's own style (every bundled bucket has all four) and
+// finally to the sans regular so a lookup always yields a usable face.
 func (f *Fonts) font(k styleKey) *opentype.Font {
 	// The families the declaration NAMED come first, in the order it named
 	// them: that is CSS's own rule, and the only way a document's own
 	// typeface can win over a bundled one. Within a named family, a slot it
 	// does not ship falls back to its regular rather than to another
 	// typeface — the upright of the right face is closer than the italic of
-	// the wrong one, which is already how the bundled Go Mono behaves.
+	// the wrong one.
 	for _, name := range k.fam.NamedFamilies() {
 		if ft := f.named[namedKey{name, faceStyle{k.bold, k.italic}}].get(); ft != nil {
 			return ft
@@ -233,9 +231,6 @@ func (f *Fonts) font(k styleKey) *opentype.Font {
 		}
 	}
 	if ft := f.fonts[k].get(); ft != nil {
-		return ft
-	}
-	if ft := f.fonts[styleKey{k.fam, false, false}].get(); ft != nil {
 		return ft
 	}
 	// The generic bucket, which every FontFamily carries: a key built with a
