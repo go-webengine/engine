@@ -22,6 +22,9 @@ const (
 	fileLoraItalic      = "lora/lora-italic.ttf"
 	fileLoraBoldItalic  = "lora/lora-bolditalic.ttf"
 	fileGoMono          = "gomono/gomono.ttf"
+	fileGoMonoBold      = "gomono/gomono-bold.ttf"
+	fileGoMonoItalic    = "gomono/gomono-italic.ttf"
+	fileGoMonoBoldIt    = "gomono/gomono-bolditalic.ttf"
 	fileDejaVu          = "dejavusans/dejavusans.ttf"
 	fileDejaVuBold      = "dejavusans/dejavusans-bold.ttf"
 	fileDejaVuItalic    = "dejavusans/dejavusans-italic.ttf"
@@ -37,7 +40,7 @@ func BundledFontNames() []string {
 	return []string{
 		fileInter, fileInterBold, fileInterItalic, fileInterBoldItalic,
 		fileLora, fileLoraBold, fileLoraItalic, fileLoraBoldItalic,
-		fileGoMono,
+		fileGoMono, fileGoMonoBold, fileGoMonoItalic, fileGoMonoBoldIt,
 		fileDejaVu, fileDejaVuBold, fileDejaVuItalic, fileDejaVuBoldIt,
 	}
 }

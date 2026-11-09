@@ -54,7 +54,7 @@ func TestBundledFacesOnDemand(t *testing.T) {
 	}
 	f.Measure("☃┼", sans, 16, 400, false) // a snowman and box drawing Inter lacks: DejaVu Sans
 	f.Measure("x", FontFamilyOf(css.GenericMono), 16, 700, true)
-	if !slices.Equal(src.asked, []string{fileInter, fileDejaVu, fileGoMono}) {
+	if !slices.Equal(src.asked, []string{fileInter, fileDejaVu, fileGoMonoBoldIt}) {
 		t.Fatalf("fetched %v", src.asked)
 	}
 }
@@ -115,5 +115,60 @@ func TestRegisterLazy(t *testing.T) {
 	}
 	if f.RegisterLazy(" ", 400, false, func() (*opentype.Font, error) { return nil, nil }) == nil || f.RegisterLazy("x", 400, false, nil) == nil {
 		t.Error("a lazy face with no name or no loader was registered")
+	}
+}
+
+// The generic monospace has all four styles of Go Mono (go-webengine/engine#403):
+// bold and italic are their own faces, not the regular one, in drawing and in
+// what a vector or office consumer embeds.
+func TestBundledMonospaceStyles(t *testing.T) {
+	f := NewFonts()
+	mono := FontFamilyOf(css.GenericMono)
+	reg := f.font(styleKey{mono, false, false})
+	bold := f.font(styleKey{mono, true, false})
+	it := f.font(styleKey{mono, false, true})
+	bi := f.font(styleKey{mono, true, true})
+	if reg == bold || reg == it || reg == bi || bold == it || bold == bi || it == bi {
+		t.Fatal("two monospace styles share one font")
+	}
+	// Every style is Go Mono: the same fixed advance, so layout does not move.
+	w := f.Measure("iiii", mono, 16, 400, false)
+	for _, c := range []struct {
+		weight int
+		italic bool
+	}{{700, false}, {400, true}, {700, true}} {
+		if got := f.Measure("iiii", mono, 16, c.weight, c.italic); got != w {
+			t.Errorf("weight %d italic %v: width %v, regular %v", c.weight, c.italic, got, w)
+		}
+	}
+	// The glyphs differ: a bold "m" carries more ink than the regular one, an
+	// italic one is not the upright shape.
+	ink := func(weight int, italic bool) (n int, sum int) {
+		fc := f.styleFace(mono, 32, weight, italic)
+		gid, _ := f.font(styleKey{mono, weight >= 600, italic}).GlyphIndex('m')
+		b, m, _, _, ok := fc.GlyphMaskIndex(gid, 0, 0)
+		if !ok || m == nil {
+			t.Fatal("no glyph")
+		}
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			for x := b.Min.X; x < b.Max.X; x++ {
+				a := int(m.AlphaAt(x-b.Min.X, y-b.Min.Y).A)
+				n += a
+				sum += a * x
+			}
+		}
+		if n == 0 {
+			t.Fatal("empty glyph")
+		}
+		return n, sum / n
+	}
+	nr, cr := ink(400, false)
+	nb, _ := ink(700, false)
+	_, ci := ink(400, true)
+	if nb <= nr+nr/10 {
+		t.Errorf("bold ink %d not clearly above regular %d", nb, nr)
+	}
+	if ci == cr {
+		t.Error("the italic is the upright glyph")
 	}
 }

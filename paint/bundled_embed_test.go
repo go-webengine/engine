@@ -18,7 +18,7 @@ var testFontData = embeddedFont
 // The names and the embedded files agree, and every one parses.
 func TestBundledFontNames(t *testing.T) {
 	names := BundledFontNames()
-	if len(names) != 13 {
+	if len(names) != 16 {
 		t.Fatalf("%d names", len(names))
 	}
 	for _, n := range names {

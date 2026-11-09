@@ -6,7 +6,7 @@ package bundledfonts
 import "testing"
 
 func TestSource(t *testing.T) {
-	if len(files) != 13 {
+	if len(files) != 16 {
 		t.Fatalf("%d files", len(files))
 	}
 	for name := range files {
