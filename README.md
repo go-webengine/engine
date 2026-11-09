@@ -298,7 +298,9 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   install typefaces of its own with **`Engine.FontFaces`** (built with
   `ParseFontFace`), as a browser's system fonts; parsed fonts are shared
   across renders, so a page set in the same faces as the last one does not
-  parse them again. A **variable font** (an `fvar` `wght` axis) is drawn at each
+  parse them again. The raster painter draws text at the exact size with a
+  fractional pen and quarter-pixel glyph origins, so word positions and widths
+  agree with Chrome to within half a pixel (v0.45.12). A **variable font** (an `fvar` `wght` axis) is drawn at each
   `font-weight` the page asks for, in raster and PDF alike, and so are the
   bundled Inter and Lora regulars (v0.45.10); the **`font` shorthand** expands
   to its longhands (v0.45.11).
