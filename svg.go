@@ -5,6 +5,8 @@ package engine
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"image"
 	"math"
@@ -108,6 +110,8 @@ func (e *Engine) svgToBitmapVec(data []byte, st *css.Style, attrW, attrH, viewpo
 	// document wholesale. We size the box ourselves from the viewBox + CSS, so
 	// strip those attributes first (injecting a viewBox from their numeric part
 	// when the document has none).
+	sum := sha256.Sum256(data)
+	source := hex.EncodeToString(sum[:])
 	data, ownW, ownH := sanitizeSVGRoot(data)
 	var (
 		icon *oksvg.SvgIcon
@@ -158,7 +162,7 @@ func (e *Engine) svgToBitmapVec(data []byte, st *css.Style, attrW, attrH, viewpo
 	}
 	// The scanner samples in the viewBox coordinate system; SetTarget scales it
 	// onto the rw×rh output.
-	return svgRasterizer(icon, rw, rh, iround(vbW), iround(vbH)), svgVectorSource(icon), w, h, true
+	return svgRasterizer(icon, rw, rh, iround(vbW), iround(vbH)), svgVectorSource(icon, source), w, h, true
 }
 
 var (
