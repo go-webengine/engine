@@ -73,6 +73,10 @@ type Fonts struct {
 
 	// axes caches each font's weight axis range (see wghtAxis).
 	axes map[*opentype.Font]weightAxis
+	// exactFaces and exactFallbacks hold the faces the raster painter draws
+	// with, at the exact (fractional) size; see drawFace.
+	exactFaces     map[exactKey]*opentype.Face
+	exactFallbacks map[exactFallbackKey]*opentype.Face
 	// styleAxes caches, per style, the weight axis of the font font() answers
 	// with ({min, max, 1} when it has one); register clears it.
 	styleAxes map[styleKey]weightAxis
@@ -317,6 +321,7 @@ func (f *Fonts) register(family string, weight int, italic bool, ft *lazyFont) e
 	}
 	f.named[k], f.namedWeight[k] = ft, weight
 	f.faces = map[faceKey]*opentype.Face{}
+	f.exactFaces = nil
 	f.styleAxes = nil // font() may now answer with this face
 	// A measurement cached before this registration may have measured with
 	// whatever font() resolved to before — the bundled fallback, or a
@@ -361,14 +366,7 @@ func (f *Fonts) face(fam css.FontFamily, sizePx float64, weight int, italic bool
 	style := styleKey{fam, weight >= 600, italic}
 	// Whether the style's font is variable is asked of font() once per style
 	// (it splits the family list, which allocates), not on every call.
-	ax, seen := f.styleAxes[style]
-	if !seen {
-		ax = f.wghtAxis(f.font(style))
-		if f.styleAxes == nil {
-			f.styleAxes = map[styleKey]weightAxis{}
-		}
-		f.styleAxes[style] = ax
-	}
+	ax := f.styleAxis(style)
 	w := ax.weight(weight)
 	key := faceKey{style, size, w}
 	if fc, ok := f.faces[key]; ok {
@@ -380,6 +378,20 @@ func (f *Fonts) face(fam css.FontFamily, sizePx float64, weight int, italic bool
 	}
 	f.faces[key] = fc
 	return fc
+}
+
+// styleAxis is the weight axis of the font font(style) answers with, cached
+// per style (font() splits the family list, which allocates).
+func (f *Fonts) styleAxis(style styleKey) weightAxis {
+	ax, seen := f.styleAxes[style]
+	if !seen {
+		ax = f.wghtAxis(f.font(style))
+		if f.styleAxes == nil {
+			f.styleAxes = map[styleKey]weightAxis{}
+		}
+		f.styleAxes[style] = ax
+	}
+	return ax
 }
 
 // glyphFont is the font a vector consumer (a PDF embedding the outlines) must
@@ -581,6 +593,58 @@ func (f *Fonts) fallbackFace(sizePx float64, bold, italic bool) *opentype.Face {
 	}
 	fc := f.fallbackFont(bold, italic).NewFace(size)
 	f.fallbackFaces[key] = fc
+	return fc
+}
+
+// exactKey identifies a face at an exact size: a family style, the size as the
+// declaration computed it, and the weight a variable font is instanced at.
+type exactKey struct {
+	style styleKey
+	size  float64
+	wght  int
+}
+
+type exactFallbackKey struct {
+	faceStyle
+	size float64
+}
+
+// drawFace is the face the raster painter DRAWS a run with: built at the exact
+// size, so the outlines have the size layout measured, and with the same weight
+// instancing as face. Layout metrics keep the whole-pixel face (see face), so
+// line boxes do not move; only glyph shapes and, with them, the advances the
+// painter walks do. The size is clamped to at least 1px.
+func (f *Fonts) drawFace(run Run, fam css.FontFamily, sizePx float64, weight int, italic bool) *opentype.Face {
+	if sizePx < 1 {
+		sizePx = 1
+	}
+	if run.Fallback {
+		key := exactFallbackKey{faceStyle{weight >= 600, italic}, sizePx}
+		if fc, ok := f.exactFallbacks[key]; ok {
+			return fc
+		}
+		fc := f.fallbackFont(weight >= 600, italic).NewFaceAt(sizePx)
+		if f.exactFallbacks == nil {
+			f.exactFallbacks = map[exactFallbackKey]*opentype.Face{}
+		}
+		f.exactFallbacks[key] = fc
+		return fc
+	}
+	style := styleKey{fam, weight >= 600, italic}
+	ax := f.styleAxis(style)
+	w := ax.weight(weight)
+	key := exactKey{style, sizePx, w}
+	if fc, ok := f.exactFaces[key]; ok {
+		return fc
+	}
+	fc := f.font(style).NewFaceAt(sizePx)
+	if w != 0 && !ax.atDefault(w) {
+		fc.SetVariation(map[string]float64{"wght": float64(w)})
+	}
+	if f.exactFaces == nil {
+		f.exactFaces = map[exactKey]*opentype.Face{}
+	}
+	f.exactFaces[key] = fc
 	return fc
 }
 

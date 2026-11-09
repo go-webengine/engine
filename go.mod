@@ -12,7 +12,7 @@ require (
 	github.com/go-images/images v0.1.1-0.20261026203936-4ac989d310a1
 	github.com/go-macos/metal v0.7.0
 	github.com/go-opentype/fonts v0.14.0
-	github.com/go-opentype/opentype v0.16.2-0.20261027113239-5e69589e9a5e
+	github.com/go-opentype/opentype v0.21.0
 	github.com/go-pdfkit/pdfkit v0.21.0
 	github.com/go-pdfkit/reader v0.9.0
 	github.com/go-webengine/esbuildsandbox v0.1.0
@@ -25,7 +25,7 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.7 // indirect
+	github.com/andybalholm/brotli v1.2.8 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
 	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect

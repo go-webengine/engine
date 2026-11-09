@@ -1053,7 +1053,7 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 	if it.Text == "" || it.Style == nil {
 		return
 	}
-	drawText(dst, pp, f, it.Style, it.Text, int(it.X), int(it.Y+it.Ascent), it.Style.Color, clip)
+	drawTextAt(dst, pp, f, it.Style, it.Text, it.X, int(it.Y+it.Ascent), it.Style.Color, clip)
 }
 
 // drawText draws s left-aligned with its baseline at (x, baseline) in col, at
@@ -1061,9 +1061,23 @@ func paintItem(dst *image.RGBA, pp *painter.PixelPainter, it *layout.InlineItem,
 // form-control label/value painting (paintFormControl) so both letter glyphs
 // identically. Returns the pen position after the last glyph.
 func drawText(dst *image.RGBA, pp *painter.PixelPainter, f *Fonts, st *css.Style, s string, x, baseline int, col css.Color, clip image.Rectangle) int {
+	return int(math.Round(drawTextAt(dst, pp, f, st, s, float64(x), baseline, col, clip)))
+}
+
+// drawTextAt is drawText with a fractional start and pen, which it returns.
+//
+// The pen is a float: every glyph is placed at the exact advance layout
+// measured (the glyph's font-unit advance scaled to the exact size, plus the
+// letter-spacing), and drawn at the nearest quarter pixel of that position
+// (opentype.Face.GlyphMaskIndexAt) with outlines at the exact size (drawFace),
+// as a browser does. Rounding each advance to a whole pixel, as this used to,
+// shortened every word by up to half a pixel per glyph while layout and the PDF
+// painter kept the exact width, so the gaps between words looked uneven and too
+// wide (go-webengine/engine#407). Only the baseline stays on a whole row.
+func drawTextAt(dst *image.RGBA, pp *painter.PixelPainter, f *Fonts, st *css.Style, s string, x float64, baseline int, col css.Color, clip image.Rectangle) float64 {
 	penX := x
 	for _, run := range f.Runs(s, st.FontFamily, st.FontWeight, st.Italic) {
-		fc := f.runFace(run, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
+		fc := f.drawFace(run, st.FontFamily, st.FontSize, st.FontWeight, st.Italic)
 		// Shape (see requiredLigatureFeature on Measure) before painting, not
 		// per rune: a required ligature (Arabic lam-alef, an icon web font's
 		// word-to-pictogram substitution) draws as the one glyph it shaped to,
@@ -1078,11 +1092,11 @@ func drawText(dst *image.RGBA, pp *painter.PixelPainter, f *Fonts, st *css.Style
 				// loop looked runes up in the cmap directly.
 				continue
 			}
-			bounds, mask, maskp, advance, ok := fc.GlyphMaskIndex(gid, penX, baseline)
+			bounds, mask, advance, ok := fc.GlyphMaskIndexAt(gid, penX, baseline)
 			if ok && mask != nil {
-				blitMask(dst, bounds, mask, maskp, col, clip)
+				blitMask(dst, bounds, mask, image.Point{}, col, clip)
 			}
-			penX += advance + int(st.LetterSpacing)
+			penX += advance + st.LetterSpacing
 		}
 	}
 	if st.Underline && penX > x {
@@ -1097,7 +1111,7 @@ func drawText(dst *image.RGBA, pp *painter.PixelPainter, f *Fonts, st *css.Style
 			thick = 1
 		}
 		y := baseline + thick + 1
-		fillRectClipped(pp, painter.Rect{X: x, Y: y, W: penX - x, H: thick}, col, clip)
+		fillRectClipped(pp, painter.Rect{X: int(math.Round(x)), Y: y, W: int(math.Round(penX - x)), H: thick}, col, clip)
 	}
 	return penX
 }

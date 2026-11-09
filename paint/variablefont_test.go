@@ -104,3 +104,35 @@ func TestGlyphFontInstance(t *testing.T) {
 		t.Error("a failed instance was not replaced by the default master")
 	}
 }
+
+// The raster painter's faces are built at the exact size, cached per size and
+// weight, and cleared by a registration; the fallback face likewise.
+func TestDrawFaceExactSizeCache(t *testing.T) {
+	f, fam := variableFonts(t)
+	run := Run{Text: "a"}
+	a := f.drawFace(run, fam, 22.4, 400, false)
+	if a.Size() != 22.4 || f.drawFace(run, fam, 22.4, 400, false) != a {
+		t.Errorf("exact face: size %v, cached %v", a.Size(), f.drawFace(run, fam, 22.4, 400, false) == a)
+	}
+	if f.drawFace(run, fam, 22.5, 400, false) == a || f.drawFace(run, fam, 22.4, 700, false) == a {
+		t.Error("a size or weight shares a face")
+	}
+	if f.drawFace(run, fam, 0.2, 400, false).Size() != 1 {
+		t.Error("a size under 1px is not clamped")
+	}
+	fb := Run{Text: "↔", Fallback: true}
+	b := f.drawFace(fb, fam, 22.4, 400, false)
+	if b.Size() != 22.4 || f.drawFace(fb, fam, 22.4, 400, false) != b {
+		t.Error("the fallback exact face is not cached")
+	}
+	bb, err := os.ReadFile("../testdata/fonts/Outfit-wght.ttf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Register("v", 400, false, bb); err != nil {
+		t.Fatal(err)
+	}
+	if f.drawFace(run, fam, 22.4, 400, false) == a {
+		t.Error("the exact-face cache survived a registration")
+	}
+}
