@@ -35,7 +35,7 @@ require (
 	github.com/go-macos/metal v0.7.0 // indirect
 	github.com/go-macos/objc v0.12.0 // indirect
 	github.com/go-opentype/fonts v0.14.0 // indirect
-	github.com/go-opentype/opentype v0.21.0 // indirect
+	github.com/go-opentype/opentype v0.21.1 // indirect
 	github.com/go-simd/highway v0.0.14 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
 	github.com/go-webengine/esbuildsandbox v0.1.0 // indirect
