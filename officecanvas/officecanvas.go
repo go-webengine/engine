@@ -67,6 +67,16 @@ type Shape struct {
 	// drawn in order: an SVG drawing as vector shapes, which a slide keeps
 	// together (a p:grpSp, a draw:g). Bounds is their union.
 	Group []Shape
+
+	// Source, ViewBox and Dst describe a KindGroup made from an SVG document
+	// (paint.VectorImage.Source): the document's hash, its view box in its own
+	// user units, and the box it was placed in, in device pixels (the view box
+	// is stretched over it). Keys, on a member of such a group, are the
+	// element keys of the SVG shape it was made from (paint.VectorShape.Keys).
+	Source  string
+	ViewBox paint.Rect
+	Dst     paint.Rect
+	Keys    []int
 }
 
 // Run is a stretch of a text line in one face, size and colour. Size is in
@@ -142,6 +152,24 @@ type Canvas struct {
 
 	// groups are the indices in out.Shapes where the open groups start.
 	groups []int
+	// source and marks describe the group being drawn (paint.SourceCanvas).
+	source    *groupSource
+	imgSource string // the document of the bitmap about to be placed
+}
+
+// groupSource is what a canvas is told of the vector image of the group it is
+// recording: the document, its boxes, and where each element's shapes start.
+type groupSource struct {
+	source        string
+	viewBox, dst  paint.Rect
+	marks         []keyMark
+	startOfShapes int
+}
+
+// keyMark says the shapes recorded from index at on belong to the element keys.
+type keyMark struct {
+	at   int
+	keys []int
 }
 
 type clip struct {
@@ -286,7 +314,11 @@ func (c *Canvas) Image(img image.Image, dst paint.Rect) {
 	if img == nil || dst.W <= 0 || dst.H <= 0 || img.Bounds().Empty() {
 		return
 	}
-	sh := Shape{Kind: KindImage, Bounds: dst, Image: img}
+	sh := Shape{Kind: KindImage, Bounds: dst, Image: img, Source: c.imgSource}
+	if c.imgSource != "" {
+		sh.Dst = dst
+		c.imgSource = ""
+	}
 	if len(c.clips) > 0 {
 		cb, ok := bounds(c.clips[len(c.clips)-1].path)
 		if ok {
@@ -323,6 +355,23 @@ func (c *Canvas) VectorSupport() paint.VectorSupport { return paint.VectorSuppor
 func (c *Canvas) BeginGroup() {
 	c.groups = append(c.groups, len(c.out.Shapes))
 	c.gradOwner = nil
+	c.source = nil
+}
+
+// BeginSource implements paint.SourceCanvas.
+func (c *Canvas) BeginSource(source string, viewBox, dst paint.Rect) {
+	c.source = &groupSource{source: source, viewBox: viewBox, dst: dst}
+}
+
+// ImageSource implements paint.SourceCanvas: the next Image is the bitmap of
+// that document.
+func (c *Canvas) ImageSource(source string) { c.imgSource = source }
+
+// ShapeKeys implements paint.SourceCanvas.
+func (c *Canvas) ShapeKeys(keys []int) {
+	if c.source != nil {
+		c.source.marks = append(c.source.marks, keyMark{at: len(c.out.Shapes), keys: keys})
+	}
 }
 
 // EndGroup implements paint.GroupCanvas: the shapes since BeginGroup become
@@ -335,7 +384,16 @@ func (c *Canvas) EndGroup() {
 	c.groups = c.groups[:len(c.groups)-1]
 	c.gradOwner = nil
 	members := c.out.Shapes[start:]
+	src := c.source
+	c.source = nil
 	if len(members) < 2 {
+		// a drawing of one shape stays that shape, which says where it came from
+		if len(members) == 1 && src != nil {
+			members[0].Source, members[0].ViewBox, members[0].Dst = src.source, src.viewBox, src.dst
+			if len(src.marks) > 0 {
+				members[0].Keys = src.marks[len(src.marks)-1].keys
+			}
+		}
 		return
 	}
 	b := members[0].Bounds
@@ -343,6 +401,19 @@ func (c *Canvas) EndGroup() {
 		b = union(b, m.Bounds)
 	}
 	g := Shape{Kind: KindGroup, Bounds: b, Group: append([]Shape(nil), members...)}
+	if src != nil {
+		g.Source, g.ViewBox, g.Dst = src.source, src.viewBox, src.dst
+		// each member belongs to the element of the last mark at or before it
+		mi := -1
+		for j := range g.Group {
+			for mi+1 < len(src.marks) && src.marks[mi+1].at <= start+j {
+				mi++
+			}
+			if mi >= 0 {
+				g.Group[j].Keys = src.marks[mi].keys
+			}
+		}
+	}
 	c.out.Shapes = append(c.out.Shapes[:start], g)
 }
 

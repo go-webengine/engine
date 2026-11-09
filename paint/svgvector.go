@@ -33,6 +33,11 @@ type VectorImage struct {
 	// Key is a content address: two images with the same key draw the same,
 	// so a canvas may draw one once and place it at each use (a PDF form).
 	Key string
+	// Source identifies the SVG document the drawing was made from: the
+	// hex SHA-256 of its bytes as the engine loaded them. A host that knows
+	// the document (an exporter that animates it) recognises its drawing by
+	// it.
+	Source string
 
 	clipped, radial bool
 	ops             int
@@ -45,6 +50,10 @@ type VectorShape struct {
 	Color    css.Color // when Gradient is nil
 	Gradient *Shading
 	Clips    []VectorClip
+	// Keys are the keys of the SVG element the shape was drawn for and of its
+	// ancestors, outermost first (oksvg.SvgPath.Keys): an element's key is its
+	// position among the document's elements in document order.
+	Keys []int
 }
 
 // VectorClip is one clip path of a VectorShape.
@@ -181,6 +190,10 @@ type VectorImages map[image.Image]*VectorSource
 // a page only ever rendered as a bitmap does not pay for it. It is safe for
 // concurrent use.
 type VectorSource struct {
+	// ID is the document's hash (VectorImage.Source), known without building
+	// the form: a canvas that is handed the bitmap of a drawing that has no
+	// exact form can still say which document it is.
+	ID    string
 	once  sync.Once
 	build func() *VectorImage
 	img   *VectorImage
@@ -228,6 +241,32 @@ type GroupCanvas interface {
 	Canvas
 	BeginGroup()
 	EndGroup()
+}
+
+// SourceCanvas is a GroupCanvas that is told where a group's shapes came
+// from: BeginSource is called right after BeginGroup with the document the
+// drawing was made from (VectorImage.Source), its view box and the box it is
+// placed in, and ShapeKeys before the drawing operations of each shape with
+// that shape's element keys (VectorShape.Keys). A recorder keeps them so that
+// an exporter can find the pieces of a drawing again.
+type SourceCanvas interface {
+	GroupCanvas
+	BeginSource(source string, viewBox, dst Rect)
+	ShapeKeys(keys []int)
+	// ImageSource is called right before Image places the bitmap of a drawing
+	// that has no vector form the canvas can draw (a clip, a radial gradient),
+	// with the document it was made from.
+	ImageSource(source string)
+}
+
+// imageSource tells a SourceCanvas which document the bitmap about to be
+// placed was made from.
+func (v *vpainter) imageSource(src image.Image) {
+	if sc, ok := v.c.(SourceCanvas); ok {
+		if s := v.vecs[src]; s != nil && s.ID != "" {
+			sc.ImageSource(s.ID)
+		}
+	}
 }
 
 // VectorSupport says what of a vector image a canvas draws as the page
@@ -293,9 +332,16 @@ func (v *vpainter) vectorImage(vec *VectorImage, dst Rect) {
 		gc.BeginGroup()
 		defer gc.EndGroup()
 	}
+	sc, tagged := v.c.(SourceCanvas)
+	if tagged {
+		sc.BeginSource(vec.Source, vec.ViewBox, dst)
+	}
 	m := vec.To(dst)
 	for i := range vec.Shapes {
 		sh := &vec.Shapes[i]
+		if tagged {
+			sc.ShapeKeys(sh.Keys)
+		}
 		if len(sh.Clips) > 0 {
 			v.c.Save()
 			for j := range sh.Clips {

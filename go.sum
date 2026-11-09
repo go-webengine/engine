@@ -19,8 +19,8 @@ github.com/go-browserhttp/browserhttp v0.2.0 h1:3RcjOQVHgqhSOmI5cfsURpexw/vetoDU
 github.com/go-browserhttp/browserhttp v0.2.0/go.mod h1:VJiwBxLetXdc8eDadOcNbiO0EelNQPny0cLZhg1hTKU=
 github.com/go-gfx/gfx v0.37.0 h1:nQH23BtuJ1pqXqvg0s7FHSI1c/ewg9nnBl3Nc3cYCik=
 github.com/go-gfx/gfx v0.37.0/go.mod h1:4OenoKrgdht6UXYf5SV8w2tb41hfAdy4QoxJRPsRDz4=
-github.com/go-gfx/oksvg v0.3.1 h1:qfSBYnIrejz0j2M0F20WFVdBNtYNWXQZuFuvjGHJHBI=
-github.com/go-gfx/oksvg v0.3.1/go.mod h1:b6zcMuvekE/5oApVUsTUW3IDSDWX6bKV/r42N79gbJQ=
+github.com/go-gfx/oksvg v0.4.0 h1:FqZldnC3TlHEZ8TwglqWyVO6y+C4eeWfAhL1SDoD628=
+github.com/go-gfx/oksvg v0.4.0/go.mod h1:b6zcMuvekE/5oApVUsTUW3IDSDWX6bKV/r42N79gbJQ=
 github.com/go-gfx/wgsl v0.4.0 h1:SJOaSkvTcPvK9wdp3vM8ruXFvtxeFLvYEBLV3ZPm4zA=
 github.com/go-gfx/wgsl v0.4.0/go.mod h1:Fzzw0jXvB+zxCqmTDwvcu3B7PkIVJBcygl2dyDyDAgQ=
 github.com/go-images/gif v0.2.0 h1:8Xl4Nan+PvyqH4wPre7wJUH61T2eJKOKonFKOdMdpkU=

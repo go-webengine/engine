@@ -20,9 +20,9 @@ import (
 // resolved), in the document's viewBox. A drawing Shapes cannot give exactly
 // (a gradient that fades, a reflected one, a clipPath of clipped pieces) has
 // no form, and is placed as its bitmap; so has one past paint.MaxVectorOps.
-func svgVectorSource(icon *oksvg.SvgIcon) *paint.VectorSource {
+func svgVectorSource(icon *oksvg.SvgIcon, source string) *paint.VectorSource {
 	vb := icon.ViewBox
-	return paint.NewVectorSource(func() (img *paint.VectorImage) {
+	vs := paint.NewVectorSource(func() (img *paint.VectorImage) {
 		defer func() {
 			if recover() != nil { // rasterx's stroker panics on some geometry
 				img = nil
@@ -39,7 +39,7 @@ func svgVectorSource(icon *oksvg.SvgIcon) *paint.VectorSource {
 				// default): no area, nothing painted
 				continue
 			}
-			vs := paint.VectorShape{Path: vectorPath(sh.Path), EvenOdd: sh.EvenOdd, Color: cssColor(sh.Color)}
+			vs := paint.VectorShape{Path: vectorPath(sh.Path), EvenOdd: sh.EvenOdd, Color: cssColor(sh.Color), Keys: sh.Keys}
 			if g := sh.Gradient; g != nil {
 				s := &paint.Shading{Radial: g.Radial, ExtendStart: true, ExtendEnd: true}
 				if g.Radial {
@@ -57,8 +57,14 @@ func svgVectorSource(icon *oksvg.SvgIcon) *paint.VectorSource {
 			}
 			out = append(out, vs)
 		}
-		return paint.NewVectorImage(paint.Rect{X: vb.X, Y: vb.Y, W: vb.W, H: vb.H}, out)
+		img = paint.NewVectorImage(paint.Rect{X: vb.X, Y: vb.Y, W: vb.W, H: vb.H}, out)
+		if img != nil {
+			img.Source = source
+		}
+		return img
 	})
+	vs.ID = source
+	return vs
 }
 
 // vectorPath converts oksvg's path, raising its quadratic curves to cubic

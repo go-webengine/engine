@@ -422,6 +422,7 @@ func (v *vpainter) bgBitmap(st *css.Style, own Rect, rad float64, src image.Imag
 				v.vectorImage(vec, r)
 				continue
 			}
+			v.imageSource(src)
 			v.c.Image(src, r)
 			v.stats.Images++
 		}
@@ -681,6 +682,7 @@ func (v *vpainter) image(it *layout.InlineItem, clip image.Rectangle) {
 				return
 			}
 		}
+		v.imageSource(src)
 		v.c.Image(src, r)
 		v.stats.Images++
 	}

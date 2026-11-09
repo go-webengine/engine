@@ -4,6 +4,9 @@
 package officecanvas
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"image"
 	"net/url"
 	"testing"
@@ -76,5 +79,36 @@ func TestGroupEdges(t *testing.T) {
 	}
 	if s := c.VectorSupport(); s.Clips || s.RadialGradients {
 		t.Errorf("support %+v", s)
+	}
+}
+
+// A group says which SVG document it was drawn from and, for each member, the
+// element it was drawn for, so that an exporter can find the pieces of a
+// drawing again (an animated one, each piece on its own).
+func TestGroupSaysWhereItsShapesCameFrom(t *testing.T) {
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect width="10" height="10" fill="#f00"/><g id="g"><circle cx="15" cy="15" r="4" fill="#00f"/><path d="M0 18H20" stroke="#080" stroke-width="2"/></g></svg>`
+	pg, _ := record(t, svgPage(svg))
+	g := pg.Shapes[1]
+	sum := sha256.Sum256([]byte(svg))
+	if g.Kind != KindGroup || g.Source != hex.EncodeToString(sum[:]) {
+		t.Fatalf("group %+v, source %s", g, hex.EncodeToString(sum[:]))
+	}
+	if g.ViewBox != (paint.Rect{W: 20, H: 20}) || g.Dst.W != 100 || g.Dst.H != 100 {
+		t.Errorf("boxes: view %+v, dst %+v", g.ViewBox, g.Dst)
+	}
+	// svg 0, rect 1, g 2, circle 3, path 4
+	want := [][]int{{0, 1}, {0, 2, 3}, {0, 2, 4}}
+	if len(g.Group) != 3 {
+		t.Fatalf("members %+v", g.Group)
+	}
+	for i, w := range want {
+		if fmt.Sprint(g.Group[i].Keys) != fmt.Sprint(w) {
+			t.Errorf("member %d: keys %v, want %v", i, g.Group[i].Keys, w)
+		}
+	}
+	// one shape stays a shape, and carries the same facts
+	pg, _ = record(t, svgPage(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><rect id="a" width="10" height="10" fill="#f00"/></svg>`))
+	if s := pg.Shapes[1]; s.Kind != KindFill || s.Source == "" || fmt.Sprint(s.Keys) != "[0 1]" {
+		t.Errorf("single shape %+v", s)
 	}
 }
