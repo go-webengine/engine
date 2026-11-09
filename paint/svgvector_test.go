@@ -280,3 +280,51 @@ func TestVectorMap(t *testing.T) {
 		t.Errorf("radii under a flip %+v", s)
 	}
 }
+
+// sourcing is a refCanvas that keeps what a SourceCanvas is told.
+type sourcing struct {
+	*limitedCanvas
+	begun   []string
+	keys    [][]int
+	imaging []string
+}
+
+func (c *sourcing) BeginSource(source string, vb, dst Rect) { c.begun = append(c.begun, source) }
+func (c *sourcing) ShapeKeys(k []int)                       { c.keys = append(c.keys, k) }
+func (c *sourcing) ImageSource(s string)                    { c.imaging = append(c.imaging, s) }
+
+// A SourceCanvas is told which document a drawing came from and which element
+// each shape was drawn for, and, when the drawing is placed as its bitmap
+// because the canvas cannot clip, which document that bitmap is.
+func TestSourceCanvasIsToldWhereShapesCameFrom(t *testing.T) {
+	n := &dom.Node{Type: dom.Element, Tag: "img"}
+	bitmap := image.NewRGBA(image.Rect(0, 0, 40, 40))
+	d := testDrawing()
+	d.Source = "abc"
+	for i := range d.Shapes {
+		d.Shapes[i].Keys = []int{0, i + 1}
+	}
+	src := VectorOf(d)
+	src.ID = "abc"
+	vecs := VectorImages{bitmap: src}
+	box := &layout.Box{Node: div(), W: 100, H: 100, Style: &css.Style{}, Lines: []*layout.LineBox{{Items: []*layout.InlineItem{{Image: n, Style: &css.Style{}, X: 10, Y: 10, Width: 40, LineHeight: 40}}}}}
+	imgs := map[*dom.Node]image.Image{n: bitmap}
+
+	c := &sourcing{limitedCanvas: &limitedCanvas{refCanvas: newRefCanvas(100, 100), support: VectorSupport{Clips: true, RadialGradients: true}}}
+	PaintVectorWith(c, box, NewFonts(), imgs, nil, vecs, image.Rect(0, 0, 100, 100))
+	if len(c.begun) != 1 || c.begun[0] != "abc" || len(c.keys) != len(d.Shapes) || c.keys[1][1] != 2 || len(c.imaging) != 0 {
+		t.Errorf("vector: begun %v, keys %v, imaging %v", c.begun, c.keys, c.imaging)
+	}
+	// no clips: the bitmap, whose document is still said
+	c = &sourcing{limitedCanvas: &limitedCanvas{refCanvas: newRefCanvas(100, 100)}}
+	PaintVectorWith(c, box, NewFonts(), imgs, nil, vecs, image.Rect(0, 0, 100, 100))
+	if len(c.begun) != 0 || len(c.imaging) != 1 || c.imaging[0] != "abc" {
+		t.Errorf("bitmap: begun %v, imaging %v", c.begun, c.imaging)
+	}
+	// a bitmap that is not a drawing says nothing
+	c = &sourcing{limitedCanvas: &limitedCanvas{refCanvas: newRefCanvas(100, 100)}}
+	PaintVectorWith(c, box, NewFonts(), imgs, nil, VectorImages{bitmap: VectorOf(nil)}, image.Rect(0, 0, 100, 100))
+	if len(c.imaging) != 0 {
+		t.Errorf("imaging %v", c.imaging)
+	}
+}
