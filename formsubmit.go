@@ -69,6 +69,27 @@ func (d *LiveDocument) Submit(ctx context.Context, form *dom.Node) (next *LiveDo
 	return next, true, nil
 }
 
+// PreviewSubmit computes exactly what Submit would send right now — method,
+// resolved target URL (including the query string a GET submission would
+// carry), and the urlencoded body a POST submission would carry (empty for
+// a GET) — without dispatching "submit" or touching the network. It exists
+// for a host that wants to show/log/confirm a form submission before
+// committing to it (the automation layer's own dry-run-by-default
+// guardrail): call this to preview, call Submit only once the caller has
+// decided to actually send it.
+func (d *LiveDocument) PreviewSubmit(form *dom.Node) (method, target, body string) {
+	target = formAction(d.doc.URL, form)
+	method = strings.ToUpper(strings.TrimSpace(form.Attr["method"]))
+	if method != "POST" {
+		method = "GET"
+	}
+	data := formData(form)
+	if method == "POST" {
+		return method, target, data.Encode()
+	}
+	return method, appendQuery(target, data), ""
+}
+
 // formAction resolves the form's action against pageURL, defaulting to
 // pageURL itself when action is absent or empty — a form with no action
 // attribute submits back to the page it's on, per spec.
