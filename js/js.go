@@ -432,6 +432,23 @@ type binder struct {
 	// Worker: there is no other context in this engine with its own
 	// independent event loop to block synchronously).
 	isWorker bool
+
+	// requireCache/requireFetched/requireBytes back require.go's runtime
+	// require() bridge — a classic script's own fallback-transpiled dynamic
+	// import() with a VARIABLE specifier (resolveURL can't be applied until
+	// the script is already running and has computed the string), as
+	// opposed to transpileModernJS's own static, string-literal case esbuild
+	// inlines directly at transpile time. requireCache maps each resolved
+	// absolute URL to its exports object, so a chunk required from two call
+	// sites (a shared vendor chunk) fetches once and returns the SAME
+	// object, matching real module-singleton semantics; requireFetched/
+	// requireBytes are ONE shared per-render budget (not per script) across
+	// every require() call AND transpileModernJS's own static-import
+	// resolution, so many separately-failing scripts on one page cannot
+	// each claim a fresh allowance.
+	requireCache   map[string]goja.Value
+	requireFetched int
+	requireBytes   int
 }
 
 // Run builds the DOM binding on root (a dom.Document node), sets the JS-enabled

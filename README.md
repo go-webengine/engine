@@ -349,9 +349,15 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   own chunk-loading runtime never compiling, e.g. React Router's route
   loader on github.com's own Support app, engine#412/#413); a script that
   fails goja's `Compile` is retried through the same `esbuild` down-leveling
-  pass `<script type="module">` already used (fetching any nested dynamic
-  `import()` chunk through this engine's own `fetch()` client), so both
-  gaps resolve transparently without a JS parser living in this repo.
+  pass `<script type="module">` already used. A dynamic `import()` with a
+  STRING LITERAL specifier (`import("./x.js")`) is inlined directly by
+  esbuild at that point, same as a module graph's own static imports; one
+  with a VARIABLE specifier (`import(j.module)` — React Router's own real
+  shape, a value only known once the script is already running) can't be:
+  esbuild lowers it to a plain `require(x)` call instead, which a real
+  runtime bridge (`js/require.go`) backs for real — fetch, transpile,
+  execute, cached by resolved URL — so both gaps resolve without a JS
+  parser living in this repo, regardless of which form the specifier takes.
 - **WebAssembly** (round 189): a page's own `WebAssembly.compile`/`instantiate`
   (and, since 2026-11-03, `compileStreaming`/`instantiateStreaming` —
   `instantiateStreaming(fetch(url))`, the overwhelmingly common real shape)

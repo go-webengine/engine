@@ -6,6 +6,7 @@ package js
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -198,4 +199,212 @@ func TestTranspileFallbackNoClientSkipsCleanly(t *testing.T) {
 	if res.ScriptsFailed != 1 {
 		t.Fatalf("expected the script to fail cleanly with no Client: res=%+v", res)
 	}
+}
+
+// TestVariableSpecifierDynamicImportFallsBackToRequire is the REAL
+// engine#412/#413 trigger, confirmed live against github.com's own Support
+// app: `await import(j.module)`, a VARIABLE specifier (a property read, not
+// a string literal) — esbuild cannot statically resolve/inline this (it has
+// no way to know a variable's runtime value at transpile time; confirmed
+// directly: esbuild leaves such a call as a literal import(...) in its
+// output regardless of target format), so transpileModernJS's own static
+// inlining never helps this shape — a prior round shipped the dynamic-import
+// fallback believing it covered this, verified ONLY against a string-literal
+// specifier, and still saw the exact same SyntaxError on github.com's real
+// page afterward. require.go's requireModule is what actually closes it:
+// "dynamic-import" marked unsupported makes esbuild lower the call to a
+// plain require(x) — ordinary ES2017 syntax, x resolved only once the
+// script is already running — which requireModule then backs for real.
+func TestVariableSpecifierDynamicImportFallsBackToRequire(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/packs/runtime.js":
+			// Mirrors the real loadRouteModule shape exactly: the module
+			// specifier arrives through an object property, never as a
+			// string literal anywhere in this script's own source text.
+			w.Write([]byte(`
+				function loadRouteModule(route) { return import(route.module); }
+				loadRouteModule({module: "./chunk.js"}).then(function(m) {
+					document.body.setAttribute('data-result', m.value);
+				});
+			`))
+		case "/packs/chunk.js":
+			w.Write([]byte(`export const value = "chunk-loaded-via-require";`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	htmlSrc := `<html><body><script src="` + srv.URL + `/packs/runtime.js"></script></body></html>`
+	root, err := dom.Parse(htmlSrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{
+		PageURL: srv.URL + "/",
+		Client:  http.DefaultClient,
+		Timeout: 5 * time.Second,
+		Log:     func(s string) { logs = append(logs, s) },
+	})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed to run, want the require() bridge to recover it: res=%+v logs=%v", res, logs)
+	}
+	if got := dom.Find(root, "body").Attr["data-result"]; got != "chunk-loaded-via-require" {
+		t.Fatalf("data-result = %q, want %q logs=%v", got, "chunk-loaded-via-require", logs)
+	}
+}
+
+// TestRequireSharedChunkFetchedOnce proves requireModule's own cache: two
+// independent require() calls (from two different top-level fallback
+// scripts, both resolving a VARIABLE specifier — a static string literal
+// specifier a bundler can resolve at transpile time is instead inlined
+// directly by esbuild's own bundler per script, as it always has been, and
+// is NOT routed through requireModule's cache at all) for the SAME
+// specifier fetch the underlying chunk exactly once and observe the SAME
+// exports object — matching real module-singleton semantics (and avoiding
+// a redundant fetch for a shared vendor chunk a real page's own separate
+// route bundles commonly both pull in, exactly react-router's own
+// loadRouteModule shape: many routes' own manifest entries can point at the
+// same shared chunk URL).
+func TestRequireSharedChunkFetchedOnce(t *testing.T) {
+	var chunkFetches int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/packs/entry.js":
+			// Two SEPARATE require() calls for the same specifier, ordered
+			// by nesting (not cross-script timing) so the test itself
+			// stays deterministic regardless of this engine's own
+			// microtask-draining order.
+			w.Write([]byte(`function load(route){ return import(route.module); }
+				load({module:"./shared.js"}).then(function(m1){
+					load({module:"./shared.js"}).then(function(m2){
+						document.body.setAttribute('data-same', String(m1.id === m2.id));
+					});
+				});`))
+		case "/packs/shared.js":
+			atomic.AddInt32(&chunkFetches, 1)
+			w.Write([]byte(`export const id = {};`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	htmlSrc := `<html><body><script src="` + srv.URL + `/packs/entry.js"></script></body></html>`
+	root, err := dom.Parse(htmlSrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{PageURL: srv.URL + "/", Client: http.DefaultClient, Timeout: 5 * time.Second, Log: func(s string) { logs = append(logs, s) }})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("res=%+v logs=%v", res, logs)
+	}
+	if got := atomic.LoadInt32(&chunkFetches); got != 1 {
+		t.Fatalf("shared.js fetched %d times, want exactly 1 (requireModule's own cache)", got)
+	}
+	if got := dom.Find(root, "body").Attr["data-same"]; got != "true" {
+		t.Fatalf("data-same = %q, want %q (same underlying export both require() calls)", got, "true")
+	}
+}
+
+// TestRequireCircularDependencyDoesNotHang proves requireModule's own
+// break-the-cycle cache write (before executing, not after): a.js requires
+// b.js, which requires a.js back — must resolve, not recurse forever or
+// deadlock, the same guarantee Node's own CommonJS loader gives.
+func TestRequireCircularDependencyDoesNotHang(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/packs/entry.js":
+			w.Write([]byte(`import("./a.js").then(function(m){ document.body.setAttribute('data-ok', '1'); });`))
+		case "/packs/a.js":
+			w.Write([]byte(`import("./b.js"); export const a = 1;`))
+		case "/packs/b.js":
+			w.Write([]byte(`import("./a.js"); export const b = 2;`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+
+	htmlSrc := `<html><body><script src="` + srv.URL + `/packs/entry.js"></script></body></html>`
+	root, err := dom.Parse(htmlSrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{PageURL: srv.URL + "/", Client: http.DefaultClient, Timeout: 5 * time.Second, Log: func(s string) { logs = append(logs, s) }})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("res=%+v logs=%v", res, logs)
+	}
+	if got := dom.Find(root, "body").Attr["data-ok"]; got != "1" {
+		t.Fatalf("data-ok = %q, want 1 (circular require must still resolve) logs=%v", got, logs)
+	}
+}
+
+// TestRequireFetchFailureRejectsCleanly proves a require() target that 404s
+// rejects the awaiting Promise cleanly (matching a real browser's own
+// rejected dynamic import on a network failure) instead of hanging the
+// script or crashing the render.
+func TestRequireFetchFailureRejectsCleanly(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+
+	root, err := dom.Parse(`<html><body><script>
+		function loadRouteModule(route) { return import(route.module); }
+		loadRouteModule({module: "./missing.js"}).then(
+			function(){ document.body.setAttribute('data-outcome', 'resolved'); },
+			function(){ document.body.setAttribute('data-outcome', 'rejected'); }
+		);
+	</script></body></html>`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	res := Run(root, Options{PageURL: srv.URL + "/", Client: http.DefaultClient, Timeout: 5 * time.Second, Log: func(s string) { logs = append(logs, s) }})
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("res=%+v logs=%v", res, logs)
+	}
+	if got := dom.Find(root, "body").Attr["data-outcome"]; got != "rejected" {
+		t.Fatalf("data-outcome = %q, want %q logs=%v", got, "rejected", logs)
+	}
+}
+
+// FuzzRequireModule feeds arbitrary bytes as a required module's own fetched
+// source (untrusted web content, same reasoning as FuzzTranspileModernJS)
+// through requireModule's own transpile+compile+execute path. The only
+// invariant held here is "never panics" — a module body esbuild or goja
+// rejects must surface as requireModule's own error return, which
+// makeRequireFn turns into a rejected Promise, not a crash.
+func FuzzRequireModule(f *testing.F) {
+	seeds := []string{
+		`export const value = 1;`,
+		`this is not valid JS at all {{{`,
+		``,
+		`module.exports = {};`,
+		`export default function(){};`,
+		`import("./x.js");`,
+		`async function* g(){ for await (const x of y) {} }`,
+	}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, body string) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(body))
+		}))
+		defer srv.Close()
+
+		root, err := dom.Parse(`<html><body></body></html>`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sess := Begin(root, Options{PageURL: srv.URL + "/", Client: srv.Client(), Timeout: time.Second})
+		defer sess.Close()
+		_, _ = sess.b.requireModule(srv.URL+"/", "./x.js")
+	})
 }
