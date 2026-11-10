@@ -37,20 +37,47 @@ import (
 // being re-emitted, not a graph being discovered — even though the esbuild
 // plugin wiring looks similar; revisit sharing it if a third call site needs
 // the same shape.
+//
+// A dynamic import() with a STRING LITERAL specifier (import("./x.js")) is
+// what esbuild's Bundle:true can resolve and inline at transpile time, here,
+// directly — but React Router's own route loader on github.com's Support
+// app (the real engine#412/#413 trigger) uses a VARIABLE specifier,
+// `await import(j.module)`: a value only known once the script is already
+// RUNNING. esbuild cannot statically resolve that, and (confirmed directly,
+// against both IIFE and CommonJS output) leaves it as a literal import(...)
+// call in its output either way — which goja still can't parse, so the
+// retry failed for exactly this shape even after this fallback shipped.
+// Marking "dynamic-import" as an unsupported target feature (Supported
+// below) makes esbuild lower EVERY import() call — literal or variable
+// specifier alike — into a plain require() call instead (confirmed
+// directly: this is how esbuild already handles a target that lacks native
+// dynamic import at all), which is ordinary ES2017 syntax goja parses fine.
+// require.go's requireModule then backs that require() call for real:
+// fetch, transpile, execute, return its exports — the one thing esbuild
+// itself cannot do for a specifier it cannot see ahead of time.
 const (
-	// maxTranspileFetches bounds how many additional chunks ONE classic
-	// script's own dynamic import()s may pull in — smaller than modules.go's
-	// own maxModuleFetches (1200), since this is a single fallback script,
-	// not a whole page's own declared module graph.
+	// maxTranspileFetches bounds how many chunks the WHOLE fallback may pull
+	// in across one render — not per script (see requireFetched's own doc
+	// comment in js.go): smaller than modules.go's own maxModuleFetches
+	// (1200), since this is a fallback path, not a whole page's own
+	// declared module graph.
 	maxTranspileFetches = 200
-	// maxTranspileSourceBytes bounds the total fetched source this fallback
-	// may pull in.
+	// maxTranspileSourceBytes bounds the total fetched source the whole
+	// fallback may pull in across one render.
 	maxTranspileSourceBytes = 16 << 20
-	// transpileTimeout bounds the whole fallback attempt — short, since this
-	// is a best-effort retry path, not the page's own primary script budget.
+	// transpileTimeout bounds one transpileModernJS attempt — short, since
+	// this is a best-effort retry path, not the page's own primary script
+	// budget. requireBuildTimeout (require.go) bounds a require() call the
+	// same way.
 	transpileTimeout = 5 * time.Second
-	// transpileFetchTimeout bounds a single nested chunk fetch.
+	// transpileFetchTimeout bounds a single nested chunk fetch — reused by
+	// require.go for its own fetches, the same shape.
 	transpileFetchTimeout = 4 * time.Second
+	// requireGlobalName is the VM global transpileModernJS's own wrapper
+	// passes into the transformed script as its local "require" parameter
+	// (never left as a bare global the script's own top-level scope could
+	// see under this name — see transpileModernJS's own return statement).
+	requireGlobalName = "__webengineRequire"
 )
 
 // transpileModernJS attempts to re-emit src (whose compile already failed)
@@ -72,9 +99,8 @@ func (b *binder) transpileModernJS(src, name string) (string, bool) {
 	tctx, cancel := context.WithTimeout(b.opt.Ctx, transpileTimeout)
 	defer cancel()
 
-	var fetched, bytesIn int
 	overBudget := func() bool {
-		return tctx.Err() != nil || fetched >= maxTranspileFetches || bytesIn >= maxTranspileSourceBytes
+		return tctx.Err() != nil || b.requireFetched >= maxTranspileFetches || b.requireBytes >= maxTranspileSourceBytes
 	}
 	plugin := api.Plugin{
 		Name: "webengine-classic-script-fallback",
@@ -105,8 +131,8 @@ func (b *binder) transpileModernJS(src, name string) (string, bool) {
 					empty := ""
 					return api.OnLoadResult{Contents: &empty, Loader: api.LoaderJS, ResolveDir: esbuildsandbox.ResolveDir()}, nil
 				}
-				fetched++
-				bytesIn += len(chunk)
+				b.requireFetched++
+				b.requireBytes += len(chunk)
 				return api.OnLoadResult{Contents: &chunk, Loader: api.LoaderJS, ResolveDir: esbuildsandbox.ResolveDir()}, nil
 			})
 		},
@@ -125,14 +151,14 @@ func (b *binder) transpileModernJS(src, name string) (string, bool) {
 				Loader:     api.LoaderJS,
 			},
 			Bundle:        true,
-			Format:        api.FormatIIFE,
+			Format:        api.FormatCommonJS,
 			Target:        api.ES2017,
 			Write:         false,
 			LogLevel:      api.LogLevelSilent,
 			Plugins:       []api.Plugin{plugin},
 			Sourcemap:     api.SourceMapNone,
 			LegalComments: api.LegalCommentsNone,
-			Supported:     map[string]bool{"import-meta": false},
+			Supported:     map[string]bool{"import-meta": false, "dynamic-import": false},
 		})}
 	}()
 	// api.Build is synchronous and takes no context (modules.go's own
@@ -145,7 +171,19 @@ func (b *binder) transpileModernJS(src, name string) (string, bool) {
 		if len(out.res.Errors) > 0 || len(out.res.OutputFiles) == 0 {
 			return "", false
 		}
-		return string(out.res.OutputFiles[0].Contents), true
+		// Format:CommonJS (above) emits bare require(x) calls for every
+		// import() — literal or variable specifier — Supported lowered;
+		// wrapping in a function that takes require as its OWN parameter
+		// (rather than ever leaving "require" as a true global the
+		// script's own top-level scope could observe under this name)
+		// keeps every other script's global scope exactly as it was
+		// before this fallback existed. requireGlobalName is reset to a
+		// fresh closure bound to THIS script's own URL right before this
+		// returns, since execute() runs one script at a time on this
+		// binder's own single goroutine — safe without a lock.
+		b.vm.Set(requireGlobalName, b.makeRequireFn(scriptURL))
+		wrapped := "(function(require){\n" + string(out.res.OutputFiles[0].Contents) + "\n})(" + requireGlobalName + ");"
+		return wrapped, true
 	case <-tctx.Done():
 		return "", false
 	}
