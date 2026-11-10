@@ -343,7 +343,15 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   `window.postMessage()` (round 201) is a no-op — this engine's
   single-document model has no second window/frame to deliver to (a real
   `MessagePort.postMessage`, via `MessageChannel`, is unaffected and
-  delivers for real).
+  delivers for real). goja has no ES-module support and a few ES2018+ gaps
+  (async generators/`for await`, and ES2020 dynamic `import()` even outside
+  a module script — the latter the real blocker behind webpack/Turbopack's
+  own chunk-loading runtime never compiling, e.g. React Router's route
+  loader on github.com's own Support app, engine#412/#413); a script that
+  fails goja's `Compile` is retried through the same `esbuild` down-leveling
+  pass `<script type="module">` already used (fetching any nested dynamic
+  `import()` chunk through this engine's own `fetch()` client), so both
+  gaps resolve transparently without a JS parser living in this repo.
 - **WebAssembly** (round 189): a page's own `WebAssembly.compile`/`instantiate`
   (and, since 2026-11-03, `compileStreaming`/`instantiateStreaming` —
   `instantiateStreaming(fetch(url))`, the overwhelmingly common real shape)
@@ -1162,14 +1170,6 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   different mechanism — see the SVG rasteriser's own clip handling) are not
   recognised and drop the whole declaration. Not extended to `::before`/
   `::after`. The polygon's edge has no antialiasing.
-- A **dynamic `import(...)`, in ANY script** (not only `<script
-  type="module">`, which this engine's own `esbuild` bundling pass already
-  resolves statically) **is rejected by goja's parser outright** — confirmed
-  directly against the pinned version. A runtime-computed import target
-  (Astro's own universal client-hydration bootstrap, and likely other
-  frameworks' lazy-loading patterns) can't be bundled away the way a static
-  import can, since deferring resolution past build time is the whole
-  point. No JS parser lives in this repo to patch.
 - `form.requestSubmit()` fires the "submit" event only — no per-control
   constraint validation, and (like `window.location.assign()`/`.reload()`)
   no actual network submission or page navigation when the event is not
