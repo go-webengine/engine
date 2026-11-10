@@ -238,3 +238,57 @@ func TestSubmitPOSTNetworkError(t *testing.T) {
 		t.Fatalf("Submit against an unreachable target: navigated=%v err=%v, want an error", navigated, err)
 	}
 }
+
+// TestPreviewSubmitMatchesRealSubmitPOST proves PreviewSubmit computes the
+// EXACT same method/target/body a real POST Submit would send, against the
+// SAME fixture TestSubmitPOST uses — and makes no request at all: the test
+// server fails the test if it's ever hit.
+func TestPreviewSubmitMatchesRealSubmitPOST(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("PreviewSubmit must not touch the network")
+	}))
+	defer srv.Close()
+
+	live := openFixture(t, New(), `<html><body>
+		<form id="f" method="POST" action="/login">
+			<input name="email" value="user@test.com">
+			<input name="password" type="password" value="hunter2">
+		</form>
+	</body></html>`, image.Rect(0, 0, 200, 200))
+	live.doc.URL = srv.URL + "/"
+
+	form := findByID(live.Document().Root, "f")
+	method, target, body := live.PreviewSubmit(form)
+	if method != http.MethodPost {
+		t.Fatalf("PreviewSubmit method = %q, want POST", method)
+	}
+	if target != srv.URL+"/login" {
+		t.Fatalf("PreviewSubmit target = %q, want %q", target, srv.URL+"/login")
+	}
+	want := url.Values{"email": {"user@test.com"}, "password": {"hunter2"}}.Encode()
+	if body != want {
+		t.Fatalf("PreviewSubmit body = %q, want %q", body, want)
+	}
+}
+
+// TestPreviewSubmitMatchesRealSubmitGET proves the GET shape too: the
+// computed target carries the query string a real GET submission would,
+// and the body is empty.
+func TestPreviewSubmitMatchesRealSubmitGET(t *testing.T) {
+	live := openFixture(t, New(), `<html><body>
+		<form id="f" action="/search"><input name="q" value="hello world"></form>
+	</body></html>`, image.Rect(0, 0, 200, 200))
+	live.doc.URL = "https://demo.test/"
+
+	form := findByID(live.Document().Root, "f")
+	method, target, body := live.PreviewSubmit(form)
+	if method != http.MethodGet {
+		t.Fatalf("PreviewSubmit method = %q, want GET", method)
+	}
+	if target != "https://demo.test/search?q=hello+world" {
+		t.Fatalf("PreviewSubmit target = %q, want %q", target, "https://demo.test/search?q=hello+world")
+	}
+	if body != "" {
+		t.Fatalf("PreviewSubmit body = %q, want empty for a GET", body)
+	}
+}

@@ -186,7 +186,7 @@ Three build tags leave out what a host does not need:
 
 | tag | leaves out | what changes |
 |---|---|---|
-| `webengine_nojs` | goja, esbuild, `Engine.Open` / `LiveDocument` / form submission | no page script runs; `Adjust` still does |
+| `webengine_nojs` | goja, esbuild, `Engine.Open` / `LiveDocument` / form submission (including `QuerySelector`/`QuerySelectorAll`/`PreviewSubmit`) | no page script runs; `Adjust` still does |
 | `webengine_nonet` | browserhttp (Chrome TLS fingerprint), the HTTP client; with `webengine_nojs` too, all of net/http | an http(s) URL goes to the host's `Engine.Fetcher`, or is refused with `ErrNoNetwork`; `data:` and `file:` (under `FileRoot`) load as usual |
 | `webengine_fontsext` | the 16 bundled font files | the host serves `paint.BundledFontNames()` (the bytes are `paint/bundledfonts`) and calls `paint.SetFontSource` before the first render |
 
