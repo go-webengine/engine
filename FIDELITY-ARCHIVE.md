@@ -1,0 +1,4744 @@
+# FIDELITY.md archive (round ≤110, and the original Phase 1/2 build-out)
+
+Split out of [FIDELITY.md](FIDELITY.md) on 2026-11-09, purely to keep that
+file under gitsafe's 1 MiB per-commit blob push guard as it kept growing —
+nothing here was rewritten, trimmed or summarized, only moved, byte for
+byte. See FIDELITY.md for the current/recent rounds and the live "Known
+gaps" / "Reproduce" / "Visual-fidelity protocol" reference sections (those
+stayed there, not here, since they're continuously-updated reference
+material, not a historical log).
+
+---
+
+## 2026-09-26 (round 110) — an absolutely-positioned dropdown MENU panel inflated its own trigger's intrinsic width, so github.com's own marketing nav badly overshot its container and the shrink pass squeezed "Pricing" — the row's shortest, last item — down to near-zero, silently dropping it from the page (engine#203)
+
+No fresh issue filed; main exactly in sync with round 109's merge (`26f8645`). JSLog sweep byte-identical (exhausted since round 73). Round 104's own leftover CSS-property list is now fully exhausted (word-spacing confirmed real on go.dev but unreachable on the corpus's own `/blog/` index page, zero hits elsewhere; resize/pointer-events have no possible visual effect on a static renderer) — pivoted to a visual scan, picking github.com/golang/go (not deep-dived recently).
+
+- **Diff-band detection found the single hottest region by far (score 4991, next-highest 674) near the page's file-listing/README area**: cropping it showed webengine's sidebar (Releases/Packages/Contributors/Languages) as generic grey skeleton placeholders where Chrome shows real avatars/counts/percentage bars — traced immediately to the ALREADY-DOCUMENTED, ALREADY-DECLINED round-60 `maxModuleEntryScripts` OOM guard (confirmed via the identical JSLog diagnostic, `"module bundle skipped: too many entry scripts"`), not re-investigated.
+- **A SECOND, genuinely new and different defect found in the same crop**: the top nav bar's "Pricing" link — present in the real page's own static HTML — was entirely absent from webengine's render. `getComputedStyle` showed it as `display:block;visibility:visible` (not CSS-hidden), yet its own `<li>` reported `width=0` even though the flex row's container had 735px of unused room — ruling out a CSS-hiding mechanism and pointing at a real LAYOUT bug.
+- **Root-caused via direct Go-level instrumentation** (a temporary, fully-reverted debug print in `layout/flex.go`'s `resolveMainRow`, confirmed via `git diff --stat` clean afterwards): the row's other five items' own reported `base` (max-content) sizes were 320–388px each — wildly more than their short visible labels ("Platform", "Solutions", etc.) could possibly need. Their real DOM structure (dumped via a live `getComputedStyle` tree walk) is a `position:relative` trigger wrapper containing a short visible `<button>` label PLUS its own `position:absolute` dropdown MENU panel — hundreds of pixels of hidden submenu text. `layout.preferredWidth`'s flex-row-sum and block-children-max branches (and `minContentWidth`'s identical mirror-structure branches) never excluded an `OutOfFlow` child the way they already exclude a `DisplayNone` one, so the absolutely-positioned panel's own width kept inflating its trigger's reported intrinsic size. Summed across five such items the row's total request badly overshot the 1024px viewport; the shrink pass that then had to claw back the difference ran out of budget on the row's own shortest, last-resolved item ("Pricing", no dropdown of its own) and squeezed it through zero.
+- **Fixed by adding the SAME `cs.Position.OutOfFlow()` check `flexItems()` and `appendElementInline` already use elsewhere in this codebase** to the two `preferredWidth` loops and their two `minContentWidth` mirrors (four call sites total, one line each) — an absolutely/fixed-positioned box is sized against its own containing block, never folded into an ancestor's normal-flow intrinsic size, exactly like a `display:none` child is already excluded.
+- **Four new tests** (`layout/outofflow_intrinsic_test.go`): a block-children-max case and a flex-row-sum case, each for both `preferredWidth` and `minContentWidth`, using a minimal `position:absolute` sibling repro rather than the complex real page. Git-stash-confirmed to fail with the exact predicted symptom (200/220 instead of the expected 20, the absolute sibling's own width leaking through). All five coverage floors held on the first pass.
+- **Verified against the REAL, live github.com/golang/go page**: re-probed the same "Pricing" `<li>` — its own reported width dropped from 0 to 70.08px (its natural size) after this fix, and a fresh montage crop confirms "Pricing" now renders and is fully visible in the nav bar, closing the round's own headline, confirmed-real defect.
+- **Honestly, this does NOT by itself make the row look fully correct** — checked directly, not assumed: the five OTHER items' own reported bases dropped from 320–388px down to 123–159px (a real, large improvement, but still noticeably more than their true ~60–90px visible-label sizes), and the whole row's total (760px) still slightly exceeds the 1024px container's 735px content width, so items render tightly packed with no visible gaps between them, unlike Chrome's properly spaced nav. Root-caused this SEPARATE remainder too, in the same investigation: the shrink phase has no automatic-minimum-size floor for a flex item whose `min-width` is `auto` (CSS's own well-known "flex items don't shrink below min-content unless explicitly told to" rule) — confirmed and already fixed in a working, tested patch, but DELIBERATELY held back from this round's PR and flagged as the next round's own precise, ready-to-ship follow-up, matching this session's own established precedent (rounds 55/56: two independent bugs gating one visible symptom ship as two separate rounds, not bundled) — the automatic-minimum-size gap is independently valid and testable on its own, not merely a residual of this round's fix.
+
+### Bench (round 110)
+
+github.com/golang/go itself barely moves (0.6233→0.6235, +0.0003) despite a real, confirmed, now-visually-verified fix — expected: the nav strip this fix touches is a small fraction of a 2528px page, the same "real fix invisible at full-page SSIM" pattern as rounds 55/56/60/67/106/108/109. news.ycombinator.com (-0.0192) is HN's own well-documented front-page churn (this fix touches no HN-reachable code path). Every other page flat or noise-level (pkg.go.dev +0.0030, caniuse.com +0.0028, tailwindcss.com -0.0009, en.wikipedia.org -0.0021) — none of these pages' own stylesheets combine a flex/block-max-content-sized container with an absolutely-positioned descendant in a way this fix would touch.
+
+## 2026-09-26 (round 109) — `border-spacing` was entirely unimplemented, so a table's cells sat flush together regardless of its own CSS — confirmed real on en.wikipedia.org's own infobox (`.infobox{border-spacing:3px}`, the visible row-to-row gap in the article's own summary box) (engine#202)
+
+No fresh issue filed; main exactly in sync with round 108's merge (`304eadf`). JSLog sweep byte-identical to round 108's baseline (exhausted since round 73). Continued round 104's leftover CSS-property list — `border-collapse` was investigated FIRST this round but proved a dead end after real digging (see below); pivoted to `border-spacing`, a related but distinct table property this round's own investigation surfaced.
+
+- **`border-collapse` investigated and correctly abandoned, not forced**: confirmed genuinely present in real stylesheets (a blanket `table{border-collapse:collapse}` UA-style reset on pkg.go.dev, `.UnitDirectories-table`), but tracing each candidate instance to an ACTUAL rendered pixel showed none currently reachable in this corpus: pkg.go.dev's own Directories table has `height:0` (its rows are behind a JS-driven "expand" toggle, never shown at page load in either engine — confirmed via a live crop of the exact page region showing plain prose text, no table, in both webengine's and Chrome's own renders) and Wikipedia's infobox never sets `border-collapse` at all (it stays at the CSS default `separate`). A genuinely useful negative result — this property's real payoff needs a corpus page with a VISIBLE collapsed-border table, which this round's corpus doesn't currently have; not pursued further rather than implementing an untestable feature.
+- **`border-spacing` confirmed real and visible instead, found along the way**: en.wikipedia.org's own `.infobox{border-spacing:3px}` — the article's prominent right-hand summary box, styled with only a `border-bottom` per cell (no left/right/top borders) — so the GAP this property adds between rows is the infobox's actual visible row-to-row breathing room, not a cosmetic afterthought riding alongside some other visible border.
+- **Implemented `css.Style.BorderSpacingH/V float64`** (INHERITED per spec, one of a handful of table-specific properties CSS inherits despite table layout itself not being inherited — matching `letter-spacing`'s own precedent from round 108 for an inherited length property), parsing both the one-value (`3px`, sets both axes) and two-value (`2px 5px`, horizontal then vertical) forms, reusing the existing `parseLength` helper.
+- **Threaded through `layout/table.go`'s existing column/row-positioning loop**: a gap of `BorderSpacingH` BEFORE the first column, BETWEEN every pair, and AFTER the last (`ncols+1` gaps total, subtracted from the width `distributeColumns` works with, matching the CSS separate-borders model's own box accounting exactly); `BorderSpacingV` does the identical thing down the rows, including the table's own final reported height. A colspan>1 cell's own width additionally includes the internal gaps its span crosses, not just the plain column widths added together. Applied UNCONDITIONALLY, without checking `border-collapse` (not modelled, so every table is implicitly always `separate`) — spec says spacing has no effect under `collapse`, but both this engine's confirmed real cases are unaffected by the simplification (Wikipedia's infobox never sets `border-collapse`; pkg.go.dev's own reset sets spacing to zero anyway, a no-op either way) — documented as an explicit scope limit on the field's own doc comment.
+- **Five new tests** in `css/parse_test.go` (`TestApplyBorderSpacing`: one/two-value forms, em resolution, an invalid three-length value left unchanged, inheritance via both the cascade's default mechanism and the explicit `inherit` keyword) and a new `layout/borderspacing_test.go` (gaps before/between/after on both axes including the table's own final reported bottom, a zero-spacing no-op reproducing the exact prior flush layout, inheritance through a plain cascade, and a colspan cell's width correctly including its internal gap). Git-stash-confirmed: css fails to COMPILE, 3 of 4 layout tests fail at runtime with the exact predicted flush-position symptom. All five coverage floors held on the first pass with no adjustment.
+- **Verified against the REAL, live en.wikipedia.org page**: the full page's own total rendered height grew by exactly 26px after the fix (24649px → 24675px) — consistent with hand-computed expectation (`border-spacing:3px` inherited only by the infobox and its own descendants, adding `3px × (rows+1)` gaps across the infobox's real ~8 visible rows ≈ 27px, matching almost exactly) — a real, measured, quantified confirmation on the actual corpus page, not merely the isolated unit tests.
+
+### Bench (round 109)
+
+en.wikipedia.org's own SSIM stays effectively flat (0.438→0.436, well within this page's own established noise band — its SSIM has moved by similar small amounts between otherwise byte-identical runs in earlier rounds too) despite the confirmed +26px real height change: the infobox occupies a small fraction of this ~24,700px, mostly-prose article, the same "real, quantified fix invisible at full-page SSIM" pattern as rounds 55/56/60/67/106/108. Every other corpus page byte-identical (border-spacing is inherited only where declared or descended from a declaring ancestor, and no other corpus page's own stylesheet sets it).
+
+## 2026-09-25 (round 108) — `letter-spacing` was entirely unimplemented, so every `tracking-*` heading/label rendered with default (zero) spacing instead of the real value — confirmed real on tailwindcss.com's own hero `tracking-tighter` headline and sidebar `tracking-widest` labels (engine#201)
+
+No fresh issue filed; main exactly in sync with round 107's merge (`7e4a2a2`). JSLog sweep byte-identical to round 107's baseline (exhausted since round 73). Continued round 104's leftover CSS-property list, having already ruled out `outline`/`user-select`/`text-overflow` in prior rounds: `letter-spacing` stood out as the strongest remaining signal, with 13 real occurrences on tailwindcss.com's own stylesheet alone.
+
+- **Confirmed real and prominently reachable**: tailwindcss.com's `.tracking-tighter` (`letter-spacing:var(--tracking-tighter)`, `--tracking-tighter:-.05em`) is applied to the site's OWN hero `<h1>` — the single largest, most prominent text on the entire homepage (60px at this corpus's 1024px/`lg:` breakpoint) — and `.tracking-widest` (`--tracking-widest:.1em`) to several sidebar section labels ("Sponsors", etc). A plain `.prose h2{letter-spacing:-.025em}` rule was also found on go.dev/blog's shared stylesheet, though not reachable on that specific page.
+- **Implemented `css.Style.LetterSpacing float64`** (px, resolved from `<length>`/`normal`, INHERITED per spec — a change from the last three properties shipped, all non-inherited — added to `inheritFrom`'s default-inheritance struct literal, `inheritProperty`'s explicit-`inherit` handling, and the main `apply` switch, matching `line-height`'s own existing precedent for an inherited length property rather than `vertical-align`/`text-overflow`/`line-clamp`'s non-inherited one). `parseLength` (already used by margin/padding) is reused directly rather than writing a new length parser.
+- **Applied in exactly two places, both confirmed reachable, deliberately not the others**: `layout.appendWords` (both its ordinary word-splitting path and its `white-space:pre` path) adds `runeCount(word) * LetterSpacing` to the word's measured `Width` — the line-wrapping width that actually matters for visible layout — via a new `letterSpacingWidth` helper; `paint.drawText`'s existing PER-GLYPH loop (already drawing one rune at a time, not a single opaque shaped-run call) adds `LetterSpacing` to `penX` after every character, including the last, matching real browsers. The shrink-to-fit/min-content intrinsic-sizing paths (`preferredWidth`, `minContentWidth`, flex/table sizing) do NOT add it to their own separate measurements — a documented, narrower scope than every possible consumer of `Measure`, since the confirmed real need (a heading/label in normal block flow) never exercises those paths.
+- **Nine new tests** across `css/parse_test.go`, a new `layout/letterspacing_test.go` (positive/negative spacing, a zero-cost no-op, inheritance through a plain default-inheritance cascade — not just the explicit `inherit` keyword, the `white-space:pre` path) and a new `paint.TestDrawTextLetterSpacing` (the pen-advance side, checked via `drawText`'s own return value at positive AND negative spacing). Git-stash-confirmed: css and paint fail to COMPILE, layout fails 4 of 5 new tests at runtime with the exact predicted unmodified-width symptom. All five coverage floors held on the first pass (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%).
+- **A genuinely useful negative finding along the way, precisely characterised rather than assumed**: `getComputedStyle(el).letterSpacing`, `getComputedStyle(el).getPropertyValue('--custom-prop')` and `el.scrollWidth` (for `white-space:nowrap` overflow) ALL return uninformative empty/unhelpful values via this engine's JS bindings — separate, pre-existing JS-reflection-API gaps, NOT evidence that the underlying CSS itself is unapplied. Verified this distinction directly rather than concluding "broken" from the JS probe alone: a minimal Go-level repro rendering `letter-spacing:var(--tracking-tighter)` (through a real `@layer theme{:root,:host{...}}` block, matching Tailwind v4's own real emitted CSS exactly) against a literal `letter-spacing:-3px` sibling produced IDENTICAL pixel widths (169 vs 169, both narrower than a plain 196px baseline) — the var()/`@layer`/`:root,:host` resolution chain and the new letter-spacing code both work correctly end to end; only the JS reflection surface (a separate, smaller gap, not pursued this round) is silent about it.
+- **Verified against the REAL, live tailwindcss.com page**: cropped the identical hero-heading region from this round's montage and round 107's own (pre-fix) montage — the pre-fix crop shows webengine's heading text visibly looser/wider than Chrome's at this exact spot; this round's crop shows it matching Chrome's spacing much more closely, consistent with the quantified minimal-repro proof above.
+
+### Bench (round 108)
+
+tailwindcss.com flat within noise (0.7402→0.7399) despite a real, pixel-confirmed fix on its own largest headline — expected: a ~3px-per-character narrowing on one heading is a tiny fraction of a ~12000px-tall page's aggregate SSIM, the same "real fix invisible at full-page SSIM" pattern as rounds 55/56/60/67/106. developer.mozilla.org (+0.0246) reproduces round 107's own identical movement almost exactly — not itself a red flag: MDN's stylesheets carry no `letter-spacing` this fix could have touched, and the recurrence of the SAME magnitude twice in a row is consistent with MDN's live content having shifted once (after round 106's commit) and stayed stable since, not two independent random draws. news.ycombinator.com (-0.0299) is HN's own well-documented front-page churn (confirmed zero `letter-spacing` in HN's stylesheet). Every other page flat or noise-level.
+
+## 2026-09-25 (round 107) — `text-overflow:ellipsis` was entirely unimplemented, so a `white-space:nowrap;overflow:hidden` label overflowing its box was clipped raw instead of ending in "…" — confirmed real on tailwindcss.com's, react.dev's and go.dev/blog's own stylesheets, though no live instance in this corpus overflows at the 1024px test viewport (engine#200)
+
+No fresh issue filed; main exactly in sync with round 106's merge (`642f223`). JSLog sweep byte-identical to round 106's own baseline (exhausted since round 73). Followed up on round 105's own flagged lead first (checking other corpus pages for the goja async-generator/`for await` gap) — found one hit on tailwindcss.com's own bundle, but recognised it as an exact rediscovery of the already-shipped round 77 finding before writing it up, and pivoted straight to round 104's leftover list of confirmed-genuinely-absent CSS properties instead (`outline`, `letter-spacing`, `word-spacing`, `text-overflow`, `resize`, `user-select`, `pointer-events`, `border-collapse`).
+
+- **Checked each candidate's real reachability** against freshly re-fetched corpus stylesheets rather than trusting the frequency count alone (round 104's own established correction): `outline:none` (github.com) and `user-select:none` (tailwindcss.com) both have zero VISUAL rendering effect regardless of implementation — `outline` isn't painted at all currently so removing it changes nothing, and `user-select` only governs text-selection interaction, invisible to a static screenshot — correctly ruled out as candidates with no possible bench/pixel payoff. `text-overflow:ellipsis` stood out instead: real, paired with `white-space:nowrap;overflow:hidden` (the standard truncation idiom), on go.dev/blog's `.Learn-eventName`, tailwindcss.com's own `.truncate` utility (14 live instances — a team/about page's role labels) and both site's shared Algolia DocSearch styles (`.DocSearch-Hit-title`).
+- **`css/parse.go` had no `"text-overflow"` case at all**, so `white-space:nowrap;overflow:hidden` alone (both already correctly implemented) already clip overflowing text — the only missing piece is swapping that raw clip for a "…"-terminated one.
+- **Implemented `css.Style.TextOverflowEllipsis bool`** (`ellipsis`/`clip`/`initial`/`unset` parsed, not inherited per spec) and a new `layouter.truncateLineWithEllipsis`, called from `layoutInline`'s existing `nowrap` branch when `TextOverflowEllipsis` is set and `OverflowX.Clips()`. It reconstructs the line's text (rejoining words with their real spaces), trims runes from the end one at a time until the trimmed text plus "…" fits the available width, and replaces the line's items with a single new text item — reusing the EXISTING `resolveInlineEdges` to re-derive its decor/padding bookkeeping rather than hand-deriving it (mutualiser). Deliberately scoped to a line made ENTIRELY of plain text items: one holding an image, forced break, or nested box is left as plain overflow (no ellipsis) — a documented, narrower scope than the full property (which also allows a custom replacement string, not modelled).
+- **Seven new tests** in `css/parse_test.go` and a new `layout/textoverflow_test.go`: basic truncation, a no-op when content already fits, a multi-word label (rejoining with real spaces, not concatenating), a box narrower than the ellipsis glyph itself (correctly keeps just "…", doesn't panic or produce an empty string), a line mixing in an image (left untouched, the documented scope boundary), a bare `<br>`'s own deliberately-empty line (round 97) not mishandled, and `text-overflow:ellipsis` alone without a clipping `overflow-x` having no effect (per spec). `layout` coverage needed the narrower-than-glyph and bare-`<br>` and multi-word tests specifically to hold 100.0% — each traced to a real, confirmed-reachable branch (not a contrived line for its own sake): a bare `<br>` genuinely does reach this code as an empty-item line (confirmed via `WrapItems`'s own doc comment and a direct repro), so its guard is live code, not dead code to delete. Git-stash-confirmed: reverting `css/value.go`+`css/parse.go`+`layout/layout.go` fails the css suite to COMPILE and fails four of the seven layout tests at runtime with the exact predicted symptoms (no truncation, no ellipsis, unchanged text). All five coverage floors held after these additions (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%).
+- **Verified against the REAL, live tailwindcss.com page**: a probe found all 14 real `.truncate` elements on the page, but `scrollWidth === clientWidth` for every one of them at this corpus's 1024px viewport — none is actually overflowing right now, so no visible change is claimed there, an honest observation matching round 104's own identical finding for `-webkit-line-clamp` on the same page.
+
+### Bench (round 107)
+
+Full corpus flat or within ordinary live-content noise on every page except two real, ruled-out movers: developer.mozilla.org +0.0246 and news.ycombinator.com -0.0203, both checked directly rather than assumed. MDN's own stylesheets carry zero `text-overflow` occurrences (confirmed in round 104's own survey and re-confirmed here) — this fix cannot mechanically have touched it; live-content drift. news.ycombinator.com's ONE real `text-overflow` rule (`table.comment-tree .comment a{...}`, truncating long comment-author links) targets `.comment-tree`, a class that — confirmed by grepping a fresh fetch of the actual benchmarked URL — appears ZERO times on the front page (`comment-tree` only exists on individual story/comment pages, never the front page this corpus tests): the rule is real but genuinely unreachable on this exact URL, so this movement is also live-content drift (HN's own well-documented front-page churn, the same pattern noted in many earlier rounds). pkg.go.dev (+0.0030), github.com/golang/go (+0.0001) and caniuse.com (+0.0019) are ordinary noise; tailwindcss.com (-0.0015) matches the live probe's own finding of zero currently-overflowing `.truncate` instances. en.wikipedia.org, example.com, go.dev/blog and react.dev byte-identical.
+
+## 2026-09-25 (round 106) — `vertical-align` was entirely unimplemented, so every inline-level image/SVG was placed with plain baseline alignment regardless of its own CSS — confirmed live on github.com's own octicon SVG icons, styled `vertical-align:text-bottom` throughout its Primer design system (engine#199)
+
+No fresh issue was filed this round (checked `gh issue list`; only the standing Dependency Dashboard was open). Main was exactly in sync with round 105's merge (`1134731`). A fresh full-corpus `Engine.JSLog` sweep was byte-identical to round 105's own baseline (exhausted since round 73). Followed up on round 105's own flagged lead first — checked whether OTHER corpus pages hit the same goja async-iteration gap via a fresh scan of every corpus page's real, currently-served script bundles for `async function*`/`for await` syntax: found one hit, tailwindcss.com's own `_next/static/chunks/0aqjr575~-kiw.js` — but this turned out to be an EXACT rediscovery of an already-shipped, already-declined finding from round 77 (the same chunk, the same `for await` construct, the same goja parser gap, `dop251/goja#498`), not new work. Correctly recognised as a duplicate before writing it up, and pivoted to round 104's own leftover list of confirmed-genuinely-absent CSS properties instead (`vertical-align`, `outline`, `letter-spacing`, `word-spacing`, `text-overflow`, `resize`, `user-select`, `pointer-events`, `border-collapse`).
+
+- **`vertical-align` confirmed reachable and real**: github.com/golang/go's own header/nav/button octicon SVGs (`<svg class="octicon..." style="vertical-align:text-bottom">`, dozens of instances across the page — the GitHub logo, every button icon, every dropdown-trigger icon) all carry this inline style. `css/parse.go` had no `"vertical-align"` case at all, so every one of them silently fell to this engine's only existing behaviour: `layout.placeLine`'s single positioning line (`it.Y = top + baseline - it.Ascent`) applies plain baseline alignment unconditionally to every inline item — correct for the CSS default, but wrong for these icons' own explicit `text-bottom`.
+- **Implemented `vertical-align` as a new `css.VerticalAlign` keyword type** (all eight standard values parsed: `baseline`/`top`/`bottom`/`text-top`/`text-bottom`/`middle`/`sub`/`super`, not inherited per spec), but deliberately scoped positional EFFECT to only `text-bottom` this round — the sole confirmed real need — matching this session's established practice (round 104's line-clamp shipped truncation without the ellipsis glyph; round 100 shipped percentage margin-left/right via a narrow side-channel rather than a full type conversion). The other seven values are recognised (so `vertical-align:top` doesn't silently fall through to some unrelated case) but not yet positioned — documented as an explicit scope limit on `Style.VerticalAlign`'s own doc comment, not a silent gap.
+- **New `InlineItem.BaselineShift float64`** (zero for every item except one created with `text-bottom`) computed once at item-creation time in `appendElementInline`'s img/svg case via a new `layouter.baselineShiftFor`, using the item's own inherited font's RAW ascent/descent (`l.m.Metrics`, not `lineMetricsFor`'s half-leading-adjusted numbers — spec's "text-bottom" means the bottom of the font's own em-box, not the used line-height box). `placeLine`'s single positioning line now adds this shift; `lineMetrics`'s own ascent/descent aggregation across a line was updated in the same round to fold the shift in (an item's effective ascent contribution becomes `Ascent-Shift`, its effective descent `LineHeight-Ascent+Shift`) so a shifted icon still fits inside the line box it was measured for, exactly the same guarantee this function already gives an ordinary tall inline — without this, a shifted icon could in principle overlap the next line.
+- **Six new tests**: `css/parse_test.go`'s `TestApplyVerticalAlign` (all eight keywords, `initial`/`unset` resolving to the default per non-inherited-property rules, an unrecognised value left unchanged, confirmed NOT inherited) and `layout/verticalalign_test.go`'s `TestBaselineShiftForVerticalAlign` (all eight keywords against `fakeMeasurer`'s known metrics — only `text-bottom` returns a nonzero, exactly-computed shift of 12) and `TestVerticalAlignTextBottomLowersInlineImage` (a real image item inside a real line, confirming the actual `Y` position moves down by exactly `BaselineShift`). Git-stash-confirmed: reverting `css/value.go`+`css/parse.go`+`layout/box.go`+`layout/layout.go`+`layout/inlinedecor.go` together fails to COMPILE both the `css` and `layout` test suites outright (undefined `VerticalAlign`/`VAlignTextBottom`/`BaselineShift`) — a stronger signal than a runtime assertion failure. Full suite green afterwards; all five coverage floors held on the first pass with no adjustment needed (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%).
+- **Verified beyond the unit tests, against a REAL render** (not fakeMeasurer): a standalone repro rendered two otherwise-identical inline SVG squares at a real 20px font size through the actual paint pipeline, one at default alignment and one at `vertical-align:text-bottom` — the pixel data shows the text-bottom square's top-left corner sitting exactly 5px lower than the default one's, a real, measured, non-trivial shift at this font size, not a rounding artifact. Also rendered the real, live github.com/golang/go page end-to-end with no crash or new diagnostic (the one JSLog line is the already-known, already-documented `maxModuleEntryScripts` cap from round 60, unrelated).
+
+### Bench (round 106)
+
+github.com/golang/go's full-page SSIM is flat within noise (0.623 this round vs 0.6249 measured last round, 0.6233 committed baseline) — checked directly, not assumed: the icons this fix repositions are individually small (16-32px) and shift by only a few pixels each, a tiny fraction of a ~2500px page dense with much larger content, the same "real, pixel-confirmed fix invisible at full-page SSIM" pattern documented for many earlier rounds (55, 56, 60, 67 among others). The pixel-level standalone repro above is the correct verification for a fix at this granularity, not the aggregate corpus score.
+
+## 2026-09-25 (round 105) — en.wikipedia.org's worst-in-corpus SSIM (0.438) root-caused: goja lacks async generators, so MediaWiki's own compatibility gate silently degrades every page to no-JS mode (no code change — third-party dependency gap)
+
+No fresh issue was filed this round (checked `gh issue list`; only the standing Dependency Dashboard was open). Main was exactly in sync with round 104's merge (`f3a4e1a`). A fresh full-corpus `Engine.JSLog` sweep produced a byte-identical log to round 104's post-fix baseline (leads exhausted since round 73) — pivoted to a full-corpus bench comparison plus a diff-band visual scan of the worst-scoring montage, per this round's rotation.
+
+The full 10-page bench run reproduced en.wikipedia.org/wiki/Go_(programming_language) as the single worst page in the corpus (ssim=0.4382017960520058, pixdiff=21.5% — identical across two independent runs this round, confirming it's not measurement noise). The round-96 diff-band-detection script was corrected in passing: it was sorting candidate bands by pixel *height* instead of total *redness score* (the same mistake the round-96 memory entry already names as a standing correction — this copy of the script in the scratchpad had drifted back to the old behaviour); fixed to sort by score before use.
+
+The two hottest bands sat right at the top of the page. Cropping that region of the montage showed real Chrome rendering a "Wiki Loves Monuments: Photograph a monument, help Wikipedia and win!" site-notice banner directly below the top nav bar — entirely absent from webengine's render, which jumps straight from the nav bar to the article title. This is MediaWiki's CentralNotice system (`ext.centralNotice.startUp`/`.geoIP`, present in the page's own `RLPAGEMODULES` list). Its missing height is exactly what shifts every pixel below it out of alignment with Chrome's render, which is what a diff-band tool keyed on misalignment (not content) will always flag as one enormous hot region regardless of how small the actual missing element is.
+
+Root-causing this took four steps, each confirmed against the real fetched page or the real dependency, not assumed:
+
+1. A wrapped `http.RoundTripper` on `Engine.Client` logging every outgoing request during a real render showed **zero** requests to any CentralNotice/geoIP-related endpoint, and in fact zero `load.php` requests for *any* of the 31 modules named in the page's own `window.RLPAGEMODULES` array — only the `startup` bootstrap script and inert style/icon requests ever fire.
+2. A `<script>` probe appended to the real fetched HTML (same live-DOM-injection technique as round 104's tailwindcss.com check) confirmed `window.RLPAGEMODULES.length === 31` (the list itself is set correctly by an inline script) but `typeof mw === 'undefined'` — MediaWiki's own loader object, which the `startup` module is supposed to create, never exists.
+3. Fetching that `startup` module's real source (`/w/load.php?modules=startup&only=scripts&raw=1`) showed its very first action is a self-contained `isCompatible()` feature-detection gate: `querySelector` in `document`, `localStorage` in `window`, `/./.dotAll === false`, `'fromEntries' in Object`, and — the deciding one — `new Function('try { async function* x() {} } catch {}')` not throwing. Only if ALL five pass does it create `window.mw` and call `mw.loader.load(window.RLPAGEMODULES)`; otherwise it marks the page `client-nojs` and stops there by design (this is MediaWiki's real, intentional progressive-enhancement fallback for old browsers, not a bug in MediaWiki's own code).
+4. An isolated probe re-running each of the five checks individually inside our engine found four pass, and the fifth throws `SyntaxError: Async generators are not supported yet` — reproduced identically with a bare `goja.New(); vm.RunString("async function* x() {}")` call that goes through none of our own code at all, confirming this is goja's own parser limitation, not something in how we invoke it. `go list -m -u github.com/dop251/goja` shows we are already on the latest available (untagged, pseudo-versioned) commit — there is no newer upstream fix to adopt.
+
+**Declined for a code fix, correctly, this round.** Async generator syntax (`async function*`, `for await`) is an ES2018 feature entirely unimplemented in goja's parser — fixing it means patching a third-party JS engine's grammar and runtime, not a narrow bug in this repository. A local workaround that spoofed `isCompatible()`'s result without real support would be dishonest: MediaWiki's own loaded modules are free to actually use async iteration at runtime, and a faked pass would trade one silent failure (missing banner) for a worse one (an uncaught runtime exception the moment any module actually needs the feature it claimed to have). This finally root-causes the open item left from round 100 ("en.wikipedia.org's own much larger total-page-height gap against Chrome... remains an open, not-yet-root-caused issue") — it is not fixed, but it is now understood: a real, external JS-engine capability gap, not anything in this engine's own DOM/CSS/layout code. The same gate likely affects other pages in the corpus that use similar progressive-enhancement feature detection, though this round only confirms it for en.wikipedia.org specifically — that is a lead for a future round, not a claim made here.
+
+### Bench (round 105)
+
+Re-ran the full 10-page corpus for verification (no engine code changed this round, so no committed bench artifact changes accompany this entry). en.wikipedia.org's ssim reproduced byte-identical (0.4382017960520058) across two independent runs, confirming the score reflects a real, stable, reproducible gap rather than noise. Three other pages (news.ycombinator.com, github.com/golang/go, tailwindcss.com) moved by ±0.01-0.02 ssim between this run and the round-104 committed baseline; these are real, unpinned websites re-fetched live and their content (top stories, trending repos, promotional content) legitimately changes between fetches — attributed to live-content drift, not to anything in this round (which changed zero engine code), per the honest-attribution discipline established since round 96.
+
+## 2026-09-25 (round 104) — `-webkit-line-clamp` (multi-line text truncation) was entirely unimplemented, so a card's description text ran to its full, untruncated length instead of stopping at N lines — confirmed live on tailwindcss.com's own room-description `<p class="line-clamp-2">` (engine#197)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 103's merge, no drift. A fresh full-corpus `Engine.JSLog` sweep returned only the already-known third-party ad-script's own cosmetic line-number shifts (leads exhausted since round 73) — pivoted to a CSS-feature survey of freshly re-fetched go.dev/blog and caniuse.com stylesheets.
+
+- **Surveyed both stylesheets' property usage against this engine's own modelled-property list**, cross-checking each candidate directly against `css/parse.go` (not trusting a crude frequency count alone, since several — `text-decoration`, `gap` — turned out to already be handled under a multi-value `case` label the initial grep missed). Genuinely absent: `vertical-align`, `outline`, `letter-spacing`, `word-spacing`, `text-overflow`, `resize`, `user-select`, `pointer-events`, `border-collapse`, and `-webkit-line-clamp`/`line-clamp`.
+- **`-webkit-line-clamp` stood out as the highest-value, most visually significant gap**: go.dev's own shared stylesheet uses the classic `display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:N;overflow:hidden` multi-line-truncation idiom in FIVE separate rules (`.Card-lineClamp`, `.LearnGo-eventDescription`, `.Learn-eventDescription` ×2, `.GoCarousel-eventName a`) — confirmed real and reachable, though not on this corpus's own `/blog/` page specifically (those classes belong to go.dev's homepage "Learn Go" carousel, checked directly rather than assumed). Widening the reachability check to the OTHER corpus stylesheets found a second, directly reachable instance: tailwindcss.com's own generated Tailwind v4 output defines `.line-clamp-2{-webkit-line-clamp:2;-webkit-box-orient:vertical;display:-webkit-box;overflow:hidden}`, and `class="mt-4 line-clamp-2 ..."` genuinely appears on a real `<p>` (a demo room-description) in the fetched page.
+- **Implemented as a new `Style.LineClamp int` field** (0 = unclamped), parsed from both `-webkit-line-clamp` and the modern standard `line-clamp` spelling (an integer, or `none`/`unset`/`initial` to clear it; a zero, negative, or non-numeric value is invalid and leaves the property unchanged, matching this session's own established invalid-value-handling convention for `text-wrap` etc.). Deliberately NOT inherited, matching `overflow`/`display` — the two properties this idiom is always paired with.
+- **Wired into `layout.go`'s `blockOrInlineContents`** at the exact point a block's own inline content produces its final `[]*LineBox` list (the common, non-nested-block-level case — confirmed this is exactly the shape of the real tailwindcss.com element: a `<p>` with pure inline content, one nested `<span>` that is itself `display:none`): when `LineClamp > 0` and the natural line count exceeds it, the slice is truncated to the first N lines and the box's own returned height is recomputed to end exactly where the Nth line does — the box stops growing past N lines instead of reserving space for content that would otherwise overflow.
+- **Deliberately scoped to line-count truncation only, not the trailing ellipsis glyph** real browsers additionally insert at the cut point — the primary, most visually significant correction (the container no longer grows past N lines, matching Chrome's height) without the added complexity of precise character-level text measurement a correct ellipsis would need. Documented as an explicit, narrower scope in `Style.LineClamp`'s own doc comment, not a silently incomplete claim.
+- **Four new tests**: `css/parse_test.go`'s `TestApplyLineClamp` (both spellings, `none` clearing, invalid values left unchanged, confirmed NOT inherited via `unset`) and `layout/lineclamp_test.go`'s two cascade-to-layout tests using the existing `fakeMeasurer` test harness for exact, predictable geometry — `TestLineClampTruncatesLines` (content that naturally wraps to 3+ lines correctly clamps to exactly 2, with the box's own height ending exactly at the 2nd line) and `TestLineClampNoOpWhenContentFitsWithinLimit` (a clamp value ABOVE the natural line count changes nothing, confirming the mechanism only ever removes lines that would otherwise overflow, matching real `line-clamp`'s own no-op behaviour when content already fits). Git-stash-confirmed: reverting `css/parse.go`+`css/value.go`+`layout/layout.go` together fails to even COMPILE the css test suite (`s.LineClamp undefined`) and fails the layout test with the exact predicted wrong line count (3 instead of 2). Full suite green; all five gated packages hold their floors on the first pass.
+- **Verified against the REAL, live, freshly-fetched tailwindcss.com page**: a probe confirmed the real `.line-clamp-2` element renders without error at its real width (864px) and reports a sensible height; the real room-description text (which ends with its own manually-authored "…" rather than needing CSS truncation at this specific viewport width) happens to already fit within the clamp limit here, so this SPECIFIC live element shows no visible height change — an honest observation, not a claimed win where none was confirmed. The mechanism's own correctness is established precisely by the fake-measurer unit tests above, which use content specifically engineered to exceed the clamp (unlike this one real-world instance, which does not, at this fold).
+- **Bench confirms a real, positive effect on tailwindcss.com (+0.0035)** — the SAME `line-clamp-2` element the live probe above sampled: the probe's own isolated JS-injection context (a bare `<html>` plus one script) evidently measured a slightly different width/wrap than the full page's own real layout does, but the FULL PAGE bench run (the authoritative signal here, not the isolated probe) shows a genuine, honest improvement. news.ycombinator.com (-0.0136) and caniuse.com (-0.0013) were checked directly rather than assumed: fresh re-fetches confirm ZERO occurrences of `line-clamp`/`-webkit-line-clamp` in either page's real CSS at all — this fix cannot mechanically have moved either one; both are live-content drift on frequently-updated pages, HN's own already-documented noise pattern from many prior rounds. Every other page byte-identical.
+
+## 2026-09-25 (round 103, DOCUMENTATION-ONLY — zero code change): a visual lead on developer.mozilla.org traced through a deep, precisely-verified CSS Grid investigation (named-line `grid-template-columns`, a repeated `var()` inside one value, a `calc()`-based Level-4 range media query — all confirmed CORRECT) to a JS-injected third-party ad placeholder, not an engine bug
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 102's merge, no drift. A fresh full-corpus `Engine.JSLog` sweep returned only cosmetic line-number/minified-variable shifts in the ALREADY-KNOWN third-party ad-script error (leads exhausted since round 73) — pivoted to a visual scan of the bench montage's worst-scoring pages, picking developer.mozilla.org (this corpus's own second-lowest SSIM).
+
+- **Diff-band-detection surfaced a large band near the article's top**, where the engine's own panel showed the article text wrapping noticeably NARROWER than Chrome's — text visibly squeezed around an in-content "Discover Otari" ad box, with everything below shifted down relative to Chrome. A precise, unhurried investigation followed rather than an assumption:
+  - A live `getBoundingClientRect()`/`getComputedStyle()` probe against the REAL fetched page located the real grid container (`.layout__2-sidebars-inline`) and confirmed its own CSS uses a genuinely advanced, uncommon pattern: `grid-template-columns` values built from NAMED GRID LINES (`[full-start left-sidebar-start]`) mixed with `minmax()` tracks, with the SAME `var(--layout-sidebar-gap)` referenced TWICE in one value (once for each inter-column gap) — a real, if unusual, feature combination worth verifying rather than assuming works.
+  - Built and ran three escalating, standalone cascade-inspection harnesses (a hand-written minimal repro of the exact named-line/dual-`var()` shape; then the REAL, complete, unmodified 17-file/66KB MDN client stylesheet bundle against the real fetched HTML) — BOTH resolve `grid-template-columns` correctly, track-for-track, confirming this engine's grid-template-columns parser correctly treats a `[bracketed multi-word line name]` as a single opaque token (verified directly in `css/grid.go`'s `splitTopLevel`, which tracks `[`/`]` alongside `(`/`)` for its "stay inside a token" depth counter) and correctly re-resolves the same custom property on each of its two uses within one value.
+  - A brief, fully-reverted Go-level debug print in `css/grid.go`'s `parseTrackList` (git-diff-confirmed clean afterwards) surfaced the REAL resolved value actually winning the cascade for this element: NOT the wide, 5-track two-sidebar layout, but a narrower, 4-track `--layout-1-sidebar-left` value — traced to a SEPARATE, real MDN rule gated by `@media (width < calc(1rem * 2 + (15rem + 2rem) * 2 + 31rem))`, a CSS Media Queries Level 4 range-comparison combined with a non-trivial four-term `calc()` expression. Hand-evaluating the expression (32px + 544px + 496px = 1072px) confirmed the threshold is 1072px — meaning `width < 1072px` correctly, genuinely evaluates true at this corpus's own 1024px test viewport, and this engine's `@media print`-scoping and calc()-based range-query evaluation (both independently spot-checked with dedicated minimal repros) are correctly choosing the SAME narrower layout MDN's own stylesheet author intended for exactly this viewport width — not a bug at all.
+  - A same-width crop taken from a DIFFERENT vertical position on the SAME page (well below the ad box, mid-article) showed near-identical text wrapping between the engine's own panel and Chrome's — confirming the width discrepancy seen near the ad box is NOT a page-wide, persistent grid-sizing difference (which the "wrong breakpoint" hypothesis would have produced everywhere on the page, not just near one ad).
+  - The "Discover Otari" ad box itself does not appear anywhere in the real fetched, server-rendered HTML at all — it is injected entirely by third-party JavaScript (a live ad-serving script) at render time, whose own exact sizing/positioning logic is outside this engine's own CSS/layout code and not further pursued this round.
+- **Correctly declined a fix**: every mechanism this investigation actually touched (named-line grid-template-columns parsing, repeated-var() resolution within one declaration, `@media print` scoping, `calc()`-based Level 4 range media queries) was independently verified CORRECT, not merely assumed — a genuinely useful, precise negative result that forecloses re-investigating this exact area in a future round without cause. The remaining, real, localised width discrepancy traces to third-party ad-injection JavaScript rather than this engine's own CSS/layout code, and was not chased further.
+- `go test ./...` reconfirmed green (untouched); no coverage floors affected. Full corpus `Engine.JSLog` sweep unchanged (aside from the already-known ad-script's own cosmetic line shifts).
+
+## 2026-09-25 (round 102, DOCUMENTATION-ONLY — zero code change): react.dev's own top nav bar renders in the WRONG (light) theme where Chrome shows dark — precisely narrowed down to a symptom of the ALREADY-DOCUMENTED React hydration-mismatch/timer-race gap (rounds 71/96), not a new CSS bug; a genuinely separate, real `getComputedStyle()` staleness gap was also found and precisely characterised, but is architectural and correctly declined for this round
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 101's merge, no drift. A fresh full-corpus `Engine.JSLog` sweep returned identical output to round 101's own post-fix baseline (leads exhausted since round 73) — pivoted to a visual scan of the bench montage's worst-scoring pages, picking react.dev (this corpus's own highest pixdiff, 48.4%, far above every other page).
+
+- **Diff-band-detection sorted by score** surfaced two enormous bands (heights 424px and 681px in the thumbnail, dwarfing everything else) — both, on inspection, the ALREADY-DOCUMENTED "Sandpack code-demo renders in light theme where Chrome shows dark" gap from round 96 (itself a recurrence of round 71's own documented React hydration/chunk-race failure), confirmed at TWO separate demo instances ("Video.js"/"VideoList.js") this time rather than the one round 96 checked. Not re-litigated — round 71's own conclusion stands.
+- **A THIRD, smaller band at the very top of the page (the site's own top `<nav>`, not a Sandpack demo) showed the SAME light-vs-dark mismatch** — a genuinely new observation (the nav is the site's OWN chrome, not a third-party embedded widget), investigated carefully rather than assumed to be "the same bug" without checking:
+  - A live probe against the REAL fetched page confirmed `<html>` DOES correctly end up with `class="client-js dark platform-win"`, and `window.matchMedia('(prefers-color-scheme: dark)').matches` DOES return `true` — matching round 96's own prior finding, re-confirmed rather than assumed stale.
+  - Feeding the REAL, complete, unmodified `react.css` (108KB) into a standalone cascade-inspection harness, with `<html class="dark">` hardcoded directly into the STATIC HTML (bypassing JavaScript and the settle loop entirely), resolves the nav's `background-color` to the byte-exact correct dark value (`{R:35 G:39 B:47 A:242}`) — CONCLUSIVELY ruling out a CSS-cascade-complexity bug (the same class of bug round 98 found in a *different* real stylesheet): the selector `:is(.dark .dark\:bg-wash-dark)` and its interaction with the surrounding ~2000-line real stylesheet are entirely correct.
+  - A second, independent live probe confirmed the REAL page's own JSLog carries `Error: Minified React error #418` (a hydration mismatch) — React's own documented behaviour on this error is to discard the server-rendered subtree and re-render it client-side. Given round 71's own documented, deliberately-deferred root cause (a `setTimeout`-vs-bundler-timeout race stalls chunk loading, so hydration for the affected subtree never correctly completes), the nav's wrong theme is the SAME underlying gap manifesting on the site's OWN chrome instead of only a third-party embedded demo — not a new, narrow, independently-fixable bug. Two more targeted hypotheses (an external-stylesheet-still-loading race with the theme-setting bootstrap script; the same race reproduced against a local test server serving the exact real bootstrap-script text) were each built and tested, and each correctly resolved to dark — refuting them before reaching this conclusion, not skipping past them.
+- **A genuinely separate, real correctness gap was found and precisely isolated along the way, standalone from react.dev's own hydration issue**: `window.getComputedStyle()` returns a STALE, pre-mutation value when queried after a DOM mutation (e.g. `classList.add`) made EARLIER IN THE SAME SCRIPT — confirmed with a minimal, clean, two-line repro requiring no React, no hydration, and no external stylesheet at all. Root-caused to this engine's own documented settle-loop architecture (`js/session.go`'s `Metrics` interface — "the engine lays the page out, feeds the geometry in via `SetMetrics`, runs scripts... re-lays-out... iterating to a bounded fixpoint"): `getComputedStyle` reads a `Metrics` snapshot that is refreshed once PER SETTLE-LOOP GENERATION, not synchronously on every DOM mutation within one script's execution — matching real Chrome's behaviour (which always forces a synchronous recalc) only ACROSS generations, not within one. The SAME minimal repro's own FINAL PAINTED pixel is correct despite this staleness (confirmed directly, not assumed) — so this specific gap has no currently-confirmed VISIBLE consequence on any of the ten corpus pages (it only misleads a script that itself makes a decision based on `getComputedStyle`'s return value mid-execution), but it is a real, genuine, and precisely-characterised departure from real browser behaviour.
+- **Correctly declined a fix for both leads this round, rather than forcing one**: the nav-bar issue is not new — it is round 71/96's own conclusion, already on record as "a genuinely bigger, separate architectural issue," and re-attempting it here would re-litigate settled ground. The `getComputedStyle` staleness IS new and real, but fixing it properly means making the settle loop's core `Metrics` refresh either synchronous-per-mutation or incrementally invalidated — a change to one of this engine's most foundational, delicate mechanisms, with no currently-confirmed corpus-visible payoff to justify the risk in one round. Documented here, precisely characterised (including the exact repro and the exact architectural choke point — `js/session.go`'s `Metrics` interface and `js/geometry.go`'s `computedStyleObj.prop`), for a future dedicated round rather than a rushed attempt now.
+- `go test ./...` reconfirmed green (untouched); no coverage floors affected. Full corpus `Engine.JSLog` sweep unchanged.
+
+## 2026-09-25 (round 101) — `backdrop-filter` was entirely unimplemented, so a translucent "frosted glass" bar showed whatever was directly behind it, unblurred — confirmed live on react.dev's own sticky nav bar and code-sandbox preview panel (engine#194)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 100's merge, no drift, despite roughly 4.5 hours elapsing between rounds — no concurrent session had touched this repo in the meantime. A fresh full-corpus `Engine.JSLog` sweep returned identical output to round 100's own post-fix baseline (leads exhausted since round 73) — pivoted to a CSS-feature survey of freshly re-fetched react.dev and github.com client bundles (a broad sweep across pseudo-classes turned up nothing new — `:is()`/`:where()`/`:focus-visible`/`:focus-within`/etc. all already modelled — so the survey widened to at-rules and properties).
+
+- **Found `backdrop-filter` genuinely used and reachable on react.dev's own real, freshly-fetched CSS**: `.backdrop-filter{...}` (Tailwind's own base utility class, composing `--tw-backdrop-*` custom properties) plus `backdrop-blur-lg`/`backdrop-saturate-200` utility classes, confirmed applied via `class="duration-300 backdrop-filter backdrop-blur-lg backdrop-saturate-200 ... bg-wash ..."` on the site's own sticky top nav, and again on three code-sandbox preview-panel title bars (`class="... shadow-outer-border backdrop-filter ... backdrop-blur-lg backdrop-saturate-200 bg-white bg-opacity-90 ..."`). `backdrop-filter` was entirely unimplemented anywhere in the codebase — no parsing, no paint-time handling at all, unlike `filter` (implemented round 43).
+- **Implemented by reusing this engine's own existing filter machinery almost entirely unchanged**: `parseFilterList` (shared with `filter`, same function grammar — `blur()`/`saturate()`/etc.) now also feeds a new `Style.BackdropFilters` field via a `case "backdrop-filter", "-webkit-backdrop-filter":` in the property switch (aliasing both spellings to the same field, since Tailwind emits the `-webkit-` form immediately before the standard one — ordinary cascade order then makes the standard spelling win, exactly as a real browser would). At paint time, a new `applyBackdropFilter` runs BEFORE a box's own content reaches the canvas (whether painted directly, or via the existing offscreen group-buffer path for opacity/mask/foreground-filter): it samples whatever has ALREADY been painted behind the box's own border box directly off the destination canvas — correct by construction, since painting proceeds in real stacking order — blurs it with the SAME `applyFilters`/`blurFilter` (go-images' Gaussian blur) the foreground `filter` property already uses, and writes the result back in place, so the box's own (often semi-transparent) background then composites on top of the now-blurred backdrop.
+- **The blur band sampled spans the full canvas width, not the box's own X range cropped first** — matching the reasoning already established for the foreground-filter group buffer (`filterMargin`/`copyRows`, reused unchanged): a blur legitimately draws on content just outside the box's own edges, and cropping first would manufacture a wrong dark/transparent fringe at the boundary instead of a smooth falloff.
+- **A defensive bounds-check in the write-back loop was written, then DELETED after determining it was unreachable dead code**, not covered by a contrived test: `applyFilters` never actually changes its output buffer's size for ANY Filter kind, including `drop-shadow()` (`dropShadowFilter` always returns `image.NewRGBA(src.Rect)`, same extent as its input) — confirmed by tracing every case before assuming a real need for the guard, matching this session's own "no speculative/unconsumed code" discipline. A doc comment records the assumption directly instead.
+- **Five new tests** (`paint/backdrop_filter_test.go`, new file; `css/filter_test.go`, extending its own existing `filter`-shorthand dispatch test): a real-shaped positive case (two solid colours meeting at a sharp seam, blurred by a translucent overlay — the seam pixel shows both colours genuinely mixed, not a hard edge); its own control (the identical layout with NO backdrop-filter, confirming the seam stays sharp — guards against a future change blurring unconditionally); compositing ORDER (the box's own opaque background still wins over the blurred backdrop, not the reverse); an off-canvas box (`r.Empty()`) confirmed to leave the destination byte-for-byte untouched; `drop-shadow()` used as a backdrop-filter confirmed not to panic or change the canvas's own bounds. Plus a css-level test confirming `backdrop-filter` and `-webkit-backdrop-filter` both populate the field correctly and separately from `Filters`. Git-stash-confirmed: reverting `css/parse.go`+`css/value.go`+`paint/paint.go` together fails to even COMPILE either the `css` or `paint` test suites (`s.BackdropFilters undefined`). Full suite green; `paint` coverage dipped to 99.8% on the first pass — the SAME investigation that found the dead bounds-check code — resolved by deleting the unreachable branch rather than writing an artificial test to hit it. All five gated packages back at their floors on the second pass. A full corpus `Engine.JSLog` sweep showed identical output to the pre-fix baseline (a pure paint-level compositing fix, no JS-visible behaviour).
+- **Verified the underlying mechanism precisely, not from a screenshot**: an isolated repro (two solid colour blocks meeting at a seam, a translucent `backdrop-filter:blur(20px)` box on top) shows the seam pixel shift from a hard red/blue boundary to a genuinely smooth, mixed gradient — confirmed via direct `RGBAAt()` sampling, matching round 96's own "getpixel before writing up a finding" discipline. The real react.dev page's own backdrop-blurred panel sits over a smooth colour gradient at this fidelity's viewport, which a screenshot crop cannot usefully distinguish blurred-from-unblurred by eye — the isolated repro is the precise evidence here, not the live crop.
+- **Bench: react.dev itself moved by exactly 0.0000** (predicted in advance, not a post-hoc excuse: its own backdrop-blurred panels sit over an already-smooth gradient, where a blur is nearly invisible at full-page SSIM — the same pattern documented for many earlier rounds). A SECOND, independent, reachable beneficiary found while attributing the run: tailwindcss.com (+0.0012) — its own real, freshly-fetched page markup genuinely uses `backdrop-blur-md`/`backdrop-blur-sm`/`backdrop-brightness-150` classes (`class="@container rounded-3xl bg-black/5 ... backdrop-blur-md ..."`), confirmed present, not merely defined-but-unused. news.ycombinator.com (+0.0190, the round's largest movement) and caniuse.com (-0.0010) were checked directly rather than assumed: fresh re-fetches confirm ZERO occurrences of `backdrop-filter` in either page's real CSS at all — this fix cannot mechanically have moved either one; both are live-content drift on frequently-updated pages, matching news.ycombinator.com's own well-documented noise pattern from many prior rounds.
+
+## 2026-09-25 (round 100) — a percentage `margin-left`/`margin-right` was silently treated as 0 everywhere, since `Style.Margin` has no room to keep it unresolved — confirmed live on en.wikipedia.org's own `.ambox{margin:0 10%}` cleanup-notice box, which never narrowed at all (engine#193)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 99's merge, no drift. A fresh full-corpus `Engine.JSLog` sweep returned identical output to round 99's own post-fix baseline (leads exhausted since round 73) — pivoted to a visual scan of the bench montage's worst-scoring pages, picking en.wikipedia.org (this corpus's own lowest SSIM, 0.4370, and not directly investigated in many rounds).
+
+- **Diff-band-detection on the Wikipedia montage, sorted by total score (not height — round 96's own correction) rather than eyeballed**, surfaced a band near the article's very top corresponding to its "relies excessively on primary sources" cleanup-notice ambox. A crop suggested the box wrapped its text differently (and looked narrower) in this engine's panel than Chrome's — per round 96's own hard lesson, verified with a live `getBoundingClientRect()`/`getComputedStyle()` probe against the REAL fetched page rather than trusted from the screenshot alone.
+- **Confirmed real and precisely quantified**: the probe showed the ambox at `w=976` (its FULL containing-block width, `marginLeft`/`marginRight` both `0px`), where the real fetched stylesheet's own rule reads `@media(min-width:720px){.mw-parser-output .ambox{margin:0 10%}}` — a media query this engine's own `mediaMatches` correctly evaluates as matching (`window.matchMedia('(min-width:720px)').matches` → `true` at this 1024px viewport), yet the 10% horizontal margins it should apply were entirely absent.
+- **Root-caused to a genuinely missing feature, not a parsing bug**: `Style.Margin` (and `Style.Padding`) is a plain `Edges{Top,Right,Bottom,Left float64}` — unlike `Width`/`Height`/`Top`/`Right`/`Bottom`/`Left`, which use the percentage-aware `Length` type specifically so layout can resolve a percentage against the containing block once it is known. `applyMarginShorthand`/`applyMarginSide` (`css/props.go`) each explicitly special-cased a percentage margin value to `0` (`if l.IsPercent { vals = append(vals, mv{px: 0}) }`) rather than dropping it by accident — a real, if narrow, gap: nowhere in the codebase (parse, cascade, or layout) carried a percentage margin's value forward at all.
+- **Scoped the fix to margin-LEFT/margin-RIGHT only** (not margin-top/margin-bottom, and not percentage `padding` at all) — the confirmed real need. A full `Edges`→`Length[4]` conversion would touch roughly 66 read sites across `layout/*.go` plus another dozen assignment sites in `css/parse.go`; margin-left/right's own "used value" is consumed at exactly ONE choke point (`layout.resolveWidths`, which already receives `cw`, the containing block's content width, for exactly this kind of resolution — the same pattern `Width.Resolve(cw)` already uses two lines above it). Added `Style.MarginLeftIsPercent`/`MarginLeftPercent` (and the `Right` pair) as a narrow side-channel next to the existing `MarginLeftAuto`/`MarginRightAuto` flags, populated by `applyMarginShorthand`/`applyMarginSide`, and resolved in `resolveWidths` exactly where `Width`'s own percentage already is. Margin-top/bottom and padding percentages remain a documented, explicitly out-of-scope gap — no confirmed real need yet, unlike the confirmed one this round closes.
+- **Three new tests** (`layout/features_test.go`, alongside the file's own existing `margin:auto` centring tests): the exact real shape (a `width:auto` box narrowed by a percentage shorthand margin, matching Wikipedia's own ambox); independent percentage longhands (`margin-left`/`margin-right` set separately, asymmetric); and a mixed case (`margin-left:10%` with `margin-right:auto`) confirming the new percent path doesn't disturb `auto`'s own pre-existing precedence. A pre-existing test, `TestMarginSideEdges`, explicitly encoded the bug as its own expectation ("A percentage margin-left is ignored (not resolved) and clears auto") — the same pattern as round 70's `document.currentScript` and round 97's `TestTrailingBrEmptyLine` — updated to assert the corrected behaviour. Git-stash-confirmed: reverting `css/parse.go`+`css/props.go`+`css/value.go`+`layout/layout.go` together fails to even COMPILE the css package's own test suite (`s.MarginLeftIsPercent undefined`) and fails all three new layout tests with the exact predicted wrong values (`X=0`, `ContentW` unnarrowed). Full suite green; the css package's coverage dipped to 99.4% on the first pass (a genuinely new, uncovered branch in the refactored `applyMarginSide` — an invalid margin-left value) — caught by the coverage gate itself, not missed by inspection, fixed with one more assertion in the same existing test. All five gated packages re-checked against their floors on the second pass. A full corpus `Engine.JSLog` sweep showed identical output to the pre-fix baseline (a pure box-model-geometry fix touches no JS-visible behaviour).
+- **Verified against the REAL, live, freshly-fetched page**: the same `getBoundingClientRect()` probe, rerun after the fix, now shows the ambox at `x=121.6 w=780.8` against its `x=24 w=976` parent — matching the CSS math exactly (`24+976×0.10=121.6`, `976×0.80=780.8`), where before the fix it showed the box spanning its parent's full width with no margin applied at all.
+- **Honestly, this does NOT explain en.wikipedia.org's much larger, ~2,900px total-page-height gap against Chrome** (confirmed unrelated: the single-URL bench-compare height is byte-identical before and after, `1024×24649` both times) — that remains a separate, larger, not-yet-root-caused issue on this session's own list of open leads, not swept under the rug by this round's narrower, independently-confirmed fix.
+- **Bench: en.wikipedia.org +0.0012 (the confirmed fix) and caniuse.com +0.0019 — a SECOND, independent, plausible beneficiary found while attributing the corpus run, not assumed**: caniuse.com's own real, freshly-fetched CSS has `.ciu-legend{margin-left:20%;...}`, and `<section class="ciu-legend js-legend">` (the page's colour-key legend explaining what each compatibility-table cell shade means) is genuinely present in the real fetched HTML — a second, unrelated site independently relying on exactly the feature this round adds. news.ycombinator.com (+0.0063) and tailwindcss.com (-0.0020) were checked directly rather than assumed: fresh re-fetches confirm HN's own CSS has ZERO percentage-margin declarations anywhere, and while tailwindcss.com's own generated utility stylesheet does define one (`.ml-\[50%\]{margin-left:50%}`, Tailwind's arbitrary-value syntax), that exact class string never appears anywhere in the real fetched page's HTML — unreachable. Neither movement can mechanically be caused by this fix; both are live-content drift on frequently-updated pages, the same noise pattern already documented for both sites in many prior rounds. Every other page byte-identical.
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 98's merge, no drift. A fresh full-corpus `Engine.JSLog` sweep returned identical output to round 98's own post-fix baseline (leads exhausted since round 73) — pivoted to a fresh CSS-feature survey of freshly re-fetched real corpus stylesheets (Wikipedia's and MDN's own client bundles).
+
+- **Surveyed Wikipedia's real, freshly-fetched CSS for `:lang()`** (410 occurrences, by far the most common not-yet-modelled pseudo-class found): every rule using it targets `h1`–`h6`/`.mw-heading`/`.cdx-message`/`ol>li` with a non-English language code, and the fetched "Go (programming language)" article's only non-`lang="en"` attributes are on its interlanguage-links sidebar `<a>` elements — none of which any `:lang()` rule's selector ever targets. Surveyed and correctly declined as genuinely unreachable on this page, not implemented speculatively.
+- **Found a genuine, reachable gap in MDN's own freshly-fetched client bundle**: `.breadcrumbs-bar mdn-language-switcher,.breadcrumbs-bar mdn-language-switcher::part(button){height:100%}` — confirmed via the real fetched HTML that `<mdn-language-switcher>` is a real custom element with a real declarative shadow root, and its shadow tree really does contain `<button part="button" slot="button" class="language-switcher__button">`. `css/selector.go` recognised `::part()` only as a generic pseudo-ELEMENT name, alongside `::before`/`::after`/`::first-line` — correct for those (they target a generated box this engine never synthesises, so "matches nothing" is the right call) but wrong for `::part()`, which is the CSS Shadow Parts spec's one sanctioned way for an OUTER stylesheet to reach a specific, real, author-opted-in element inside a shadow tree from the outside. The button never got `height:100%`, leaving it sized only by its own content instead of stretching to fill the switcher's row.
+- **Implemented as the mirror image of the existing `:host`/`:host()` mechanism**, which already lets a shadow's OWN stylesheet reach OUT to style the host: a new `compound.Part` field (the `::part(name)` argument) requires the CANDIDATE element to carry a matching `part="name"` attribute, while everything else the compound would normally check (tag/class/id/attrs) is checked against the shadow HOST instead — reusing `matches()` unchanged, just pointed at `host` rather than `n`. `Selector.MatchesHost` continues any further leftward combinator chain (e.g. the real rule's own `.breadcrumbs-bar` ancestor requirement) from `host`'s own real ancestry, not the shadow-internal element's — cascade.go's existing shadow-boundary-aware `matchLeft` needed no changes at all for this, since a `Host`-only escape-at-boundary mechanism already existed; only the entry point changed. The remaining piece: `cascade.go`'s shadow-tree walk now also computes `filterPartSelectors(rules)` — the AMBIENT (outer) rules ending in `::part()` — and folds them into the shadow tree's own scoped rule list before descending, alongside the shadow's own `<style>` rules (mirroring `filterHostSelectors`'s exact shape, in the opposite direction).
+- **Four new tests** (`css/shadowdom_test.go`, extending the file's own existing `:host`/shadow-scoping test suite rather than a new file): a positive match reaching into a real shadow tree through an ancestor-combinator chain; a sibling shadow-internal element WITHOUT the `part` attribute staying unaffected (opt-in is per-element, not "everything in this host's shadow tree"); a `::part()` written for the WRONG host tag not reaching an unrelated custom element's shadow tree; and a bare `part` HTML attribute outside any shadow tree at all (host=nil) correctly never matching. Git-stash-confirmed: reverting `css/cascade.go`+`css/selector.go`+`css/shadowdom.go` together fails exactly the two POSITIVE-match tests (the two negative-match tests still pass either way, as expected — "matches nothing" was already the pre-fix behaviour for those). Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) on the first pass. A full corpus `Engine.JSLog` sweep showed identical output to the pre-fix baseline (a pure CSS-selector-matching fix touches no JS-visible behaviour).
+- **Verified against the REAL, unmodified, freshly-fetched rule text and DOM fragment** (not a hand-simplified assumption): a standalone cascade-inspection harness fed the exact real `.breadcrumbs-bar mdn-language-switcher::part(button){height:100%}` rule and the exact real `<button part="button" slot="button" class="language-switcher__button">` markup shape now resolves `Height` to the byte-exact correct 100%, where before the fix it resolved to `auto`.
+- **Bench: developer.mozilla.org itself moved by exactly 0.0000** — the same "real, directly-confirmed fix with no measurable full-page SSIM effect" pattern documented for many earlier rounds (e.g. 55, 65, 67); a `height:100%` on one nav-row button, already sized close to correct by its own flex context, is a small enough visual change to vanish into a page this size. The small movements elsewhere (news.ycombinator.com +0.0039, caniuse.com -0.0018, tailwindcss.com -0.0005, en.wikipedia.org -0.0003) are attributed with certainty rather than assumed: this fix's entire code path lives inside cascade.go's `if n.Shadow != nil` branch, so it is LITERALLY UNREACHABLE on any page with no declarative shadow root at all — confirmed by fetching all nine other corpus pages fresh and grepping for `shadowrootmode`/`shadowroot=`: zero matches on every one. These four movements cannot mechanically be caused by this change; they are live-content drift on frequently-updated pages, the same already-documented noise pattern from every prior round.
+
+## 2026-09-25 (round 98) — `:disabled`/`:enabled` were entirely unmodelled, so a higher-specificity `:disabled` rule won the cascade for EVERY element, not just actually-disabled ones — confirmed live on pkg.go.dev's cookie-consent "Okay" button (engine#191)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 97's merge, no drift. A fresh full-corpus `Engine.JSLog` sweep returned identical output to round 97's own post-fix baseline (leads exhausted since round 73) — pivoted to a visual scan of the bench montage's remaining diff bands.
+
+- **Found a genuine, precisely-quantified color mismatch on pkg.go.dev's own cookie-consent "Okay" button** (`<button class="go-Button">Okay</button>`, styled via `.go-Button{background-color:var(--color-button)}`): a diff-band crop suggested the button was the wrong shade, confirmed — per round 96's own hard-won lesson — not by eyeballing the crop but by `PIL.Image.getpixel()` sampling of the actual committed render: engine=`rgb(240,241,242)`, chrome=`rgb(0,125,156)`. A real, precisely-quantified bug, not a thumbnail-scale illusion.
+- **Two precise, well-verified hypotheses were tested and refuted before finding the real cause**, each checked with a standalone Go program calling `css.Cascade` directly rather than assumed: (1) chained/indirect `var()` resolution (`--color-button: var(--turq-dark)` two levels deep) — `css/vars.go`'s own `substituteVars` already supports recursive chains up to depth 64, confirmed correct with an isolated 3-rule repro; (2) a competing, overriding definition of `--color-button`/`--turq-dark` in one of pkg.go.dev's OTHER two stylesheets — fetched both fresh and grepped for the names; neither defines them.
+- **Root-caused by feeding the REAL, complete, unmodified 87KB `frontend.min.css`** (fetched fresh) into the same cascade-inspection harness: this reproduced the bug exactly (`Background={R:240 G:241 B:242}`, precisely `--gray-9`'s own literal value), where a minimal hand-written 3-rule repro using the same variable chain did not. The specific real rule responsible: `.go-Button:disabled{background-color:var(--color-button-disabled)}` — `--color-button-disabled` resolves to `--gray-9` (`#f0f1f2`), exactly the wrong observed value. `css/selector.go` had never modelled `:disabled` (or its counterpart `:enabled`) at all — every other pseudo-class not explicitly modelled degrades a compound to matching its base selector unconditionally (the same "reduce, don't drop" philosophy that is correct for a genuinely-always-false dynamic pseudo like `:hover`, but was already found actively wrong for other real, statically-determinable structural facts: `:first-child`/`:last-child` on caniuse.com/pkg.go.dev, `:empty` on pkg.go.dev, `:visited` on developer.mozilla.org). `:disabled`, like those, is a real, sometimes-true, statically knowable fact (the element's own `disabled` HTML attribute), not user-interaction state — so the unmodelled `.go-Button:disabled` rule (class-level specificity, higher than the plain `.go-Button` base) won the cascade for the "Okay" button too, even though it carries no `disabled` attribute at all.
+- **Fixed by modelling `:disabled` and `:enabled` together** (`compound.Disabled`/`compound.Enabled` fields, `isDisabled` — presence of the `disabled` attribute, mirroring `isChecked`'s own "presence, not value" reasoning), following the exact shape `:checked` already established. Disabled state inherited from an ancestor `<fieldset disabled>` is intentionally NOT modelled (no confirmed real-world need, and fieldset-inheritance has its own legatee/exception rules that would add real complexity for zero currently-observed benefit) — a documented scope limit, not a silent gap.
+- **Wrote a selector-level test (`TestDisabledEnabledPseudo`) and a cascade-level test reproducing the exact real rule shape (`TestCascadeDisabledNeverMatchesPlainElement`)**, the latter modelled directly on `TestCascadeVisitedNeverMatches`'s own precedent (same bug shape: an unmodelled pseudo-class that only ever exists to override a lower-specificity base for a narrower, opposite-state case). Both assert a plain element is unaffected AND that a genuinely-disabled element still gets the `:disabled` styling — the fix is not "always false", it is a real, bidirectional discrimination. Git-stash-confirmed both new tests fail — with a compile error (`bare.parts[0].Disabled undefined`), an even stronger signal than a runtime assertion failure — when `css/selector.go` is reverted alone. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) on the first pass. A full corpus `Engine.JSLog` sweep showed identical output to the pre-fix baseline (a pure CSS-selector-matching fix touches no JS-visible behaviour).
+- **Verified live against the REAL, unmodified, freshly-fetched stylesheet and DOM fragment** (not a hand-simplified assumption): the same cascade-inspection harness that reproduced the bug, rerun after the fix, now resolves the button's background to the byte-exact correct `{R:0 G:125 B:156 A:255}` (`#007D9C`).
+- **Bench showed small, honestly-attributed movements, no regression**: pkg.go.dev/net/http +0.0003 and go.dev/blog +0.0005 (both plausible — go.dev's own site frontend shares the same design-token stylesheet family) are consistent with a narrow, single-button-sized fix on a very tall page. news.ycombinator.com (-0.0068) and github.com/golang/go (-0.0009) were checked directly rather than assumed: freshly re-fetched HTML/CSS for both confirmed **zero** occurrences of `:disabled`, `:enabled`, or a literal `disabled` attribute anywhere on either page — this fix cannot have touched their rendering at all, so both movements are live-content drift on frequently-updated pages, the same already-documented noise pattern as every prior round. Every other page's montage was byte-identical (unchanged SSIM to 4 decimal places).
+
+## 2026-09-24 (round 97) — a `<br>` with nothing after it opened a further, visibly-empty line of its own — confirmed live on go.dev/blog's own `<span class="author">…<br></span>` markup, which ends EVERY post title with a trailing break (engine#190)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 96's merge, no drift, no PR-number collision — predicted #190 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned only a one-off network timeout fetching caniuse.com (retried clean, unrelated to any code path) — leads exhausted since round 73. Pivoted to a visual scan of the bench montage's worst-scoring pages, and this time verified every step with precise pixel measurement rather than eyeballing a crop, per round 96's own freshly-written lesson.
+
+- **Found a genuine, precisely-quantified structural mismatch on go.dev/blog**: a diff-band crop showed our engine's panel still mid-article at a y-coordinate where Chrome's panel had already reached the page footer — not a thumbnail-scale illusion this time, confirmed by running `bench/cmd/compare` against this ONE url in isolation and reading its own stderr log directly: `webengine: 1024x1686` vs `chrome: 1024x1575`, a real 111px difference.
+- **Two precise, well-verified hypotheses were tested and refuted before finding the real cause** — each checked via a temporary Go-level cascade instrumentation and a live JS `getBoundingClientRect()` probe, not assumed: (1) `.blogtitle`/`.blogsummary`'s own `margin-block-end:0`/`margin-block-start:0` (CSS logical properties) compute EXACTLY correctly (`MarginTop=16 MarginBottom=0` / `MarginTop=0 MarginBottom=16`), correctly beating the page's own generic `p{margin-top:1rem;margin-bottom:1rem}` rule via specificity; (2) margin COLLAPSING between adjacent blog-post `<p>` siblings is also exactly correct (measured gaps: 0px between a title and its own summary, 16px collapsed — not 32px summed — between one post's summary and the next post's title). Both mechanisms were already fully correct; the extra height was elsewhere.
+- **Root-caused precisely by measuring every element in the page's own container hierarchy** (`#blogindex` → footer, then every footer column and every footer link) until the arithmetic stopped adding up: the footer's own internal layout is ALSO exactly self-consistent with its CSS (`.Footer-linkColumn` flex-stretches all 5 columns to the tallest one's own natural content height, verified to the pixel: 1593−1301=292, matching the measured outer height exactly). The actual cause was upstream of the footer entirely: `layout.go`'s own `layoutInline` carried a DELIBERATE (if mistaken) design, its own comment reading "a trailing forced break opens a final empty line" — unconditionally adding one extra empty line whenever the LAST item consumed was a forced `<br>` with nothing left in the run, regardless of whether anything actually followed it. go.dev/blog's own markup ends every post's title paragraph with `<span class="author">NAME<br></span>` — a trailing break with genuinely nothing after it — and real Chrome gives this exactly zero extra height, confirmed via a pixel-precise isolated repro (four coloured boxes: `A<br>B`=41px, `A<br>B<br>`=61px **before** the fix — 20px, one full line, taller than it should be — `A<br>`=41px **before** the fix vs a plain `A`'s 21px, `A`=21px).
+- **Fixed the same underlying mistake in both of its two independent code paths**: `layoutInline`'s own float-aware, `wrapOneLine`-based general loop (the path go.dev/blog's own paragraphs actually take), and `WrapItems`'s pure, float-free fast path (used by `white-space:nowrap`/`text-wrap:nowrap`/`text-wrap:balance`) — matching this session's own established practice of fixing a bug at every call site it reaches, not just the one that happened to surface it. `wrapOneLine`'s own `brokeAtEnd bool` return value became entirely unused once the special-case block it existed for was deleted, so it was removed from the function's signature rather than left as a speculative, unconsumed API. Careful case analysis (hand-traced against real forced-break sequences before writing any code) confirmed the fix does NOT suppress a genuinely visible blank line from an EARLIER break in a run with real content still following it — `<p>A<br><br>B</p>` (an already-existing, already-tested real blank-line case, `TestPreDoubleNewline`) is untouched; only the break that is truly the last thing in the whole run, with nothing left to place on a following line, loses its own spurious empty line.
+- **A pre-existing test had encoded the very bug as its own expected behaviour** (matching this session's own established pattern, e.g. round 70's `document.currentScript`): `TestTrailingBrEmptyLine` asserted that `<div>a<br></div>` produces 2 lines — replaced with `TestTrailingBrGivesNoExtraLine` (asserting the corrected 1-line, same-height-as-plain-"a" behaviour) and a new `TestTrailingDoubleBrKeepsOneRealBlankLine` (`a<br><br>` must land exactly ONE line taller than `a<br>` — neither zero taller nor two taller), plus `TestWrapItemsTrailingLineBreakGivesNoExtraLine` for the `WrapItems` code path (covering the single-trailing-break, double-trailing-break, and lone-standalone-break-with-no-preceding-content cases, the last confirming a bare `<br>` alone still correctly renders as ONE real empty line, not zero). Git-stash-confirmed all four new/changed tests fail with the exact predicted symptom (wrong line count) when `layout/layout.go` and `layout/linebreak.go` are reverted together. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) on the first pass, no coverage gap this round. A full corpus `Engine.JSLog` sweep showed identical output to the pre-fix baseline (a pure layout-geometry fix touches no JS-visible behaviour).
+- **Verified live end-to-end with a TRUE controlled A/B** (git stash the fix, render, note height; restore, render again — back-to-back on the same live fetch, not two renders taken minutes apart, since go.dev/blog's own post list can change over time): 1686px → 1461px, a reproducible 225px reduction — matching the predicted mechanism exactly (10 real blog posts × one suppressed trailing-`<br>` line, 22.4px each, ≈224px). A direct crop of both renders confirms the visible effect: the gap between a post's author byline and its own summary paragraph, previously an extra blank line, is now gone, and the list packs noticeably more posts into the same vertical space.
+- **Bench confirmed a genuinely large, reachable-well-beyond-go.dev/blog fix**: pkg.go.dev/net/http's own SSIM jumped 0.6414→0.7111 (pixdiff 33.2%→11.3%) — this session's single largest movement from any round — a direct crop of the montage's own top region shows the header, breadcrumb, and badge row now aligning with real Chrome almost pixel-for-pixel, where they were visibly drifting apart before; Go's own generated package-documentation HTML evidently leans on trailing `<br>` formatting heavily throughout a function/type signature list, so the same one-line-per-trailing-break error compounded across a ~78,000px page into a dramatically larger gap than go.dev/blog's own ten posts ever could. tailwindcss.com (+0.0128), caniuse.com (+0.0036), and react.dev (+0.0096) all moved smaller but genuinely positive amounts too. news.ycombinator.com's own -0.0156 (this round's only real negative movement) was checked directly rather than assumed: its own page has only 2 `<br>` tags total (far too few to explain a movement this size) and its own front-page listing shows entirely different, currently-trending stories between the two captures — the same already-documented live-rotation noise cited in nearly every prior round. en.wikipedia.org (-0.000001) and github.com/golang/go (-0.00012) are rounding noise; developer.mozilla.org and example.com are byte-identical.
+## 2026-09-24 (round 96) — a round with NO code change: a fresh CSS-feature survey found nothing left to fix (all real candidates already implemented or unreachable), and three separate visual leads were each verified false before being written up
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 95's merge, no drift. A fresh full-corpus `Engine.JSLog` sweep returned only a one-off cosmetic variation in the already-known third-party ad-script error (leads exhausted since round 73) — pivoted to a fresh survey of freshly re-fetched real corpus stylesheets for another unimplemented CSS feature, then to a visual scan.
+
+- **Surveyed by real occurrence + reachability across six freshly re-fetched corpus stylesheets**: `:where()` (1281 hits) and `light-dark()` (40 hits) both turned out to be **already fully implemented** (checked the actual code — `css/selector.go`'s `:is()`/`:where()`/`:matches()` shared path, `css/lightdark.go`'s dedicated resolver with its own `@supports` probe — not gaps at all). `text-underline-offset`/`text-decoration-thickness` (7 each) traced to Tailwind's `.prose a` rule and `.underline-offset-N`/`.decoration-N` utility classes, none of which are applied to any live element on the fetched page (`class="prose"` never appears, only `not-prose`) — not reachable. `writing-mode`/`field-sizing`/`overscroll-behavior` (4/4/10) are all Tailwind utility-class definitions with zero matching classes found on any live element. `scroll-snap-type` (4) IS genuinely applied to real elements (`snap-x snap-mandatory`, `snap-proximity snap-end` on a horizontal carousel) but has no confirmed visible effect achievable in this engine's architecture: scroll-snap only affects behaviour during interactive scrolling, and this engine's static full-page render has no scroll-position concept to snap. `@property` (123) is Tailwind's own internal `--tw-*` composable-transform variables, already surveyed and declined in earlier rounds (89, 93) — not re-litigated.
+- **Pivoted to a visual scan and found react.dev's own interactive code demos (the "Video"/"VideoList" Sandpack widgets) rendering in the WRONG (light) theme where Chrome shows dark** — confirmed via a live probe that the underlying cause is NOT a `prefers-color-scheme` detection failure (`window.matchMedia('(prefers-color-scheme: dark)').matches` correctly returns `true`, and `<html>` correctly carries the `dark` class) but a recurrence of round 71's own already-documented, deliberately-deferred React hydration/chunk-loading failure (the SAME `ChunkLoadError`-class console errors: minified React error #418, "Route did not complete loading: /_error") — the interactive widget never successfully hydrates, so it never gets past whatever un-hydrated/default light-themed state its SSR fallback markup carries. Confirmed on a SECOND, independent demo on the same page (the exact same light-vs-dark mismatch), ruling out a one-off. Not re-litigated: round 71's own conclusion (the deeper cause is a `setTimeout`-vs-bundler-timeout race, "a genuinely bigger, separate architectural issue") still applies unchanged.
+- **Two further visual leads were investigated and found to be false alarms from my own misreading of a small screenshot, caught by direct pixel measurement before being written up** — the same discipline round 94 applied to a font mismatch, applied here twice more in one round: (1) pkg.go.dev's top nav bar appeared solid dark in a montage crop where Chrome shows teal; a Go-level cascade inspection confirmed the correct `#007D9C` background is computed, a live probe confirmed the correct box geometry and colour (`rgb(0, 125, 156)`) at the right position, and a direct `getpixel()` check of the COMMITTED montage on disk confirmed it already shows the correct teal at that exact coordinate — the crop's own small scale had simply made a muted teal look dark to the eye. (2) caniuse.com's "Can I use" search bar appeared roughly half-width in one panel; a precise per-pixel colour-boundary scan of both panels found the two bars within 6% of each other's width (971px vs 913px) — the apparent gap was the panel-boundary divider line in the small crop, mistaken for the bar's own edge.
+- `go test ./...` reconfirmed green (untouched) before closing out; no coverage floors affected. Full corpus `Engine.JSLog` sweep unchanged.
+## 2026-09-24 (round 95) — `text-wrap:nowrap`/`text-wrap-mode` was entirely unread — flagged in round 93 as a follow-up rather than folded into that round's own `balance` fix, confirmed live on tailwindcss.com's own `.text-nowrap{text-wrap:nowrap}` transition-timing-function demo labels (engine#188)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 94's merge (a docs-only round), no drift, no PR-number collision — predicted #188 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned zero diagnostic lines at all (not even the usual cosmetic ad-script churn) — leads exhausted since round 73. Rather than start a fresh survey, picked up round 93's own explicitly flagged follow-up directly: `text-wrap:nowrap` (the `text-wrap-mode` axis of the shorthand round 93 left unimplemented on purpose, confirmed real then on the same page).
+
+- **Read CSS Text 4 §text-wrap-mode BEFORE writing code**: initial `wrap`, INHERITED, values `wrap|nowrap`. `nowrap`: "lines only break at forced line breaks; content that does not fit ... overflows" — exactly this engine's EXISTING white-space:nowrap wrapping behaviour, but the spec is explicit that text-wrap-mode affects line-breaking opportunities ONLY, never whitespace collapsing/preservation (unlike white-space:nowrap, which also collapses).
+- **Implemented by reusing the existing mechanism, not a new one**: new `css.Style.TextWrapNowrap bool`; `layoutInline`'s own pre-existing `nowrap` local (already fed by `white-space:pre`/`nowrap`) now also widens on this field — a one-line change, since the actual never-wraps PLACEMENT logic already existed for white-space:nowrap and needed no duplication. Left `pre` (which also controls whitespace COLLAPSING) untouched, matching the spec's own explicit carve-out.
+- **Restructured `text-wrap` shorthand parsing to cover both axes correctly, not just extended the existing balance-only parser**: split into `parseTextWrapMode`/`parseTextWrapStyle` (one keyword each, shared by both the two longhands `text-wrap-mode`/`text-wrap-style` and the shorthand) plus `parseTextWrap` (tokenises the shorthand's `<mode> || <style>` any-order grammar, checking each token against both). Confirmed this correctly implements ordinary CSS shorthand semantics — an axis absent from a `text-wrap` value resets to ITS OWN initial value, not "stays whatever it was before" (e.g. `text-wrap:balance` after `text-wrap:nowrap` must reset nowrap back to false) — via a dedicated test, not assumed.
+- **Verified live end-to-end**: an isolated narrow-container repro (`width:60px`) shows the expected effect unambiguously — plain wrap breaks "transition duration-750 linear" onto 3 lines; `text-wrap:nowrap` keeps it on one line, overflowing the box, exactly per spec. The corpus's own confirmed-real use (tailwindcss.com's transition-timing-function demo, `.text-nowrap{text-wrap:nowrap}` wrapping "linear"/"ease-out"/"ease-in-out"/"ease-in" labels) turned out to have a genuinely NULL visual effect at this engine's own 1024px bench viewport — checked directly via a controlled A/B render (git stash the fix, render, diff; restore, render again), which came back BYTE-IDENTICAL (`diff bbox: None`): the element's own 716px-wide flex container is far larger than its short text content, which never needed wrapping in either mode at this width. Not a bug — the isolated repro above independently confirms the implementation itself works correctly; the corpus page simply doesn't happen to exercise it visibly at the one viewport this project benches against.
+- Added `TestApplyTextWrapNowrap` (css, covering both longhand+shorthand forms, the shorthand's per-axis reset semantics in both token orders, invalid-values-unchanged, and `unset`-re-inherits) and `TestTextWrapNowrapPreventsWrapping`/`TestTextWrapNowrapStillCollapsesWhitespace` (layout, end-to-end via real HTML — the second specifically pinning the spec's own collapsing-is-unaffected carve-out, asserting the two words stay separate, collapsed-whitespace items rather than one preserved multi-space run). Git-stash-confirmed the css test fails with a compile error and the layout tests fail with the exact predicted symptom (wrapping happens when it shouldn't) when `css/value.go`, `css/parse.go`, and `layout/layout.go` are reverted together. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — css briefly dipped to 99.4% from an untested `text-wrap-style:unset` branch newly exposed by the shorthand-parsing refactor, closed by extending the existing balance test rather than adding a whole new one. A full corpus `Engine.JSLog` sweep showed identical (empty) output to the pre-fix baseline.
+- **Bench's own movement on tailwindcss.com (-0.0128, this round's largest) was checked directly and found to be the SAME already-documented rotating customer-logo carousel (rounds 74/76/91/93), not this fix** — a full-page diff of two ordinary (non-stash) renders taken minutes apart showed a real, but entirely unrelated, changed region (y≈1470–3049: the sponsor-logo strip), and a side-by-side crop showed COMPLETELY DIFFERENT logos between the two (greptile/Fin/Google AI Studio/Vercel/Unblocked/Resend vs. Fin/Lovable/clerk/Vercel/bolt.new/supabase) — live content rotation, confirmed unrelated to `text-wrap` by the EARLIER, properly-controlled git-stash A/B render (see above), which isolated the fix's own real effect and found it byte-identical in the region it actually touches. news.ycombinator.com's own +0.0097 is its own already-documented live-rotation noise; caniuse.com's -0.0014 is ordinary ad-network variance. Every other page byte-identical.
+## 2026-09-24 (round 94) — a round with NO code change: two real leads were investigated and precisely characterised, both correctly identified as too large in scope for one round rather than forced into a rushed fix
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main had moved since round 93 (Renovate's own dependency-bump PR #173 had merged) — pulled and re-confirmed build/test green before investigating. A fresh full-corpus `Engine.JSLog` sweep returned only cosmetic minified-name churn in the already-known third-party ad-script error (leads exhausted since round 73) — pivoted to a visual scan of the bench montage's worst-scoring pages, reusing round 92's diff-band-detection script.
+
+- **Two leads investigated on en.wikipedia.org were correctly caught as false alarms from my own misreading of a small screenshot, not real defects — verified rather than written up on first impression.** A crop of the "History" section heading appeared, at first glance, to render in a sans-serif font where real Chrome shows serif — but a Go-level cascade inspection confirmed this engine's own CSS correctly resolves `.mw-body-content h2{font-family:'Linux Libertine','Georgia','Times','Source Serif 4',serif}` to its `Serif` enum value, and a zoomed-in crop of the actual rendered glyphs showed the heading WAS already rendering in the bundled serif face (Lora) all along — clear serifs visible once magnified 3×, invisible at the montage's own small scale. A follow-up isolated repro (plain `serif`/`sans-serif`/`monospace` divs) that seemed to show ALL THREE rendering identically turned out, on an actual pixel diff and a larger, cleaner re-render, to be three genuinely different, correctly-selected fonts — the small multi-line crop's overlapping line-height boxes (73px/77px/69px, one per family) had made three different fonts look like one at a glance. Neither lead was written up as a finding.
+- **A real, precisely-diagnosed, but genuinely large gap found on developer.mozilla.org**: the "In this article" right-sidebar TOC renders positioned much lower than real Chrome's (which aligns it with the page's H1, spanning both the header and body grid rows). Traced through several correctly-working layers first (this engine's `grid-template-areas` row-spanning via `lookupArea`, its `display:contents` promotion of `<main class="layout__content">`'s children into the grid — itself a previously-fixed, already-documented mechanism — and its nested-`calc()`-in-`@media` evaluation, all independently confirmed correct via minimal repros and a temporary Go-level cascade instrumentation) before finding the real, still-open cause: the active `grid-template-columns` value at this viewport width resolves (via a CSS custom property, `--layout-1-sidebar-left`, confirmed via its own `@media print` guard that the SIMPLER `!important` variant does NOT apply on screen) to `[full-start sidebar-start left-sidebar-start] minmax(var(--layout-sidebar-min),1fr) [sidebar-end left-sidebar-end] var(--layout-sidebar-gap) [content-start] minmax(0,var(--layout-content-max)) [full-end content-end] minmax(0,1fr)` — CSS Grid's bracketed NAMED LINE syntax, combined with a bare `var()` used directly as a track size and `var()` nested inside `minmax()`. This engine's `grid-template-columns` parser explicitly does not support named lines (`layout/grid.go`'s own `parseGridLine` comment: "named line: unsupported") — a deliberate, previously-untested scope limit that this round is the first to find load-bearing. Implementing it correctly (bracketed names at arbitrary positions between track sizes, referenced by `grid-area`'s longhand `grid-column-start`/`-end` OR simply consumed as a track-count contributor here) plus the nested-`var()`-inside-`minmax()` resolution is comparable in scope to this session's own Shadow DOM or CSS Grid multi-round build-outs, not a one-round fix — correctly declined rather than forced, matching rounds 44/64/86's own precedent for recognising an over-scoped investigation before committing to it.
+- **A second, smaller, likely-unfixable difference noted on the same page but not chased further**: real Chrome shows a sticky ad banner ("Meet Otari...") pinned above the page's own top nav; this engine's render shows the identical campaign's copy as an in-content card further down the page instead, with the top banner slot empty. A JS probe found the ad's own text only inside an unexecuted `<script>` payload at the point this engine's settle loop had already stopped — consistent with the many already-documented third-party ad-script timing/non-determinism sources cited across this whole session (caniuse.com's own ad-network variance, tailwindcss.com's rotating logo carousel), not a defect in this engine's own rendering.
+- `go test ./...` reconfirmed green (untouched) before closing out; no coverage floors affected (no code touched). Full corpus `Engine.JSLog` sweep unchanged.
+
+## 2026-09-23 (round 93) — `text-wrap:balance` was entirely unread, so a short multi-line heading always wrapped GREEDILY, leaving the classic uneven "orphan" split real browsers avoid — confirmed live on tailwindcss.com's own `<h2 class="text-balance">` "Build whatever you want, without touching your CSS file." heading (engine#185)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 92's merge, no drift, no PR-number collision — predicted #185 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned only cosmetic minified-function-name churn in the already-known third-party Google Ads bundle error (leads exhausted since round 73) — pivoted to grepping the corpus's real, freshly-fetched external stylesheets for another unimplemented CSS feature.
+
+- **Surveyed candidates by real occurrence count in freshly re-fetched corpus stylesheets, then checked reachability against each page's own live HTML, not just presence in the CSS**: `color-mix()` (1113, already declined round 86 — Tailwind's own `@supports` fallback already covers it), `mask-composite` (280, declined round 91, no confirmed trigger), `backdrop-filter` (162, declined repeatedly since round 86 — too large for one round), `@property`/`color-scheme` (123/438, redundant or unused), `:has()` and `@container`/`container-type` (105/27/2) both turned out to be **already fully implemented** (checked the actual code, not assumed from memory of past rounds), `mix-blend-mode`/`isolation` (18/4, unused/no-visible-effect utility classes, matching round 91's own prior finding for the same pair), `clip-path` (8, but every occurrence was the standard `sr-only`/`visually-hidden` accessibility idiom — already effectively invisible via its own `width:1px;height:1px;overflow:hidden`, so implementing the CSS property itself would have no confirmed VISIBLE effect on this corpus). **`text-wrap` (5 occurrences, `balance` value specifically) was the confirmed find**: applied to tailwindcss.com's own live hero `<h1>` and three `<h2>` headings via its `text-balance` utility class.
+- **Read the actual normative spec BEFORE writing any code**: CSS Text Module Level 4 §text-wrap-style — `balance` is UA-defined ("line boxes are balanced when the standard deviation from the average inline-size of the remaining space in each line box is reduced"), with two concrete, testable constraints: it must NOT change the number of line boxes a plain wrap already produces (for 5 lines or fewer), and a UA MAY fall back to plain `auto` wrapping past 10 lines. `text-wrap`/`text-wrap-style` are both INHERITED, initial `auto`.
+- **Implemented via a binary search, not a bespoke algorithm** (matching the spec's own explicit "UA-defined" latitude): a new `balanceWidth` helper finds the narrowest width in `[0,cw]` that still wraps the SAME line count a plain greedy wrap already produces at the real container width — since `WrapItems`'s own line count is provably monotonically non-increasing as width grows, this converges to exactly the width a real balancing algorithm would target, reusing the engine's own existing, already-tested greedy wrapper as its only primitive. New `css.Style.TextWrapBalance bool` (parsed from both `text-wrap` and the `text-wrap-style` longhand, handling the shorthand's `<mode> || <style>` any-order grammar token-by-token); `layoutInline` gained a fast path ahead of its general float-aware loop, scoped deliberately to when NO floats exist anywhere in the document yet (a per-line float-narrowed width has no single `cw` the binary search could run against) and the line count is in `(1,10]` (the spec's own stated cap). Only `balance` is modelled — `pretty`/`stable`/`avoid-short-last-line` are recognised as valid (not silently overwritten) but resolve to ordinary wrapping, same as the property's own initial value.
+- **A second, real, independently-confirmed gap found and deliberately NOT fixed this round**: `text-wrap:nowrap` (a `text-wrap-mode` value, not `balance`) is ALSO confirmed live on the same page's code-toolbar filename labels (`.text-nowrap{text-wrap:nowrap}`) and is equally unimplemented — flagged precisely as a follow-up rather than folded into this round's own fix, matching this session's established one-narrow-fix-per-round discipline (e.g. rounds 55→56, 89→90).
+- **Verified live end-to-end, and honestly investigated an initial null result rather than assuming success from the isolated repro alone**: an isolated two-box repro (`text-wrap:balance` vs. plain, same width/font) showed the expected effect clearly — same line count, visibly more even distribution. But the FIRST live check, on tailwindcss.com's own hero `<h1>`, showed a BYTE-IDENTICAL render before and after. Investigated via a temporary debug print (fully removed before shipping) rather than assumed either "the fix does nothing" or "it's working, trust it": the `<h1>`'s own greedy wrap at this exact 1024px viewport ALREADY happens to break almost exactly where balancing would put it (`balanceWidth` returned 923.9px against a 928px container — essentially no room left to redistribute), a genuine coincidence of this specific viewport/font-size combination, not a bug. The SAME debug pass confirmed the fix DOES fire correctly on the page's third `<h2>` (`text-balance`, "Build whatever you want, without touching your CSS file."): greedy wraps it "Build whatever you want," / "without touching your" / "CSS file." (a classic short-orphan-last-line pattern); balanced wraps the SAME 3 lines as "Build whatever you" / "want, without touching" / "your CSS file." — confirmed via a direct crop of a fresh render at the JS-probed real y-coordinate (10169px) against Chrome's own equivalent behaviour.
+- Added `TestApplyTextWrapBalance` (css, covering the shorthand's both-order grammar, the longhand, unset-re-inherits, and invalid-values-leave-the-value-unchanged), `TestBalanceWidthKeepsLineCountButRedistributes` (layout, a pure unit test of the binary search itself), and `TestTextWrapBalanceRedistributesLineBreaks`/`TestTextWrapBalanceSkipsWhenFloatsPresent` (layout, end-to-end via real HTML). Git-stash-confirmed all fail with the exact predicted symptom (a compile error — an even stronger signal than a runtime failure — since `TextWrapBalance`/`balanceWidth` don't exist on the reverted files) when `css/value.go`, `css/parse.go`, `layout/layout.go`, and `layout/linebreak.go` are reverted together. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) on the first pass, no coverage gap this time. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page (a pure text-layout fix touches no JS-visible behaviour).
+- **Bench correctly predicted, in advance, that the confirmed real fix would be invisible at the aggregate level, and every other movement was noise**: tailwindcss.com's own SSIM moved by a negligible +0.000009 — expected, since the standard comparison region is capped to the page's own top 2500px, while the confirmed-fixed `<h2>` sits at y≈10169px, entirely outside it; the direct crop above is the real, only confirmation this fix needed. news.ycombinator.com's own -0.0134 (this round's largest movement, on a page whose markup has zero `text-wrap` occurrences) is its own already-documented live-rotation noise (rounds 61, 78, 85…). github.com/golang/go (+0.00015) and caniuse.com (-0.00025) are both ordinary rounding noise; en.wikipedia.org, example.com, go.dev/blog, developer.mozilla.org, pkg.go.dev/net/http, and react.dev were all byte-identical.
+
+## 2026-09-23 (round 92) — a button's icon was only ever found among its DIRECT children, and only a single TRAILING one was ever drawn — so github.com's own Primer "Code"/"master" buttons, whose leading AND trailing icons both sit inside a non-replaced `<span data-component="leadingVisual"/"trailingVisual">` wrapper, rendered as bare, iconless "Code"/"master" text (engine#184)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 91's merge, no drift, no PR-number collision — predicted #184 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned the same log lines as every round since 73 (leads exhausted) — pivoted to a visual scan of the bench montage's worst-scoring pages, this time using a new Python diff-band-detection script (crop the montage's own rightmost diff-heatmap third, score each row's redness, group contiguous high-score rows into bands, sort by height) to locate the most visually significant differing region without manually scrolling a multi-thousand-pixel image.
+
+- **Checked en.wikipedia.org first (the corpus's own worst SSIM) and correctly identified the leading candidate as a non-novel rediscovery, not a new bug**: the largest diff band pointed at the "Generics" section heading's own `[edit]` link, where this engine renders "edit" with no surrounding brackets or spacing. A live JS probe confirmed `.mw-editsection-bracket`/`.mw-editsection-divider` compute to `display:none` in this engine; fetching Wikipedia's own real, currently-served stylesheet confirmed that IS its real, intentional rule — the brackets are drawn via `::before`/`::after` generated content on the anchor instead, the same already-known, deliberately-out-of-scope generated-content limitation documented in rounds 44/56/57/87 (MDN's own breadcrumb separators). An initial crop had also appeared to show the heading text itself entirely missing; a fresh, independent full-height render and a directly-aligned re-crop showed it was present all along — a misaligned crop range on my own part, not a rendering defect. Correctly declined to write this up as a new finding and moved to the next-worst page.
+- **Found live on github.com/golang/go**: the repository header's "Code" button (a `<> Code ▾` split button) and the branch-selector "master" button both render as bare text with no icons at all in this engine, while real Chrome shows a leading `<>`-style code icon and/or a trailing chevron alongside the label.
+- **Root-caused precisely**: round 85's own `buttonIcon` function (i) only ever inspected a button's DIRECT children for an `img`/`svg`, never descending into a wrapper, and (ii) only ever recognised a single TRAILING icon. GitHub's own real Primer markup nests each icon inside its own non-replaced `<span data-component="leadingVisual">`/`<span data-component="trailingVisual">` wrapper — invisible to a direct-children-only walk — and the "Code" button carries icons on BOTH sides at once, a shape `buttonIcon` had no way to represent even if it had found them.
+- **Fixed by generalising `buttonIcon` into `buttonIcons`**: it now walks ALL descendants (skipping into non-replaced wrappers, but never descending into an `img`/`svg` itself — those are atomic), and partitions every replaced element found into a "before" or "after" bucket purely by DOCUMENT ORDER relative to the button's own first visible non-whitespace text (a generic signal, not coupled to any framework's own class-naming convention) — mirroring exactly how `buttonLabel` itself already walks visible text. `layout.InlineItem` gained a second `LeadingIcon` field alongside the existing `Icon` (now documented as specifically the TRAILING icon); either, neither, or both may be set on the same item, matching the real "Code" button's own shape. Three call sites updated (`contents()`, `appendElementInline`, and `formControlDefaultSize`'s own sizing switch), each keeping a single icon-only button's sole icon routed to the SAME field legacy tests expect (an icon with no text naturally lands in the "before" bucket, since there is no text position to compare against — normalised back onto the trailing field at the two InlineItem call sites for backward compatibility; `formControlDefaultSize` calls `buttonIcons` independently and needed no such normalisation, since its own icon-only case already branches on `leading != nil` directly). `paintFormControl`'s label+icon drawing path now draws an optional leading icon, then the label, then an optional trailing icon, centring the whole group as one unit — layout already reserves exactly this width when sizing the control's box.
+- **A real, structural dead-code branch found and removed while writing the regression tests, not merely worked around**: `formControlDefaultSize`'s own switch briefly carried a `label == "" && trailing != nil && leading == nil` case mirroring the icon-only-leading one — but `buttonIcons`' own "before"/"after" partition can only ever populate `after` once `seenText` has gone true, which is exactly the condition `buttonLabel` itself requires for a non-empty label (both walk the same visible-text definition) — so an EMPTY label structurally guarantees `trailing` stays nil forever; the case could never be reached by any real input. Confirmed by first observing 94.1% (not 100%) layout coverage on this function, tracing it to this exact unreachable branch, and removing it (not just adding a test for it) — matching this session's own "no error handling for scenarios that can't happen" discipline.
+- **A second, genuinely arithmetic test mistake caught by the SAME coverage-floor discipline**: a first draft of the leading+trailing regression test hand-calculated the expected combined width as 92px; the code (and the test's own inline comment, once summed correctly) actually gives 104px (`labelW(40) + 2×padX(24) + lw(16)+gap(4) + tw(16)+gap(4)`) — corrected the test's own expectation, not the code, after re-deriving the arithmetic by hand and confirming via a standalone debug program that the code's output matched the documented formula exactly.
+- **Verified live end-to-end on the exact page that exposed the bug**: a direct render of github.com/golang/go now shows both the "Code" button's leading code-bracket icon and trailing caret, and the "master" button's trailing caret, all correctly drawn alongside their labels. A controlled A/B render (git stash this fix, render, compare; restore, render again) isolated the change precisely to these two buttons' own icon glyphs — the "before" state renders bare "master"/"Code" text with zero icons, exactly matching the bug description.
+- Added `TestFormControlButtonLeadingIconAndTextBothPaint`, `TestFormControlButtonLeadingAndTrailingIconBothPaint`, and `TestFormControlButtonLeadingTallIconAndTextHeightUsesTallerOfTheTwo` (`layout/formcontrol_test.go`, the last added specifically to close the coverage gap on the leading icon's own line-height comparison, mirroring the pre-existing trailing-icon equivalent) and `TestPaintFormControlLeadingAndTrailingIconBothDraw` (`paint/formcontrol_test.go`, using two distinct solid colours — red leading, green trailing — to confirm both icons draw strictly on their own correct side of the label's own pixels, not just "present somewhere"). Git-stash-confirmed the layout/paint tests fail with the exact predicted symptom (a compile error — an even stronger signal than a runtime failure — since `LeadingIcon` does not exist on the reverted `InlineItem`) when `layout/box.go`, `layout/layout.go`, and `paint/paint.go` are reverted together. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — layout briefly dipped to 99.9% from the dead-code branch above and was restored to 100.0% by removing it and adding the tall-leading-icon test. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page (a pure layout/paint icon-drawing fix touches no JS-visible behaviour).
+- **Bench correctly attributed a small, real SSIM movement on the targeted page as noise, not a regression**: github.com/golang/go's own SSIM moved by a negligible -0.00024 — smaller in magnitude than FOUR pages this round's code cannot possibly touch at all (caniuse.com +0.00036, developer.mozilla.org -0.00019 is comparable, news.ycombinator.com +0.0053, tailwindcss.com +0.0023), confirming ordinary live-fetch content jitter rather than a real change; the fix's own true visual effect was already isolated conclusively by the stronger, deterministic A/B stash render above, which the aggregate SSIM metric is simply too coarse (and too exposed to unrelated live-page drift) to cleanly show on a ~2500px-capped comparison region against a page whose two changed buttons occupy a small fraction of it. en.wikipedia.org, example.com, go.dev/blog, and pkg.go.dev/net/http were all unchanged (byte-identical results).
+
+## 2026-09-23 (round 91) — the CSS `tab-size` property was entirely unread: tab expansion in preserved text (`<pre>`) already existed but always expanded to the hardcoded value 8, ignoring an author-set `tab-size` — confirmed live on pkg.go.dev's own `pre,textarea.code{tab-size:4}`, doubling the real indentation depth of its own tab-indented Go source samples (engine#183)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 90's merge, no drift, no PR-number collision — predicted #183 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned the same log lines as every round since 73 (leads exhausted) — pivoted to grepping the corpus's real, freshly-fetched external stylesheets for another unimplemented feature.
+
+- **This round's investigation was preceded by an explicit bibliography check the user prompted mid-round-91-claim** ("as-tu fait de la biblio récemment?"), which reviewed rounds 85–90 and found none of them had opened an external reference source before implementing — round 89's `object-fit` was flagged as the clearest gap. Retroactively checked the actual W3C specs for both round 89 (CSS Images Module Level 3, `object-fit`) and round 90 (CSS 2.2 §10.3.2/§10.6.2, replaced-element sizing): both implementations matched the normative text exactly (cover/contain's own algorithm; the aspect-ratio-derivation rule gated specifically on "height … auto", exactly matching round 90's fix). No corrective PR was needed, but the discipline itself — read the spec BEFORE implementing a normed primitive, not after being asked — carried into this round's own investigation from the start.
+- **Surveyed several candidates by real corpus-stylesheet occurrence count, then checked reachability**: `mask-composite` (291, paired with `mask-image`, no confirmed real trigger checked), `color-scheme` (568, largely redundant with existing dark-theme handling), `mix-blend-mode`/`isolation` (26/13, single generic-utility-class hits, not applied to any live element found), `@starting-style` (3, animation-entry, invisible in a static render regardless). **`tab-size` (53 raw occurrences) was the confirmed find**: reachable via a genuine `pre,textarea.code{tab-size:4}` rule on pkg.go.dev, and confirmed load-bearing by finding real tab characters (`\t`) inside the page's own fetched `<pre>` code samples (Go source is tab-indented by `gofmt` convention).
+- **Read the actual normative spec BEFORE writing any code this time**: CSS Text Module Level 3 §4.3 (`tab-size`) — confirmed the property is `<number [0,∞]> | <length [0,∞]>`, initial `8`, **inherited**, and that a tab's advance is computed as a tab-STOP algorithm (advance to the next multiple of `tab-size` space-widths from the line's own start), not a fixed-width substitution.
+- **Root-caused precisely**: `layout.go`'s own `expandTabs` function ALREADY implements exactly this tab-stop algorithm correctly (confirmed by 4 pre-existing passing tests: `TestPreTabsReachTabStops`, `TestPreBrResetsTabColumn`, etc.) — but reads a package-level `const tabSize = 8` instead of the element's own computed `tab-size`, because `css.Style` had no such field at all: the CSS property was never parsed anywhere in this engine, so any author-set value was silently discarded before ever reaching layout.
+- **Fixed narrowly**: added `TabSize int` to `css.Style` (set to the spec's own initial value 8 in `initialStyle()`, copied in `inheritFrom()` since the property IS inherited — verified via the spec's own formal definition table, not assumed), a `tab-size` case in `apply()` using a new `parseTabSize` helper (bare non-negative integer only — the sibling `<length>` form is spec-flagged "at risk" and has no confirmed real use here), and `expandTabs` now takes the resolved `tab-size` as a parameter instead of reading the hardcoded constant. Also handled the spec's own explicit zero case (`tab-size:0` renders no tab at all) to avoid a modulo-by-zero.
+- **Verified live end-to-end**: an isolated repro (two `<pre>` blocks, one with `tab-size:4`, one at the default 8, each with two lines whose tab lands at a different starting column) shows both lines within each block correctly aligning at their own block's own tab stop, and the two blocks visibly differing from each other. Re-rendered the real pkg.go.dev page and confirmed via a direct A/B crop: a continuation line of a wrapped `http.PostForm(...)` call previously over-indented (tab expanded to 8 columns) now correctly aligns at 4, matching real Chrome's own rendering of `gofmt`-formatted Go source.
+- Added `TestApplyTabSize` (`css/parse_test.go`, covering parse/initial/invalid-values-leave-inherited-value-unchanged/`unset`-re-inherits) and `TestPreTabSizeHonoursCSSProperty`/`TestPreTabSizeZeroRendersNoTab` (`layout/nbsp_tab_test.go`, alongside the pre-existing default-tab-size tests, confirmed still passing unmodified). Git-stash-confirmed all three fail with the exact predicted symptom (a compile error for the css test; the old, wrong 8-column expansion for the layout tests) when the source fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%). A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page (a pure text-layout fix touches no JS-visible behaviour).
+- **Bench confirmed a real, if small, improvement on the exact targeted page, and correctly attributed every other movement as noise**: pkg.go.dev/net/http's own SSIM rose slightly (0.6409→0.6414) — small because the standard comparison region is capped to the page's own top 2500px, while the affected code blocks are scattered throughout a ~78,000px page; the live crop above is the real, direct confirmation. tailwindcss.com's own small movement (-0.0030) was checked via A/B render and found to be its own ALREADY-documented (rounds 74/76) live-rotating customer-logo carousel — an entirely different set of sponsor logos between the two renders, confirmed via direct crop, unrelated to `tab-size` (that page's own single `tab-size` hit is a generic, unused Tailwind utility class). news.ycombinator.com (-0.0054), github.com/golang/go (-0.0001), and caniuse.com (-0.0024) are all within their own already-documented noise sources (HN's live rotation; ordinary rounding; caniuse's ad-network variance) — none of their markup uses `tab-size`.
+
+## 2026-09-23 (round 90) — `resolvedReplacedSize` derived a replaced element's height PURELY from its resolved width and the source's own aspect ratio, silently discarding an INDEPENDENTLY-set explicit CSS `height` — so an image with both `width:100%` and an explicit `height` (Tailwind's own common `w-full h-40` idiom) rendered oversized and spilled over the content sitting below it, and (as a side effect) masked round 89's own `object-fit` fix entirely, since the resulting box always shared the source image's own aspect ratio (engine#182)
+
+This round's target was already precisely scoped at the end of round 89: `resolvedReplacedSize` (added in engine#180) mathematically guarantees the box's aspect ratio always equals the source bitmap's own whenever it derives height from a resolved width — which not only ignores the author's own explicit height but ALSO made `object-fit:cover`/`contain` (round 89) a provable no-op on every element that path reaches. No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 89's merge, no drift, no PR-number collision — predicted #182 confirmed via `gh pr list` both before and after pushing.
+
+- **Fixed by making an explicit, definite (px) height always win outright**, exactly like an explicit width already does, and exactly matching real CSS precedence (a definite height is never overridden by an aspect-ratio derivation) — a new early-return branch in `resolvedReplacedSize`, checked after width/max-width resolution: `if !st.Height.Auto && !st.Height.IsPercent && st.Height.Px > 0 { return w, st.Height.Px }`. A percentage height is deliberately NOT resolved (no containing-block height parameter is available/meaningful at this call site, unlike width's own `cw`), and `max-height` has no confirmed real caller yet either — both left for a future round if a real need surfaces.
+- **Verified live end-to-end on the exact page that exposed the bug**: tailwindcss.com's own listing-card gallery images (`w-full h-40 object-cover`) previously rendered 285px tall (aspect-ratio-derived from a 1024×682 pre-scaled source) instead of the CSS-intended 160px, spilling downward over the "Beach House on Lake Huron" listing card's own title, rating, and "Check availability" button sitting directly below it. A controlled A/B render (git stash this fix, render, compare; restore, render again) isolated a real, precisely-bounded diff region (`(112, 3766)`–`(976, 4182)`) and confirmed the fix: the image now renders correctly cropped to 160px, with the card's own text fully legible again — and, as a direct consequence, `object-fit:cover`'s own crop is now visibly engaged (a JS `getBoundingClientRect()` probe confirmed the DOM box itself was already reporting the correct 428×160/210×160 dimensions even before this fix — the discrepancy was entirely internal, between the box's own reported size and the DIFFERENT, wrong value `resolvedReplacedSize` was separately feeding to paint's own image-scaling step).
+- **A genuinely subtle, real testing trap, caught and corrected before shipping**: an initial block-level regression test asserted on the box's own `H`/`ContentH` fields and PASSED even with this round's fix fully reverted — a false positive. Root-caused to a SEPARATE, pre-existing, completely general quirk (confirmed present on a plain, non-replaced `<div style="height:80px">x</div>`, unrelated to images or this fix at all): `place()`'s own pre-existing `usedHeight` override ALREADY forces a block box's reported height to match an explicit CSS `height`, independent of `resolvedReplacedSize` entirely — so testing the box's outer fields never actually exercised the regression this round fixes. Corrected the test to check the box's own `Lines[0].Items[0]` fields instead (`Width`/`LineHeight` — what paint actually reads to scale the bitmap), which correctly fails without the fix and passes with it.
+- Added `TestInlineImageExplicitHeightWinsOverAspectRatio` and `TestBlockImageExplicitHeightWinsOverAspectRatio` (`layout/layout_test.go`), using the same `imgSizeHTML` map-override helper as round 88's own tests (not width/height HTML attributes, which map to real CSS declarations and would interfere with the very test being written). Git-stash-confirmed both fail with the exact predicted symptom (a wrong, aspect-ratio-derived height) when the source fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — layout itself stayed at 100.0% throughout, including through the test-correctness fix above. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page (a pure layout-geometry fix touches no JS-visible behaviour).
+- **Bench confirmed a real, if modest, improvement on the exact page this round targeted, and correctly attributed every other movement**: tailwindcss.com's own SSIM rose (0.7356→0.7378), directly matching the confirmed live fix above. pkg.go.dev/net/http showed a genuinely tiny (1px) real change — its own rendered content height shifted by exactly 1px (78390→78389) — traced via an A/B render to a small, correct height-rounding effect near the top of the page (the "Latest" version badge's own icon/label area, itself imperceptible in a direct crop) cascading the well-established "a small correct height change moves everything below it" pattern through the rest of the ~78,000px page; its own tiny SSIM dip (-0.0006) is this same pattern, not a regression. github.com/golang/go, react.dev, developer.mozilla.org, en.wikipedia.org, example.com, and go.dev/blog all showed their engine panels effectively unchanged (github.com/golang/go's -0.0000 is rounding noise). news.ycombinator.com (+0.0049) and caniuse.com (+0.0033) are both small, positive movements within their own already-documented noise sources (HN's live rotation; caniuse's ad-network variance) — neither page's own markup reaches this code path.
+
+## 2026-09-23 (round 89) — `object-fit` was entirely unimplemented, so an image whose box aspect ratio doesn't match its own would be unconditionally stretched/distorted rather than uniformly scaled and cropped/letterboxed — confirmed live as `object-fit:cover` (Tailwind's `object-cover` utility) in react.dev's own avatar/thumbnail images and tailwindcss.com's own gallery images (engine#181)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 88's merge, no drift, no PR-number collision — predicted #181 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned the same log lines as every round since 73 (leads exhausted) — pivoted to grepping the corpus's real, freshly-fetched external stylesheets for another unimplemented modern CSS feature (alternating from round 88's visual scan).
+
+- **Surveyed several candidates by real, freshly-compiled corpus-stylesheet occurrence count, then checked REACHABILITY (not just presence) against each page's actual live HTML**: `backdrop-filter` (175, already declined round 86 — compositing/blur too large for one round), `@property` (125, not attempted — a distinct, separate at-rule feature), `clip-path` (66, but every corpus hit turned out to be an SVG `clip-path="url(#...)"` ATTRIBUTE, an entirely different mechanism from the CSS property of the same name — a false positive from keyword-only grepping), `text-wrap`/`scroll-snap`/`object-fit` on developer.mozilla.org (all false positives too: MDN's OWN documentation page text literally listing these as CSS reference article titles, not the page's own styling), `subgrid` (12, not attempted). **`object-fit` (43 raw occurrences) was the confirmed real find**: reachable via a genuine `class="...object-cover..."` (Tailwind's compiled utility) on live elements on TWO separate corpus pages — react.dev's avatar/video-thumbnail images and tailwindcss.com's own gallery/customer-photo images — the other three pages' hits (github.com, go.dev/blog) traced to marketing-page-only classes (`Primer_Brand__*`, `SidebarNudge-module__*`, `Hero-gopherLadder`, `GoCarousel-eventThumbnail`) absent from the specific pages fetched in this corpus.
+- **Implemented `cover`/`contain`** (not `none`/`scale-down` — no confirmed real use of either): a new `css.ObjectFit` enum on `css.Style`, parsed from the `object-fit` property. Paint's image-drawing branch now checks it: when set to cover/contain, reuses this engine's OWN EXISTING `coverContain`/`scaleTile`/`blitTileClipped` helpers — the exact same mechanism `background-size:cover/contain` already implements for a background layer — to scale the loaded bitmap UNIFORMLY (preserving its own aspect ratio) and centre-crop (cover) or letterbox (contain) it within the item's display box, rather than independently stretching each axis to fill it (this engine's own prior behaviour for every image, matching CSS's initial `fill` value, unaffected by this change). `object-position` is not modelled — no confirmed non-centred real use — so cover/contain always centre.
+- **A genuinely surprising negative result, investigated rather than assumed a bug**: neither confirmed-live page (react.dev, tailwindcss.com) showed ANY pixel difference at all in a controlled A/B render (fix stashed vs restored) — checked directly via a debug instrumentation of the new code path (temporarily printed the resolved box/source dimensions, then removed it) rather than accepting the null result at face value. **Root-caused to a real, PRE-EXISTING bug in round 88's own `resolvedReplacedSize`, exposed for the first time by this round's own testing**: that function derives an image's display HEIGHT purely from its resolved WIDTH and the loaded bitmap's own intrinsic aspect ratio, entirely ignoring an INDEPENDENTLY-set explicit CSS `height` (e.g. Tailwind's `h-40` alongside `w-full`) — so the resulting box's aspect ratio is, BY CONSTRUCTION, always identical to the source bitmap's own aspect ratio, which mathematically guarantees `object-fit:cover`/`contain`'s uniform-scale-then-crop/letterbox produces IDENTICAL pixels to a plain independent-axis stretch (`fill`) in every single case this bug's code path is taken — completely masking this round's own feature's real-world visual effect on both confirmed-live pages. Verified precisely via a temporary debug print showing the derived box height (285px) diverging sharply from the CSS-intended, DOM-visible height (160px, confirmed via a separate `getBoundingClientRect()` JS probe) for tailwindcss.com's own gallery image. **Deliberately NOT fixed in this same round**, matching this session's own established precedent (rounds 55→56: two independent bugs gating one visible symptom, shipped as two separate rounds rather than bundled) — flagged here precisely, with the exact function and symptom named, as the immediate next round's target.
+- **Verified the implementation itself is correct independent of that masking bug**, via an isolated repro (a 200×100 two-colour SVG squeezed into a 100×100 `object-fit:cover` box): the box shows a correctly centred 50/50 crop of the two colours, not a squashed/distorted full image — confirming the paint-time logic itself works exactly as CSS specifies, and the null corpus result is fully and precisely explained by the OTHER bug above, not a defect in this round's own code.
+- Added `TestApplyObjectFit` (`css/parse_test.go`) and `TestPaintItemObjectFitCoverCropsToBox`/`TestPaintItemObjectFitContainLetterboxes` (`paint/paint_test.go`, using a custom two-tone red/blue bitmap specifically because a single-colour source can't distinguish a uniform-scale-crop from a plain stretch). Git-stash-confirmed all three fail with a compile error (an even stronger signal than a runtime failure) when the source fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%). A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page (a pure paint-time image-scaling fix touches no JS-visible behaviour).
+- **Bench confirmed the null result rather than merely reporting it**: react.dev and github.com/golang/go and tailwindcss.com's own engine-panel PNGs are all BYTE-IDENTICAL before and after this fix (github.com/golang/go's own SSIM moved a negligible +0.0001, within rounding noise) — directly matching the masking-bug explanation above, not a sign the feature does nothing. developer.mozilla.org's own SSIM movement this round (-0.0313, almost exactly reversing round 88's own +0.0313 gain) was checked directly via the same A/B stash technique and confirmed BYTE-IDENTICAL between the stashed and restored render — pure Chrome-reference-image variance between runs, unrelated to this fix (MDN's own compiled stylesheet has zero `object-fit` occurrences at all, so this code path could not possibly touch it). news.ycombinator.com's own movement (-0.0109) and caniuse.com's (-0.0018) are both within the same already-documented noise sources (HN's live rotation; caniuse's ad-network variance) — neither page's markup uses `object-fit` at all.
+
+## 2026-09-23 (round 88) — a percentage `width`/`max-width` on an `<img>` was resolved against the page's VIEWPORT, never its real containing block — so github.com's own README image (`style="max-width:100%"` in a ~646px article column on a 1024px page) rendered at its full ~1262px intrinsic width, overflowing the article and misaligning the whole page below it (engine#180)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 87's merge, no drift, no PR-number collision — predicted #180 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned the same log lines as every round since 73 (leads exhausted) — pivoted to a visual scan of the bench montage's worst-scoring pages.
+
+- **Checked en.wikipedia.org first (the corpus's own worst SSIM) and correctly ruled it out as live-content-fetch-timing noise, not a bug**: a montage crop appeared to show Chrome's own "relies excessively on primary sources" maintenance banner missing from this engine's render — but a fresh direct re-render (and a JS probe confirming the banner's real DOM presence, computed style, and position) showed it rendering correctly right now. The two independent HTTP fetches inside the SAME bench run (one for this engine, one for Chrome) evidently landed a few seconds apart across a genuine content change on Wikipedia's own live edge — the same "external content variability" class already documented for Wikipedia's promotional banners (round 63) and Hacker News's rotating front page, not a rendering defect. Correctly declined to chase further and pivoted to the corpus's second-worst page.
+- **Found live on github.com/golang/go's own README**: real Chrome shows its "five years" gopher-mascot illustration cleanly contained within the README's own article column; this engine's render showed it spilling out under the page's right-hand sidebar.
+- **Root-caused to the pre-layout image loader's own necessary approximation, not a missing feature**: `images.go`'s `loadOneImage` resolves a percentage width (and its own final "shrink to fit" safety cap) against the page's `viewportW` — the ONLY width it can possibly know at that point, since images are fetched and decoded BEFORE layout ever runs (a real chicken-and-egg: layout needs the image's size to size its box, but the image's own CSS size can depend on a container layout hasn't computed yet). This is a reasonable approximation for an image whose real container IS the viewport, but plainly wrong whenever the real container is narrower — extremely common (any two-column page, a sidebar, a centered content well) and confirmed live on a specific, extremely widespread real-world idiom: `<img style="max-width:100%">`, arguably the single most common responsive-image pattern on the web. Layout itself never revisited the loader's guess: `appendElementInline`'s `"img","svg"` case (and the equivalent block-level replaced-element branch in `contents()`) used the loaded size directly as both the DISPLAY size and the paint source, with no reference to the element's own `width`/`max-width` CSS at all.
+- **Fixed by resolving the image's CSS size a SECOND time, at LAYOUT, against the REAL containing width `cw`** — something layout has and the loader never can: a new `resolvedReplacedSize(st, iw, ih, cw)` applies an explicit `width` (mirroring CSS's replaced-element sizing algorithm) and clamps further by `max-width` when smaller, both resolved against `cw` via the existing `css.Length.Resolve`, scaling height by the same intrinsic aspect ratio when width shrinks. The loaded bitmap's own resolution (`ImgW`/`ImgH`) is left completely untouched — it stays the paint-time SOURCE and an upper bound on quality — while the new DISPLAY size (`Width`/`LineHeight`) is what layout reserves in the flow. Deliberately narrow: does not also resolve `height`/`max-height` (no confirmed real caller), and the overwhelmingly common no-CSS-size case is provably unaffected (a bare, unstyled oversized image still overflows its container, matching how a real browser treats it too — this engine's separate, pre-existing "cap to viewport" loader safety-net is untouched).
+- **Painting gained a real scale-to-fit step for `<img>`, reusing existing infrastructure rather than adding new**: `paintItem`'s image branch now resizes the source bitmap to the item's own DISPLAY size (`Width`×`LineHeight`) via `scaleTile` — the SAME bicubic resample path `background-image` tiles already use — only when it actually differs from the loaded bitmap's own pixels; the previous straight 1:1 `blitImage` remains the fast path for the common unscaled case.
+- **Verified live end-to-end**: re-rendering the real page after the fix shows the gopher illustration correctly contained within its own README column, matching Chrome; a minimal isolated repro (a 646px container, a 1000×500 image, `max-width:100%`) confirmed the exact predicted 646×323→200×100-style scaling at each of the inline and block-level code paths independently.
+- Added `TestInlineImageMaxWidthPercentResolvesAgainstContainer`, `TestInlineImageWidthPercentResolvesAgainstContainer`, `TestInlineImageNoCSSSizeStaysAtIntrinsicWidth`, `TestBlockImageMaxWidthPercentResolvesAgainstContainer` (`layout/layout_test.go`, using the imgSize-map override rather than width/height HTML attributes — those attributes map to REAL CSS `width`/`height` declarations via `css/presentational.go`, which would have given the test image a definite, non-auto height and short-circuited the very aspect-ratio-driven resize being tested) and `TestResolvedReplacedSizeDefensiveGuards` (a direct unit test restoring layout's coverage floor on the new function's nil/zero-guard branch). Added `TestPaintItemScalesImageToDisplaySize` (`paint/paint_test.go`), confirming a bitmap is genuinely resized, not just blitted and clipped. Git-stash-confirmed all new tests fail with the exact predicted symptom (a compile error for the layout tests; unscaled-bitmap overflow for the paint test) when the source fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%). A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page (a pure layout/paint sizing fix touches no JS-visible behaviour).
+- **Bench found FOUR independently-confirmed real improvements, not just the one page the fix was found on — each checked directly via a controlled A/B render (fix stashed vs restored) rather than trusted from the aggregate alone**: github.com/golang/go's own height gap to real Chrome shrank from 238px to just 19px (2747→2528px rendered, Chrome itself at 2509px) — SSIM 0.5352→0.6247, the round's largest confirmed move. tailwindcss.com's own height dropped 158px (12373→12215px, Chrome at 11916px, narrowing its own gap too) — SSIM 0.6963→0.7360. developer.mozilla.org showed NO height change but a real, confirmed pixel difference in a small icon graphic (a chat-bubble icon's neighbouring shape no longer spills past its own circular mask) — SSIM 0.6053→0.6365. news.ycombinator.com's own movement (+0.0302) was checked and found to be its usual live-rotating-front-page noise — its engine-panel PNG is BYTE-IDENTICAL before and after this fix. caniuse.com's tiny movement (+0.0023) is within its own already-documented ad-network variance.
+
+## 2026-09-23 (round 87) — `overflow:hidden` on a `white-space:nowrap` box was never trusted to clip unless it ALSO had an explicit height, so caniuse.com's own `.news` ticker (sized only by a CSS Grid column, no explicit height at all) overflowed its long single-line text straight through the adjacent "Compare browsers"/"About" nav items (engine#179)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard and the unrelated Renovate dependency PR were open). Main was already exactly in sync with round 86's merge, no drift, no PR-number collision — predicted #179 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned the same log lines as every round since 73 (leads exhausted) — pivoted to a visual scan of the bench montage's worst-scoring pages.
+
+- **Checked developer.mozilla.org first and correctly declined it as non-novel**: a direct crop confirmed BOTH the breadcrumb-separator gap (`.breadcrumbs li:not(:last-child):after{content:">";mask-image:url(chevron-right.svg)}`, "WebCSS" jammed together with no separator) AND the theme-toggle icon gap (`.color-theme__option:before{content:"";mask-image:var(--color-theme-light-dark)}`) are still present. Before writing either up, grepped FIDELITY.md's own history and found BOTH exact patterns already extensively documented across rounds 44, 56, and 57, including the same architectural conclusion (`::before`/`::after` generated content is "comparable in scope to Shadow DOM's own multi-round build-out", deliberately out of scope). Recognising these as re-confirmations rather than fresh findings, pivoted to a different page instead of writing them up again.
+- **Found live on caniuse.com's own top nav**: real Chrome truncates the "March 5, 2026 - New feature: Lazy loading via attribut…" news item with a trailing ellipsis inside its own narrow column; this engine's render instead ran the full, untruncated sentence straight across the page, overlapping "Compare browsers" and "About".
+- **Root-caused to `paint.clipsContent`'s own deliberate conservatism gate, not a missing overflow implementation**: that gate only trusts an `overflow:hidden` box's height enough to clip its children when the height is an author-set EXPLICIT value — auto and percentage heights are excluded, because this engine's block layout can still under-size some auto-height containers (a collapsed float/flex row can come out 0-tall), and clipping to a wrongly-tiny box would hide real body text, a far worse failure than not clipping at all. caniuse.com's `.news` ticker has no explicit height whatsoever (sized only by its CSS Grid column via `overflow:hidden;white-space:nowrap;text-overflow:ellipsis`), so it fell on the wrong side of that gate and never clipped.
+- **Fixed by recognising a `white-space:nowrap` box's auto height as a SEPARATE, genuinely trustworthy case**: forbidding wrapping means the box's content is exactly one line, so its auto height is a simple, direct line-height computation — never the result of the same float/flex collapse logic the gate otherwise guards against. `clipsContent` now also returns true when `st.WhiteSpace == css.WSNoWrap`, regardless of whether the height is auto or an unresolved percentage (both cases fall back to the same trustworthy line-height computation for a non-wrapping box).
+- **Deliberately scoped to the CLIP only, not `text-overflow: ellipsis`'s own "…" glyph**: this engine now correctly cuts the overflowing text off at the box's own edge, matching what real Chrome falls back to for any UA without ellipsis support — never a worse outcome than before, only trading "worse" (overlap) for "correctly clipped but missing a cosmetic ellipsis". Rendering the actual "…" character is a separate, narrower, still-open gap, flagged for a future round.
+- **Verified live end-to-end**: re-rendered the real page after the fix — the ticker text now truncates cleanly inside its own column, with "Compare browsers" and "About" fully clear of any overlap.
+- Added `testdata/overflow_nowrap_autoheight_clips.html` (a minimal repro mirroring the real shape: a 150px `overflow:hidden;white-space:nowrap` box with no explicit height, next to a sibling separated by a gap) and `TestOverflowNowrapAutoHeightClips` (`paint/overflow_clip_test.go`), plus direct assertions on the `WhiteSpace == css.WSNoWrap` branch inside the existing `TestClipHelperUnits` (confirming both the new clip-on-nowrap case and that the pre-existing auto-height-without-nowrap and percent-height cases are unaffected). Git-stash-confirmed both tests fail with the exact predicted symptom (ink in the clipped region; `clipsContent` returning false) when the source fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — paint itself stayed at 100.0%. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page (a pure paint-clipping fix touches no JS-visible behaviour).
+- **Bench found no regression and one real, if noise-sized, movement — checked directly rather than trusted the aggregate**: caniuse.com's own SSIM moved slightly (0.6648→0.6629, pixdiff 17.85%→18.07%), the wrong direction for a genuine fix at first glance. A direct crop of the montage's three panels shows why: the top nav row already carries large PRE-EXISTING pixel differences from this engine's own header spacing/column-width divergence from Chrome's, unrelated to this round's fix, which dominates that region's SSIM regardless of the ticker's own state. The crop also confirms the fix itself is working correctly — the ticker text now truncates to a similar length as Chrome's own ellipsis-terminated version, no longer spilling into the nav items — so the small negative movement is noise from an already-known, separate layout divergence, not a regression from this fix. Every other page's SSIM was checked directly and found unchanged to four decimal places except news.ycombinator.com (its own live rotating front page, confirmed via crop showing an entirely different story list) and a negligible tailwindcss.com uptick (+0.0010, below the threshold this session treats as noise).
+
+## 2026-09-23 (round 86) — `aspect-ratio` was entirely unimplemented, so any box sized ONLY by a resolved width plus `aspect-ratio` (no explicit height) collapsed to zero — confirmed live on react.dev's own community-photo and video-thumbnail placeholders, and tailwindcss.com's own cover-image placeholders (engine#178)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard and the unrelated Renovate dependency PR were open). Main was already exactly in sync with round 85's merge, no drift, no PR-number collision — predicted #178 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned identical lines to every round since 73 (leads exhausted) — re-fetched the corpus's real, CURRENT stylesheets fresh (the session's own cached copies from earlier rounds had been cleared) to check for another unimplemented modern CSS feature.
+
+- **Checked `color-mix()` again first, with a much deeper corpus this time (1113 raw occurrences, not round 81's single unreachable use) — and correctly declined it again**: Tailwind v4 wraps every `color-mix()`-based opacity-modifier utility (`bg-black/5`, `border-gray-200/50`, the extremely common "slash opacity" idiom) in `@supports (color: color-mix(in lab, red, red))`, gated behind a feature test this engine doesn't recognise — but confirmed, by reading the actual compiled CSS directly rather than assuming, that Tailwind ALSO ships a plain hex-with-alpha fallback declaration (`border-color:#0000000d`) immediately BEFORE that `@supports` block. Since this engine already (correctly) drops an unrecognised `@supports` condition's block wholesale, the fallback is what actually applies — already visually correct, nothing to fix.
+- **Checked `backdrop-filter` (155 uses) and declined it**: implementing a real backdrop blur needs access to already-composited pixels behind a semi-transparent element plus a genuine blur convolution — a substantially larger rendering feature than fits in one round, and a subtler visual degradation (an unblurred backdrop, not a missing/wrong element) than most of this session's other findings. Not attempted.
+- **Checked `accent-color` (17 uses) and declined it**: every use found in tailwindcss.com's CSS bundle is a Tailwind utility class (`.accent-rose-500` etc.) that does not actually appear on any element in the page's current live HTML — no confirmed real trigger on this corpus.
+- **`aspect-ratio` (21 uses across the corpus) was the confirmed real find**: an isolated repro (`<div style="width:400px;aspect-ratio:16/9">`) showed the box collapsing to zero height, confirmed via `contentHeight` dropping from the expected ~455px to 62px. `css.Style` had no `AspectRatio` field at all.
+- **Implemented the single confirmed-common direction (width known, height auto → derive height)**, not the reverse (no confirmed real caller): a new `AspectRatio float64` field on `css.Style` (0 = unset), a `parseAspectRatio` parser handling a bare number or `<W>/<H>`, and `layout.usedHeight` extended to compute `contentW / ratio` when height is auto/an unresolvable percentage and a ratio is set — reusing `contentW`, which `resolveWidths` already returns in content-box terms regardless of box-sizing, so no separate box-sizing correction is needed. An explicit height still always wins (matches spec: aspect-ratio only fills in a MISSING dimension). The `flex.go` cross-height call site was deliberately left unaffected (passes 0 for the new parameter) — a flex container sized by its own aspect-ratio has no confirmed real caller.
+- **Verified live on the isolated repro**: the 400px-wide 16:9 box now renders as a proper 400×225 rectangle, and a 200px 1:1 box as a proper square, both previously invisible.
+- Added `TestAspectRatioComputesHeightFromResolvedWidth`, `TestAspectRatioIgnoredWhenHeightExplicit`, `TestAspectRatioAutoKeywordAndUnparseableValuesAreNoOp` (`layout/cover4_test.go`) and `TestApplyAspectRatio` (`css/parse_test.go`, needed for the `parseAspectRatio` branch's own coverage — a layout-package test alone doesn't count towards the css package's coverage floor). Git-stash-confirmed the layout tests fail with the exact predicted zero-height symptom, and the css test fails with a compile error, when the source fix is reverted. Full suite green; css coverage dipped to 99.0% on the new parser function and was restored to exactly 99.5% by the new css-package test; all other floors unaffected. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page.
+- **Bench found a SECOND, independently-confirmed, and precisely QUANTIFIED real-world instance while investigating an unexpected height change on react.dev**: react.dev's own rendered height dropped by exactly 778px (11207→10429), confirmed via a controlled before/after A/B render (stash the fix, render, note the height; restore it, render again) to isolate the cause conclusively rather than assume. Traced to react.dev's own real fetched HTML: `<a class="... aspect-video w-32 ...">` YouTube-thumbnail overlay links and `<img class="aspect-[4/3] h-full w-full ...">` community-photo placeholders, both previously collapsing to (near-)zero height with no aspect-ratio support. This is an OBJECTIVE, measurable improvement in structural accuracy, not just a plausible-looking side effect: real Chrome's own height for this exact page is 9289px — the fix HALVED the height gap to Chrome (1918px→1140px), matching the 778px change exactly. tailwindcss.com's own confirmed real `aspect-ratio` usage (blog/changelog cover-image placeholders, found via the real fetched CSS) had no visible trigger on the specific homepage snapshot in this corpus — the same honest "real feature, not visibly triggered on this exact page" pattern documented several times this session.
+- **Every other corpus movement was checked directly, not assumed**: news.ycombinator.com's real difference is, once again, its own live rotating front page (a direct crop shows an entirely different story list with all points/comments/timestamps ticked up). developer.mozilla.org, github.com/golang/go, and caniuse.com's engine-panel PNGs are all BYTE-IDENTICAL before and after — any of their tiny SSIM movements are pure Chrome-reference-image variance between runs, confirmed via direct pixel diff.
+
+## 2026-09-23 (round 85) — a `<button>` with BOTH a visible text label AND a trailing icon silently dropped the icon entirely, so github.com's own site-wide nav dropdown triggers ("Platform▾"/"Solutions▾"/etc.) — and tailwindcss.com's version selector, and caniuse.com's settings gear — all rendered as bare text with no caret/icon at all (engine#177)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard and the unrelated Renovate dependency PR were open). Main was already exactly in sync with round 84's merge, no drift. This round also hit a genuine environment obstacle worth recording honestly: `bench/cmd/compare`'s headless Chrome launch hung indefinitely (0% CPU, its DevTools port never opened) because of an already-running background `Google Chrome --no-startup-window` process on this machine absorbing new launches via macOS's single-instance handoff — confirmed by direct manual reproduction (launching Chrome by hand with the exact same flags hung identically), not just assumed. Killed with the user's explicit authorization; the retry succeeded immediately.
+
+- **Found live via a direct crop of github.com's own top nav** (present even on a repository page, not just the marketing homepage): "Platform", "Solutions", "Resources", "Open Source", and "Enterprise" all render as plain text with no trailing caret at all, while real Chrome shows a small "▾"/"▸"-style triangle icon after each label.
+- **Root-caused to an existing, deliberately-scoped limitation, not a new bug class**: `layout.buttonIcon` (added in an earlier round for MDN's and pkg.go.dev's own ICON-ONLY search buttons) already had a doc comment explicitly noting "a button WITH visible text (the icon/text-mixing case has no confirmed real caller...) is intentionally not attempted" — this round found that confirmed real caller. The function unconditionally returned `nil, 0, 0` whenever `buttonLabel(node) != ""`, so a button with both a label AND an icon child fell back to the ordinary text-only sizing path, and the icon was never even looked at, let alone painted.
+- **Fixed by removing that early return and teaching both layout and paint the combined shape**: `buttonIcon` now returns the icon regardless of whether the button also has a text label; callers distinguish the two shapes (icon-only vs label+icon) via the label they already have. `layout.formControlDefaultSize` sizes a label+icon button as label-width + a small fixed gap (`buttonIconGap`, 4px, approximating github.com's own real `margin-left:4px`) + icon-width + padding, with height the taller of the text's own line height or the icon's height. `paint.paintFormControl` draws the label text then the icon immediately after it, the pair centred as a whole in the control's box — mirroring exactly what layout already reserved space for.
+- **Verified live on the real page**: github.com's nav now shows "Platform ▸", "Solutions ▸", "Resources ▸", "Open Source ▸", and "Enterprise ▸" all correctly, matching real Chrome.
+- Added `TestFormControlButtonTextAndIconBothPaint` and `TestFormControlButtonTextAndIconHeightUsesTallerOfTheTwo` (`layout/formcontrol_test.go`, exercising both branches of the height-max formula) and `TestPaintFormControlTextAndIconBothDraw` (`paint/formcontrol_test.go`, confirming the icon's own bitmap is drawn, not just the label, via a distinctive pure-blue test icon). The pre-existing `TestFormControlButtonIconFallsBackWhenAmbiguousOrUnsized` was updated: its old "visible text alongside icon" fallback case is no longer a fallback at all (moved to the new tests) and was replaced with a genuinely-still-falling-back case (text alongside an icon whose size never resolved). Git-stash-confirmed all three new tests fail with the exact predicted symptom (`Icon = <nil>`, wrong height, "label text not found") when the source fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — unaffected. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page.
+- **Bench confirmed the fix live on THREE separate real corpus pages, not just the one it was found on**: github.com's own diff (209 pixels, in the nav's exact bounding box) is real but too small to move the aggregate SSIM (`0.5351→0.5352`, essentially flat) — the well-established "real fix, invisible at full-page SSIM" pattern. tailwindcss.com's version-selector button ("v4.3") and its "Ctrl K" search button both now show their previously-missing icons too — a genuinely new sighting, not anticipated when the fix was scoped to github.com's nav. caniuse.com's "Settings" button now shows its gear icon. tailwindcss.com's own SSIM movement (-0.0120, the round's largest) was investigated rather than assumed a regression: its own page height shifted by exactly 2px (12371→12373) as a direct, correct consequence of the two now-differently-sized nav buttons, cascading into a whole-page 2px vertical misalignment that reads as widespread pixel differences at fixed y-coordinates even though the content itself is unchanged — the same "a small, correct height change moves everything below it" pattern this session has documented several times before (e.g. round 80's github.com README fix). Two pages' engine panels were confirmed BYTE-IDENTICAL despite real SSIM moves — developer.mozilla.org (its own search button was already icon-only, so this fix has nothing to change there) — pure Chrome-reference-image variance. news.ycombinator.com's movement is, once again, its own live rotating front page. react.dev's tiny movement (226 differing sample points) showed no visible difference in a direct crop — negligible, likely a 1px anti-aliasing rounding difference, not investigated further.
+
+## 2026-09-23 (round 84) — `position:fixed` anchored against the FULL DOCUMENT HEIGHT rather than the real viewport, so a `bottom:0` fixed element (a cookie-consent banner) landed at the very bottom of a 78,000px+ page instead of near the top — closing an architectural gap explicitly flagged, but not fixed, since round 74's react.dev investigation (engine#176)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard and an unrelated Renovate dependency PR were open). Main was already exactly in sync with round 83's merge, no drift, no PR-number collision — predicted #176 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned identical lines to every round since 73 (leads exhausted) — pivoted to a visual scan of the bench montage's worst-scoring pages, landing on pkg.go.dev/net/http, not closely investigated since round 76.
+
+- **Found via a direct crop comparison against the real page**: real Chrome shows a "go.dev uses cookies from Google..." consent banner right near the top of the page (overlapping the first code sample); this engine's render showed no such banner anywhere near the top at all. Checking the very BOTTOM of this engine's own 78,388px-tall render found the banner sitting there instead — confirming, not guessing, the already-documented (round 74, react.dev) `position:fixed` anchoring gap: this engine's `layout.LayoutDocument` had no real viewport HEIGHT available at all (only width), so a fixed box's `bottom:0` resolved against the eventual full document height rather than the real viewport — the opposite of a real browser's own full-page-screenshot behaviour, which keeps `position:fixed` content pinned to the ORIGINAL viewport bounds.
+- **Root-caused precisely, not just re-confirmed**: `layout.LayoutDocument`'s public signature took only `viewportW`; its internal `positioned()`/`resolveContainingBlock()` used the eventual document height (`total`) as the initial containing block for BOTH absolute (correct — absolute content scrolls with the page) and fixed (wrong) positioning, with no separate real-viewport-height input to draw on.
+- **Fixed without touching the widely-used public `LayoutDocument` signature (27 test call sites use it)**: added a new `LayoutDocumentViewport(root, sm, viewportW, viewportH, m, imgSize)` entry point — `LayoutDocument` itself is now a one-line wrapper calling it with `viewportH=0`, which falls back to the exact pre-existing document-height approximation (so all 27 existing tests are untouched, zero test updates needed for that reason). `positioned()` now builds a SEPARATE `fixedICB` rect using the real viewport height when given one, while absolute's own containing-block fallback (`icb`, using the document height) is completely unchanged — a deliberately narrow fix touching only the one confirmed-wrong case.
+- **The real viewport height was already available at every production call site**, just never threaded through: `engine.go`'s `renderCoreStaged`, `dynamic.go`'s `settle`, and `interactive.go`'s `resettle` all already carry `vpH`/`d.vpH` as a parameter (used elsewhere for JS `window.innerHeight` and geometry metrics) — switching their `layout.LayoutDocument(...)` calls to `layout.LayoutDocumentViewport(..., vpH, ...)` (and threading a new `vh` parameter through the shared `layoutWithContainers` @container-refinement helper, used by all three) needed no new plumbing, only passing a value each already had in scope. `buildMetaFallback` (the last-resort OpenGraph-card renderer) was deliberately left unchanged: it renders a synthesised card with no `position:fixed` content, so there is nothing for this fix to affect there.
+- **Verified live end-to-end**: re-rendered the real page after the fix — the cookie banner now appears near the top of the page (at the real 768px viewport boundary, overlapping the first code sample much as real Chrome's own render does), and the very bottom of the page — previously showing the banner — now correctly shows nothing but the page's own footer.
+- Added `TestFixedAnchorsToRealViewportNotDocumentHeight` (`layout/position_test.go`), directly comparing `LayoutDocumentViewport` (with a real viewport height) against `LayoutDocument` (the old document-height approximation) on the same fixture, confirming both the new correct placement AND that the old function's behaviour is genuinely unchanged. Git-stash-confirmed to fail with a compile error (`undefined: LayoutDocumentViewport`) when the source fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — layout itself reached 100.0%, unaffected by the new code path. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page (a pure layout-geometry fix touches no JS-visible behaviour).
+- **Bench found a SECOND real, independent instance of the exact same fix while checking for regressions, not assumed safe**: go.dev/blog shows the identical "go.dev uses cookies..." banner (the same go.dev-family consent-banner component), also previously misplaced at the bottom and now correctly anchored near the top — confirmed via a direct crop showing chrome renders the same banner at a very similar (not pixel-identical, but far closer than before) position. Two pages' engine panels were confirmed BYTE-IDENTICAL before and after despite a real SSIM move (developer.mozilla.org, caniuse.com) — pure Chrome-reference-image variance between runs, unrelated to this fix. news.ycombinator.com's real difference is, once again, its own live rotating front page (confirmed via crop: an entirely different story list). tailwindcss.com's tiny movement sits in the exact same bounding box as every prior round's customer-logo carousel. github.com/golang/go's tiny movement is real repository activity (its Discussions count ticked 550→552 between fetches, confirmed via crop) — a third instance of the "GitHub live stats" noise source first noticed in round 82.
+
+## 2026-09-23 (round 83) — the entire "-of-type" structural pseudo-class family (`:nth-of-type()`, `:nth-last-child()`, `:nth-last-of-type()`, `:first-of-type`, `:last-of-type`, `:only-of-type`, `:only-child`) was entirely unmodelled — found live and load-bearing on github.com's own "AvatarStack" contributor-overflow widget (engine#175)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open, plus the still-open unrelated Renovate dependency-bump PR). Main was already exactly in sync with round 82's merge, no drift, no PR-number collision — this time double-checked `gh pr list --state all` BEFORE writing any predicted number into the docs, after round 82's own near-miss (a stray Renovate PR had silently claimed the "next" number). A fresh full-corpus `Engine.JSLog` sweep returned the same log lines as every round since 73 (leads exhausted, aside from cosmetic third-party ad-script variable-name churn) — pivoted to checking corpus stylesheets for another unimplemented modern CSS feature.
+
+- **Checked `min()`/`max()` first and correctly declined them**: both are genuinely unimplemented (documented in Known gaps alongside `clamp()`) and have real usage — GitHub's own dialog-sizing CSS (`min(500px, 90vw)`, `min(192px,100vh - 2rem)`), MDN's page-padding formula (`max(var(--layout-side-padding-min),calc(50vw - 720px + 1rem))`). But nearly every real instance found mixes a viewport-relative unit (`vw`/`vh`) with an absolute length — the EXACT same "cannot resolve a percentage-like unit without layout-time context" wall this engine's `calc()` already hits and documents. Implementing `min()`/`max()` would mostly still resolve to nothing for real-world usage; declined, matching round 81's `color-mix()` precedent.
+- **Pivoted to the "-of-type" pseudo-class family after finding real, load-bearing usage**: `.avatar:nth-of-type(3)`/`(4)`/`(5)`/`(n+6)` in GitHub's own Primer CSS (`global-*.css`) — the "AvatarStack" component that progressively narrows a contributor-avatar row as more are shown, then hides everything past the 5th behind a "+N" overflow badge. `:nth-child` (round 81) alone doesn't cover this: the avatar row's DOM commonly interleaves non-avatar elements (badges, separators), so position must be counted among SAME-TAG siblings only — exactly what round 81's own `parseAnB` doc comment had already flagged as a "narrower, deliberately-scoped gap for a future round if a real need surfaces."
+- **Implemented the whole family in one coherent pass, reusing round 81's An+B machinery unchanged**: new `elementPositionOfType` (same-tag-only position, mirroring `elementPosition`), `elementPositionFromEnd` (position counted from the end, for `:nth-last-child`), and `elementPositionOfTypeFromEnd` (both combined, for `:nth-last-of-type`). `:first-of-type`/`:last-of-type`/`:only-of-type`/`:only-child` reuse the existing `prevElementSibling`/`nextElementSibling` helpers and the new position functions, following the exact pattern already established for `:first-child`/`:last-child`.
+- **Verified live with an isolated repro** covering all seven pseudo-classes at once (avatars alternating blue/red at the `nth-of-type(n+3)` boundary, a `:nth-last-child(2)`-highlighted middle row, an `:only-of-type` singleton, and `:first-of-type`/`:last-of-type` on a paragraph run) — every pseudo-class matched exactly the predicted elements before writing a single test.
+- **Checked the real corpus page directly rather than assuming the fix would be visible**: fetched github.com/golang/go's actual HTML — it contains ZERO `.avatar`/`AvatarStack` markup at all (grepped directly). The widget is JS-injected, and this repo's own module bundle is still skipped under the already-documented `maxModuleEntryScripts` cap, so the fix — though real, correctly implemented, and confirmed via an isolated repro — has no visible trigger on THIS specific corpus snapshot, the same honest "real feature, not visibly triggered here" pattern as round 81's own `:nth-child` finding on this identical page.
+- Added `TestNthOfTypePseudo`, `TestNthLastChildPseudo`, `TestNthLastOfTypePseudo`, and `TestOnlyChildAndOfTypeVariants` (`css/selector_test.go`), using GitHub's own AvatarStack shape (including an interleaved non-avatar `<b>` sibling, confirming same-tag-only counting) as the primary fixture. Git-stash-confirmed to fail with a compile error (`undefined: elementPositionOfType`, an even stronger signal than a runtime assertion) when `css/selector.go`'s fix is reverted. Full suite green; css coverage dipped to 99.4% on the three new position-counting functions' defensive post-loop fallback branches (structurally unreachable via real DOM traversal, but still counted) and was restored to exactly 99.5% by adding a direct test with a deliberately-detached-but-parented node exercising those fallbacks — the same technique this session has used before for "genuinely can't be reached through real parsing" branches. All other four gated floors unaffected (layout/paint/paginate 100.0%, dom 98.1%).
+- A full corpus `Engine.JSLog` sweep after the fix showed identical log-line counts to the pre-fix baseline on every page, aside from caniuse.com's own third-party `adsbygoogle.js` re-serving itself with different minified internal names between fetches (same error, cosmetically different variable names) — confirmed as the ad network's own build churn, not a regression.
+- **Bench: 7/10 pages exactly flat** (example.com, en.wikipedia.org, pkg.go.dev, go.dev/blog, react.dev, developer.mozilla.org — all `±0.0000`), consistent with the fix having no visible trigger on any of these pages' current fetched content. The four pages with real movement were each checked directly, not trusted from the number: **news.ycombinator.com (-0.0389, the round's largest)** is, once again, its own live rotating front page — a full day had passed since the last bench run, so the story list changed completely (a bigger swing than usual, but the same already-established noise source, confirmed via a direct crop showing an entirely different set of headlines). **tailwindcss.com (-0.0010)** sits in the exact same bounding box as every prior round's customer-logo carousel. **caniuse.com (-0.0024)** has a BYTE-IDENTICAL engine-panel PNG before and after — the SSIM move is entirely the Chrome reference image changing between runs, the same pattern first documented in round 74. **github.com/golang/go (+0.0002)**, confirmed via a direct crop, is real GitHub repository stats ticking up over the day that passed (67,678→67,702 commits, 138.9k→139.0k stars, 547→550 discussions) — genuine site content drift unrelated to any code change, extending round 82's own newly-noticed "GitHub live stats" noise source with a second confirmed instance a day later.
+
+## 2026-09-22 (round 82) — `setTimeout`/`setInterval` discarded their own requested delay entirely, draining every timer job in pure FIFO enqueue order — implemented real delay-ascending ordering; also further characterised (but did not fix) a deeper, previously-undiagnosed React hydration crash on react.dev (engine#174)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open, plus an unrelated Renovate dependency-bump PR). Main was already exactly in sync with round 81's merge, no drift, no PR-number collision — predicted #173 confirmed via `gh pr list` both before and after pushing. Since the last two rounds both used the `Engine.JSLog`-sweep method, alternated back to a visual scan of the bench montage's worst-scoring pages — landing on react.dev, not closely investigated since round 71.
+
+- **Verified against a fresh live fetch, not the possibly-stale committed montage**: re-rendered react.dev directly and confirmed the same already-documented "reskin" symptom (dark navy skeleton, missing headings/logo colour, light-themed code panels stuck on a dark page) is still live. Round 71 had already root-caused this page's OWN internal `ChunkLoadError` to a real, flagged-but-undone architectural gap: this engine's `setTimeout` binding discarded its delay argument entirely, running every queued timer strictly FIFO by enqueue order regardless of requested delay — explicitly documented at the time as "affecting the whole timer model, not a narrow one-round fix."
+- **Re-examining the actual code this round showed the fix was narrower than round 71 assumed**: `js/window.go`'s `installTimers` never even read `call.Argument(1)` for any timer kind. Added a `delay int64` field to `timerJob`, captured via the pre-existing `numOr` helper (already used elsewhere in this package for optional-numeric-argument parsing) and clamped to non-negative, and changed `drainTimers` (`js/js.go`) to pick the queue's minimum-delay job each iteration (ties broken FIFO by original enqueue order) rather than always popping the head. `requestAnimationFrame`/`requestIdleCallback`/`queueMicrotask`/`setImmediate` keep an implicit delay of 0, unchanged from their current behaviour.
+- **A live re-check disproved the theory that this specific fix would close react.dev's crash**: re-ran the exact same diagnostic before and after the fix — the JS log output was **byte-for-byte identical**, confirmed via a direct `diff`. The timer-ordering gap is real and now fixed, but it was not, in fact, the cause of react.dev's own visible failure.
+- **Investigating further precisely characterised a NEW, previously-undiagnosed failure mode, not the old `ChunkLoadError`**: the live log now shows `Minified React error #418` (a genuine React hydration mismatch — "the initial UI does not match what was rendered on the server") immediately followed by a SECONDARY internal React crash during its own unmount/remount recovery path (`TypeError: Cannot read property 'length' of undefined`, repeated), cascading into `Error: Route did not complete loading: /_error` — the whole app unmounts to nothing, and this engine's own pre-existing empty-page guard (`settle: script pass emptied an already-rendered page; keeping prior layout, re-skinning with its styles`) falls back to the pre-hydration SSR skeleton. This is the precise mechanism behind the long-documented "reskin gap," not previously traced this far.
+- **One plausible theory was tested and explicitly ruled out**: `window.matchMedia('(prefers-color-scheme: dark)')` was suspected as a possible source of a client/server theme mismatch, but `js/window.go`'s `mediaQueryMatches` already deliberately resolves this to `true` specifically for react.dev's own dark-theme class strategy (a pre-existing, documented, correct behaviour) — ruled out by reading the existing code and its own doc comment, not guessed.
+- **Not chased further this round**: minified production React strips the hydration-mismatch diff details that would name the exact divergent DOM node, and finding it without that requires a materially larger, open-ended investigation — kept to the "root-cause one narrow bug per round" discipline rather than forcing an unbounded chase. The now-more-precisely-characterised hydration crash is flagged as a real, open finding for a future round, distinct from (and deeper than) the original `ChunkLoadError` theory.
+- Added `TestTimerDelayOrdering` (three timers with descending-then-mixed delays, asserting ascending-delay execution order), `TestTimerDelayTiesAreFIFO` (equal delays stay enqueue-ordered), and `TestTimerNegativeDelayClampsToZero` (`js/js_test.go`). Git-stash-confirmed `TestTimerDelayOrdering` fails with the exact predicted FIFO-not-delay-ordered symptom (`slow, fast, mid` instead of `fast, mid, slow`) when the fix is reverted. Full suite green; `drainTimers` and `installTimers` both reached 100% of their own statements (not itself coverage-gated, but checked anyway); all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — untouched, since this fix lives entirely in `js`. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page, including react.dev itself (confirmed via direct diff, not assumed).
+- **Bench: 7/10 pages exactly flat** (example.com, pkg.go.dev, go.dev/blog, react.dev, developer.mozilla.org, en.wikipedia.org, github.com/golang/go — all `+0.0000`/`-0.0000` to four decimals), consistent with a fix whose only currently-observable corpus effect is "no effect," since no fetched page currently races a real near-immediate timer against a real long-delay one in a way that changes final rendered pixels. The three/five pages with any non-zero pixel difference were each checked directly, not assumed: tailwindcss.com's `-0.0016` sits in the exact same bounding box as rounds 74/76/81's already-documented customer-logo carousel (confirmed by an identical diff bbox). news.ycombinator.com's `+0.0158` is, once again, its own live rotating front page (a direct crop shows an entirely different story list, ranks, and points). Two pages whose SSIM rounded identically to four decimals (`+0.0000`/`-0.0000`) still had tiny sub-threshold pixel diffs, checked directly rather than ignored: github.com/golang/go's commit count ticked from 67,675 to 67,678 and its watcher count from 3.3k to 3.4k between the two fetches (real repository activity, unrelated to any code change), and en.wikipedia.org's own relative-timestamp string ticked from "20 days ago" to "21 days ago" (real time passing during the bench run) — both newly-noticed, genuinely harmless sources of noise, distinct from any previously-documented one.
+
+## 2026-09-21 (round 81) — `:nth-child()` was entirely unmodelled, matching only the bare base selector regardless of position — found extremely widely used for zebra-striping (`nth-child(2n)`) across nearly every real corpus stylesheet fetched this session (engine#172)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 80's merge, no drift, no PR-number collision — predicted #172 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned identical log lines to every round since round 73 — those leads remain exhausted — so this round again checked for a modern CSS feature this engine has never modelled.
+
+- **Checked `color-mix()` first and correctly declined it**: grepped every already-fetched real stylesheet for `color-mix(` and found exactly one use, targeting an unrenderable `::placeholder` pseudo-element (this engine, like most headless renderers, has no text-input placeholder to paint) — not worth implementing for zero visible effect. Pivoted to checking `:nth-child(`, which turned up extremely widespread real usage — `nth-child(2n)` row-striping alone appears in nearly every fetched stylesheet this session (`tw_css1.css`, `global-54ba76e934a49d7c.css`, `github-456bd5deb85c7ecd.css`, `primer-1d2c7f7b52a6068b.css`, MDN's own CSS, and more) — a far better-justified target than a single unreachable rule.
+- **Implemented the full An+B grammar**, not just the common `2n`/`odd`/`even` forms: a new `parseAnB(arg string) (a, b int, ok bool)` (`css/selector.go`) handles the literal keywords `odd`→(2,1) and `even`→(2,0), a bare integer (`nth-child(3)`) via `strconv.Atoi`→(0,B), and the general `An+B` formula via a new `nthAnBRe` regexp with explicit sign handling for both the coefficient (`n`, `+n`, `-n`, `2n`, `-3n`, …) and the offset (`+4`, `- 4`, …). A new `matchesAnB(position, a, b int) bool` implements the standard CSS matching rule (`a==0`: exact match on `position==b`; otherwise `position` must be reachable by stepping `a` from `b` in either direction). A new `elementPosition(n *dom.Node) int` computes the real 1-based position among a parent's ELEMENT children (skipping text/comment nodes), returning 1 for a node with no parent.
+- **Wired in alongside the existing pseudo-class machinery**: new `compound` fields `NthChildSet bool`/`NthChildA, NthChildB int`, set in `parseSimple`'s `case "nth-child":`, checked in `compound.matches()` right after the existing `:empty` check. Unlike `:has()` (round 80), an unparseable argument is NOT a fail-closed case — it simply leaves `NthChildSet` false, falling through to the generic unmodelled-pseudo default (matches the base tag alone), since `:nth-child` (unlike `:first-child` etc.) has no meaningful argument-free form to fall back to, and a genuinely malformed argument essentially never appears in real, non-hand-written CSS.
+- **Verified live with an isolated repro**: a minimal 4-row `<table>` with `tr:nth-child(2n){background:#eee}` correctly alternates shaded/unshaded rows before the fix showed every row identically unstyled (or identically styled, depending on the base selector), matching the "matches only the bare tag" pre-fix symptom exactly.
+- **Two coverage-floor corrections, both genuinely instructive, not just box-ticking**: first pass left css coverage at 99.4% (`elementPosition` 77.8%, `parseAnB` 93.8%) — added `TestNthChildPseudo` covering `odd`, `2n+1`, a bare integer, `-n+3`, `n+4`, a malformed argument, an explicit `+2n+1` form, and `elementPosition`'s own orphan-node case (using the existing `el()` helper for a genuinely parentless node, after an initial mistaken attempt with `dom.Parse("<html></html>")` — which does NOT produce a nil-Parent node, since the parser wraps content in a synthetic Document root). This still left one branch uncovered; a throwaway `zzdebug_test.go` calling `parseAnB` and the real `parseComplex` pipeline directly confirmed the wrong line had been blamed — a careful re-read with `sed -n` showed the genuinely-uncovered branch was `case "even":`, distinct from (and untested by) the already-covered equivalent `"2n"` form reached via the regex path. Fixed by extending the test to loop over both `"2n"` and `"even"` together. Restored css coverage to exactly 99.5%; all other floors (layout/paint/paginate 100.0%, dom 98.1%) unaffected.
+- Added `TestNthChildPseudo` (`css/selector_test.go`) as described above. Git-stash-confirmed to fail — with an EVEN STRONGER signal than a runtime assertion, a compile error (`undefined: elementPosition`) — when `css/selector.go`'s fix is reverted. Full suite green. A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page.
+- **Confirmed broad real-world reach without a single visible trigger on THIS corpus's ten specific snapshots**: github.com's own Primer CSS uses `:nth-child` for README table row striping and `AvatarStack` overflow-hiding — neither currently applies to anything present on the fetched `golang/go` page, so its own engine-panel PNG is byte-identical before and after (confirmed directly, not assumed). All ten corpus pages' bench numbers were checked individually rather than trusting the aggregate SSIM figure: seven moved by exactly `+0.0000`/`-0.0000` (example.com, Wikipedia, pkg.go.dev, go.dev/blog, react.dev, developer.mozilla.org, github.com/golang/go) — consistent with the fix having no visible trigger on any of these specific pages' current content. The three that moved were each checked directly: tailwindcss.com's small `+0.0011` move is, byte-for-byte, its own already-documented (rounds 74/76) customer-logo-carousel widget rotating to a completely different set of sponsor logos between fetches — confirmed via a direct crop, unrelated to `:nth-child`, which tailwindcss.com's own homepage content doesn't currently exercise. news.ycombinator.com's `+0.0259` move (the round's largest) is, once again, its own live, constantly-rotating front page — a direct crop comparison showed an entirely different set of stories, ranks, and point counts between the two fetches, with identical layout/rendering otherwise; HN's markup doesn't use `:nth-child` at all. caniuse.com's tiny `-0.0010` move is within its own already-documented ad-network variance.
+
+## 2026-09-21 (round 80) — `:has()` was entirely unmodelled, degrading every use to "matches everything" — found live on tailwindcss.com's own Typography plugin CSS, and on github.com's own README rendering, where it forced EVERY hyperlink in golang/go's whole README onto its own separate line instead of flowing inline as normal prose (engine#171)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 79's merge, no drift, no PR-number collision — predicted #171 confirmed via `gh pr list` both before and after pushing. A fresh full-corpus `Engine.JSLog` sweep returned identical log lines to every round since round 73 — confirming those leads exhausted — so this round instead checked whether any real corpus page uses a modern CSS selector feature this engine has never modelled: `:has()`.
+
+- **Confirmed a real, live need before writing any code**: grepped every already-fetched real stylesheet from this session's own investigations for `:has(`. Found one confirmed use on tailwindcss.com (`.prose h2:has(+h3){...}`, Tailwind's own Typography plugin giving an h2 immediately followed by an h3 a distinct "eyebrow" style) — though tailwindcss.com's own homepage doesn't actually contain any `.prose` content, so this specific rule has no visible effect on THIS corpus page. A minimal isolated repro confirmed the CURRENT (pre-fix) behaviour: `:has(+h3)` degraded to "matches everything" via this engine's own generic "reduce, don't drop" default for unmodelled pseudo-classes — turning EVERY `<h2>`, not just ones paired with an `<h3>`, into the small/uppercase/monospace eyebrow style.
+- **Root-caused the general shape of the gap, not just this one rule**: `:has()` is structurally different from every other pseudo-class this engine already models (`:is()`/`:where()`/`:not()` are alternatives evaluated against the SAME candidate element; `:has()` instead checks a RELATIONSHIP to OTHER elements — children, descendants, or siblings). Deliberately scoped the fix to what real-world usage overwhelmingly needs: a single compound per comma-separated alternative (no nested combinators inside the argument), with one of four relationship kinds (bare = any descendant, `> X` = direct child, `+ X` = immediate next sibling, `~ X` = any following sibling) — reusing the existing `nextElementSibling` helper (added round 67) for the two sibling forms, and a small new recursive walk for the descendant form.
+- **Deliberately fails CLOSED, not open — the opposite default from every other unmodelled pseudo-class in this file, and explicitly documented as such**: elsewhere, "reduce, don't drop" (impose no constraint) is correct because most unmodelled pseudos are either already always-false (`:hover` etc.) or rare enough that failing open barely matters. `:has()` is different — it is ALWAYS a real, deliberate narrowing constraint an author wrote for a reason, so an alternative this engine can't model (a multi-compound chain, a dynamic-pseudo argument) is skipped, and if NONE of a present `:has()`'s alternatives could be modelled, the whole compound matches NOTHING — over-applying a targeted style everywhere is a far more visible wrong answer than the enhancement simply not firing.
+- **A second, much higher-impact confirmed live instance found while verifying the fix caused no regressions**: github.com's own Primer CSS uses `:has()` extensively (25 occurrences across its core stylesheets). One in particular — `.markdown-body a:has(>p,>div,>pre,>blockquote){display:block}` (making a link that WRAPS block-level content itself block-level, a real, narrow markdown-rendering idiom) — had, under the OLD unmodelled-pseudo default, forced EVERY `<a>` in ANY `.markdown-body` (which includes golang/go's own real README) to `display:block`, regardless of what it actually wrapped. The visible result on golang/go's real README, confirmed with a direct before/after crop: EVERY hyperlink (`Renee French`, `Creative Commons 4.0 Attribution license`, both repository URLs, `go.dev/dl`, …) rendered alone on its own line instead of flowing inline within its sentence — a dramatic, whole-README-wide correctness bug, now fixed.
+- Added `TestHasPseudo` (`css/selector_test.go`) covering the confirmed real `+` shape plus all three other relationship kinds, and the fail-closed behaviour for both an unmodelled (multi-compound) and a dynamic-pseudo alternative, plus an empty-alternative-in-a-list edge case. Git-stash-confirmed to fail with the exact predicted "matches everything" symptom across every relationship kind when `css/selector.go`'s fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — css dipped to 99.4% on the new `parseHasSelectorList` branches and was restored by extending the test to cover the empty-alternative and dynamic-pseudo skip paths too. Full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page.
+- **Bench required real investigation to correctly attribute, not just report the number**: github.com/golang/go's SSIM moved DOWN (0.5435→0.5351) despite a confirmed, dramatic, VISUALLY OBVIOUS correctness improvement — investigated why rather than either hiding the number or assuming a real regression: this engine's own rendered page height dropped from 3035px to 2747px (every previously-wrongly-blocked link collapsing back into its paragraph's normal flow shortens the page substantially) — and real Chrome's own height for this exact page is 2509px, meaning this fix HALVED the height gap to Chrome (526px→238px), an objective, independently-verifiable improvement in structural accuracy. The SSIM metric's apparent "regression" is the well-established whole-page vertical-alignment sensitivity this session has documented many times before (a large, correct height change shifts exactly which rows of content the fixed-size comparison region samples) — not a real defect, confirmed by directly comparing crops of the actual README text rather than trusting the aggregate number. Two other pages' movements were checked directly and ruled unrelated: developer.mozilla.org's own engine-panel PNG is BYTE-IDENTICAL before and after (its SSIM move is entirely the Chrome reference image changing between runs), and news.ycombinator.com's real difference is, once again, its own live, constantly-rotating front page (completely different stories/rankings) — neither page plausibly reachable by a fix scoped to `:has()`, which neither page's own CSS uses.
+
+## 2026-09-21 (round 79) — a round with NO code change: en.wikipedia.org's own site wordmark/tagline logos (the current 25th-anniversary SVG variants) render with garbled black shapes overlapping several letters — confirmed conclusively to be the SAME already-documented third-party `oksvg` complex-path defect (rounds 25, 64), a THIRD real-world example, not fixable in this engine's own codebase
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 78's merge, no drift. Visual scan this round targeted en.wikipedia.org — the corpus's worst-scoring page by a wide margin, but not the SOURCE of a new discrete fix in many rounds (its already-documented "Wiki Loves Monuments" banner drives most of its SSIM gap, and cascades a diffuse vertical offset through the whole ~24,800px article that makes deeper-page visual diffing unreliable) — so this round instead focused on the near-top infobox region, less affected by that offset.
+
+- **A first lead, investigated and cleanly abandoned once observation error was caught**: the infobox's own `<th class="infobox-above" style="background-color:#e0e0e0">` header appeared, in a downscaled thumbnail crop of the committed bench montage, to have NO grey background at all. A minimal isolated repro (identical inline style, `colspan`, and surrounding table markup) rendered the background correctly; a live `getComputedStyle` probe on the actual fetched page confirmed the correct colour AND `display:table-cell` were both already being computed correctly. Re-examining the SAME crop at full resolution (not the downscaled thumbnail used for the initial visual scan) showed the grey band WAS there all along, just faint — a genuine observation error on a small/compressed image, caught and corrected before it became a wasted "fix" for a bug that never existed. A concrete reminder of why this session insists on checking pixels directly rather than trusting a single glance, even when the glance is one's own.
+- **The real finding**: zooming into the Wikipedia logo area (top-left) revealed a real, striking defect independent of the above — the "WIKIPEDIA" wordmark shows a black bowtie/hourglass shape overlapping the "IK"/"PE" letterforms, and the tagline "25 years of the free encyclopedia" shows small solid black dots in place of certain letters (the "y" in "years", the "c" in "encyclopedia"). Traced the source: both are `<img>`-referenced EXTERNAL SVG files (`wikipedia-wordmark-en-25.svg`, `wikipedia-tagline-en-25.svg` — the site's CURRENT 25th-anniversary logo variants), each drawing its letterforms as complex vector `<path>` data — structurally the exact same "wordmark as a single complex path" shape as round 25's already-documented MDN finding and round 64's GitHub octocat finding.
+- **Confirmed conclusively with the SAME two-step methodology round 64 established**, not assumed from visual similarity alone: (1) an isolated `<img src="data:image/svg+xml;base64,...">` repro using the real fetched SVG bytes verbatim, with NO other page markup, CSS, or engine code path beyond image decoding — reproduced the identical garbled shapes for both logos; (2) a standalone Go program calling `oksvg.ReadIconStream`/`rasterx.NewDasher` DIRECTLY, with literally zero go-webengine code anywhere in the call path — reproduced the SAME garbled shapes again, for both logos, conclusively proving this lives entirely inside the third-party `oksvg`/`rasterx` dependency's own path-fill handling, not anywhere in this engine's own SVG/CSS/image code.
+- **No PR opened this round**: the finding is real, precisely characterised, and extends an already-documented "Known gaps" entry with a third independent real-world instance, but there is no code change to ship — a third-party rasteriser's own path-fill-rule handling is outside this repo's scope, exactly matching rounds 25 and 64's own precedent. `go test ./...` reconfirmed green (untouched); no bench run needed since nothing changed to compare.
+
+## 2026-09-21 (round 78) — TWO independent, causally-linked-only-by-investigation fixes on developer.mozilla.org: `@supports` conditions were unconditionally dropped wholesale, so this engine's own genuine `light-dark()` support was never recognised by real CSS's own feature-detection polyfill; and a non-inset `box-shadow` never excluded the box's OWN footprint, so a common "small-offset fake border" idiom on a background-less box painted as an almost-solid fill instead of a thin sliver (engine#169)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 77's merge, no drift, no PR-number collision — predicted #169 confirmed via `gh pr list` both before and after pushing. Chose a visual scan of the bench montage's worst-scoring pages this round, focusing on developer.mozilla.org (not deeply investigated since round 72), rather than a fresh `Engine.JSLog` sweep.
+
+- **Found live via a direct crop comparison, not the diffuse ad-slot noise already documented for this page**: MDN's own "In this article" table-of-contents sidebar (`Beginner's tutorials`/`Guides`/`How to`/`Tools`/`Reference`/`See also`) rendered every single link with a solid grey highlight box; real Chrome shows none at all. Confirmed with actual pixel sampling (not visual impression alone): Chrome's sampled pixels were the flat page background everywhere; this engine's were the exact colour `#51565d` filling most of each link's own padded box.
+- **Root-cause investigation genuinely branched into two SEPARATE, independently real defects**, each checked and confirmed on its own rather than assumed from a single hypothesis:
+  1. **First theory, tested and explicitly disproved**: an unusual `[aria-current=true]:is(.reference-toc a)` selector (attribute selector token BEFORE a `:is()`) looked like a plausible parser-ordering bug. Verified with isolated repros that `:is()` alone and the attribute selector alone both worked correctly, and the COMBINED form matched NEITHER of two candidate elements — the opposite of "matches everything." A live DOM probe confirmed no `<a>` ever actually gets `aria-current` set at all, ruling this selector out entirely as the cause of the visible symptom; abandoned once the evidence didn't fit, not forced.
+  2. **The real, but separate, first cause**: `--color-border-primary` (the colour behind the sidebar's box-shadow-simulated left border) is defined via postcss-preset-env's own `light-dark()` polyfill pattern — an UNCONDITIONAL toggle-based fallback, overridden by a POSITIVE `@supports (color: light-dark(...))` block using the native function directly, itself further overridden by a NEGATIVE `@supports not (...)` block re-affirming the toggle fallback for browsers truly lacking native support. `css/parse.go` already documented `@supports` as an at-rule "skipped wholesale, like any other unrecognised at-rule" — meaning NEITHER `@supports` block ever applied, leaving only the toggle-based UNCONDITIONAL default in effect. This engine HAS real, working native `light-dark()` support (`css/lightdark.go`, added rounds ago) — so it was answering its own feature-detection query wrong by never asking it at all. Fixed narrowly with a new `supportsConditionHolds` (new file `css/supports.go`): recognises ONLY the specific `(color: light-dark(...))` feature test (with or without a leading `not`) as this engine's own real capability, honestly returning true — any OTHER `@supports` condition still drops the block wholesale, unchanged from before.
+  3. **The second, INDEPENDENT cause, found only once the CSS-variable question was fully traced end-to-end**: a Go-level diagnostic test proved `--color-border-primary` ALREADY computed to the objectively correct dark-mode colour (`#51565d`) — meaning the visible symptom persisted for an entirely different, paint-level reason. Verified this precisely by taking an ACTUAL real headless Chrome screenshot (via a small standalone `chromedp` script, `file://` against a minimal, byte-identical repro of the exact real box-shadow shape) rather than continuing to guess from CSS spec text alone: Chrome shows only a thin sliver from the shadow's own small negative offset, never the fill this engine painted. Per spec, a non-inset `box-shadow` never shows through a box's own ORIGINAL (un-offset) footprint, transparent background or not — the box's own content is what normally covers it there, and that must hold even with no background of its own. `paint/paint.go`'s `paintDropShadow` had never modelled this exclusion, so a common real-world idiom (`box-shadow:-2px 0 0 <colour>` in place of a real border-left, avoiding the layout shift a genuine border/padding change would cause) painted almost the entire box, not just the sliver the offset exposes. Fixed by skipping any pixel inside the box's own (un-shifted) footprint — reusing the existing `insideRoundRect`/`rectOf` helpers already used elsewhere in this file, so rounded corners are respected without new geometry code.
+- **A legitimate, understood test-expectation update**: `TestPaintDropShadowSharp` asserted a ZERO-offset box-shadow's own centre pixel should be black — itself encoding the very same bug (a zero-offset shadow's rect is IDENTICAL to the box's own footprint, so per the corrected model it must be entirely excluded, i.e. fully invisible, which is the mathematically correct answer for that degenerate case, not a regression). Rewrote the test with a small nonzero offset so it meaningfully verifies BOTH halves of the corrected behaviour: the overlap with the box's own footprint stays unshadowed, and the sliver the offset genuinely exposes beyond the box's own edge is still shadowed — the same kind of legitimate test update as round 70's `TestDocumentMisc` and round 74's `TestSettleFixpointCap` fixes.
+- Added `TestParseStylesheetSupportsLightDark` (`css/parse_test.go`), covering all four `supportsConditionHolds` branches (positive light-dark match included, negated light-dark match excluded, an unrelated condition still excluded, its negation still included) through the real `ParseStylesheetVW` entry point, not just the bare function — reproducing postcss-preset-env's exact real-world shape. Git-stash-confirmed both fixes independently: reverting only `css/parse.go` (with `css/supports.go` set aside) fails the new CSS test with the exact predicted "nothing included" symptom; reverting only `paint/paint.go` fails `TestPaintDropShadowSharp` with the exact predicted "interior painted black" symptom. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — `css` dipped to 99.4% on the new `supportsConditionHolds` branches and was restored to 99.5% by extending the new test to exercise all four cases (not just two). A full corpus `Engine.JSLog` sweep showed identical log-line counts to the pre-fix baseline on every page — the box-shadow fix in particular is broad (touches every drop shadow on every page), so this was checked directly rather than assumed safe given its reach.
+- **Verified live end-to-end against the real fetched page**: the "In this article" sidebar now renders plain text with only a thin border-like indicator, matching real Chrome's own rendering closely, confirmed via a direct crop comparison at the same region.
+- **Bench showed a real, correctly-attributed positive movement on the actual target page**: developer.mozilla.org's SSIM rose (0.6046→0.6111). Other movements were checked directly, not assumed: pkg.go.dev's own engine-panel PNG is BYTE-IDENTICAL before and after (confirmed via a direct pixel diff, zero differing pixels) despite a real SSIM move — entirely the Chrome reference image changing between runs, the same already-established pattern from round 74's caniuse.com finding. news.ycombinator.com's real engine-panel difference is, once again, its own live, constantly-rotating front-page content (completely different stories/rankings, confirmed via a side-by-side crop) — unrelated to either of this round's fixes, which touch neither HN's markup nor anything it uses.
+
+## 2026-09-21 (round 77) — a round with NO code change: a real, precisely-isolated defect (tailwindcss.com's own Next.js chunk fails to compile) traced conclusively to a THIRD-PARTY dependency — goja's JS parser does not support ES2018 `for await (... of ...)` async-iteration syntax — with no fix possible in this engine's own codebase
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 76's merge, no drift. A fresh full-corpus `Engine.JSLog` sweep came back with the SAME log lines seen every round since round 73 — confirming those leads are exhausted (github.com's already-known `maxModuleEntryScripts` cap, react.dev's already-known reskin gap, caniuse.com's already-known third-party ad-script error) except for ONE that had sat unpicked-up since round 74: `engine: compile /_next/static/chunks/0aqjr575~-kiw.js: SyntaxError: ... Line 1:96635 Unexpected token await`.
+
+- **First checked whether this was the SAME class of bug already fixed in rounds 74-76** (a `.type='module'` property assignment never reaching the real attribute, so a genuine ES module gets misidentified as a classic script and fails to parse its own module-only syntax): it is not. The failing `<script src="/_next/static/chunks/0aqjr575~-kiw.js" async="">` tag is declared this way directly in the page's OWN static HTML, with NO `type` attribute at all — correctly treated as an ordinary classic script by this engine, exactly as intended by the page's own author (Next.js deliberately ships this chunk as a plain script, not a module).
+- **Root-caused to the exact byte**: fetched the real chunk and extracted the code at the reported line/column — `async function eT(e,t,r){if(void 0!==t){let r;for await(let e of t)r=e; ...}}`, a `for await (let e of t)` loop (ES2018 asynchronous iteration) used correctly and legitimately inside a real `async function`. Confirmed with a minimal, from-scratch repro (`async function f(t){ for await (let e of t) {} }`, nothing else in the file) reproducing the IDENTICAL error signature — ruling out any minification artifact, surrounding context, or interaction with this engine's own module/script-type handling.
+- **Confirmed as a genuine, currently-unfixed upstream limitation, not a local misconfiguration**: goja (`github.com/dop251/goja`, this engine's JS runtime) has an open, currently-unresolved GitHub issue ("Upgrade to latest version of ECMAScript 2021/2022", dop251/goja#498) tracking exactly this class of gap — its parser does not yet recognise `for await` at all, regardless of how it's reached (module or classic script, top-level or nested inside a function). There is no local workaround: this engine has no JS parser of its own to patch, and forking or patching goja itself is well outside this repo's own scope, exactly matching this session's own established precedent for the oksvg SVG-rasteriser defect (rounds 25, 64) and the Go Mono font glyph defect (round 64) — a real, confirmed, precisely-isolated defect with literally no fix available in THIS engine's own codebase.
+- **No PR opened this round**: the finding is real and precisely characterised, but there is no code change to ship — reported honestly as a documentation-only round rather than forcing an unrelated change just to have something to commit. `go test ./...` reconfirmed green (untouched) before closing out the round; no bench run needed since nothing changed to compare. See "Known gaps" below for the permanent record.
+
+## 2026-09-21 (round 76) — `display:initial` (and `unset`, which is equivalent for a non-inherited property) matched none of the `display` property's cases and was silently ignored, so pkg.go.dev's real, correctly-recognised, correctly-MATCHING `@media (width>=…)` override never took effect — closing a follow-on finding flagged at the end of round 75 (engine#167)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 75's merge, no drift, no PR-number collision — predicted #167 confirmed via `gh pr list` both before and after pushing. Picked up round 75's own explicitly-flagged follow-on finding: real Chrome shows a "Rendered for [linux/amd64 ▾]" platform-selector on pkg.go.dev that this engine never rendered.
+
+- **First hypothesis, checked and ruled out rather than assumed**: the widget's real markup is a genuine, static `<select class="go-Select js-buildContextSelect">` wrapped in a `<label>` alongside an `<a class="UnitBuildContext-link">Rendered for</a>` — confirmed present in the fetched HTML, not JS-injected. Its container is `position:relative` with the `<label>` itself `position:absolute;bottom:.875rem;right:0` — an initial theory (a bottom/right-anchored absolute box inside a flow-collapsed, zero-height container landing off-canvas) was tested with an isolated minimal repro and DISPROVED: the `<select>` itself DOES render correctly (confirmed live: "linux/amd64" shows, with its own visible border) — only the `<a>Rendered for</a>` text next to it was missing. Absolute positioning was a dead end; moved on rather than forcing that theory to fit.
+- **Root-caused precisely by comparing the `<select>` (visible) against the `<a>` (invisible) side by side**: `.UnitBuildContext-link{display:none}` unconditionally, overridden only inside `@media only screen and (width>=30rem){.UnitBuildContext-link{display:initial}}` — a real viewport of 1024px is nearly 3.5× that 480px breakpoint, so the media query should plainly match. Verified the media-matching machinery ITSELF was innocent first, via a throwaway diagnostic test calling `widthFeaturesHold`/`mediaMatches` directly — both correctly returned `true` for this exact condition at 1024px, ruling out the Level 4 range-syntax matcher (`mediaWidthCmpRe`, added a few rounds back for exactly this GitHub-Primer-style syntax) as the culprit. Isolated with a minimal repro, progressively simplified (dropping `only screen and`, then the whitespace around `>=`) until swapping the OVERRIDE value from `display:initial` to a literal `display:inline` made the bug disappear — pinpointing the true cause precisely: `css/parse.go`'s `display` property switch had no `case "initial"` (nor `"unset"`) at all, so the declaration matched none of its cases and was silently ignored, leaving the ORIGINAL `display:none` from the earlier, unconditional rule still in effect — regardless of how correctly the surrounding `@media` had already been recognised and matched.
+- **Fixed following an established, existing convention, not a new pattern**: this codebase already has precedent for a property explicitly handling the CSS-wide `initial`/`unset` keywords (`background{display:initial|unset → Transparent}`, `orphans`/`widows{unset → inherit; initial → 2}`) rather than a fully generic "reset any property to its own initial value" mechanism (which doesn't exist here and would be a materially larger undertaking, on the order of enumerating every modelled property's own initial value — not attempted). Added `case "initial", "unset": s.Display = DisplayInline` (display's own real, spec-defined initial value; `unset` on a non-inherited property resolves to `initial`, matching the already-established `orphans`/`widows` precedent), immediately after the existing `"contents"` case.
+- **Verified live end-to-end**: the real fetched page's "Rendered for [linux/amd64]" label now renders exactly where and how real Chrome shows it, confirmed by a direct crop comparison at the "Documentation" heading row.
+- Extended `TestApplyProperties` (`css/parse_test.go`, the existing low-level property-application test) with both `initial` and `unset` checks on `display`, and added `TestCascadeMediaOverrideDisplayInitial` (`css/cascade_test.go`) reproducing the exact real shape end-to-end through the actual cascade (an unconditional `display:none` overridden by `display:initial` inside a matching `@media (width>=…)` block) — the kind of test that would have caught this specific interaction, since `TestApplyProperties` alone tests the property switch in isolation, not its combination with a real cascade + media-query pass. Git-stash-confirmed both to fail with the exact predicted stale value (`DisplayNone`) when `css/parse.go`'s fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — unaffected. A full corpus-wide `Engine.JSLog` sweep showed IDENTICAL log-line counts to the pre-fix baseline on every one of the ten pages — this fix touches only a display value that was previously silently dropped, so it cannot introduce a new script-visible error; confirmed rather than assumed.
+- **Bench showed a real, meaningful, correctly-attributed positive movement**: pkg.go.dev's SSIM rose by the largest margin of any page this run (0.6395→0.6494) — the exact page this round's fix targets. Small, unrelated movements elsewhere (news.ycombinator.com up, tailwindcss.com and caniuse.com down slightly) were checked directly rather than assumed: tailwindcss.com's diff bbox is byte-for-byte the SAME region already identified in round 74 as its own logo-carousel widget rotating between fetches, and caniuse.com's movement is within the range of its own already-documented ad-network variance — neither plausibly related to a fix scoped to the `display` property switch.
+
+## 2026-09-21 (round 75) — `Node.hasChildNodes()` did not exist, aborting one of pkg.go.dev's own bundled ES modules partway through its top-level `init()` — the module now runs end-to-end with zero errors, closing a follow-on finding flagged at the end of round 74 (engine#166)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 74's merge, no drift, no PR-number collision — predicted #166 confirmed via `gh pr list` both before and after pushing. Rather than a fresh investigation, picked up round 74's own explicitly-flagged follow-on finding directly: a `TypeError: Object has no member 'hasChildNodes' at init` surfaced deeper in pkg.go.dev's module bundle once round 74's fixes let it run further than ever before.
+
+- **Re-confirmed still live** with a targeted `Engine.JSLog` check before touching anything (the discipline this session always applies, even to an already-identified target — a fix must be verified against the CURRENT state of the code, not assumed still valid from a prior round's notes).
+- **Root-caused and fixed with the exact same shape as round 73's `hasAttributes`**: `js/dom.go`'s `defineElement` already bound `contains`/`isEqualNode` (genuine `Node`-interface methods, by this codebase's own established convention bound only on elements, not text nodes — followed here for consistency) but never `hasChildNodes()`. Fixed with a one-line binding: `len(n.Children) > 0`.
+- **Verified live end-to-end**: re-ran the same `Engine.JSLog` check — pkg.go.dev's module bundle now runs to completion with ZERO error or warning lines at all (previously it aborted partway through one of its four bundled entry modules' own top-level `init()` call). A full corpus-wide sweep confirmed no other page regressed and surfaced nothing new beyond already-known items (github.com's `maxModuleEntryScripts` cap, react.dev's reskin gap, caniuse.com's third-party ad-script error) — also incidentally confirmed that round 74's `.type`-accessor fix had ALREADY, as a side effect, resolved a separate `unit.js` "Unexpected reserved word" compile error seen in round 73's sweep (that script is now correctly routed through the ES-module bundler instead of being misparsed as a classic script) — not a fresh finding, just a previously-unremarked consequence of round 74's own fix, worth noting for the record.
+- **A real, confirmed, and honestly-explained visible side effect**: fixing the TypeError lets that bundled module's `init()` complete, and the real fetched page's own rendered height changed by exactly 8px (78,380px→78,388px) — traced to the "Documentation" quick-nav dropdown area via a direct before/after pixel diff (not assumed). Checked for corruption by comparing far-down regions of the page (60,000px in): content is byte-for-byte identical, just uniformly shifted by the height delta — conclusively a pure vertical-offset artifact of one small upstream fix, not a rendering regression.
+- **A separate, NOT-fixed-this-round, newly-noticed gap while comparing against the committed Chrome reference**: real Chrome shows a "Rendered for [linux/amd64 ▾]" platform-selector control next to the page heading that this engine does not render AT ALL, in either the pre- or post-fix version — a genuinely different, pre-existing gap, unrelated to this round's fix (which only concerns the quick-nav dropdown area), flagged here for a future round's investigation rather than conflated with this round's actual work.
+- Added a `hasChildNodes()` check to the existing `TestElementTreeAndManipulation` (`js/js_test.go`) rather than a new test function — asserting `true` on an element with children already established by that point in the test, and `false` on a freshly-created, empty element. Git-stash-confirmed to fail with the exact predicted `TypeError` when `js/dom.go`'s fix is reverted. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — unaffected, since the fix lives entirely in `js`.
+- **Bench required real investigation, not just reporting the number**: pkg.go.dev's SSIM moved down by a small amount (0.6435→0.6395, pixdiff 33.7%→35.4%) — precisely the SAME page this round's fix touches, so checked directly rather than dismissed as noise: the 8px height change (see above) shifts the alignment of virtually the ENTIRE rest of this 78,000-plus-pixel, code-example-dense page against Chrome's own unchanged height, and dense monospace text is unusually sensitive to even a small constant vertical offset — confirmed by diffing a region 60,000px down the page, which shows byte-identical content merely shifted by the height delta, not corrupted or different. The SAME category of "a real, correct, upstream height change costs the aggregate metric on a very long page" phenomenon already documented for external content (cookie/ad banners); this round it originates from an internal JS fix instead, but the lesson is identical: check pixels directly, don't trust the number alone. Other corpus movements (news.ycombinator.com down, developer.mozilla.org down slightly, tailwindcss.com and caniuse.com up slightly, github.com up negligibly) are all consistent with this session's already-documented noise sources (HN's live-rotating front page, MDN's and tailwindcss.com's own ad/carousel content variability) and are not plausibly related to a `hasChildNodes` fix that only affects pkg.go.dev's own bundle.
+
+## 2026-09-20 (round 74) — TWO causally-linked bugs kept pkg.go.dev's own cookie-consent banner (and everything else its frontend.js gates on `window.addEventListener("load", …)`) from ever running: `el.type = 'module'` silently never touched the real attribute (no generic `.type` accessor existed at all), and even a correctly-recognised module ran too late to see the one-shot `window` "load" event, which this engine's settle loop fired BEFORE bundling any page-created `<script type="module">` (engine#165)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard was open). Main was already exactly in sync with round 73's merge, no concurrent-session drift, no PR-number collision — predicted #165 confirmed via `gh pr list` both before and after pushing. Chose a visual scan of the bench montage's worst-scoring pages this round rather than a fresh `Engine.JSLog` sweep.
+
+- **Started from github.com/golang/go's own diff heatmap** (second-worst-scoring page), whose pervasive "ghosting" traced cleanly to the ALREADY-KNOWN, deliberately-declined `maxModuleEntryScripts` cap (confirmed via a fresh `Engine.JSLog` check: the exact same "10 module script(s) not bundled... too many entry scripts" line from prior rounds) — a "no confirmed live trigger, abandon cleanly" case, not pursued further. Pivoted to pkg.go.dev, whose own diff heatmap showed a distinctive, isolated red patch mid-page that turned out to be a real cookie-consent banner ("go.dev uses cookies from Google…") that real Chrome renders and this engine never did.
+- **Root-caused precisely, not guessed from the screenshot**: the banner text is genuinely present in the STATIC fetched HTML (`<section class="Cookie-notice js-cookieNotice">`, CSS `display:none` by default, `.Cookie-notice--visible{display:flex}` to show it) — so this was never a missing-content problem, only a missing-CSS-class problem. Fetched the real `frontend.js` bundle directly and found the exact toggle function (`Z()`): `if(!document.cookie.match(/cookie-consent=true/)){ ... e.classList.add("Cookie-notice--visible") ... }`, called unconditionally from inside `window.addEventListener("load", () => {...})`. A temporary probe script (injected into the real fetched HTML via `Engine.RenderHTML`, fully removed before shipping — confirmed via `git diff`) confirmed the class was never added and `document.cookie` was correctly empty, so the gating condition itself wasn't the problem — `Z()` was simply never being reached.
+  1. **The proximate cause**: pkg.go.dev's own `loadScript(src, mod=true)` helper creates a `<script>`, sets `s.type = 'module'` (a plain JS PROPERTY assignment, not `setAttribute`), sets `.src`, and appends it — the standard hand-rolled ResourceLoader idiom for lazy-loading a module bundle. `js/dom.go`'s `defineElement` had never bound a generic `.type` accessor on any element (only specific attribute-backed accessors like `.id`/`.className`/`.hidden` existed) — so `s.type = 'module'` created an ordinary, disconnected property on the JS wrapper object and never touched the real `n.Attr["type"]` at all. `modules.go`'s `collectModuleScripts` (which reads the REAL "type" attribute) never recognised the script as a module, and `js/js.go`'s `scriptIsJS` (seeing no "type" attribute) ran it as an ordinary classic script instead — invisible to the whole ES-module-bundling pipeline. Fixed with a one-line generic `.type` accessor mirroring `.id`/`.className`/`.hidden`'s existing shape.
+  2. **The deeper cause, which survived fixing #1 alone**: even with `.type` correctly reflected, `dynamic.go`'s settle loop called `sess.RunInitial()` (which runs classic scripts THEN unconditionally fires `DOMContentLoaded`/`load`) BEFORE it ever bundled the page's `<script type="module">` graph (`bundleModuleScripts`/`injectBundledScript`, which can only run once module scripts exist in the DOM — i.e., after the classic script that created them has already run). So frontend.js's own `window.addEventListener("load", …)` — registered only once its bundled code actually executes — registered AFTER the one-and-only `load` event had already fired and gone; it would never be called, no matter how fast its own fetch was. Fixed by splitting `Session.RunInitial()` into `RunInitialScripts()` and a new `DispatchLifecycle()` (kept as a `RunInitial()` = both, unchanged, for every other existing caller — none of which have a module-bundle step of their own), and reordering `dynamic.go`'s settle() to run classic scripts, THEN bundle+inject+run any module graph (`sess.RunPending()`), THEN dispatch `DOMContentLoaded`/`load` — giving a module's own "load" listener the same chance to register in time that it has in a real browser (where an ES module fetched same-origin typically completes well before the page's own "load", which additionally waits on slower resources — images — this engine's JS timeline does not model at all).
+  - **Generalised one step further, deliberately**: made the pre-`DispatchLifecycle` `sess.RunPending()` call unconditional, not just inside the "a module was bundled" branch — a classic script can equally well append a plain, NON-module `<script>` this same way (pkg.go.dev's own `loadScript(..., false)` also loads a plain `dialog-polyfill.js` exactly this way), and it needs the identical chance to run before `load` fires, for the identical reason.
+- **A legitimate, understood, and updated test expectation**: `TestSettleFixpointCap` (a self-replicating script chain, capped at `maxSettlePasses`) started asserting `data-d="4"` instead of `"3"` — not a regression, but the DIRECT, bounded, and correct consequence of the new pre-loop `RunPending()` call giving the chain's first-generation script one more genuine opportunity to run before the pass-counted loop even starts. Traced precisely (by hand-counting each pass's script execution) to confirm this is exactly one extra generation, not an unbounded change, then updated the test's expectation and comment to explain why — the same kind of legitimate test update as round 70's `TestDocumentMisc` fix, not a hack to force a pass.
+- Added `TestDynamicScriptTypeModuleSeesLoadEvent` (`modules_test.go`) reproducing the EXACT real idiom end-to-end against a local `httptest` server: a classic script creates a `<script>`, sets `.type` via the property, sets `.src` to a GENUINE ES module (one that `import`s a second file — deliberately, so it can only work via the module-bundle path; an earlier draft using plain JS in "mod.js" accidentally also passed when run as an ordinary classic script, which would have proven nothing) whose own top-level code registers a `window` "load" listener that mutates the DOM. Extended `TestAttributes` (`js/js_test.go`) with a focused `.type` accessor check. Git-stash-confirmed each fix's OWN necessity independently: reverting only `js/dom.go` fails with the predicted symptom (module never recognised), reverting only `dynamic.go`+`js/session.go` fails with the same predicted symptom for the other reason (listener registers too late) — proving BOTH are independently required, not merely convenient together. Full suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — unaffected, since both fixes live in `js`/the root package, not itself coverage-gated for the touched files (root package has its own suite, all green).
+- **Verified live end-to-end against the real fetched page**: rendered the real, full pkg.go.dev page and found the banner correctly present near the BOTTOM of the (78,380px-tall) full-page canvas, with the exact right text, colour, and "Okay" button — confirmed correct in content, but landing at a DIFFERENT vertical position than real Chrome's own full-page capture (which keeps `position:fixed` anchored to the ORIGINAL, small viewport height even in a `captureBeyondViewport`-style capture, per Chrome DevTools Protocol's own documented behaviour, so its banner appears near the TOP of its huge capture instead). This is a genuine, newly-surfaced divergence in how `position:fixed` behaves in a full-document-height render — pre-existing, general, and not specific to this fix (nor attempted this round) — flagged here as a new, honestly-documented follow-on finding for a future round, not conflated with the actual fix (which is about the banner's CLASS/existence, verified correct independent of where it paints).
+- **A second, independent, unrelated-to-this-round's-fix issue surfaced deeper in the SAME bundle once it could finally run further**: `TypeError: Object has no member 'hasChildNodes'` — the same category of missing-DOM-method gap as round 73's `hasAttributes`/`getAttributeNames`, now on a different method, found only because this round's fix let frontend.js's execution get much further than before. Flagged for a future round, not attempted here (this round's own scope was already two causally-linked fixes; a third, unrelated missing method is a fresh, separate root cause).
+- **Bench honestly, precisely explained rather than just reported**: pkg.go.dev's SSIM is EXACTLY unchanged (0.6435→0.6435 to four decimal places) despite a confirmed, real, directly-pixel-verified fix — checked why rather than accepting the flat number at face value: the bench montage is capped to its own `maxheight` (2500 rows) of a 78,380px-tall real page, and (per the `position:fixed` finding just above) this engine's own banner renders near the very BOTTOM of the full page, thousands of rows below where the montage comparison even looks — so the SSIM metric structurally cannot see this fix's effect at all, a different and more complete explanation than any of this session's prior "external content variability" cases. caniuse.com's engine-panel PNG is BYTE-IDENTICAL before/after this fix (confirmed via a direct pixel diff, zero differing pixels) — its small SSIM movement (0.6667→0.6635) is entirely attributable to the CHROME reference image changing between runs, not this engine's own output. news.ycombinator.com's and tailwindcss.com's own engine-panel movements were checked directly (not assumed) and are both real, visible, but unrelated to this round's fix: HN's own live, constantly-rotating front page (already an established noise source for that page) and, newly observed on tailwindcss.com specifically, its own "logo cloud" customer-carousel widget showing a different rotation of logos between fetches — the same category of live-content noise as HN's, just a first sighting on this particular page.
+- One transient, fully-explained timing anomaly during this round's OWN investigation, not shipped as a bench finding: an early bench run clocked caniuse.com at 19.2 SECONDS (vs. its usual ~3.5s) immediately after this fix. Investigated rather than dismissed OR panicked over: five repeated direct `Engine.Render` calls moments later were all back to ~3.7s with the identical code, and caniuse.com's own engine-panel PNG (see above) is byte-identical to before this fix — conclusively a one-off real-network hiccup (this page fetches genuinely live third-party ad content over the real internet) coincident with, not caused by, this round's change. Confirmed by re-running the full bench compare a second time, which reproduced the normal ~3.7s timing.
+
+## 2026-09-20 (round 73) — `Element.hasAttributes()`/`getAttributeNames()` did not exist on any element, aborting caniuse.com's own bundle.js partway through page initialisation — its active-nav highlight and a "did you know" carousel's `Next` link never appeared (engine#164)
+
+No fresh issue was filed this round (checked `gh issue list` again; only the standing Dependency Dashboard is open). Main was already exactly in sync with the previous round's merge, no concurrent-session drift. Ran a fresh corpus-wide `Engine.JSLog` sweep (round 60/69-72's own methodology) rather than a visual scan this time.
+
+- **Found live**: caniuse.com's own `js/bundle.js` aborted with `TypeError: Object has no member 'hasAttributes'`. `js/dom.go`'s `defineElement` had `hasAttribute` (singular, spec-correct) but never bound the separate, no-argument `hasAttributes()` (plural — "does this element have ANY attribute at all") — a real, standard `Element` method this engine had simply never implemented. Fixed with a one-line binding: `len(n.Attr) > 0`.
+- **Fixing that immediately surfaced the exact same bundle's NEXT call**, `TypeError: Object has no member 'getAttributeNames'` — the same category of gap (an unimplemented standard `Element` attribute-reflection method), found via the very same investigation at negligible extra cost, so fixed together rather than deferred to a separate round. **A real modelling limit surfaced implementing it**: the spec returns attribute names in insertion order, but `dom.Node` stores attributes in a plain Go map (see its own doc comment) with no recorded insertion order at all — returning them alphabetically-sorted is the deterministic choice actually available from that storage, documented as such in a comment at the binding. Real callers (enumerating/copying an element's attributes, checking for any `data-*` attribute) don't depend on the exact order, only on seeing every name exactly once — a materially different situation from, say, the timer-delay gap (round 71), which is a genuinely load-bearing simplification, not merely an ordering approximation.
+- **Verified live end-to-end against the real fetched page, not just the log line disappearing**: rendered caniuse.com before/after with a `git stash` of the fix and pixel-diffed the two PNGs — a real, visible change confined to the page header (bbox x:14-408, y:0-714), not a no-op. Cropping that region showed the site's own "Home" nav button now gets its active-page orange highlight, and a "Next" link appears for the page's "Did you know?" carousel — both previously silently dropped because the bundle's own initialisation code aborted before reaching them. Cross-checked against the committed Chrome reference screenshot: real Chrome shows the exact same orange-highlighted "Home" button, confirming the fix is correct, not merely different.
+- Extended the existing `TestAttributes` (`js/js_test.go`) with both new methods: `hasAttributes()`/`getAttributeNames()` on the fixture's pre-populated `<div id="d" class="foo" data-existing="v">` (asserting the sorted `class,data-existing,id` name list) and on a freshly created, attribute-free `<span>` (asserting `false`/empty). Git-stash-confirmed to fail with the exact predicted `TypeError` when `js/dom.go`'s fix is reverted. Full test suite green; all five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — unaffected, since this fix lives entirely in `js`, not itself coverage-gated.
+- **Bench moved caniuse.com by a small, real amount in the right direction (0.6654→0.6667)** — consistent with the two now-visible header elements matching Chrome more closely; not overstated as more than it is, since the fix only affects a small header region on one page. Other corpus pages moved by small amounts in mixed directions this run (github.com/golang/go, news.ycombinator.com, tailwindcss.com), all consistent with ordinary run-to-run noise already documented across prior rounds, none plausibly related to this round's fix; the rest were exactly unchanged.
+- No fresh issue filed, no PR/round-number collision — predicted #164 confirmed via `gh pr list` both before and after pushing.
+
+## 2026-09-20 (round 72) — two real, high-impact gaps closed on developer.mozilla.org: `:visited` was unmodelled and degraded to matching EVERY link (not zero), and `text-decoration` did not exist anywhere in this engine at all — no Style field, no parser case, no paint code — so every underline on every page ever rendered here was silently dropped (engine#163)
+
+No fresh issue was filed this round (checked `gh issue list` again). A fresh visual scan of developer.mozilla.org's own montage (its whole-page diffuse offset re-traced, not re-investigated, to the same external "Wiki Loves Monuments"/MDN-ad-slot content-variability pattern already documented in rounds 63/64/69/70) turned up something new and much more concrete lower down the page: every in-article link rendered in a flat purple with no underline, where Chrome shows blue, underlined links.
+
+- **Root-caused with the real fetched page's own CSS, not guessed from the screenshot**: `:is(.content-section a):visited{color:var(--color-link-visited)}` (purple) is the ONLY colour rule targeting these links besides the page's own plain `a{color:var(--color-link-normal)}` (blue) default. `css/selector.go`'s `parseSimple` had no case for `:visited` at all — the generic "reduce, don't drop" default degraded it to matching its base selector UNCONDITIONALLY. This is actively wrong specifically because `:visited` and `:link` style OPPOSITE, complementary states of the very same element: a rule meant to apply to NONE of a fresh, history-less render's links instead applied to ALL of them, and — being written with higher specificity than the plain default it exists only to override for the narrower "visited" case — won the cascade over the correct colour for every single link on the page.
+- **Fixed by adding `"visited"` to `isDynamicPseudo`'s existing list** (`hover`, `active`, `focus`, …) — the exact same "never matches in a static render" treatment those already get, since a single fresh fetch has no real browsing history for any hyperlink to have. Minimal, one-line change reusing infrastructure this engine already had.
+- **A second, independent, and much larger gap surfaced isolating the fix**: even after `:visited` stopped mismatching, the SAME real links still had no underline in either engine or the very simplest possible isolated repro (`a{text-decoration:underline}` alone, no compound selector, no `:is()`, nothing). Grepping the whole codebase for `text-decoration`/`TextDecoration`/`Underline` found NOTHING — this property had no `css.Style` field, no `css/parse.go` case, and no paint-time line-drawing at all. Every underline this engine has EVER rendered, on any of the ten corpus pages across 71 prior rounds, was silently dropped — a gap that had simply never been looked for directly, because most pages colour their links distinctly enough from surrounding text that a missing underline alone rarely stood out on its own.
+- **Fixed with a deliberately narrow implementation**, scoped to the overwhelmingly common real-world case (a link is underlined) rather than the full property: a new `css.Style.Underline bool`, set by `text-decoration`/`text-decoration-line` containing the token "underline" and cleared by any other explicit value (including "none"); `text-decoration-color`/`-style`/`-thickness` and the `line-through`/`overline`/`blink` lines are not modelled — the rendered line is always solid, one line, in the text's own current colour. Real `text-decoration-line` is NOT an inherited property (a line set on a container instead visually PROPAGATES through descendant inline boxes that do not set their own) — approximated here by copying `Underline` parent-to-child exactly like a genuinely inherited property, which is correct for the overwhelming majority of real content and only wrong for a descendant deliberately opting out with its own `text-decoration-line:none` while an ancestor's line should still show through. Painted in `drawText` (shared by plain inline text and form-control label/value painting) as a single filled rectangle spanning the drawn text's own advance width, positioned a font-size-scaled distance below the baseline with a 1px floor.
+- **A known, honestly-documented limitation of this narrow approach**: since `drawText` is called once per InlineItem (typically once per word, given how this engine's line-breaking splits text), a multi-word underlined link renders with a small gap at each inter-word space instead of Chrome's one continuous line — confirmed directly on the real page (visible in the committed montage). A real, if minor, cosmetic difference from a full implementation, not attempted this round; the underline itself is now correctly present and correctly coloured, which is the overwhelming majority of the value here.
+- Added `TestCascadeVisitedNeverMatches` (`css/cascade_test.go`, using the real confirmed selector shape) and `TestTextDecorationUnderlinePropagates` (covering the shorthand, the longhand, "none" clearing it, propagation to a plain descendant, and a descendant's own "none" overriding a propagated line) plus `TestDrawTextUnderline` (`paint/paint_test.go`, covering the line's presence, its absence without the property, and the tiny-font-size 1px floor). All git-stash-confirmed to fail — the two paint/css cascade tests fail to even COMPILE when their respective source change is reverted (a stronger signal than a runtime assertion), the strongest form of this session's own revert-and-confirm-fail discipline. All five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — paint dipped to 99.4%/99.9% mid-round on the new `drawText` branches and was restored to 100.0% by extending `TestDrawTextUnderline` to also exercise the sub-1px clamp.
+- **Verified live end-to-end** against the real fetched page: every in-article link now renders blue and underlined (word-gap cosmetic aside), matching Chrome closely, confirmed in both an ad-hoc render and the committed bench montage.
+- **Bench moved the WRONG way on developer.mozilla.org (0.6330→0.6046) despite two confirmed, directly pixel-verified fixes** — checked directly rather than assumed a regression: the committed montage crop shows the fix correctly applied (blue, underlined links matching Chrome). This is the SAME already-documented external-content-variability source flagged for this exact page in rounds 69/70/71 (its own third-party ad slot's presence shifts the whole page vertically by a large, constant amount) — not something this round's fix touches, and not something a single-page SSIM number can distinguish from a real regression without checking pixels directly, which is exactly why this session never trusts the aggregate number alone.
+- No fresh issue filed, no PR/round-number collision — predicted #163 confirmed via `gh pr list` both before and after pushing. An 11-day gap since the previous round required a macOS Xcode-license workaround (`DEVELOPER_DIR=/Library/Developer/CommandLineTools`, matching an already-known fleet-wide lesson) before `git`/`go` would run at all, and three Renovate dependency PRs (including two `goja` bumps) had landed in the meantime — a fresh corpus-wide `Engine.JSLog` sweep confirmed zero regressions from those before this round's own investigation began.
+
+## 2026-09-09 (round 71) — two real, independently-confirmed gaps in dynamic script loading closed (`onload`/`onerror` never existed on any element; a script appended during timer-draining could be silently stranded, never run) — neither alone closes react.dev's own `ChunkLoadError`, whose remaining root cause is a genuinely deeper, separate simplification flagged for a future round, not attempted here (engine#160)
+
+No fresh issue was filed this round (checked `gh issue list` again). en.wikipedia.org's own diffuse whole-page offset reconfirmed (not rediscovered) as the same external "Wiki Loves Monuments" banner noise from rounds 63/64/70. Continued round 69/70's `Engine.JSLog`-sweep methodology instead of a fresh visual scan, and dug into react.dev's own recurring `ChunkLoadError: Loading chunk 809 failed. (timeout: …)` — present in every prior sweep this session but never individually root-caused, always folded into the page's already-known, much bigger "reskin gap."
+
+- **Root-caused with direct, temporary Go-level instrumentation** (added, used, then fully removed before shipping — confirmed via `git diff`) rather than guessed from the minified bundle: traced the failing chunk's own dynamically-created `<script>` element all the way through — `document.createElement('script')` DOES run, `document.head.appendChild(...)` DOES attach it to the real tree with the correct `src` — but its fetch is NEVER even attempted (zero matching calls into this engine's own script-fetch function). Two separate, confirmed defects surfaced along this trail:
+  1. **`onload`/`onerror` did not exist as properties on ANY element** — webpack/Turbopack's own classic chunk-loading helper sets both directly on a dynamically-created `<script>` (never via `addEventListener`), so even if the chunk HAD loaded, its own promise would never have settled. Fixed by wiring both generically in `defineElement`, backed by a new `binder.onHandlers` map that lets a later assignment replace (not stack with) an earlier one — the correct IDL-event-handler-attribute semantics — implemented as a registered listener under the hood so `dispatch` needed no separate code path. `runScripts` now also dispatches "load" on a script that fetched-and-ran (regardless of whether its own top-level code threw — a real browser reports that separately via `window`'s error event, not the element's own) and "error" specifically when the FETCH itself fails.
+  2. **A dynamically-injected `<script>` created inside a timer callback could be silently stranded, never run at all.** `Session.RunPending` decided its "did anything happen" signal from `runScripts` alone, called BEFORE `drainTimers` — but the standard chunk-loading idiom (`document.createElement('script'); s.onload=...; s.src=chunkURL; document.head.appendChild(s)`) runs from EXACTLY such a timer callback, so the check always ran too early to see it. The caller (`dynamic.go`'s settle loop) reads a false "ran" as "nothing left to do" and stops iterating — so the freshly-appended script, sitting correctly in the DOM, was simply never picked up. A first attempt at the fix (calling `runScripts` a second time within the same `RunPending` call) over-corrected: it broke `TestSettleFixpointCap` by running a whole SYNCHRONOUS self-replicating script chain's next TWO generations in one pass instead of one per outer settle iteration. Fixed instead by having `RunPending` check, after `drainTimers`, whether any unexecuted `<script>` now exists (`hasPendingScripts`) — reporting "there is more to do" without actually running it inline, preserving the existing one-generation-per-outer-pass pacing; the NEXT `RunPending` call (from the settle loop's next iteration, exactly as it already does for any other case) is what actually executes it.
+- **Honestly, neither fix — even together — closes react.dev's own visible `ChunkLoadError` symptom**, and this was verified directly rather than assumed: re-running the exact same instrumentation after both fixes still shows zero fetch attempts for the chunk. The most likely remaining cause (not fixed this round, flagged as a real, separate, deeper issue): this engine's `setTimeout` binding discards its own delay argument entirely, draining every timer job in pure FIFO order regardless of requested delay — so a bundler's own internal "give up after 120 seconds" safety-net timeout races (and structurally always wins) against the chunk's own near-instant real fetch, an architectural simplification affecting the whole timer model, not a narrow one-round fix.
+- Added `TestSessionInjectedScriptOnloadAndOnerrorFire` (covering both outcomes: a script that fetches-and-runs fires `onload`, one whose fetch fails fires `onerror`, and never the wrong one) and `TestSessionRunPendingReportsPendingScriptAppendedDuringDrainTimers` (a focused white-box test exercising the exact "runScripts finds nothing, but this call's own drainTimers appends a script" ordering, since constructing that exact interleaving through real page HTML alone proved impractical). Both git-stash-confirmed to fail with the exact predicted symptoms when their respective mechanism is reverted. `TestSettleFixpointCap` (the test the first, over-corrected fix attempt broke) re-confirmed still green. All five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — unaffected, `js` isn't itself coverage-gated.
+- **Bench flat on react.dev (0.6126→0.6126, exactly unchanged) — correctly predicted in advance, not a surprise**: confirmed directly via the same instrumentation that the chunk still never fetches, for the separate, deeper reason above. Other corpus movements this run (en.wikipedia.org, developer.mozilla.org, news.ycombinator.com, tailwindcss.com) are consistent with this harness's own already-documented sources of noise — external promotional/ad-banner presence toggling for the first two, and HN's own live, constantly-rotating front page plus its previously-documented diffuse font-metric spacing for the third (checked directly via a side-by-side crop: same stories, same ranking, no attributable rendering difference) — none plausibly related to this round's script-loading-specific fixes.
+- No fresh issue filed, no PR/round-number collision — predicted #160 confirmed via `gh pr list` both before and after pushing.
+
+## 2026-09-09 (round 70) — `document.currentScript` was hardcoded to always return null, so a bundler's own base-URL detection came back empty for every chunk load — found live on tailwindcss.com's Turbopack runtime, 10 failing script executions closed with one fix (engine#159)
+
+No fresh issue was filed this round (checked `gh issue list` again). A visual scan of en.wikipedia.org's own montage — still the corpus's worst page by a wide margin — traced its whole-page diffuse vertical offset directly to the SAME already-documented external-content-variability culprit as rounds 63/64: Chrome's fetch this run happened to include the intermittent "Wiki Loves Monuments" promotional banner again, shifting everything below it down by a constant amount; correctly recognised as noise, not chased further. Pivoted to a fresh `Engine.JSLog` sweep (round 60/69's own methodology) instead, which turned up no new panics but did surface a cluster of 10 repeated script-execution failures on tailwindcss.com that hadn't been individually investigated before: `Error: chunk path empty but not in a worker`, once per lazily-loaded Turbopack chunk.
+
+- **Root-caused by reasoning from the error's own phrasing, not by guessing from the minified bundle text**: "chunk path empty but not in a worker" reads as a bundler-runtime assertion — outside a Web Worker, a chunk-loading module ordinarily derives its OWN base path from `document.currentScript.src` (the standard Webpack/Turbopack idiom for locating sibling chunk files relative to the currently-running script), then falls back to a worker-specific mechanism only inside an actual worker. Checked this engine's own binding for `document.currentScript`: it was unconditionally hardcoded to `null`, regardless of whether a script was actually running — so that base-path detection always failed, producing an empty path, which is exactly the condition the runtime's own error message describes.
+- **Fixed by actually tracking the currently-executing script**, rather than special-casing this one property: a new `binder.currentScript` field is set to the `<script>` element's own DOM node immediately before `execute()` runs it and cleared immediately after, in the single call site (`runScripts`) that invokes `execute` — matching the real spec precisely (non-null only for a synchronously-running classic script; null between scripts, and null again inside any later callback/timer, which run through a completely different path (`callSafely`) that never touches this field). `document.currentScript`'s own accessor now simply wraps whatever this field holds.
+- **A pre-existing test had encoded the old bug as its own expectation**: `TestDocumentMisc`'s inline script asserted `document.currentScript` stringifies to `"null"` while it was itself the one synchronously executing — correct only because the old implementation always returned null, not because that's the real, spec-correct answer. Updated its assertion to check `instanceof HTMLScriptElement` instead of relying on incidental string output, which is both correct and more informative.
+- **Verified live**: the real fetched tailwindcss.com page still renders correctly (checked directly, not just via the log count), and a fresh `Engine.JSLog` sweep shows every one of the 10 "chunk path empty" failures gone — nothing else on any of the ten corpus pages changed.
+- Added `TestDocumentCurrentScriptIdentifiesTheRightScriptAndClearsAfterwards` (`js/js_test.go`), covering the two properties this fix actually needs to hold beyond "is it non-null": it must identify the RIGHT script when several are present (not just any script on the page), and it must go back to `null` once synchronous execution ends — inside a queued `setTimeout` callback specifically, since a bundler reading this only once per script would silently miscompute for every later chunk if either property held only sometimes. Git-stash-confirmed to fail with the exact predicted `TypeError` (`Cannot read property 'getAttribute' of undefined or null`) when the source fix is reverted. All five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — unaffected, since this fix lives in `js`, not itself coverage-gated.
+- **Bench essentially flat on tailwindcss.com (0.7053→0.7038, ordinary noise) — correctly not oversold as a visual win**: the 10 chunks that now load successfully are plausibly deferred/lazy UI enhancements outside the top-of-page region this comparison captures, not core layout-affecting content — checked directly by rendering the real page, which looks the same as before at a glance. The real, demonstrated value is JavaScript execution correctness (ten fewer failed script runs on a real, heavily-trafficked site's actual production bundle), not a fidelity number. Two other pages moved by their now-familiar external-content-variability amounts (en.wikipedia.org and developer.mozilla.org both landed back on their exact round-68 baseline values, +0.0109/−0.0242 respectively from round 69's snapshot) — consistent with the "Wiki Loves Monuments" banner and MDN's own third-party ad slot toggling on/off between fetches, not anything this round's fix touches.
+- No fresh issue filed, no PR/round-number collision — predicted #159 confirmed via `gh pr list` both before and after pushing.
+
+## 2026-09-08 (round 69) — `document.importNode` crashed with a nil-pointer dereference when its argument wasn't a real bound node, aborting the whole script — found live on caniuse.com's real ad-network bundle (engine#158)
+
+No fresh issue was filed this round (checked `gh issue list` again), and this round's two initial visual-scan leads both dead-ended cleanly rather than being forced: developer.mozilla.org's masthead icon differences traced to the already-known, cross-repo `oksvg` wordmark defect (the "mdn" logo is drawn as an SVG path, not text — rounds 25/44/64's already-documented rasteriser gap) plus a set of hamburger/sidebar-toggle icons that never appear in the static HTML at all (client-side-rendered, the same class of gap as react.dev's reskin/github.com's module-cap issues); react.dev's own top-of-page difference reconfirmed as the ALREADY-KNOWN reskin gap (round 51 explicitly checked and ruled unrelated to that round's own isEqualNode fix). Neither was chased further, matching this session's "no confirmed caller, don't guess" / "don't force an over-scoped lead" precedents.
+
+Pivoted to round 60's own methodology instead: a fresh `Engine.JSLog` sweep across the whole 10-URL corpus, looking for anything a plain visual scan can't surface. It found a genuine crash in this engine's OWN code, not a website's: `engine: panic in js/bundle.js?1788344919: runtime error: invalid memory address or nil pointer dereference` on caniuse.com.
+
+- **Root-caused via a temporary `debug.PrintStack()` in `execute`'s recover** (removed before shipping — the change never left this round's own diagnostic pass) rather than guessing from the one-line panic message: the stack trace pinned it to `js.cloneNode` (`js/dom.go:1063`), called from `document.importNode`'s own binding, which passes `b.node(call.Argument(0))` — a helper that returns `nil` for ANY argument that isn't a real, already-wrapped DOM node (`null`/`undefined`, or a plain object from an unrelated API this binding never registered) — straight into `cloneNode` with no nil check. `cloneNode` dereferences `n.Type` unconditionally at its very first line, so any such call panics immediately.
+- **The fix pattern already existed one function away in the same file**: `contains`/`isEqualNode` both treat a nil node as "no match, don't crash" (their own doc comments say so explicitly), and `createTreeWalker`'s own binding, a few lines above `importNode`'s, already falls back to `b.root` when `b.node(...)` returns nil for its first argument. `importNode` was simply the one call site that never got this treatment.
+- **Fixed by making `cloneNode` itself nil-safe** (returning nil for a nil input), rather than adding an ad-hoc check only at the `importNode` call site — this is the SAME defensive posture `contains`/`isEqualNode` already model for exactly this situation, and it protects every current and future caller of `cloneNode`, not just this one binding.
+- **Verified live**: caniuse.com's real fetched page no longer panics; the same script that used to abort mid-execution now fails its `importNode(...)` call the ordinary JS way (a plain `null` result, surfacing a normal, containable `TypeError` on the next line that tries to use it) — the "one bad argument fails that one call, not the whole script" behaviour every other binding in this file already has, not a new gap being papered over.
+- Added `TestImportNodeWithNonNodeArgumentDoesNotPanic` (`js/interfaces_edge_test.go`, alongside the existing `TestDocumentExtraMethods`), covering `null`/`undefined`/a plain object and confirming the script completes (a trailing `console.log` still fires) rather than aborting. Git-stash-confirmed to fail with the exact predicted panic when the source fix is reverted. All five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%) — unaffected, since this fix lives in `js`, which is not itself coverage-gated.
+- **Bench essentially unmeasurable either way on caniuse.com (0.6658→0.6644, ordinary noise)** — expected and correctly not oversold: the crashing script belongs to a third-party Google ad slot (`pagead2.googlesyndication.com`), whose actual rendered content is exactly the kind of live, non-deterministic third-party variability this session has repeatedly documented as invisible to (or actively confounding) a pixel/SSIM comparison — fixing a crash in code that decides what an AD shows does not make the page look more like a specific Chrome screenshot of a DIFFERENT ad impression. The real value here is crash-safety in this engine's own DOM binding, confirmed by the test, not a visual fidelity win. Two other pages moved by larger-than-typical amounts this run (en.wikipedia.org −0.0109, developer.mozilla.org +0.0278) — both consistent with this exact corpus's own already-documented external-content variability (Wikipedia's intermittent promotional banner, MDN's own third-party ad slot, both observed directly in earlier rounds) rather than anything this fix touches (neither page's own script calls `importNode` in a way this change affects).
+- No fresh issue filed, no PR/round-number collision — predicted #158 confirmed via `gh pr list` both before and after pushing.
+
+## 2026-09-08 (round 68) — the `hover`/`pointer` media features defaulted to "matches optimistically", the SAME default that is right for an ordinary unknown feature but backwards for these two: a touch-device fallback on github.com's own Markdown-heading permalink icon wrongly matched, making it permanently visible on every heading (engine#157)
+
+No fresh issue was filed this round (checked `gh issue list` again). A fresh visual scan of github.com/golang/go's own bench montage (the corpus's second-worst page, pixdiff 30.2%, not deeply investigated in recent rounds — prior rounds' findings there were the already-known, deliberately-declined `maxModuleEntryScripts` module-cap gap) showed the README's markdown content rendering closely to Chrome almost everywhere, but with one clear, isolated difference: every heading ("Download and Install", "Contributing", …) carried a small link/anchor icon to its left that Chrome's own render never shows.
+
+- **Traced the real markup and CSS**: GitHub renders each Markdown heading as `<div class="markdown-heading"><h3>text</h3><a class="anchor"><svg class="octicon octicon-link">…</svg></a></div>` — the anchor permalink icon is a SIBLING of the heading text, not nested inside it. Its real styling (`global.css`) is `.markdown-body .markdown-heading .anchor{opacity:0;position:absolute;…}` with `.anchor:hover{opacity:1}`, `.anchor:focus{opacity:1}`, `.heading-element:hover+.anchor{opacity:1}` (hovering the TEXT also reveals the sibling icon) — and, critically, `@media (pointer:coarse){.anchor{opacity:1}}`: a touch-device fallback, since a touchscreen can never trigger `:hover` to reveal the icon another way.
+- **A closely-related but ultimately DEAD rule initially looked like the cause and cost real investigation time before being ruled out**: primer.css also carries an OLDER `.markdown-body h1 .octicon-link,…,h6 .octicon-link{visibility:hidden}` / `h1:hover .anchor .octicon-link{visibility:visible}` pair, styled for a PRIOR DOM shape (the icon nested directly inside the heading element) GitHub has since replaced with the sibling `.markdown-heading` wrapper above — confirmed directly with a `Selector.Matches` check against the real DOM tree that this older selector's `h1`-`h6` compound never matches at all (h3 and the anchor are siblings, not ancestor/descendant), so it is inert on the modern page, not the active mechanism.
+- **Root cause**: `css/media.go`'s `mediaQueryMatches` treated `hover`/`any-hover`/`pointer`/`any-pointer` the same as any other feature it does not specifically parse — "anything else matches optimistically" (its own doc comment, already correctly justified for a feature like `color-gamut`, where matching still describes a plausible desktop browser). That default is backwards for THESE features specifically: `(pointer:coarse)`/`(hover:none)` ask "is the input a touchscreen", and this engine's one rendering context is a mouse-equipped desktop browser (matching the headless Chrome this project measures itself against) — so `@media (pointer:coarse){.anchor{opacity:1}}` wrongly matched, and every heading's permalink icon rendered permanently visible instead of only on (unreachable, in a static render) hover/focus.
+- **Fixed by giving hover/pointer their own evaluation** (`css/parse.go`'s new `inputFeaturesHold`, called alongside the existing `widthFeaturesHold`): `hover`/`any-hover` hold only for `hover`, `pointer`/`any-pointer` only for `fine` — matching a real desktop browser's own `matchMedia` answers — while every OTHER unrecognised feature keeps the existing optimistic default unchanged.
+- **A separate, genuinely independent defect was found (with a clean, non-github-specific repro) while chasing the dead `visibility:hidden` lead above, and fixed alongside it**: `paint.paintItem` — the function painting every `<img>`/inline `<svg>` (always an `InlineItem`, never a `layout.Box`) — never consulted the item's own `Visibility` at all, unlike `paintBoxContent`'s existing Box-level handling. A minimal `<h1>text<a><svg style="visibility:hidden">…</a></h1>` repro confirmed this independently of github.com's own (differently-gated, `opacity`-based) icon. Fixed with a single check mirroring `paintBoxContent`'s existing pattern.
+- **Verified live end-to-end** against the real fetched github.com page: every Markdown heading's permalink icon is now correctly absent, matching Chrome, confirmed both in an ad-hoc render and in the committed bench montage.
+- Added `TestMediaMatchesHoverAndPointer` (`css/parse_test.go`, alongside the file's existing `TestMediaMatches*` family) and `TestPaintItemVisibilityHiddenSkipsInlineImage` (`paint/paint_test.go`, alongside the existing box-level Visibility test). Both git-stash-confirmed to fail with the exact predicted symptoms when their respective source fix is reverted. All five gated packages re-checked against their floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%).
+- **Bench essentially flat on github.com (0.5432→0.5437) despite a confirmed, directly pixel-verified fix** — the same well-documented "real fix, invisible at full-page SSIM" pattern as many earlier rounds: a small icon repeated at each of a handful of headings is a tiny fraction of this page's overall ~30% pixel-diff (dominated by the already-known, unrelated module-cap gap hiding the sidebar/file-listing entirely). Four other pages' montages (caniuse.com, developer.mozilla.org, news.ycombinator.com, tailwindcss.com) also shifted by small, both-direction amounts this run — consistent with this harness's already-documented ordinary Chrome-fetch noise, not this fix (none of the four rely on `hover`/`pointer` media features in a way this fix touches).
+- No fresh issue filed, no PR/round-number collision — predicted #157 confirmed via `gh pr list` both before and after pushing.
+
+## 2026-09-08 (round 67) — `:last-child` was an unmodelled pseudo-class, so pkg.go.dev's own breadcrumb rule dimming only the CURRENT crumb instead dimmed EVERY crumb, wiping the whole trail's link colour (engine#156)
+
+No fresh issue was filed this round (checked `gh issue list` again). Tried a new lead-generation technique first — grepping the codebase's own source comments for self-admitted gaps ("not modelled", "no confirmed caller", etc.) — which surfaced ~15-28 candidates; two were investigated (`layout/select.go`'s `<option>` internal-whitespace-collapse gap, `css/value.go`'s CSS mask-image non-`url()` gap) and both cleanly abandoned for lack of any confirmed live trigger across the full 10-URL corpus, citing this session's own "no confirmed caller, don't guess" precedent by name. Pivoted to a fresh visual scan of pkg.go.dev's bench montage instead, and its own diff-heatmap panel (the third montage column, `webengine | chrome | diff-heatmap`) immediately showed a duplicated-text "ghosting" artifact running the ENTIRE height of the page, starting right at the very top — the page's own breadcrumb trail ("Discover Packages > Standard library > net > http").
+
+- **Symptom**: real Chrome renders "Discover Packages", "Standard library" and "net" as blue links with the current page ("http") in dim grey; this engine rendered all four segments in the SAME flat grey, indistinguishable from each other.
+- **Bisected to the real cause with a reproducible harness, not guesswork**: built a minimal HTML repro from pkg.go.dev's own three real stylesheets and its own breadcrumb markup (`<nav class="go-Breadcrumb"><ol><li><a>...`), confirmed it reproduced the bug, then mechanically bisected pkg.go.dev's `frontend.min.css` (parsed into its 286 top-level rule blocks, all brace-nesting-aware) down to a 9-block minimal case and then a single culprit rule: `.go-Breadcrumb li:last-child>a{color:var(--color-text-subtle)}` — the exact rule meant to dim ONLY the final, unlinked crumb.
+- **Root cause**: `css/selector.go`'s `parseSimple` had a case for `:first-child` (round 31, engine#111) but no matching case for `:last-child` — round 31's own entry explicitly deferred it ("`:last-child` would need a new forward-walking helper that doesn't exist yet, a bigger step not justified by any confirmed need"). An unmodelled pseudo-class "reduces, don't drop": the compound degrades to matching its BASE selector alone. `.go-Breadcrumb li:last-child>a` therefore silently became plain `.go-Breadcrumb li>a`, matching EVERY breadcrumb link's `<a>`, not only the last one's. Since this compound has higher specificity than the page's generic `a,a:link,a:visited{color:var(--color-brand-primary)}` link-colour rule, it wrongly overrode the colour on every crumb, not just the current page's — the exact same "unmodelled pseudo silently over-matches" failure shape `:first-child`, `:empty` and the vendor pseudo-ELEMENTs in `isPseudoElement` were each fixed for. This round supplies the confirmed live need round 31 was waiting for.
+- **Fixed by modelling `:last-child` directly**, mirroring `FirstChild` exactly: a new `compound.LastChild` field, a `nextElementSibling` helper (the mirror image of the existing `prevElementSibling`), and a `matches()` check that fails when a following element sibling exists. Also wired into the "compound reduces to nothing" check so a bare `:last-child` (or `:not(:last-child)`) still carries its own constraint rather than vanishing.
+- **Verified live end-to-end**: re-rendered the actual fetched pkg.go.dev page (not just the isolated repro) and confirmed the breadcrumb now shows "Discover Packages", "Standard library" and "net" in blue with "http" correctly staying grey — matching real Chrome, modulo the separately-known, already-declined `::before`/`::after` generated-content gap (the `>` separators themselves, `li:not(:last-child):after{content:">"}`, are a different, already-documented limitation, not reopened here).
+- Added `TestLastChildPseudo` (`css/selector_test.go`), mirroring the existing `TestFirstChildPseudo` structure and exercising the EXACT real compound shape (`.go-Breadcrumb-item:last-child>a`) rather than only the bare pseudo-class, so the test would have caught the real-world failure mode specifically. Git-stash-confirmed to fail with the exact predicted symptom (`:last-child should parse`) when the source fix is reverted. All five gated packages re-checked against their coverage floors (css 99.5%, layout/paint/paginate 100.0%, dom 98.1%).
+- **Bench essentially flat on pkg.go.dev (0.6435→0.6435, unchanged to four decimal places) despite the confirmed, directly pixel-verified fix** — checked directly rather than assumed: a side-by-side crop of the committed montage shows the breadcrumb rendering correctly. This is the same well-documented "real fix, invisible at full-page SSIM" pattern as many earlier rounds — a small, localised text-colour fix in one line near the top of a ~2500px-tall page barely moves a windowed luminance metric. Four other pages' montages also changed slightly this run (caniuse.com, github.com/golang/go, news.ycombinator.com, tailwindcss.com), all within the small, both-directions magnitude this bench harness has repeatedly shown to be ordinary Chrome-fetch noise (live ads/content, timing) rather than anything related to this fix.
+- No fresh issue was filed and no PR/round-number collision — predicted #156 confirmed via `gh pr list` immediately before pushing.
+
+## 2026-09-08 (round 66) — caniuse.com's search input, finally closed: a THIRD, independent bug (an unrecognised vendor pseudo-element degrading to match the real element) was the actual reason it was invisible all along — round 65's width fix and this round's own border fix were both real, but neither mattered until this one shipped too (engine#155)
+
+Picked up round 65's own explicitly flagged follow-up (the per-side border-painting gap) directly. Fixed it, then went to verify live against the real page as always — and found the input STILL didn't render, for a reason that had nothing to do with either bug fixed so far.
+
+- **The border fix itself**: `paint.paintFormControl`'s own border check inspected ONLY `Style.Border.Top`'s width/style/colour to decide whether to draw a border AT ALL, then stroked a SINGLE uniform-colour rectangle for all four sides if it did. `border:0;border-bottom:1px solid #fff` (caniuse.com's own search input, and an entirely ordinary way to draw an underline-style field) zeroes every side first, then overrides ONLY the bottom one — `Border.Top` stays at zero, so the whole check failed and NOTHING painted, regardless of the other three sides' real values. Fixed by routing through `paintEdges`, the SAME general per-side border painter a real `layout.Box`'s own `paintBorders` already uses (found via `[[feedback-extract-reusable-code-from-go-webengine]]`'s own standing "mutualiser le code" discipline: check for an existing, already-correct implementation before writing a new one) — `paintFormControl` had simply never been wired to it.
+- **Verified with a minimal repro first**: a bare `<input style="border:0;border-bottom:1px solid #fff;background:transparent">` now shows a correct bottom-only white line. Good — but checking the REAL caniuse.com page next (never skip this step, no matter how confident the isolated repro looks) showed the input STILL completely invisible.
+- **Root-caused with direct in-package instrumentation of the real fetched page** (walking the cascade's own StyleMap for the actual `<input id="feat_search">` node, not guessing): `Display` computed to `DisplayNone` — the input isn't merely mis-sized or mis-bordered, it never gets a box AT ALL. Neither round 65's width fix nor this round's border fix could ever have mattered, since the element was hidden before either one's code path was ever reached.
+- **Traced the ACTUAL cause to the real stylesheet**: `.ciu-search__input::-ms-clear{display:none}` — legacy Internet Explorer/Edge's own vendor pseudo-element for a text input's native "clear this field" X button. `css/selector.go`'s `isPseudoElement` function — whose own doc comment already documents fixing the EXACT same bug class for `-webkit-details-marker` (round 26, pkg.go.dev) — did not include `-ms-clear` in its list of recognised vendor pseudo-elements. An unrecognised `::`-suffix degrades the whole compound to its base selector (`parseSimple`'s documented "unmodelled pseudo, ignore it" behaviour, correct for a genuine pseudo-CLASS like `:hover` but actively wrong for a pseudo-ELEMENT, which should make the compound match NOTHING) — so `.ciu-search__input::-ms-clear` silently became plain `.ciu-search__input`, and its `display:none` hid the REAL search input, not the non-existent IE-only clear button nothing in this engine renders anyway.
+- **Fixed by adding `-ms-clear` to `isPseudoElement`'s list — and its near-inseparable sibling `-ms-reveal`** (the "show password" eye icon IE/Edge also natively draws inside a text input) alongside it, matching the list's own established precedent of covering a whole vendor-pseudo-element FAMILY once one member is confirmed live (the `-webkit-scrollbar`/`-thumb`/`-track`/`-button` group already does exactly this) rather than only the single rule that happened to be hit first — real-world CSS resets targeting one of `-ms-clear`/`-ms-reveal` overwhelmingly target both together.
+- **Verified all three fixes combine correctly on the real page**: re-instrumented the live fetch and confirmed `Display` now computes correctly (no longer `DisplayNone`), the `InlineItem` now exists with the correctly-resolved `Width=389.12` (round 65's own fix, finally reachable), and the rendered page shows a properly-positioned, properly-bordered search input closely matching Chrome's own rendering — round 65 and this round's border fix were both real all along, just invisible until this THIRD, independent bug was also found and fixed. A genuine three-bug chain gating one visible symptom, discovered one layer at a time by actually checking the live page after each fix rather than declaring victory from an isolated repro.
+- Added `TestPseudoElementMatchesNothing`'s own new assertions for `-ms-clear`/`-ms-reveal` (`css/selector_test.go`, extending the existing `-webkit-details-marker` test in place rather than duplicating its structure in a new function) and `TestPaintFormControlPerSideBorder` (`paint/formcontrol_test.go`, using a deliberately non-white border colour so the assertion is meaningful against the test harness's own white canvas backdrop — a white-on-white check would have been vacuously true either way). Both git-stash-confirmed to fail with the exact predicted symptoms. `layout`/`css`/`paint` coverage all re-checked against their floors.
+- **Bench essentially flat on caniuse.com (0.673→0.665, a small dip, not a rise)** despite the confirmed, directly pixel-verified, THREE-bug-deep fix — checked directly rather than assumed to be a regression: a side-by-side crop shows the search input rendering correctly, closely matching Chrome, with the tiny SSIM movement attributable to ordinary measurement noise elsewhere on the page (news.ycombinator.com moved by a similar small amount this same run with zero relevant code touched at all). The clearest reminder yet that this session's own long-documented "real fix, invisible (or even slightly negative) at full-page SSIM" pattern can mean exactly that — SSIM is not the judge of correctness, the live pixel comparison is.
+- No fresh issue filed, no PR/round-number collision — predicted #155 confirmed via `gh pr list` immediately before pushing.
+
+## 2026-09-08 (round 65) — a form control reached through ordinary inline collection had NO containing width to resolve its own percentage width against, so `width:40%` silently degraded to a fixed UA-default size regardless of the real container (engine#154)
+
+Re-examined caniuse.com's own masthead — improved substantially by round 63's inline-block fix, but its search `<input>` still renders with no visible box at all between "Can I use" and the "?" help icon.
+
+- Fetched the real markup and CSS: a plain `<input type="text" class="ciu-search__input">` styled with `width:40%;border:0;border-bottom:1px solid #fff;background:transparent` (a media query bumps it to 50% at wider viewports) — an ordinary, extremely common real-world pattern (a text input sized as a fraction of its container), not anything exotic.
+- **Root-caused precisely to a comment the codebase already had on itself**: `appendElementInline`'s own `isFormControlTag` branch (the common inline-context path EVERY plain `<input>`/`<select>`/`<textarea>` as a child of a div/label/form/etc. takes — as opposed to the rarer `display:block`-routed one, which already worked correctly) called `l.formControlSize(el, cs, 0)` — a literal, hardcoded `0` for the containing width, with the function's own doc comment candidly admitting "cw is unavailable in this inline-collection context so a percentage width/height degrades to the default." `formControlSize` resolves `width:40%` against `cw=0` → `0`, then (since 0 isn't a usable positive size) falls through to `formControlDefaultSize`'s UA-shaped fallback (170px for a text input) — entirely irrespective of the real container's width.
+- **Fixed by threading the containing width through**, rather than reaching for a hidden/implicit field: added a `cw float64` parameter to the whole inline-collection call chain (`collectInline`, `collectInlineFrom`, `appendInline`, `appendElementInline`), explicit at every call site rather than a shared mutable field on `layouter` — deliberately, since some callers (`floats.go`'s `preferredWidth` fallback, `mincontent.go`'s `minContentWidth` fallback) are themselves INTRINSIC-size computations with no real containing block yet to resolve a percentage against at all; an implicit field would risk a stale value leaking across a nested computation for a different node. Those two intrinsic-sizing call sites keep passing `0` explicitly (correct CSS behaviour: a percentage against an indeterminate max-/min-content containing block is auto), while the two genuine in-flow layout call sites (`blockOrInlineContents`'s own inline path and its block-loop `flush()` closure) and `flex()`'s own mixed-text fallback now pass the REAL resolved content width already in scope there.
+- **A minimal repro at a DELIBERATELY wide container (1000px) was needed to see the fix clearly** — an earlier, narrower 400px repro coincidentally showed almost no visible difference (170px UA-default vs. 160px at 40% of 400px, a 10px gap easy to mistake for "no effect"), a reminder to choose parameters that make an intended difference actually visible rather than trusting the first repro that compiles.
+- **Confirmed this does NOT, by itself, make caniuse.com's own search input visible** — checked directly on the live page rather than assumed: the input's own CSS relies ENTIRELY on `border-bottom` for any visual presence (no fill, `background:transparent`), and `paintFormControl` decides whether to draw ANY border at all by checking only `it.Style.Border.Top` — `border:0` (zeroing all four sides) followed by `border-bottom:1px solid #fff` (overriding only the bottom side) leaves `Border.Top.Width` at 0, so `drawBorder` stays false and nothing paints regardless of the box's now-correct width. This is a SEPARATE, independent bug in form-control border painting (checking one side to gate all four, and stroking a single uniform rectangle rather than per-side borders) — flagged honestly as a follow-up, not fixed here, matching round 55→56's own precedent where two independent bugs gated one visible symptom and were fixed in two separate rounds rather than bundled.
+- Added `TestFormControlPercentWidthResolvesAgainstContainer` (`layout/formcontrol_test.go`), using the same wide-container design as the repro above specifically so the assertion is unambiguous. Git-stash-confirmed to fail with the exact predicted symptom (`width = 170, want 400`). Two existing tests (`cover2_test.go`, `whitespace_test.go`) needed their own `collectInline`/`collectInlineFrom` call sites updated for the new parameter — mechanical, no behaviour change (both pass `0`, matching what those specific tests already exercised). `layout` coverage stays at 100.0%; all five gated packages re-checked.
+- **Bench flat on caniuse.com (0.673→0.673, unchanged to three decimal places)** — expected and correctly predicted in advance, not a surprise requiring investigation: the border bug above independently keeps the input invisible regardless of this fix's own correctness, the same "real fix, invisible at full-page SSIM" pattern this session has documented dozens of times, just with an unusually precise advance prediction of WHY this time. No regressions elsewhere; the rest of the corpus moved within ordinary run-to-run noise.
+- No fresh issue was filed this round (checked `gh issue list` again) and no PR/round-number collision — predicted #154 confirmed via `gh pr list` immediately before pushing.
+
+## 2026-09-07 (round 64) — a round with NO code change: two real defects were found and precisely characterised, both confirmed to live in third-party dependencies with no fix possible in this engine's own codebase
+
+No fresh issue was filed this round (checked `gh issue list` again) and a fresh full-corpus JSLog sweep came back clean except the already-known caniuse.com ad-script error, confirming that lead is genuinely exhausted. Investigated three leads in sequence, each requiring real work to confirm rather than assume, and each ultimately landing outside this repo's own scope:
+
+- **Round 63's own flagged Wikipedia "Appearance" toggle icon, revisited and cleanly ABANDONED as more tangled than a one-round fix.** Traced the real markup: the icon lives in a `.vector-appearance-landmark` element that appears TWICE in the DOM (once in the masthead, once in the sidebar), gated by CSS rules keyed to a `vector-feature-appearance-pinned-clientpref-N` class this page's own inline bootstrap script sets synchronously from a default value (no cookie needed) — yet neither of the two fetched stylesheet modules contains a rule that actually SHOWS the landmark in either location, only rules that HIDE it under various pinned-state combinations. This points to either a third stylesheet module not yet fetched, or genuine JS-driven DOM manipulation client-side — determining which would need meaningfully more digging into MediaWiki's own Vector-skin preference system, a page-specific rabbit hole disproportionate to the actual defect. Abandoned cleanly, matching round 44/57's own precedent for over-scoped leads.
+- **A NEW defect, precisely characterised: the bundled Go Mono font's comma glyph loses its tail below 14px**, found chasing pkg.go.dev's own code blocks (`resp, err := ...` reading as `resp. err`). Narrowed to an exact size threshold (10-14px broken, 15px+ correct) via a systematic sweep, and to the COMMA GLYPH SPECIFICALLY (not a general small-size clipping issue) by confirming Go Mono's own letter descenders (g/j/p/q/y) render correctly at the SAME 14px, and proportional-font commas (Inter/Lora) also render correctly at 14px. Traced as far as this repo's own boundary: the font (`go-opentype/fonts/gomono`) and its rasteriser (`go-opentype/opentype`) are both separate dependencies; hinting is confirmed OFF in this engine's own font setup, ruling out a local misconfiguration. See "Known gaps" below for the full writeup.
+- **A SECOND real-world example of round 25's already-documented oksvg defect**: GitHub's own octocat logo (linked from tailwindcss.com's header) renders as a small wrong-shaped crescent instead of its full silhouette. Isolated with a minimal, CSS-free, class-free standalone `<svg><path>` repro using the exact real path data — reproducing the identical broken shape and ruling out any involvement of this engine's own SVG/CSS handling. See "Known gaps" below.
+
+**No PR opened this round**: both findings are real, confirmed, and precisely isolated, but neither has a possible fix within this engine's own codebase (the font/rasteriser and SVG rasteriser are both separate dependencies) — there is no code change to ship. Reported honestly as a documentation-only round rather than forcing an unrelated change just to have something to commit. `go test ./...` reconfirmed green (untouched) before closing out the round.
+
+## 2026-09-07 (round 63) — `display:inline-block` was parsed but never actually implemented: it silently fell through to plain `display:inline`, so an EMPTY inline-block element (the common shape of a CSS-only icon) contributed no box — and no mask-image/background — at all (engine#152)
+
+No fresh lead was filed this round (checked `gh issue list` — only the Renovate Dependency Dashboard is open), so returned to a full corpus re-scan rather than assuming round 62's rankings still held. en.wikipedia.org remained the corpus's worst page (SSIM 0.434, essentially unchanged in magnitude despite three consecutive prior rounds' fixes there) — re-examined its top masthead, which an earlier round's crop had shown missing a search icon and a language-switcher icon, neither previously root-caused.
+
+- Fetched the real markup: both icons are `<span class="vector-icon mw-ui-icon-wikimedia-search cdx-button__icon"></span>` — completely EMPTY spans, no children, no text — sized and coloured entirely through CSS (`display:inline-block;width:1rem;height:1rem` for the box, `mask-image:url(...)` for the icon's SHAPE, `background-color` filling through the mask's alpha channel for its colour). This is a materially different mechanism from round 57's MDN hamburger-icon case (a `::before{content:""}` pseudo-element, an entirely unimplemented gap) — here the icon is a REAL DOM element, and `mask-image` itself is already implemented (an older, pre-session capability) and already fetches/decodes external mask URLs correctly.
+- **Root-caused precisely**: `layout/layout.go`'s `appendElementInline` dispatches on element tag and a handful of specific `Display` values (`DisplayInlineFlex` for inline-flex, `isBlockLevel` for a genuinely block-level promoted child) — `css.DisplayInlineBlock` was parsed correctly by `css/parse.go` into `css.Style.Display` (confirmed by grep: the enum value and its parse case both exist) but was referenced NOWHERE in `layout/layout.go` at all. A `display:inline-block` element therefore fell all the way through to the generic "a plain inline element contributes no box of its own" tail case — for an element WITH text/children, this merely lost inline-block's own sizing/atomicity semantics (a smaller, more theoretical gap); for a genuinely EMPTY one (this engine's own `appendInline` recurses into zero children and adds NOTHING to the item stream), the element vanished from layout ENTIRELY — not merely unstyled, absent — since mask-image/background-color/box-level effects only ever apply through the real `Box`-paint path (`paintBox`'s own `hasMask` check reads `box.Style`, never an `InlineItem` directly), which a plain inline element never reaches.
+- **Fixed by extending the exact same mechanism round 45 already built for `display:inline-flex`**: a new `layoutNestedInlineBlock` (new file `layout/inlineblock.go`) lays the element out as a genuine nested formatting context via the existing `layoutIsolated` helper, forcing `DisplayBlock` internally (an inline-block's content area IS an ordinary block formatting context — inline-vs-block only changes how the PARENT places the box, never how it lays out its own children) and sized at its explicit width when the author gave it one — `preferredWidth`'s own definite-width branch already returns that outright, checked before any display-specific branching — or shrink-to-fit otherwise, identically to `layoutNestedInlineFlex`'s own sizing rule. Wired into `appendElementInline` as a new `es.Display == css.DisplayInlineBlock` branch, structurally identical to the existing inline-flex one (same `wasWsEmitted`/`wasWsPending` capture-before-recursing pattern, same `InlineItem{NestedBox: box, Width: box.W, Ascent: box.H, ...}` shape) — confirmed via `hasBlockLevelChild` (unaffected, `DisplayInlineBlock` correctly stays out of `isBlockLevel`) that a container with only inline-block children still takes the fast pure-inline layout path, exactly as before.
+- Verified live end-to-end at three levels: a minimal empty `<span style="display:inline-block;width:20px;height:20px;background-color:red">` between two words; the SAME shape with a REAL `mask-image:url(...)` pointing at Wikipedia's own live icon endpoint (rendered a correct blue magnifying-glass glyph); and the actual full en.wikipedia.org page, whose top-nav search icon now renders (confirmed via a 2×-zoomed crop of the real render). A SECOND icon in the same masthead (Vector-2022's "Appearance" reading-preferences toggle, `mw-ui-icon-appearance` — the SAME empty-span-plus-mask-image mechanism) is STILL missing after this fix, gated by something else not yet root-caused (plausibly a `client-js`/feature-flag class this engine's settle loop doesn't set) — flagged honestly for a future round rather than chased into this one, matching this session's "one narrow bug per round" discipline even when a fix's own verification surfaces a sibling gap.
+- Added `TestInlineBlockExplicitSizeGetsNestedBox`, `AutoWidthShrinksToFit`, `BorderBoxNarrowerThanItsOwnPadding` (the last mirroring `layoutNestedInlineFlex`'s own identically-shaped edge-case test), and `NotTreatedAsBlockLevelChild` (new `layout/inlineblock_test.go`) — all git-stash-confirmed to fail with the exact predicted symptom; the empty-span case failed even MORE completely than expected (2 items instead of 3 — the element vanished from the item stream altogether, not merely rendered as a zero-size box), a stronger confirmation than assumed going in. A pre-existing `TestInlineBlockTreatedInline` (features_test.go, asserting only that a NON-empty inline-block doesn't break the line) correctly kept passing unchanged, since it never inspected the item's internal shape — confirmed compatible rather than assumed. `layout` coverage stays at 100.0% (one branch — the width-clamp floor — needed its own dedicated test to restay at the floor, caught by the coverage gate itself, not missed).
+- **Bench moved for real on two DIFFERENT pages this time, not Wikipedia**: developer.mozilla.org SSIM 0.610→0.633 and caniuse.com SSIM 0.640→0.673 (pixdiff 21.1%→18.1%) — both plausibly lean on `inline-block` icon/badge patterns extensively (not yet individually traced pixel-by-pixel, but consistent with this fix's general, non-Wikipedia-specific scope). en.wikipedia.org itself moved slightly the WRONG way (0.434→0.423) — checked directly rather than assumed a regression: Chrome's fetch happened to pick up a live, time-varying "Wiki Loves Monuments" promotional banner Wikipedia serves intermittently (confirmed via a side-by-side crop showing the banner ONLY on Chrome's side, pushing all its content down and misaligning the comparison), an external content-variability artifact wholly unrelated to this fix, not a real regression — the search icon itself is directly confirmed correct in the same crop.
+
+## 2026-09-07 (round 62) — an inline element boundary with no whitespace was still treated as a line-breaking opportunity, so `152,3<sup>†</sup>` wrapped the dagger onto its own line — every InlineItem seam was breakable, not just the ones a browser would actually break at (engine#151)
+
+Picked up a lead already scoped by a concurrent session rather than starting a fresh visual sweep: issue #149, filed against this repo with a precise root cause and a suggested fix shape, found while that session was chasing "lost spaces" in html2pdf's own PDFs. Verified it live before touching any code — a minimal `AA BB<sup>CC</sup>` repro at a narrow viewport reproduced the exact reported symptom (the `<sup>` content stranded alone on the next line, with no whitespace before it in the source).
+
+- **Root cause**: `layout/linebreak.go`'s `WrapItems` and `layout/layout.go`'s `wrapOneLine` (the two greedy line-breaking loops behind the `nowrap` and normal wrapping paths respectively) treated every `InlineItem` boundary as a valid break point, regardless of whether real whitespace (or a margin gap) separated the two items — an element boundary with no source whitespace (`<sup>`, `<b>ex</b>iste`, `kW<sup>‡</sup>`) got exactly the same treatment as a genuine space. `InlineItem.SpaceBefore` already carries this exact signal for free: `appendWords`/`appendElementInline` leave it at precisely 0 when no collapsible whitespace and no margin gap preceded an item, and nonzero otherwise — no new field was needed, unlike the issue's own suggested `NoBreakBefore bool`, since the information already exists and duplicating it would just risk the two drifting apart.
+- **Fixed with a `glueRun` helper** (`linebreak.go`): given an item index, returns the extent and combined width of the maximal run of items joined by a zero `SpaceBefore` — item i itself, plus every immediately-following item with `SpaceBefore==0`. Both `WrapItems` and `wrapOneLine` now measure and place a RUN as one atomic unit (the same treatment a single too-wide word already got), rather than deciding per item: a run that doesn't fit alongside existing line content moves to the next line WHOLE (not split at its internal seam); a run that overflows even a fresh empty line is still placed as one piece in `WrapItems` (matching a single overlong word's existing overflow behaviour) or, in `wrapOneLine`, reports `consumed==0` so the caller's existing `forceOne` fallback splits it only as a genuine last resort — never as an ordinary wrap point.
+- **Also fixed `minContentWidth`'s inline fallback** (`layout/mincontent.go`), per the issue's own explicit ask: its "widest single item" loop had the identical gap, one level up — a table column's min-content floor (round #147) could be sized between a glued run's individual pieces and its true combined width, letting the SAME mid-run split reappear inside a table cell even after the line-breaking fix above, since the column itself would be too narrow to hold the run as one piece. Rewrote the loop to accumulate a running `run` width across zero-`SpaceBefore` items, flushing into `widest` at each real break/BlockBreak, mirroring `glueRun`'s own semantics without reusing it directly (this loop also has to special-case `BlockBreak` items recursively, which `glueRun` — built for the plain-item wrapping loops that never see a `BlockBreak` — doesn't need to).
+- Verified live end-to-end at multiple widths: the whole run moves to the next line together when it doesn't fit with preceding content; it stays on one line when there's room; and at extreme narrowness (narrower than the run itself) `forceOne` still splits it as the documented last resort — confirmed via a real two-column table (`101,5 / 152,3<sup>†</sup>` in the narrower cell) rendering "152,3†" together on one line instead of splitting.
+- Added `TestWrapItemsGluedRunMovesTogether`/`FitsWithPriorContent`/`OverflowsAsOneUnit` (`layout/linebreak_test.go`, using the file's existing `word`/`glued` item-builder pattern), `TestInlineGluedRunDoesNotSplitAtLineWrap`/`SplitsOnlyAsLastResort` and `TestMinContentWidthCountsGluedRunAsOneWord` (new `layout/gluedrun_test.go`, end-to-end via real HTML and the table-column-width harness `table_width_test.go` already established). All git-stash-confirmed to fail with the exact predicted symptom — the two tests whose scenario is unaffected by the fix (already-fits, and already-graceful-split) correctly kept passing even with the fix reverted, confirming the new tests actually isolate the bug rather than testing something else. `layout` coverage stays at 100.0%.
+- **Bench moved for real, not just noise, on two pages**: en.wikipedia.org SSIM 0.424→0.434 and news.ycombinator.com 0.639 vs 0.618 (pixdiff 12.9% vs 13.6%) — checked directly rather than assumed: Wikipedia's article body is full of `<sup id="cite_ref-...">` citation markers glued straight onto the preceding word with no space (`concurrency,[18]`, `codebases.[24]`, `Google[5]` — visible throughout the live crop), exactly this bug's shape, repeated dozens of times across the whole ~24,700px article; a handful of those markers previously landing at a line-wrap boundary were stranding themselves, now correctly staying attached. Six of the ten corpus pages (pkg.go.dev, go.dev/blog, react.dev, MDN, github.com, example.com) render byte-identical montages — confirmed via `git status` on `bench/out/` — since they don't lean on this exact glued-inline pattern; tailwindcss.com and caniuse.com also moved slightly. A genuinely corpus-wide-relevant fix, not the usual "real but invisible at full-page SSIM" pattern this session has documented for most rounds.
+- Coverage: all five gated packages re-checked (css 99.5%, layout 100.0%, paint 100.0%, dom 98.1%, paginate 100.0%). No PR-number or round-number collision this round.
+
+## 2026-09-07 (round 61) — `display:table` with no real table-row/table-cell descendant silently dropped its WHOLE box (image and caption both), instead of falling back to block layout — en.wikipedia.org's own gopher-mascot figure vanished entirely (engine#150)
+
+Re-synced `main` first (five PRs — #144-148 — had landed from a concurrent session since round 60: `paginate` boundary-marking, paint font fallback + exact sub-pixel text measurement, and a new automatic table layout with a min-content floor plus `white-space:nowrap`) and confirmed build/vet/test still green before investigating. Ran a fresh full-corpus bench comparison rather than trusting round 60's numbers to still hold, given how much of `layout`/`paint` had just changed — en.wikipedia.org came back as the corpus's worst page (SSIM 0.426, unchanged in shape from round 57/58's own numbers), never a dedicated round's target since round 58's per-host concurrency cap.
+
+- Cropped the montage's "Branding and styling" section and found a real, discrete defect (not diffuse font-metric noise, this session's usual caveat): Chrome shows a hand-drawn cartoon-gopher mascot image with a caption ("A drawing of Go's mascot, a cartoon gopher.") floated right of the paragraph text; this engine's render shows NEITHER the image NOR the caption — no reserved space at all, the paragraph runs full-width as if the figure never existed.
+- **Root-caused via direct in-package instrumentation of the REAL fetched page** (a throwaway test walking the cascade's own `StyleMap` for the figure node), not by guessing from the screenshot: the element is a `<figure typeof="mw:File/Thumb" class="mw-default-size">` wrapping a `display:block` `<a class="mw-file-description"><img></a>` and a `<figcaption>` — and MediaWiki's own real stylesheet sets `figure[typeof~='mw:File/Thumb']{display:table;...;float:right}` plus `figcaption{display:table-caption;caption-side:bottom;...}`. This is the classic pre-flexbox "shrink-to-fit via `display:table`" CSS idiom: a table box whose children are NOT table-row/table-cell at all, relying on CSS's own anonymous-table-object synthesis (implicit row+cell wrapping) to render anyway.
+- **The actual defect**: `layout/table.go`'s `table()` calls `collectRows(node)`, which only recognises `DisplayTableRow`/`DisplayTableRowGroup` children — the anchor (`display:block`) and figcaption (`display:table-caption`, which this engine doesn't even parse as a recognised `Display` value, so it silently keeps figcaption's own UA-default `block`) are neither. `collectRows` returned zero rows, and `table()`'s existing `if len(rows) == 0 { return top }` dropped the ENTIRE box — not misrendering it, discarding it outright, as if it had no content whatsoever. Confirmed independent of Wikipedia specifically: a bare `<div style="display:table"><a style="display:block">IMG</a><span style="display:block">CAPTION</span></div>` reproduces the identical total-disappearance minimally.
+- **Fixed by extracting the existing block-in-flow child-layout loop** (`contents`'s own default, non-flex/grid/table path in `layout/layout.go` — mixed inline runs, block children, floats, out-of-flow items) into a new shared `blockOrInlineContents` method, and having `table()`'s zero-rows case call it instead of returning `top` unchanged. This is deliberately narrower than implementing real anonymous-table-object synthesis (which would need to handle mixed row/non-row children, multi-cell wrapping, `table-caption` placement above/below, etc.) — it does not reproduce a real browser's shrink-to-fit sizing or the caption's own width-matched centering, but it renders the actual content, floated and positioned close to correctly, instead of silently discarding it. This is the same "real fix, not a full model" scope call this session has made repeatedly (e.g. round 56's icon-only button, round 60's inline-flex guard).
+- Verified live end-to-end: re-rendered the real en.wikipedia.org article and the gopher mascot drawing plus its caption now appear, floated right of the "Branding and styling" paragraph, with the surrounding text wrapping around it — matching Chrome's layout closely (the one remaining difference: the caption renders as a full-width block rather than Chrome's image-width-matched, 2-line-wrapped caption box, since anonymous-table-object width-matching isn't modelled — documented, not hidden).
+- Added `TestTableWithNoRowsFallsBackToBlockContent` (`layout/table_no_rows_test.go`), git-stash-confirmed to fail with the exact predicted symptom (`a=<nil> span=<nil>`, i.e. neither block child got a box at all) before the fix. `layout` coverage stays at 100.0%; re-checked all five gated packages' floors (css 99.5%, layout 100.0%, paint 100.0%, dom 98.1%, paginate 100.0%) against the post-sync tree.
+- **Bench essentially flat on en.wikipedia.org (0.426→0.424, noise)** despite the confirmed, directly pixel-verified fix — the same "real fix, invisible at full-page SSIM" pattern as rounds 51/52/54/56/57/60: the gopher figure is a small region on an otherwise overwhelmingly text-heavy ~24,000px article, and the caption's own width mismatch (full-width block vs. Chrome's narrow, wrapped one) costs back a little of what the now-visible image gains. Full corpus re-run confirmed zero regressions elsewhere (every other page's SSIM held within ordinary run-to-run noise of its round-60 baseline), including the three pages with real `<table>` markup (pkg.go.dev, news.ycombinator.com, github.com) that exercise `table()`'s normal (non-fallback) path — this change only touches the previously-dead zero-rows branch.
+- No PR-number or round-number collision this round (five concurrent-session PRs merged since round 60, but not while THIS round's own work was in flight) — still re-verified #149 immediately before pushing, per standing discipline.
+
+## 2026-09-06 (round 60, renumbered from 59 — a concurrent session's PR #141 claimed "round 59" first, see its own note below) — `preferredWidth`'s block-child branch had the SAME "silently drops mixed bare text" gap round 47 fixed in its sibling branch — tailwindcss.com's own "Become a sponsor →" button wrapped one word per line (engine#143)
+
+Investigated round 56's own flagged MDN hamburger-icon follow-up first and cleanly ABANDONED it: fetching the real markup confirmed the icon is a `::before{content:"";mask-image:url(...)}` pseudo-element on an otherwise-EMPTY `<button>` — a minimal repro (`<button></button>` with `::before{content:"";background:red;display:block;width:20px;height:20px}`) painted NOTHING at all, confirming TWO much larger, already-known gaps stack here: `::before`/`::after` generated content is entirely unimplemented anywhere in this engine (only recognised syntactically by the selector parser for specificity — no `content` property on `css.Style`, no pseudo-box synthesis at all — a gap round 44 first flagged for MDN's own breadcrumb separators), and even if it were, a form control's children are never rendered except through rounds 55-56's narrow text/single-icon paths, since a `<button>` is a wholly atomic box. Implementing real generated-content support is comparable in scope to Shadow DOM's own multi-round build — correctly left alone, matching round 44's own precedent for abandoning an over-scoped lead cleanly (this round's finding WIDENS the known impact of that gap rather than closing it).
+
+Also investigated (and confirmed, not fixed) github.com/golang/go's sidebar "Packages"/"Used by" skeletons staying visible forever and its top-nav search/filter icons + dropdown carets all being absent: BOTH trace to ONE already-documented, DELIBERATE policy decision — `maxModuleEntryScripts` (`modules.go`) skips esbuild's module-bundling stage entirely for a page with more than 6 `<script type="module">` entries (GitHub's page has more), specifically so a heavy SPA cannot fan its import graph into an OOM-risking parallel-fetch burst; the code's own doc comment already names GitHub as the intended example. A corpus-wide `Engine.JSLog` sweep confirmed only ONE diagnostic line for this page ("module bundle skipped: too many entry scripts") and otherwise zero errors across all 10 URLs (the already-known caniuse.com third-party ad script aside) — React genuinely never mounts here, so nothing downstream of it ever runs. Raising the cap would go directly against the documented OOM-risk rationale without new information changing that trade-off, so this was correctly left as a confirmed-not-a-bug finding, not "fixed."
+
+news.ycombinator.com's own SSIM gap was also checked directly rather than assumed fixable: both engines render the IDENTICAL 30 items, "More" link, footer and search box (confirmed by a side-by-side crop of the page bottom) — the gap is diffuse per-row spacing/font-metric accumulation across 30+ rows, not a discrete, narrowly-fixable defect.
+
+Pivoted to tailwindcss.com and found a real, cleanly-isolated bug via its "Become a sponsor →" CTA button, which rendered as four separate lines ("Become" / "a" / "sponsor" / "→") instead of one:
+
+- **Root-caused via careful bisection of the REAL 690KB stylesheet** (matching round 49's own precedent that this page's bugs often only reproduce against the genuine, full cascade): a hand-written inline-style equivalent of the button's classes did NOT reproduce it, but loading the real stylesheet — even via a bare `style="display:inline-flex"` with NO utility classes at all — did. Bisecting the stylesheet by half (at safe `}` boundaries, serving each candidate over a local HTTP server so `<link>` resolution stayed realistic) narrowed the cause to Tailwind's own PREFLIGHT reset rule `img,svg,video,canvas,audio,iframe,embed,object{vertical-align:middle;display:block}` — confirmed with a two-line minimal repro (`<style>svg{display:block}</style>` plus the inline-flex `<a>Become a sponsor<svg>`) reproducing the exact word-per-line symptom standalone.
+- **The actual defect**: `layout/floats.go`'s `preferredWidth` has TWO branches that can size a flex row's shrink-to-fit width — a flex-row-SUM branch (guarded since round 47 by `!l.hasDirectText(node)`, falling through to a shared inline-measurement fallback whenever the container ALSO has bare text mixed with an element child) and a sibling `hasBlockLevelChild` "max of ELEMENT children" branch immediately below it, which ONLY visits Element children and had NO equivalent guard. Whenever a flex row's element child computes `display:block` — exactly what Tailwind's preflight gives every inline `<svg>` — `hasBlockLevelChild` returns true and this branch runs INSTEAD of the sum branch, silently dropping the bare text's contribution entirely: `preferredWidth` measured only the 10px icon, sizing the whole inline-flex container down to ~10px and forcing "Become a sponsor" to wrap after nearly every word.
+- **Fixed by extending round 47's own established guard** (`&& !l.hasDirectText(node)`) onto this sibling branch, matching its own stated reasoning exactly — "hasDirectText routes BOTH cases through the same fallback" was already the documented intent for the flex-row-sum branch; this closes the gap where a SECOND branch could intercept the same shape of bug before ever reaching that fallback.
+- Verified live: the minimal repro, the real-stylesheet repro, and the actual tailwindcss.com page (both `-file` and `-url` fetches) all now render "Become a sponsor →" on one line, matching Chrome.
+- Added `TestInlineFlexPreferredWidthIncludesTextAlongsideBlockChild` (`layout/inlineflex_test.go`, beside the file's existing NestedBox-focused tests), confirmed via a full `git stash` revert to fail with the exact predicted symptom (`NestedBox.W = 10`, text dropped entirely, only "Become" surviving as the first line's sole item). Coverage: `layout` stays at 100.0% with the new branch covered.
+- **Bench essentially flat on tailwindcss.com (0.700→0.699, noise)** despite the confirmed, directly-verified fix — the button is a small fraction of a long marketing page, the same "real fix, invisible at full-page SSIM" pattern as rounds 51/52/54/56/57. A live before/after check of react.dev (which also uses this exact icon-button shape elsewhere) showed no visual regression and a small, benign height decrease (11447px→11199px) — consistent with the SAME fix correctly un-wrapping some OTHER icon-button on that page too, not a defect.
+- **Round-number collision** (the session's fourth this run, after #128/#133/#137's PR-level collisions): a CONCURRENT session's PR #141 also labelled its own work "round 59" in this same file, merging first. Renumbered this round to 60 accordingly; predicted PR #142 was also taken by that session's own follow-up PR (#142, `paginate` package) by the time this round finished, so this shipped as #143 instead — re-verified the full pipeline (build/vet/test/all five now-gated packages' coverage floors, including the two NEW packages — `css` and `paginate` — that PR added) against the post-merge code before shipping, per this session's established collision-recovery procedure.
+
+## 2026-09-06 (round 59) — CSS fragmentation properties, `@page`, and the absolute length units: the contract a paginating consumer reads, plus a `height:40mm` that laid out as 0 (engine#141)
+
+Paged media needs three things the engine did not carry: where a page may or must break, what the page box is, and lengths in the units print stylesheets are written in. This round adds all three to the `css` package as a contract for go-pdfkit/html2pdf and the `paginate` package (written concurrently against these exact names); the engine's own screen layout is unchanged by the first two.
+
+- `css.Style` gains `BreakBefore`/`BreakAfter` (`css.Break`: Auto, Avoid, Page, Left, Right), `BreakInside` (`css.BreakInside`: Auto, Avoid) and `Orphans`/`Widows` (int; initial 2; inherited — the break properties are not). Every `break-before`/`break-after`/`break-inside` value of CSS Fragmentation 3 parses, mapped to what matters to a page: the column/region-only values (`column`, `avoid-column`, `region`, `avoid-region`) read as auto; `page`, the legacy `always`, `all`, `recto`, `verso` as a forced page break; `left`/`right` keep their side. The legacy `page-break-before/after/inside` are aliases. `orphans: 0`, `-1` and `2.5` are invalid and ignored, per spec. `inherit`/`initial`/`unset` behave per CSS Cascade (unset is inherit for orphans/widows, initial for the break properties).
+- `css.ParsePageRules` / `css.ResolvePage` / `css.DocumentPage` (`css/page.go`) read `@page` (CSS Paged Media 3): the selectors `:first`/`:left`/`:right`/`:blank`, named pages and selector lists; `size` (auto, one length = a square page, two lengths, the ten named sizes A3–A5/B4–B5/JIS-B4–B5/letter/legal/ledger, `landscape`/`portrait` in either order) and `margin` + its longhands, in CSS px. A `@page` inside `@media print` applies under `css.Print` only, exactly as its style rules would; `@layer` is unwrapped. A nested margin box (`@top-center { content: counter(page) }`) is skipped without losing the declarations around it — `ParseDeclarations`, which splits on semicolons and knows nothing of braces, would otherwise have fused it with its neighbours into garbage on both sides. Margin boxes themselves are not modelled yet. `ResolvePage` applies the unqualified rules first, then the selected page's, so `@page :first { margin-top: 30mm }` overrides only the top of `@page { margin: 1in }`; `DocumentPage` gathers every `<style>` plus the external sheets, external first, as the cascade does.
+- **`parseLength` understood no absolute unit but px** — measured, not assumed: `<div style="height:40mm">` laid out with H = 0.0 (`4cm`, `1.5in`, `100pt`, `10pc` likewise), while `height:151px` gave 151. Added `in`, `cm`, `mm`, `Q`, `pt`, `pc` per CSS Values 4 §6.2 (1in = 96px = 2.54cm = 25.4mm = 72pt = 6pc; 1Q = ¼mm) in the one place every property resolves a length — font-size (`12pt` is exactly 16px), calc() terms, line-height and the flex basis included; `flex`'s own unit sniff (`hasUnit`) updated alongside. A unit is split off as the token's trailing letters and the rest must parse as a number, so a keyword such as `thin` (→ "th" + "in") can never read as a length. `@page` sizes and margins go through the same conversion (em/rem at the 16px root default, a page box having no element font).
+- Tests: every value of every property through both spellings; inheritance through the real cascade (orphans/widows inherited by a child block, break-* reset to auto); the unit table (`40mm` → 151.18px, `12pt` → 16px, `thin`/`10`/`1..2mm` rejected); a layout test that `height:40mm` is 151.18px tall; and the `@page` contract cases — `size: A5; margin: 15mm` → 559.37×793.70 with 56.69px margins all set, `100mm 200mm`, `letter landscape` and `landscape letter`, `10cm` square, `margin: 1in 2in` pairs, `:first` overriding only the top, print-only `@page` under Print and not screen, a rule with a nested `@top-center` whose surrounding `margin` is still read, and `DocumentPage` over two `<style>` elements plus one external sheet (external first, later wins).
+- Coverage: css 99.5% → 99.6% (two pre-existing uncovered lines, `CascadeMedia` and `display: contents`, covered on the way); layout stays at 100%.
+
+## 2026-09-06 (round 58) — A per-host image-fetch concurrency cap, empirically tuned rather than assumed, cuts round 57's 429 rate roughly 70% — the honest, measured complement to that round's retry, not a claimed fix for Wikipedia's overall render time (engine#140)
+
+Picks up round 57's own explicitly-flagged follow-up: reduce how often this engine's own concurrent image fetching trips a host's rate limiter in the first place, rather than only recovering after it does via retry-with-backoff.
+
+- Added `perHostLimitedTransport` (`transport.go`), a small `http.RoundTripper` wrapper bounding concurrent in-flight requests to any single host via a lazily-created per-host semaphore — independent of `imgWorkers`' own overall fetch-concurrency bound (`images.go`), which has no per-host awareness at all. Wired in once, wrapping `browserhttp.NewClient`'s own transport inside `New()`. Waiting for a slot honours the request's own context (a cancelled render aborts a queued request immediately, never an indefinite hang) and never rejects a request outright — only delays it.
+- **Chose the concurrency cap from live measurement, not the generic "browsers use ~6 per host" convention** — that convention measured NO better here: re-fetching en.wikipedia.org's own infobox-heavy article repeatedly against the real `upload.wikimedia.org` CDN (via a throwaway in-package instrumented test counting actual 429 responses) showed **10 429s at a cap of 6, only 3 at a cap of 2, and STILL 3 — no further improvement — at a cap of 1**, consistently across repeated runs at each value. This is itself informative: some of Wikimedia's 429s are NOT a pure concurrency effect this cap can fully eliminate (plausibly a request-RATE or cold-cache request-coalescing limit at Wikimedia's Varnish edge, not simultaneity alone, given the 429 responses came from `Server: Varnish` while 200s came from `Server: envoy` — different layers). Shipped at **2**, the smallest value that captured the achievable reduction, rather than fully serialising per host (cap 1) for no additional benefit.
+- **Honestly, this does NOT fix en.wikipedia.org's overall render-time regression from round 57** — checked directly rather than assumed: a full live bench run at cap=2 still measured ~10.9s (round 57's own bench run measured 11.8s at cap=6) — within ordinary run-to-run noise of each other, not a clear win. The isolated, image-loading-ONLY measurement DOES show a real improvement (fewer wasted 429-retry round-trips), but the full page's wall-clock time is dominated by OTHER, unrelated costs this fix does not touch (JS execution and esbuild's bundling of MediaWiki's own substantial script bundle) far more than by image-fetch concurrency. Reported exactly this way — a measured reduction in self-inflicted 429s and their associated wasted retries, NOT a claimed fix for the page's overall speed — rather than overselling a number the bench run does not actually support.
+- Added three regression tests (`transport_test.go`): `TestPerHostLimitedTransportBoundsConcurrency` (10 concurrent requests to one slow-responding host never exceed the configured cap of 2 in flight, measured via an atomic high-water mark), `TestPerHostLimitedTransportHostsAreIndependent` (two DIFFERENT hosts, each capped at 1, can still have a request in flight to EACH simultaneously — guards against a shared-instead-of-per-host limiter bug), and `TestPerHostLimitedTransportRespectsContextCancellation` (a request queued behind a full slot aborts within milliseconds of its own context expiring, never blocking on a semaphore nothing will ever signal). All three confirmed to fail to even COMPILE without the fix via a full `git stash` revert.
+- **Caught and fixed a genuine deadlock in the test suite itself before it ever ran clean**: `TestPerHostLimitedTransportRespectsContextCancellation`'s FIRST version registered `defer close(block)` before `defer srv.Close()` — Go's LIFO defer order then ran `srv.Close()` FIRST, which itself blocks waiting for the still-in-flight "holder" handler goroutine to return, which can only happen once `block` closes — a call that was queued to run AFTER `Close()`, which therefore never returned. `go test` hung past its 120s default and had to be killed and diagnosed rather than assumed correct; fixed by reordering the two defers (with a comment explaining why the order matters, not just what it is) — the same "verify, don't assume" discipline this session applies to the ENGINE'S code applied here to the session's OWN test code.
+- Coverage: this fix lives entirely in the root `engine` package (network I/O, not coverage-gated per `scripts/coverage-gate.sh`'s own exclusion) — css/layout/paint/dom floors re-checked and unaffected, as expected for a change that touches none of them.
+- Bench: full corpus re-run against real Chrome succeeded 10/10; the rest of the corpus moves by ordinary noise, consistent with round 57's own numbers.
+
+## 2026-09-06 (round 57) — Wikimedia's CDN 429s this engine's own concurrent per-page image fetches; a rate-limited (not missing, not broken) image was silently and non-deterministically dropped with no retry at all (engine#138)
+
+Picked up round 56's flagged hamburger-menu-icon follow-up first, but that investigation cleanly redirected: developer.mozilla.org's mobile nav toggle icon is a `::before{content:"";mask-image:url(...)}` pseudo-element on a `<button>` — CONFIRMED (via a minimal repro: a plain `<button>::before{content:"";background:red;...}` painted nothing at all) to be blocked by TWO much larger, pre-existing, already-known architectural gaps stacked together: (1) `::before`/`::after` generated content is not implemented ANYWHERE in this engine at all — only recognised syntactically by the selector parser for specificity, with no `content` property on `css.Style` and no mechanism to synthesise a pseudo-box from one — a gap round 44 already flagged for MDN's breadcrumb separators; and (2) even if it were, a form control's children (real OR generated) are never rendered except through the narrow text-label/single-icon-child paths rounds 55-56 built, since a `<button>` is laid out as a wholly atomic box. Implementing real `::before`/`::after` support is comparable in scope to Shadow DOM's own multi-round build-out, not a one-round fix — cleanly ABANDONED (matching round 44's own precedent for exactly this situation) rather than half-attempted, and this ROUND'S finding widens the known impact of that already-accepted gap (nav hamburger icons, not just breadcrumb separators) without pretending to close it.
+
+Pivoted to the corpus's worst-SSIM page (en.wikipedia.org, 0.438 — never a dedicated round's target all session) and found a genuinely different, well-scoped, fixable bug via the infobox's Go-logo image, missing from this engine's render but present in Chrome's:
+
+- **Root-caused precisely, ruling out four wrong hypotheses in sequence before confirming the real one** — this session's own "verify, don't guess" discipline paid for itself repeatedly in one investigation: the image's URL, once isolated, fetched fine via plain `curl` (5/5); an ISOLATED HTML repro of the exact same `<table><tr><td><span><a><img></a></span></td></tr></table>` nesting with the real URL rendered the logo correctly; a `resolveURL` unit check confirmed protocol-relative `//upload.wikimedia.org/...` URLs resolve correctly (Go's stdlib `url.ResolveReference` already handles this per RFC 3986); and the fetch wasn't racing against JS/settle-loop timing either (`DisableJS=true` was EQUALLY flaky). Direct in-package instrumentation of `loadImages`/`fetchImageBytes` against the REAL full page, run repeatedly, finally caught it: `fetchImageBytes` was returning `ok=false` on most runs, and a minimal high-concurrency-only repro (hitting `browserhttp.NewClient` directly with 8-12 simultaneous requests, no webengine code involved at all) reproduced it instantly and consistently — Wikimedia's `upload.wikimedia.org` CDN replies **`429 Too Many Requests`, with a real `Retry-After: 1` header**, to whichever fraction of this engine's own concurrent per-page image-fetch pool (up to `imgWorkers` = min(8, GOMAXPROCS) simultaneous requests, all to the SAME host for an image-heavy article) lands outside its rate-limit window — this engine's own success is what defeats it here: fetching many thumbnails from one host AS FAST AS POSSIBLE is exactly the pattern a rate limiter exists to catch.
+- **Not a webengine-specific bug, and not present in a single, uncontended request** (plain `curl`, or even `e.Client.Do` called once, always succeeded) — purely a self-inflicted concurrency-vs-politeness mismatch: this engine's `imgWorkers` pool has no per-host awareness, and a real browser's own per-host connection ceiling (and progressive-discovery request pacing) means it rarely fires 8 truly-simultaneous requests at one host the way a full-page-DOM-known-upfront fetch pass does.
+- **Fixed with retry-with-backoff, honouring the server's own `Retry-After`** (delay-seconds form; an HTTP-date value falls back to a short default, since no confirmed caller has sent one) — `fetchImageBytes` (shared by `loadOneImage`/`loadOneBackground`/`LoadImageSet`, so every image-fetching path benefits uniformly) now retries a `429` response up to `maxRateLimitRetries` (3) times, waiting the requested delay (capped at 5s as a defensive ceiling against a hostile/misconfigured server) between attempts, aborting promptly on context cancellation, before giving up exactly as it already did for any other non-200 status. Any other status code is unaffected — this is deliberately narrow, only 429 triggers a wait-and-retry.
+- **Verified live, repeatedly**: 4/4 fresh renders of the real page (both before and again after an UNRELATED concurrent-session merge landed in the same file — re-verified post-merge, not assumed) now show the infobox logo consistently, up from roughly 1-in-4 before the fix.
+- **Honest cost, not hidden**: this correctness fix has a real, measurable SPEED cost specifically for image-heavy single-host pages — en.wikipedia.org's own render time went from ~1.5-2s to ~8-12s (this round's live bench run measured 11.8s), now SLOWER than Chrome for this one page (speed_ratio 0.49, down from >2x) where it previously "won" partly by silently skipping content Chrome actually waits for. This is the appropriate cost of respecting a real server's stated rate limit rather than an implementation flaw — hammering the CDN harder or ignoring `Retry-After` would be worse, not better. A complementary, NOT attempted this round, follow-up would be a genuine per-host concurrency cap (reducing how often the limit is hit at all, rather than paying for it after the fact) — flagged for a future round rather than folded into this one, since it is a materially bigger change to `parallelDo`'s architecture (currently host-unaware).
+- **Bench SSIM essentially unchanged (0.438→0.437, noise)** despite the confirmed, directly-verified fix — the same "real fix, invisible at full-page SSIM" pattern as rounds 51/52/54/56: one infobox image is a small fraction of an overwhelmingly text-heavy, ~21,000px article where font-rendering differences between this engine's own font stack and Chrome's system fonts already dominate the per-pixel score far more than any single image ever could. The genuinely worse `speed_ratio` is the round's real, honestly-reported cost; the SSIM number is not where this fix's value shows up.
+- Added `TestRetryAfterDelay` (table-driven, no network: empty/negative/non-numeric fall back to default, a plain integer is honoured, an absurd value is clamped), `TestFetchImageBytesRetriesOn429` (an `httptest.Server` returning 429 twice then 200, confirming the eventual success and the exact retry count), and `TestFetchImageBytesGivesUpAfterMaxRetries` (a server that always 429s, confirming a bounded — not infinite — retry loop). All three are in the root `engine` package (not coverage-gated, like every other network-I/O test here) but follow the same `git stash`-confirmed-fail discipline as every gated-package test: without the fix, they fail to even COMPILE (`doWithRateLimitRetry`/`retryAfterDelay`/`maxRateLimitRetries` undefined).
+- **Concurrent-session note**: PR #137 (an unrelated `Engine.LoadImageSet` feature, also touching `images.go`) merged while this round was in flight. Predicted PR number shifted from #137 to #138 accordingly; `git stash`→`pull --ff-only`→`stash pop` merged with zero conflicts (disjoint edits within the same file), and the full pipeline (build/test/coverage/live Wikipedia re-render) was re-verified against the POST-merge code before shipping, matching this session's established collision-recovery procedure.
+
+## 2026-09-06 (round 56) — `<button>` was laid out as an atomic label-TEXT-only box, so an icon-only button's img/svg child was sized and painted as nothing at all, regardless of round 55's shadow-DOM fix (engine#136)
+
+Picks up round 55's own flagged, deliberately-unfixed follow-up directly: MDN's nav search icon needed BOTH the shadow-DOM discovery fix (round 55) AND this one to actually appear, and round 55 was explicit that the second half was left for a dedicated round given its larger, cross-cutting scope.
+
+- Confirmed the gap was real and already partly self-documented: `layout.formControlDefaultSize`'s "button" case and `layout.buttonLabel`'s doc comment both already cited pkg.go.dev's icon-only search-submit button as a case that sizes to padding-only with "no fabricated Submit label" — correct as far as it went, but the code never went the extra step of sizing/painting the icon itself, only avoiding a wrong text fallback.
+- Reproduced minimally and confirmed the gap is independent of Shadow DOM: a plain `<button style="width:40px;height:40px"><svg stroke="red">...</svg></button>` with NO shadow tree involved at all lost its icon exactly the same way — proving round 55's fix alone could never have closed this even on a non-shadow page.
+- **Root-caused to TWO separate FormControl-item creation sites, not one** — an easy trap this round nearly fell into: an isolated call to the new `buttonIcon` helper worked correctly, and layout.go's `contents()` function (used when an element is laid out as its own top-level box, e.g. `display:block`) was patched and looked right, but the live repro still rendered nothing. Instrumenting layout directly (a throwaway in-package test walking the real box tree) showed the button's `<button>`-tag InlineItem's `Icon` field was still nil — tracing the ACTUAL code path taken for a plain, default-`display:inline` button as a child of `<body>` led to a SECOND, separate call site (`appendElementInline`'s own `isFormControlTag` branch, layout.go ~line 770) that builds its own `FormControl` `InlineItem` independently of `contents()` — the common case for a bare, unstyled `<button>` — which I had not touched. Both sites now compute the icon identically.
+- Added `layouter.buttonIcon(node) (icon *dom.Node, w, h float64)`: returns a `<button>`'s single img/svg DIRECT child and its used size, but ONLY when `buttonLabel(node) == ""` — a button with visible text (even alongside an icon: no confirmed real caller mixes them) keeps the old text-only path unchanged. Deliberately narrow, matching this session's "no confirmed caller, don't guess" discipline: more than one img/svg child returns nil (ambiguous — which one is "the" icon?), and a lone child whose size never resolved (fetch failed, budget exceeded, no width/height attribute either) falls back to the pre-existing padding-only sizing rather than a wrong or zero-size box.
+- `formControlDefaultSize`'s "button" case now sizes an icon-only button to the icon's own size plus the SAME `formControlPadX/Y` padding a text button already used — the same box a real browser gives it — instead of the previous padding-only floor.
+- Added `InlineItem.Icon *dom.Node` (both FormControl-creation sites now set it) and taught `paint.paintFormControl` to blit the icon's bitmap (looked up in the SAME `imgs` map an ordinary `Image` item already uses, so no new plumbing needed there) centred in the control's box, instead of falling through to the empty-label text-drawing path.
+- **Verified live end-to-end, combining BOTH rounds' fixes**: re-rendered round 55's exact MDN `<mdn-search-button>` repro — the magnifying-glass icon now renders correctly, matching Chrome. Confirmed directly against the FULL live MDN page too (not just the isolated repro): the search icon is now visibly present in the bench montage, matching Chrome's rendering pixel-for-pixel in that region.
+- **A second, genuinely separate icon is still missing next to it** — MDN's mobile nav hamburger-menu button/icon, immediately to the right of the search pill in the top bar. Spotted while confirming this fix, NOT investigated (different element, likely a different root cause), flagged honestly for a future round rather than silently left unmentioned or scope-crept into this one.
+- **Bench essentially flat on MDN (SSIM 0.6098→0.6096, pixdiff 18.01%→18.02%, both noise)** — expected and consistent with this session's repeated finding (rounds 51/52/54) that a small, real, correctly-fixed visual element can be too small a fraction of a 1024×2500 comparison region to move the aggregate metric, even when directly confirmed present via a pixel-level crop. The rest of the 10-page corpus moves by ordinary run-to-run noise (caniuse.com: 0.646/18.4%, matching round 54's numbers exactly, confirming no regression there).
+- Coverage: `layout` and `paint` both remain at 100.0% with the new branches (`buttonIcon`'s four outcomes, `paintFormControl`'s icon-drawing path) — the new tests exercise every one.
+- Added three regression tests at three levels, mirroring this session's usual "verify at the layer where the bug actually lives, plus end-to-end" pattern: `layout/formcontrol_test.go`'s `TestFormControlButtonIconSizesToIconAndIsPainted` (the common inline-context entry point), `TestFormControlDisplayBlockButtonIconRoutesThroughContents` (the SECOND entry point this round's own investigation found — a dedicated regression against exactly the gap that nearly shipped incomplete), and `TestFormControlButtonIconFallsBackWhenAmbiguousOrUnsized` (three fallback cases, table-driven); `paint/formcontrol_test.go`'s `TestPaintFormControlIconDrawsBitmapCentered`; and the root package's end-to-end `TestButtonIconOnlyRendersIcon` (`images_test.go`). All confirmed to fail with the exact predicted symptom via a full `git stash` revert of the three source files (`layout/box.go`, `layout/layout.go`, `paint/paint.go`) — the layout/paint unit tests failed to even COMPILE without the new `Icon` field (a stronger signal than a runtime failure), and the end-to-end test failed with the precise predicted pixel mismatch (`#efefef` — plain button background — instead of `#ff0000`).
+
+## 2026-09-06 (round 55) — `loadImages`'s replaced-element walk never descended into a host's declarative shadow tree, so an `<svg>`/`<img>` living only in shadow content was never fetched or rasterised — silent empty space regardless of how correctly layout/cascade positioned and styled it (engine#135)
+
+Found on developer.mozilla.org: the top-nav search control (a
+`<mdn-search-button>` custom element, SSR'd with a `<template
+shadowrootmode="open">` per the Declarative Shadow DOM spec) renders as an
+empty pill with no magnifying-glass icon, while Chrome shows the icon
+clearly. Confirmed with a pixel-level zoom crop of the existing bench
+montage before investigating further (this session's standing "never trust
+a downscaled thumbnail" discipline) — round 55 continued from a fresh
+corpus-wide `Engine.JSLog` sweep (the round 51 technique) that came back
+fully clean of script errors, so this round switched to the traditional
+visual-comparison approach instead.
+
+- Fetched MDN's real HTML (not assumed) and found the search button's icon
+  is a genuine inline `<svg fill="none" stroke="currentColor" ...>` (a
+  circle + diagonal handle, Feather-icon-style) sitting inside the
+  declarative shadow root's own `<button>` element — i.e. shadow CONTENT,
+  never a light-DOM child of `<mdn-search-button>`.
+- Root-caused with a minimal, isolated repro (`cmd/render -file`, no
+  network): the SAME structure (`<my-icon><template shadowrootmode="open">
+  ...<svg>...</svg>...`) reproduced the bug standalone. Instrumented
+  `loadImages` (`images.go`) directly via a throwaway in-package test and
+  found the cause precisely: its own `walk` function — SEPARATE from the
+  cascade and layout tree walks, which already handle `n.Shadow` correctly
+  (see `css/cascade.go`, `layout/shadow.go`) — only ever recursed into
+  `n.Children`, never `n.Shadow.Children`. An `<svg>`/`<img>` reachable
+  only through a host's shadow content was therefore never added to the
+  fetch/rasterise job list at all: not a cascade bug (the element's
+  computed style, including the inherited `color` `currentColor` resolves
+  against, was already correct), not a serialisation bug (`serializeSVG`
+  already produced correct XML), purely a discovery gap in this one
+  independent tree walk.
+- Fixed by adding the same `if n.Shadow != nil { for _, c := range
+  n.Shadow.Children { walk(c) } }` branch `loadImages`'s walk was missing,
+  mirroring the pattern every other shadow-aware walk in this codebase
+  already uses. One-line mechanism, `images.go`.
+- **This alone does NOT fully resolve MDN's visible symptom** — documented
+  honestly rather than oversold. A SECOND, independent, pre-existing
+  limitation also gates this specific icon: `<button>` is laid out as an
+  atomic, label-text-only box in this engine (see
+  `layout.formControlDefaultSize`'s "button" case and
+  `layout.buttonLabel`'s doc comment, both already flagging this for
+  `pkg.go.dev`'s icon-only search-submit button before this round), so a
+  `<button>` whose entire content is an icon with no text has that icon
+  silently discarded at layout time regardless of whether it is discovered
+  by `loadImages` — confirmed directly: a plain `<button><svg
+  stroke="red">...</svg></button>` with NO shadow DOM involved at all
+  loses its icon exactly the same way. Fixing that is a materially larger,
+  cross-cutting change (multiple call sites sizing/painting every
+  input/button/select/textarea) and is left as a dedicated follow-up round
+  rather than folded into this one.
+- The fix is real and general on its own regardless: MDN's page also has a
+  DIFFERENT shadow-hosted icon (an `<a class="button">` "Ask the MDN
+  community" link, not a `<button>` tag) whose SVG is not gated by the
+  button limitation above — any host element OTHER than a real
+  input/button/select/textarea with a shadow-hosted `<img>`/inline `<svg>`
+  is fixed by this round alone. A live before/after full-page render diff
+  of the actual MDN URL showed zero pixel difference, however: with
+  JavaScript enabled (this session's normal bench/live-render configuration)
+  the settle loop's post-JS-mutation DOM differs from the raw fetched HTML
+  in ways not fully traced down given this round's time budget, and no
+  corpus page currently exercises the fixed mechanism in a JS-disabled,
+  non-button context. Reported honestly as a real, verified-by-unit-test
+  mechanism fix with unmeasured (not "flat", genuinely not isolated) impact
+  on the current 10-URL corpus, rather than claiming a corpus improvement
+  that a live diff did not actually show.
+- Added `TestShadowDOMInlineSVGIsDiscoveredForRasterization`
+  (`shadowdom_test.go`): a minimal, JS-disabled, non-button fixture (a
+  plain custom element host) with a shadow-hosted red-filled `<svg><rect>`,
+  asserting the rect's colour actually reaches a painted pixel. Confirmed
+  it fails with exactly the predicted symptom (`pixel (10,10) = #000000,
+  want #ff0000` — plain background, matching the live empty-pill symptom)
+  via a full `git stash` revert of `images.go` alone, and passes again once
+  restored.
+- **Bench corpus comparison could not be run this round**: headless Chrome
+  failed to complete its devtools handshake for every one of the 10 URLs
+  (`websocket url timeout reached` / `could not dial ...: context deadline
+  exceeded`), confirmed — via six independent manual `Google Chrome
+  --headless` invocations across several flag combinations, all hanging
+  with DevTools listening but no page-load ever attempted within a 15-25s
+  window — to be a local machine-load issue (33 concurrent Claude Code
+  processes, load average 4.3-8.0 observed via `ps`/`uptime` at the time),
+  not anything related to this fix, this page, or this engine. Retried
+  once more at a 60s per-page timeout with an identical result across all
+  10 URLs. The failed run's `results.json`/`REPORT.md` (all-zero SSIM,
+  `chrome_ok:false`) were correctly discarded via `git checkout --` rather
+  than committed over the last good numbers — bench/REPORT.md and
+  bench/results.json are UNCHANGED by this round, not silently regressed.
+
+## 2026-09-06 (round 54) — `document.createTreeWalker` returned a bare empty object, so `nextNode()` threw and aborted lit-html's OWN template-compilation code, breaking every web component built on it (engine#134)
+
+Closes the SECOND (and last) of the two leads round 51's corpus-wide
+`Engine.JSLog` sweep flagged and left unfixed — caniuse.com's own remaining
+crash, which survived round 50's `customElements` fix untouched (a
+different, later failure in the same bundle).
+
+- caniuse.com's console: `TypeError: Object has no member 'nextNode'`.
+  `document.createTreeWalker` (`js/dom.go`) previously just returned
+  `b.vm.NewObject()` — a bare object with no methods at all, not merely a
+  narrower stub — so ANY call into a `TreeWalker` immediately threw.
+- **Confirmed the exact real-world caller before implementing anything**
+  (this session's standing discipline, same as round 52's `document.
+  implementation`): fetched caniuse.com's real `bundle.js` and found the
+  failing line is [lit-html](https://lit.dev)'s own `Template` constructor —
+  `E=c.createTreeWalker(c,129)` (`c`=`document`, `129`=`NodeFilter.
+  SHOW_ELEMENT|SHOW_COMMENT`), then `E.currentNode=this.el.content` followed
+  by a `while(null!==(i=E.nextNode()))` loop reading each element's
+  attributes to find lit's `?`/`.`/`@`-prefixed template bindings. lit-html
+  underlies a huge fraction of the modern web-components ecosystem
+  (Shoelace, Material Web, and many sites' own custom elements), so this
+  crash's blast radius extends well past caniuse.com specifically.
+- Implemented a real, working (if narrowly-scoped) `TreeWalker`:
+  `currentNode` (get/set) and `nextNode()` — the two members lit-html's own
+  confirmed usage actually reaches for. `nextNode()` does a genuine
+  depth-first pre-order document-order walk (children before siblings),
+  bounded to never escape above the walker's own root, returning `null`
+  once the subtree is exhausted — reusing the SAME `nextSibling` helper
+  `Node.nextSibling`/`previousSibling` already use, not a new traversal
+  mechanism. `previousNode`/`parentNode`/`firstChild`/`lastChild`/
+  `nextSibling`/`previousSibling` (the rest of the real spec) are NOT
+  implemented — no confirmed caller reaches for them, matching round 52's
+  identical scope discipline for `document.implementation`.
+- **`whatToShow` honoured on a best-effort basis, honestly limited**: this
+  engine has no distinct Comment node type at all — `document.
+  createComment` already just returns a plain Text node (confirmed by
+  reading the existing code, not assumed) — so `NodeFilter.SHOW_TEXT` (4)
+  and `SHOW_COMMENT` (128) cannot be told apart internally; either bit
+  accepts every `dom.Text` node. For lit-html's own `129` mask this is
+  harmless in practice: its walker loop only ever DOES anything for
+  `nodeType===1` (element) nodes, silently skipping whatever else it visits,
+  so over-matching a text node it wouldn't otherwise have seen costs nothing
+  functionally — but this is a real, documented approximation, not a
+  claim of spec-complete `NodeFilter` support.
+- Verified live via the SAME JSLog sweep script from rounds 51/52:
+  caniuse.com now reports ZERO `nextNode`-related errors (the ONE remaining
+  console error on the page — `TypeError: Cannot convert undefined or null
+  to object` in `pagead2.googlesyndication.com/.../adsbygoogle.js` — is a
+  third-party Google-ads script, confirmed present and IDENTICAL before
+  this fix too via a targeted `git stash` check; correctly left alone as
+  non-deterministic third-party ad-network code, the same category
+  already established for MDN's ad banner in round 47). **Bench essentially
+  flat (SSIM 0.646→0.644, pixdiff 18.3%→18.4%, both within the corpus's
+  normal run-to-run noise band)** — whatever lit-html-based widget this
+  unblocks on caniuse.com is evidently small or below the fold at 1024×768,
+  so the fix's visible effect on a full-page screenshot is negligible even
+  though the underlying crash is real and now silenced. The fix's actual
+  value, like rounds 51/52, is general rather than page-specific: lit-html
+  is a foundational, widely-used library, and this exact `TreeWalker` setup
+  is its OWN core template-compilation mechanism, not an edge case.
+- Added `TestTreeWalkerNextNode` (`js/js_test.go`, alongside round 52's
+  `TestDocumentImplementationCreateHTMLDocument`): builds a real 3-element
+  tree, walks it with `whatToShow=SHOW_ELEMENT`, and checks the visited
+  order, that `currentNode` reflects the last-visited node, that walking
+  past the end returns `null`, and that `currentNode` is settable.
+  Confirmed to fail with the exact predicted `TypeError` via a full
+  `git stash` revert.
+- **This closes both leads round 51's corpus sweep flagged** — the sweep
+  technique (rounds 50→51→52→54, round 53 being an unrelated concurrent
+  session's PR) has now directly produced 4 shipped fixes
+  in a row from a single hour of initial investigation, the highest
+  yield-per-investigation-hour of any technique used this session.
+
+## 2026-09-06 (round 52) — `document.implementation` was entirely absent, so jQuery's OWN bootstrap feature-check threw and aborted before assigning the global `$`, breaking every other script on the page that depends on it (engine#132)
+
+Picks up the first of the two leads round 51's corpus-wide `Engine.JSLog`
+sweep flagged but deliberately left unfixed (one bug per round even when a
+sweep surfaces several).
+
+- go.dev/blog's console output: `TypeError: Cannot read property
+  'createHTMLDocument' of undefined or null` in jquery.js, immediately
+  followed by `ReferenceError: $ is not defined` in godocs.js (go.dev's own
+  script). The second error is a DIRECT CONSEQUENCE of the first, not an
+  independent bug: jQuery's own bootstrap runs a feature-detection check
+  unconditionally at load —
+  `y.createHTMLDocument = ((_t = E.implementation.createHTMLDocument("")
+  .body).innerHTML = "<form></form><form></form>", 2 === _t.childNodes
+  .length)` — and with `document.implementation` entirely absent (this
+  engine never modelled it at all, not even a stub), reading
+  `.createHTMLDocument` off `undefined` threw before jQuery finished
+  assigning its global `$` alias, so godocs.js's very first `$(...)` call
+  failed outright.
+- Confirmed the EXACT real-world usage before implementing anything, by
+  fetching go.dev's actual `jquery.js` and reading the offset the error
+  named: both the feature-check above AND `jQuery.parseHTML` itself call
+  `document.implementation.createHTMLDocument("")`, then use the result's
+  `.body`/`.head`/`.createElement` — never anything else (no
+  `querySelector`, no event dispatch, no `getElementById`) — a narrow,
+  concretely-bounded real requirement, not a request to implement a full
+  second `Document` interface.
+- Implemented `document.implementation` (a `DOMImplementation`-shaped stub
+  with `createHTMLDocument`/`hasFeature`) and `createHTMLDocument(title)`
+  returning a minimal but GENUINELY REAL detached document: an actual
+  `<html><head></head><body></body></html>` tree of real elements (the same
+  `dom.Node`s the main document uses), plus `createElement`. Deliberately
+  NOT a full `Document` — no `querySelector`/`getElementById`/event
+  methods — since nothing in the confirmed real usage reaches for them;
+  adding them would be speculative surface with no live caller.
+  `.body.innerHTML = "..."` on the returned document therefore parses REAL
+  child nodes exactly the same way it does on the main document, which is
+  exactly what jQuery's own feature-check depends on to tell a real browser
+  apart from a broken shim.
+- Verified live via the same JSLog sweep from round 51: go.dev/blog now
+  reports ZERO ReferenceError/TypeError output; jQuery's global `$` is
+  correctly defined and godocs.js's calls into it succeed. **Bench flat
+  (SSIM/pixdiff unchanged)** — expected, not a shortfall: on THIS
+  particular page jQuery only drives interactive behaviours (nav
+  dropdowns' JS-assisted state, presumably), not the page's static layout,
+  so a script no longer crashing has no visible effect on a full-page
+  screenshot. The fix's real value is general rather than page-specific:
+  jQuery is one of the most widely-deployed libraries on the web, and this
+  exact feature-detection line ships unconditionally in every jQuery 3.x
+  bundle — any OTHER page in the wild using jQuery would have hit the
+  identical crash.
+- Added `TestDocumentImplementationCreateHTMLDocument` (`js/js_test.go`,
+  next to round 51's `TestCustomElementsRegistry`): checks `head`/`body`/
+  `documentElement` tag names, that `.body.innerHTML=` genuinely parses two
+  sibling `<form>` elements (mirroring jQuery's own feature-check
+  precisely), and that `createElement` + `appendChild` + attribute
+  read/write work on the detached tree. Confirmed to fail with the exact
+  predicted `TypeError` via a full `git stash` revert.
+- Coverage: `js` remains ungated (only css/layout/paint/dom are), same as
+  rounds 50/51 — the revert-and-confirm-fail discipline was applied anyway.
+
+## 2026-09-06 (round 51) — `Node.prototype.isEqualNode` was entirely missing, throwing a TypeError on every call; a NEW corpus-wide diagnostic technique (reading `Engine.JSLog` across all 10 pages at once) found this plus two more real, unfixed bugs in a single pass (engine#131)
+
+**Methodology shift, not just a bug fix**: round 50 established that
+`Engine.JSLog` (console/diagnostic output — already wired through the whole
+render pipeline, just never READ in any prior round's diagnostics) surfaces
+uncaught script errors directly, without needing to guess a root cause from
+a visual symptom first. This round applied that technique PROACTIVELY across
+the entire bench corpus in one sweep (a small script fetching all 10 URLs,
+filtering `JSLog` output for `ReferenceError`/`TypeError`/"not defined"/"not
+a function") rather than picking one page and investigating reactively.
+**This single sweep surfaced THREE distinct real bugs at once**:
+
+1. **react.dev: `TypeError: Object has no member 'isEqualNode'`, repeated 8
+   times per render.** `Node.prototype.isEqualNode` (a standard, spec-
+   required DOM method — structural equality of two nodes: same type/tag/
+   attributes/text and recursively-equal children, in order; distinct from
+   `isSameNode`/`===`'s reference identity) did not exist anywhere in this
+   engine's JS/DOM bridge at all. react's hydration/reconciliation calls it
+   directly on real DOM nodes. **Fixed** — see below — this round.
+2. **go.dev/blog: `TypeError: Cannot read property 'createHTMLDocument' of
+   undefined or null` in jquery.js, immediately followed by `ReferenceError:
+   $ is not defined` in godocs.js.** jQuery's own bootstrap touches
+   `document.implementation.createHTMLDocument` and fails, so jQuery itself
+   never finishes initialising and the global `$` alias is never assigned —
+   go.dev's own script then fails outright trying to use it. NOT fixed this
+   round (a `document.implementation` gap, potentially broad — jQuery is
+   near-ubiquitous — but a fresh root cause, not yet scoped); flagged here so
+   a future round doesn't have to re-discover it from scratch.
+3. **caniuse.com: `TypeError: Object has no member 'nextNode'`, still
+   present after round 50's `customElements` fix.** Round 50 fixed the
+   FIRST crash in this bundle (which unblocked four real UI pieces); this is
+   a SECOND, later, different crash further into the same script — likely
+   `document.createTreeWalker(...).nextNode()` (`TreeWalker` support gap).
+   NOT fixed this round; flagged for later, since round 50 already extracted
+   the confirmed, high-value fix from this page.
+
+**This round fixes only #1** (react.dev's `isEqualNode`), keeping to one
+bug per round even though the sweep surfaced three — #2 and #3 are real,
+confirmed, and now documented, not silently dropped.
+
+- Implemented `isEqualNode` as a genuine recursive structural comparison
+  (`js/dom.go`): same `NodeType`, same `Tag`, same `Text`, same attribute
+  set (order-independent), same number of children with each corresponding
+  pair ALSO equal, recursively. Two nil arguments (both JS `null`) compare
+  equal; exactly one nil does not.
+- **Checked, rather than assumed, whether this explains react.dev's much
+  bigger, already-documented "washed-out prose" reskin gap** (rounds
+  10/19/42's `dynamic.go` settle-loop empty-render-guard defect, explicitly
+  scoped as "genuinely comparable to Shadow DOM… not attempted" and never
+  fixed) — a plausible hypothesis, since a live rendering error mid-settle
+  is exactly the trigger condition that gap depends on. **It does not**:
+  reconfirmed by rendering the real page after the fix and inspecting the
+  output — the reskin symptom (large sections of prose retaining light-mode
+  colours on a dark background) is unchanged. `isEqualNode` and the reskin
+  gap are two independent defects that happen to both live in the same
+  settle path; fixing one does not fix the other. Documented honestly
+  rather than overclaiming a fix for the corpus's longest-standing
+  known gap.
+- Verified live: react.dev's render produces ZERO `isEqualNode` (or any
+  other ReferenceError/TypeError) console output now, confirmed via the
+  same sweep script re-run after the fix. **Bench flat (SSIM/pixdiff both
+  unchanged)** — expected and consistent with the finding immediately
+  above: the fix is real (a genuine, previously-uncaught, repeated runtime
+  exception, now silenced) but the page's dominant visual defect is the
+  separate, still-unfixed reskin gap, which swamps this one at the pixel
+  level.
+- Added `isEqualNode` coverage to the existing `TestElementTreeAndManipulation`
+  (`js/js_test.go`, alongside the pre-existing `cloneNode`/`contains`
+  checks): self-equality, structural equality of two distinct-but-identical
+  elements, inequality on a differing attribute, inequality on a differing
+  tag, and the null-argument case. Confirmed to fail with the exact
+  predicted `TypeError` via a full `git stash` revert. Not one of the
+  coverage-gated packages (`js` isn't gated, same as round 50), so no floor
+  to hold, but the same revert-and-confirm-fail discipline applied anyway.
+
+## 2026-09-06 (round 50) — a bare reference to the global `customElements` (no method call needed) threw an uncaught ReferenceError, silently aborting the REST of the script it appeared in — including unrelated code later in the same file (engine#130)
+
+caniuse.com re-investigated fresh. Live at 1024px: the nav bar was missing
+"News" and "Compare browsers" (only "Home" and "About" showed), the search
+box's "⚙ Settings" control was gone, and the "Filter features" dropdown never
+appeared — four visibly different, seemingly-unrelated UI pieces all absent
+at once.
+
+- Confirmed the markup for all four IS present in the real, fetched, static
+  HTML (this is a server-rendered page, not a client-templated one) — so the
+  gap wasn't missing content, it was something hiding already-present
+  elements.
+- Found the CSS mechanism first: `.no-js .site-nav-item--news, .no-js
+  .site-nav-item--comparison, .no-js .options-toggle, .no-js
+  .primary-settings, ... { display: none; }` — the classic progressive-
+  enhancement pattern: `<html class="no-js">` ships by default, and the
+  page's own bundled script removes that class once JS successfully runs,
+  revealing everything gated on its absence. All four missing pieces are
+  gated by this ONE mechanism.
+- **Confirmed directly, not inferred**: fetched the real page end-to-end
+  (`Engine.Fetch` + `Engine.RenderDocument`, the real pipeline, not a
+  simplified fixture) and inspected the final DOM's `<html>` class
+  attribute after settle: `"no-js client-js"` — this engine's OWN
+  `client-js` marker was added correctly, but the SITE'S OWN `no-js` class
+  was still there, meaning the page's `classList.remove("no-js")` call
+  never ran.
+- **Root cause, found by wiring `Engine.JSLog` (console/diagnostic output,
+  already piped through but not read in prior rounds) and reading what the
+  script actually reported**: `ReferenceError: customElements is not
+  defined`, thrown partway through the page's ~330KB bundled script. This
+  engine's JS global environment has no `customElements` at all — not even
+  as an inert stub — so a bare, unguarded reference to it (not even a
+  method CALL, just reading the global) throws immediately. Since the
+  `classList.remove("no-js")` call sits LATER in the exact same script
+  file, the uncaught exception aborted execution before ever reaching it —
+  the missing nav links, the missing "Settings" text and the missing
+  "Filter features" dropdown are four UNRELATED-LOOKING symptoms of the
+  SAME single root cause, discovered together because they share one CSS
+  gate, not because they share any functional connection to custom
+  elements.
+- This sits right next to an EXISTING, already-declined Known Gap (Shadow
+  DOM's write-up: "no imperative `attachShadow()`/`customElements.define()`
+  JS API (neither confirmed real site needed it)") — but that gap was about
+  custom elements not WORKING; this bug is about the bare global not
+  EXISTING, a materially different (and much smaller) problem with a much
+  bigger blast radius, since real sites often reference a capability
+  defensively (`if (window.customElements) {...}` or similar) or as part of
+  a larger bundle without actually depending on it doing anything.
+  caniuse.com's script apparently doesn't even get that far — it references
+  the bare identifier directly.
+- Fixed by adding `window.customElements` as a stub object (matching this
+  engine's existing "present-but-inert beats absent-and-throwing"
+  philosophy already used for `MutationObserver`/`IntersectionObserver`/
+  etc.): `define`/`get`/`upgrade` are harmless no-ops, `whenDefined`
+  resolves immediately (reusing the existing `resolved()` promise helper).
+  This does NOT implement real custom-element upgrade machinery (no
+  `connectedCallback`, no attribute-changed reactions) — that remains the
+  same already-documented, deliberately out-of-scope gap; only the
+  crash-on-mere-reference is fixed.
+- Verified live: "Home | News | March 5, 2026 - ... | Compare browsers |
+  About" now all render in the nav, and "Settings" appears next to the
+  search box, matching Chrome. **Bench moved for real this time: SSIM
+  0.640→0.645, pixdiff 21.7%→18.4%** — unlike most of this session's
+  "real fix, flat bench" nav-bar rounds, four separate, visible UI pieces
+  reappearing on a fairly compact (1547px) page was enough to move the
+  aggregate score meaningfully.
+- Coverage: `js` is not one of the gated packages (css/layout/paint/dom
+  only — it exercises the goja/DOM bridge, not pure deterministic layout
+  logic), so no floor to hold, but a new `TestCustomElementsRegistry` was
+  added anyway (`js/js_test.go`, alongside the existing `TestWindowStubs`)
+  and confirmed to fail with the EXACT predicted `ReferenceError` via a
+  full `git stash` revert.
+
+## 2026-09-06 (round 48) — an inline-level element generated NO BOX AT ALL: its background, border and padding were never reserved and never painted, so a styled `<span>` label rendered as bare text and, with white-on-coloured text, vanished entirely (engine#128)
+
+An inline-level element — `<span style="background:…;padding:…;border:…">`,
+a bordered `<code>`, a highlighted `<a>`, the near-universal "pill"/"chip"/
+"badge" pattern — had no representation in the layout tree of any kind.
+`collectInline` flattened it into a flat list of `InlineItem` words, each
+carrying only the innermost element's `Style` pointer and `Node`; nothing
+recorded that a run of those words belonged to a box with edges.
+
+Two distinct failures followed from the same root cause.
+
+**Nothing reserved the horizontal space.** CSS reserves an inline box's
+`border-left + padding-left` before its first content and its
+`border-right + padding-right` after its last. `collectInline` reserved
+neither, so the words after a padded `<span>` sat exactly where that span's
+own padding should have been: any decoration painted for it would have
+overlapped its neighbours, and a shrink-to-fit container sized to the text
+alone clipped the padding off entirely.
+
+**Nothing painted the decoration.** `paintBoxContent` paints backgrounds and
+borders for a `*layout.Box`, and an inline element never gets one;
+`paintItem` draws glyphs, image blits and form controls and nothing else. A
+narrow stopgap existed for the background alone — `paintInlineBackground`
+filled a rectangle behind each item whose `Style` pointer differed from the
+block's, merging adjacent items of the same originating node — but it could
+reach only the INNERMOST element (a `<b>` inside a styled `<span>` hid the
+span's own background from it completely, since the words then carry the
+`<b>`'s style, not the span's), it painted per item interleaved with the
+glyphs (so a later item's background could paint over an earlier item's
+letters), and it had no notion of a border, of padding, or of an element
+being split across lines. Borders on an inline element simply never appeared.
+
+Fixed by modelling what CSS actually specifies: an inline box FRAGMENTS, one
+fragment per line box it spans, with `box-decoration-break: slice` (the CSS
+default) putting its leading edge on the first fragment only and its trailing
+edge on the last only.
+
+**Layout.** Inline collection now carries a `decor` chain (`layouter.decor`):
+the inline-level ancestors currently in scope that generate a box —
+`newInlineDecor` says an element does when it has a background to paint or an
+edge (border or padding) to reserve, and says NO for a `<b>`, `<em>`, `<a>` or
+UA-default `<code>` carrying nothing but typographic style. Every `InlineItem`
+keeps a reference to that chain, shared per element rather than copied per
+word, so a page of plain text allocates nothing at all for this.
+`resolveInlineEdges` then walks one formatting context in document order and,
+from where each item's ancestor chain DIVERGES from its neighbour's, fills in
+`decorFirst`/`decorLast` (the depths at which this item is the first/last item
+of an ancestor) and `padLead`/`padTrail` (the horizontal edges it therefore
+reserves). Those two lengths enter the line's advance in `wrapOneLine`,
+`WrapItems`, `lineMetrics` and `preferredWidth`'s max-content estimate — the
+same fields, and the same machinery, the collapsible-whitespace and
+inline-margin work of round 44 already uses, not a parallel path. They are
+deliberately NOT `SpaceBefore`: collapsible whitespace legitimately disappears
+at the start of a line, an element's own padding does not.
+
+A single new positioning loop, `placeLine`, replaces the two (wrapped and
+`white-space:pre`) that layoutInline carried, opening a fragment when an
+ancestor's first item arrives and closing it when the next item leaves it —
+taking the trailing edge only when the element genuinely ENDS there rather
+than merely continuing on the next line. Vertical padding/border deliberately
+do NOT grow the line: they extend the fragment beyond it, which is what CSS
+says an inline box's vertical padding does.
+
+**Paint.** `paintInlineBackground` is gone, replaced by `paintInlineFragment`,
+which paints a fragment's background (honouring `border-radius`, including the
+rounded-fill path) and then its border. `paintBorders` was refactored into a
+shared `paintEdges(…, left, right bool, …)` so a block box and an inline
+fragment stroke their edges through the same code: a block passes true/true, a
+fragment passes its own `First`/`Last`. All of a line's fragments now paint
+BEFORE any of its items, outermost fragment first, so an enclosing background
+lands under a nested one and no background ever paints over an already-drawn
+glyph.
+
+**Exported API** (`layout/box.go`), for a downstream painter — a PDF writer,
+specifically — to consume without re-deriving any of it:
+
+```go
+type InlineFragment struct {
+	Node        *dom.Node   // the inline element this is a piece of
+	Style       *css.Style  // its computed style
+	X, Y, W, H  float64     // absolute document px, BORDER box
+	First, Last bool        // box-decoration-break: slice
+}
+
+type LineBox struct {
+	// …
+	Inlines []InlineFragment // outermost first
+}
+```
+
+A consumer iterates `for _, line := range box.Lines { for _, fr := range
+line.Inlines { … } }` and paints in that order. `X..X+W` covers the element's
+content on this line plus its leading edge when `First` and its trailing edge
+when `Last`; `Y..Y+H` covers the items' font box grown by the element's
+vertical border+padding, and may exceed the line box's own height. Fragments
+translate with their box (`translateBox`), so a flex/grid/float-repositioned
+subtree's decoration follows its words.
+
+**Proven deterministically.** In `layout` (fake measurer: 10px per rune,
+ascent 8, line height 20, so every coordinate below is exact):
+`TestInlineDecorationReservesEdges` (a span's 7px edges reserved: its text at
+x=27 and the FOLLOWING text pushed to x=54, fragment X=20/W=34, and the line
+height unchanged at 20 by the vertical border),
+`TestInlineDecorationFragmentsPerLineBox` (a wrapped span: two fragments,
+First/Last true/false then false/true, and no phantom re-indent on the
+continuation line — its first word at x=0),
+`TestNestedInlineDecorationOutermostFirst` (a decorated `<b>` inside a
+decorated `<span>`: two fragments, span BEFORE b, both edges nested),
+`TestAdjacentInlineDecorationsAreSeparateFragments`,
+`TestInlineDecorationSpansAForcedBreak` (a `<br>` is not content: the edge is
+reserved once, before the first word),
+`TestInlineDecorationCountsTowardMaxContentWidth` (a float sizes to 34, not
+20), `TestInlineDecorationInPreformattedText` (the `white-space:pre` path),
+`TestBorderStyleNoneReservesNothing`,
+`TestInlineDecorationTranslatesWithItsBox`, and
+`TestUndecoratedInlineElementsMakeNoFragment` — which pins the
+no-regression claim directly: `<a>`, `<code>`, `<b>` and `<em>` produce no
+fragment, reserve nothing, and leave every item's X exactly where it was.
+
+In `paint`: `TestPaintInlineFragmentBackground`,
+`TestPaintInlineFragmentBorderSlice` (all three cases — a first fragment with
+a left border and no right, a last with a right and no left, a middle with
+neither and both horizontals), `TestPaintInlineFragmentRounded`,
+`TestPaintInlineFragmentDegenerate`.
+
+End to end: `TestInlineDecorationGolden` renders
+`testdata/inline_decoration.html` and asserts the FINAL pixels — the top
+border band, the left border on the first fragment, the background present on
+BOTH lines, NO left border where the element continues onto line two, the
+nested `<b>`'s green over its ancestor's blue, the right border on the last
+fragment only, the bottom border, and not one decoration pixel anywhere on the
+undecorated `<span>`'s rows — against a committed golden PNG.
+
+**Every one of the other twelve committed goldens regenerates byte-identical**
+(`UPDATE_GOLDEN=1 go test -short ./...` leaves `testdata/golden/` clean), which
+is the direct evidence that no existing page changed. `layout` and `paint` both
+hold 100% statement coverage.
+
+**Honest residual.**
+
+- **`box-decoration-break: clone` is not supported** — the property is not
+  parsed at all; every fragment is sliced. `slice` is the CSS initial value,
+  so this is only wrong for a page that explicitly asks for `clone`.
+- **A fragment's content height is the item's LINE BOX height, not the font's
+  own em box.** CSS paints an inline background over the content area, whose
+  height is font-derived and independent of `line-height`; this engine uses
+  `InlineItem.LineHeight`, so with a large `line-height` the band is taller
+  than a browser's (the same convention the previous `paintInlineBackground`
+  used — this change does not make it worse, and does not fix it). The font's
+  natural height is not currently carried on the item, which is what fixing it
+  would need.
+- **`background-image`/gradient layers on an inline element still do not
+  paint** — only the solid `background-color` does. An element whose ONLY
+  background is a gradient generates no fragment at all.
+- **`box-shadow`, `outline` and `filter` on an inline element** are likewise
+  unpainted; those live on the `*layout.Box` path only.
+- **No RTL.** Fragments are built left to right in document order;
+  `direction: rtl` is unmodelled engine-wide, so a fragment's First edge is
+  always its LEFT one.
+- **An inline element split by a promoted block-level child** (the round-40
+  `BlockBreak` path) yields fragments in each surrounding anonymous box with
+  First on the earlier and Last on the later, rather than CSS's own
+  "split the inline box around the block" model. No confirmed live page
+  depends on the difference.
+- **Vertical padding overflows the line box and is not clipped**, so a tall
+  inline background can overlap the line above or below. That IS what a
+  browser does; it is listed here because it looks like a defect and is not.
+
+## 2026-09-06 (round 49) — preferredWidth's replaced-element check only matched the literal "img" tag, so an inline `<svg>` made `display:block` by its own stylesheet (a common preflight reset) measured as a zero-width flex item (engine#129)
+
+Closes the LAST open bug from round 46's tailwindcss.com investigation — the
+"v4.3" version-badge rendering overlapping the START of the logo, found live
+but explicitly left undiagnosed after two minimal reproductions both failed
+to reproduce it ("didn't reproduce in 2 minimal attempts, documented for
+later"). Round 47's flex/mixed-text fix was suspected as a possible partial
+fix but confirmed NOT to touch this — re-checked live at the start of this
+round and the badge still overlapped the logo, unchanged.
+
+- **Root-caused via a graduated series of reproductions, escalating only
+  after each simpler one failed to reproduce the bug** (this session's
+  established method when a live symptom won't reproduce from a
+  hand-simplified fixture): a plain `<a><svg width=... height=...></svg></a>`
+  next to a flex sibling positioned correctly; adding the real `shrink-0`
+  class, the real multi-path SVG content, even the real `position:fixed`
+  wrapper — all still positioned correctly. Only loading the page's ACTUAL
+  fetched stylesheet (690KB of real Tailwind-generated CSS, not a hand-typed
+  approximation) reproduced it. This ruled out the SVG's own complexity, the
+  flex-shrink property, and the fixed-position ancestor as red herrings
+  before the real cascade rule was found.
+- **The real culprit, found with a temporary instrumented print inside
+  `flexRow` dumping every item's resolved `main` size**: the logo's flex
+  item (`<a>` wrapping the `<svg>`) resolved to `main=0`, while a plain
+  `imageSize()` unit check on the SAME svg node — called from a DIFFERENT
+  path — correctly reported its real size (159×20). This proved the SVG's
+  own intrinsic-size lookup was fine, narrowing the bug specifically to
+  `preferredWidth`'s handling of the `<a>` wrapping it.
+- Tailwind's own preflight resets EVERY `img`/`svg`/`video`/etc. to
+  `display:block` (`img,svg,video,canvas,audio,iframe,embed,object{
+  vertical-align:middle;display:block}`) — a completely standard, common
+  reset most real sites carry. `layout/layout.go`'s `hasBlockLevelChild`
+  checks a child's COMPUTED display with no exception for a replaced
+  element, so a now-block `<svg>` makes its `<a>` parent's
+  `preferredWidth` take the "widest BLOCK child" branch instead of the
+  "Inline: max-content" one. That branch recurses into `preferredWidth` for
+  the svg — but `preferredWidth`'s OWN replaced-element fast path checked
+  only the literal `"img"` tag, never `"svg"` (`appendElementInline`, a
+  SEPARATE function used for the correct, working case, already dispatches
+  on tag via a switch that doesn't care about `display` at all — the two
+  functions had silently drifted out of sync). Missing that check, the
+  recursive call falls through every other branch to the generic
+  inline-content fallback, which measures the SVG's own `<path>`/`<rect>`
+  children (no text) as ~0.
+- Fixed with a one-line change: `node.Tag == "img"` → `isReplacedTag(node.Tag)`
+  (the SAME helper `contents()`'s own replaced-element check already uses,
+  previously duplicated ad hoc here instead of shared).
+- Verified live: tailwindcss.com's nav now renders "tailwindcss v4.3 ⌄"
+  correctly laid out left-to-right, matching Chrome, closing a bug that
+  spanned three rounds (46: found, misdiagnosed as unrelated fill/stroke
+  work shipped instead; 47: suspected-but-confirmed-unrelated; 49: actually
+  root-caused — round 48, concurrent with this investigation, was an
+  unrelated inline-box fix by another session). **Bench essentially flat on
+  tailwindcss.com (SSIM 0.706→0.704, pixdiff 13.4%→13.3%)** — a small badge
+  icon on a 13,657px page, the usual "real fix, tiny aggregate movement"
+  pattern. The fix's real value is general: ANY flex item whose only content
+  is a CSS-sized-only (no width/height HTML attributes), block-styled inline
+  SVG — a common pattern for any site combining Tailwind's default preflight
+  with a plain inline logo/icon SVG — no longer collapses to zero width.
+- Added `TestFlexRowSVGSiblingNotOverlapped` (end-to-end, `svg_test.go`):
+  confirmed to fail via a full revert (`git stash`) with the exact predicted
+  symptom (`sibling positioned AFTER the svg... pixel = white, want
+  magenta`). Coverage floors held (css 99.5%, layout 100.0%, paint 100.0%,
+  dom 98.1%) without needing a new test to close a gap — the changed branch
+  was already exercised by existing `<img>`-tag tests; the new test adds
+  real-bug coverage on top, not gap-filling.
+
+## 2026-09-05 (round 47) — a flex container mixing bare text with an element child silently dropped the text entirely, so a nav dropdown's own label vanished, leaving only its icon (engine#127)
+
+go.dev/blog re-investigated fresh (by far the most stale page in the corpus:
+last dedicated look was round 20, 27 rounds ago, on the already-declined
+`@font-face` icon-ligature gap). A fresh full-resolution comparison found a
+DIFFERENT, previously-undiscovered bug in the same nav bar: "Why Go" and
+"Docs" — two of the nav's dropdown menu links — rendered as EMPTY, showing
+only their `arrow_drop_down` icon (itself the already-known, correctly-
+declined ligature-text gap) with no visible label text before it at all.
+"Learn" and "Packages" (plain links, no dropdown icon) rendered correctly.
+
+- Real markup: `<a class="js-desktop-menu-hover" aria-label=Docs
+  aria-describedby="...">Docs <i class="material-icons"
+  aria-hidden="true">arrow_drop_down</i></a>`, and go.dev's own stylesheet
+  sets `.Header-menuItem > a:link, ...:visited { display: inline-flex; ... }`
+  — the anchor itself is an `inline-flex` container holding BOTH bare text
+  ("Docs ") and a real element child (the icon `<i>`).
+- **Root cause, confirmed with a minimal offline reproduction before
+  touching any source** (`<div style="display:flex">Why Go
+  <i>ICON</i></div>` rendered as "ICON" alone): `layout/flex.go`'s
+  `flexItems()` — and `layout/floats.go`'s `preferredWidth` flex-row branch —
+  only ever collect `dom.Element`-type children, never bare text. Round 14
+  already handled the case of a flex container whose content is bare text
+  with ZERO element children (react.dev's `<h1 style="display:flex">React
+  </h1>`) by falling back to plain inline layout — but that fallback only
+  triggered when `len(items) == 0`. A MIXED container (bare text ALONGSIDE
+  at least one real element, go.dev's actual case) has `len(items) > 0`, so
+  it skipped straight to `flexRow`, silently discarding every bare-text
+  sibling: the icon rendered, the label never did. The exact same gap
+  existed independently in `preferredWidth`'s flex-row sum, which would have
+  under-measured the container's width even if `flex()` alone were fixed.
+- Fixed with a new `hasDirectText(node)` helper (any direct child that is a
+  non-blank text node) used in BOTH places: `flex()` now takes its existing
+  bare-text fallback whenever `len(items) == 0 OR hasDirectText(node)`, and
+  `preferredWidth`'s flex-row branch is skipped (falling through to the
+  general inline-measurement path already used for the zero-element case)
+  under the same condition. This is the shared root cause for BOTH
+  `display:flex` and `display:inline-flex` — `layoutNestedInlineFlex`
+  (round 45) internally forces plain `DisplayFlex` and routes through this
+  exact same `flex()` function, so go.dev's real `inline-flex` bug and a
+  plain `display:flex` case are fixed by the identical code path.
+- **A second, narrower bug surfaced while testing the fix against the
+  pre-existing `TestFlexSkipsTextAndHidden` fixture** (text + a
+  `display:none` span + a genuinely BLOCK-level `<div style="width:50px">`
+  — heavier than go.dev's real case, where the second child is merely
+  `display:inline`): the naive fallback unconditionally called
+  `layoutInline` and set `box.Lines` directly, exactly like round-14's
+  original fallback — but when the bare text sits alongside a true
+  block-level element, `collectInline` promotes that block via the ordinary
+  BlockBreak mechanism, which needs `box.Children` populated by
+  `placeInlineSegments`, not a bare `box.Lines` assignment. This is the SAME
+  "secondary box nothing walks" defect class round 45 fixed for
+  `InlineItem.NestedBox` — an orphaned box, not a crash, so nothing but a
+  targeted test would have caught it. Fixed by checking `hasBlockBreak(items)`
+  and delegating to `placeInlineSegments` when true, mirroring `contents()`'s
+  own identical check a few lines away.
+- The pre-existing `TestFlexSkipsTextAndHidden` test asserted exactly the
+  bug (`len(outer.Children) == 1`, treating the dropped text as CORRECTLY
+  "not a flex item" when it should have become an anonymous one) —
+  rewritten as `TestFlexRendersMixedTextHiddenAndElement` to assert the text
+  and the block child both render while the `display:none` child still does
+  not, matching this session's established precedent (rounds 42/45) for
+  fixing a test that encoded a bug rather than working around it.
+- Verified live: go.dev/blog's "Why Go" and "Docs" now render their labels
+  correctly before the (separately, already-known) literal
+  "arrow_drop_down" ligature text. **Bench flat on go.dev/blog itself
+  (SSIM 0.684→0.684, pixdiff 19.0%→19.0%)** — two two-word nav labels are a
+  tiny fraction of a page dominated by a long article list, the same "real
+  fix, tiny aggregate movement" pattern this session has hit on nearly every
+  nav-bar round. **developer.mozilla.org moved the OTHER way this run
+  (pixdiff 13.3%→17.9%)** — confirmed NOT caused by this fix: Chrome's own
+  capture now includes a live third-party ad banner ("Discover Otari") that
+  was absent from round 46's capture (Chrome's own page height changed
+  4188px→4278px between runs with no engine change at all, and re-running
+  MDN alone reproduces the same new score deterministically against
+  whatever ad is currently being served) — the same "ads/cookie banners are
+  non-deterministic, not a rendering bug" category already documented for
+  pkg.go.dev's cookie banner. news.ycombinator.com moved slightly better
+  (16.2%→15.7%), plausibly the same general fix touching an unrelated flex
+  usage there; not separately investigated.
+- Coverage: css 99.5%, layout 100.0% (two new branches — the mixed-content
+  fallback and the `hasBlockBreak` delegation — were 0%-covered immediately
+  after the initial implementation, closed with
+  `TestFlexContainerMixedTextAndElement` and the rewritten
+  `TestFlexRendersMixedTextHiddenAndElement`), paint 100.0%, dom 98.1% (all
+  floors held).
+
+## 2026-09-05 (round 46) — an SVG `fill`/`stroke` set via an ordinary CSS class (Tailwind's `fill-*`/`stroke-*` utilities) was silently dropped, so the element rasterised with SVG's initial fill (black) instead of its intended colour (engine#126)
+
+tailwindcss.com re-investigated fresh (last dedicated look pre-dated this
+session's round numbering — by far the corpus's most stale page). Wasn't
+picked for its bench score alone (13.3% pixdiff, mid-table) but for
+staleness, per this round's own "pick the worst-scoring/longest-stale page"
+discipline — and it paid off: the nav bar's Tailwind logo mark rendered as a
+near-invisible dark blob instead of Chrome's blue swirl+wordmark, and the
+search-box and version-badge icons were entirely missing.
+
+- Real markup, fetched fresh: `<a aria-label="Home"><svg class="h-5
+  text-black dark:text-white"><path class="fill-sky-400" d="..."/><path
+  fill="currentColor" d="...(wordmark letterforms)..."/></svg></a>`. The
+  wordmark path (`fill="currentColor"`, a literal XML attribute) is the
+  session's ALREADY-documented oksvg multi-subpath mis-render gap (round 25,
+  MDN's "mdn" logo) — ruled out as a re-discovery, not chased again. The
+  ICON path is different: `class="fill-sky-400"`, no `fill=` attribute at
+  all. `.fill-sky-400{fill:var(--color-sky-400)}` is a real, separate,
+  previously-undocumented gap.
+- **Root cause, confirmed with a minimal offline reproduction before
+  touching any source** (`<style>.blue{fill:#1e90ff}</style><svg><rect
+  class="blue".../></svg>` rendered black instead of blue): this engine's
+  CSS cascade has NEVER modelled `fill`/`stroke` as properties at all — no
+  field on `css.Style`, no case in `apply()`. Worse, even if it had,
+  `svg.go`'s `serializeSVG` (which re-emits an inline `<svg>` DOM subtree as
+  raw XML text for the third-party rasteriser, oksvg, to parse) only ever
+  copies each element's literal `n.Attr` map — it has no notion of this
+  engine's CSS cascade at all, so a class-driven paint colour had nowhere to
+  go even in principle. oksvg then sees a `<path>` with no `fill` attribute
+  and falls back to SVG's OWN initial value, black — invisible or
+  near-invisible against a dark nav bar.
+- Confirmed the SAME gap independently affects the nav's search-icon SVG
+  (`class="fill-gray-600 dark:fill-gray-500"`, no attribute) and the
+  version-badge's chevron SVG (`class="fill-gray-400"`, alongside an
+  IGNORED-by-CSS-priority `fill="currentColor"` attribute) — both were
+  invisible against the dark background for the identical reason, and
+  `stroke-white` (a CTA underline) is a second, live, real usage of the
+  parallel `stroke` property on the same page, so both were fixed together
+  rather than fill alone — not speculative, both confirmed load-bearing on
+  this one page.
+- Fixed with three additive changes: (1) `css/value.go` — `Style` gains
+  `Fill`/`FillSet`/`FillNone` and `Stroke`/`StrokeSet`/`StrokeNone` (the
+  *Set/*None split matters because `Color{}` — transparent black — is also a
+  legitimate real colour value, so "unset" needs its own bit rather than
+  overloading the zero value), inherited like `color` in `inheritFrom`. (2)
+  `css/parse.go` — `fill`/`stroke` cases parse a colour via the same
+  `parseColor` every other colour property already uses, or set the *None
+  flag for `none`; an unparseable value (an unresolved `var()`, matching
+  every other colour property's existing behaviour) is silently a no-op,
+  not a special case. (3) `svg.go`'s `serializeSVG`/`writeSVGNode` now take
+  the document's already-computed `css.StyleMap` (already available at both
+  call sites in `images.go` — no new plumbing needed) and, per element,
+  override (or add) the regenerated XML's `fill`/`stroke` attribute when CSS
+  resolved one, leaving every element CSS left untouched exactly as before.
+  Deliberately NOT implemented: `fill:currentColor`/`stroke:currentColor`
+  via a CSS class (no confirmed live usage — `currentColor` is fully
+  supported already, but only via the pre-existing literal-XML-attribute
+  path) and `fill:inherit`/`stroke:inherit` through the CSS-wide `inherit`
+  keyword dispatcher (ditto) — both narrower gaps than base support, left
+  undone rather than gold-plated in ahead of a confirmed need, matching this
+  session's established scope discipline.
+- **A second, separate real bug was found but NOT root-caused this round**:
+  the "v4.3" version-badge button renders overlapping the START of the logo
+  (a layout/positioning defect, unrelated to fill/stroke — it reproduced
+  identically before and after this round's fix). Two reasonable minimal
+  reproductions (a plain block-level flex sibling; an inline `<a>`
+  containing an SVG as a flex item, matching the real markup's un-styled
+  default `display:inline` `<a>`) both positioned correctly, failing to
+  reproduce it — the real page's specific combination (a `position:fixed`
+  ancestor, `justify-between` on the outer flex row, and a badge button
+  whose own text content is split by an empty React-hydration `<!--
+  -->` comment node between "v" and "4.3") wasn't narrowed down further
+  before time was better spent shipping the confirmed, well-scoped fix
+  above. Documented here rather than silently dropped, so a future round
+  doesn't have to rediscover the symptom from scratch.
+- Verified live: the nav's Tailwind logo now renders its correct blue swirl
+  (confirmed via a full-resolution crop of a fresh render, matching Chrome).
+  **Bench moved only slightly on tailwindcss.com itself (SSIM 0.706→0.709,
+  pixdiff 13.3%→13.1%)** — the fixed icons are a handful of pixels on a
+  13,585px page, the same "real fix, small aggregate movement" pattern this
+  session has hit repeatedly. The fix's real value is general: it applies to
+  any inline SVG on any page styled via CSS classes rather than XML
+  attributes, a very common pattern (every Tailwind-based site's icon set).
+- Coverage: css 99.5% (two new branches — `fill`/`stroke`'s color and
+  `none` cases — were 0%-covered immediately after the initial
+  implementation, closed with `TestApplyFillAndStroke`), layout 100.0%,
+  paint 100.0%, dom 98.1% (all floors held). Also added
+  `TestSerializeSVGCSSFillOverridesAttribute` (unit-level: override vs.
+  untouched vs. `none`) and `TestInlineSVGCSSClassFill` (end-to-end,
+  mirroring the real bug's shape) — the root `engine` package itself is not
+  coverage-gated (it performs live network I/O), but both were verified to
+  fail via a full revert-and-confirm-fail (`git stash`) before shipping.
+
+## 2026-09-05 (round 45) — `display:inline-flex` parsed down to the SAME value as block-level `flex`, making every such element block-level; fixing it surfaced a SECOND, unrelated bug in `translateBox` that silently dropped a nested box tree's own coordinates during re-translation (engine#125)
+
+pkg.go.dev re-investigated with a full top-to-bottom comparison (last
+touched round 43, on a narrow icon-colour issue only) after noticing it
+carries this session's corpus's highest pixdiff (49.6%) despite a middling
+SSIM — a strong signal that SOMETHING beyond the small icon fix was
+dominating the diff on this particular 78,426px page. The bench tool's own
+diff-heatmap montage showed a ghosting pattern that visibly WORSENED going
+down the page — the classic signature of a fixed vertical offset introduced
+early that then propagates through everything below it, rather than
+scattered noise.
+
+Traced to the very top: pkg.go.dev's breadcrumb (`Discover Packages > Standard
+library > net > http`) rendered as FOUR SEPARATE LINES, one per segment,
+instead of Chrome's single row. `.go-Breadcrumb li{display:inline-flex}` —
+this engine's CSS parser mapped BOTH `flex` and `inline-flex` to the exact
+same `css.DisplayFlex` value, discarding the "inline" qualifier entirely and
+making every `inline-flex` element block-level, stacking each breadcrumb
+`<li>` onto its own line and inflating the header's height by roughly 3
+extra lines — a fixed offset at the very top of the page that then shifted
+everything below it, compounding into exactly the growing-misalignment
+pattern the diff-heatmap showed.
+
+This is the "opposite direction" half of the already-documented "inline-
+flex/grid/table conflated with block" architectural gap (Known Gaps,
+originally scoped as "comparable to Shadow DOM… not attempted", confirmed
+on github.com round 24 and this same page's breadcrumb round 26) — but it
+turned out substantially more tractable than that estimate, because this
+engine already has the exact CONCEPT needed: `DisplayInlineBlock` already
+exists as "an atomic inline-level box, laid out as a block", and
+`layoutIsolated` (already used by flex/grid/table children) already knows
+how to lay a node out at a fixed content width in its own isolated context.
+
+Implemented for `inline-flex` specifically (the one confirmed live case;
+`inline-grid`/`inline-table` are NOT attempted, unconfirmed as live bugs):
+a new `css.DisplayInlineFlex` value, kept distinct from `DisplayFlex` so
+`isBlockLevel` correctly excludes it. `appendElementInline` treats it as a
+NEW kind of atomic inline item — `InlineItem.NestedBox`, a real laid-out
+`*Box` (unlike Image/FormControl's opaque bitmap/drawn-control) — sized via
+`layoutNestedInlineFlex`, which forces the isolated clone's `Display` back
+to plain `DisplayFlex` (inline-vs-block only matters for how the PARENT
+places the box, not how it lays out its own children) and shrink-to-fits it
+at its own `preferredWidth` (no surrounding line width is known yet at
+inline-collection time — the same reason Image/FormControl are sized up
+front). `layoutInline`'s two positioning loops translate the NestedBox to
+its final position once resolved, and `paintItem` recurses straight into
+`paintBox` for it, so it gets the identical filter/opacity/background/
+border/children handling any other box does for free.
+
+**A second, unrelated, more surprising bug surfaced verifying this live,
+found by the SAME "measure the real pixels" discipline this session
+applies throughout**: after the base fix, the breadcrumb correctly flowed
+onto one line — but rendered OVERLAPPING the page's own top search bar,
+painted well above where its own correctly-computed layout box said it
+should be. Direct instrumentation (comparing a from-scratch reproduction of
+the engine's OWN pipeline against `engine.Render`'s real output) proved the
+LAYOUT was already correct in both — the bug was in PAINT. Root cause:
+`translateBox` — the general mechanism that repositions a subtree already
+laid out at a local, pre-positioning origin (used for every flex/grid
+item, and for floats) — walks `box.Children` and updates each
+`InlineItem`'s scalar `X`/`Y`, but `NestedBox` is a SECOND, independent box
+tree hanging off an `InlineItem` that neither of those paths reaches. This
+is the EXACT SAME blind spot an earlier fix in this same function already
+found and fixed for a DIFFERENT kind of attached data (a list-item
+marker's absolute position, confirmed live on caniuse.com) — a flex/grid
+ancestor positioned ABOVE the inline-flex element (pkg.go.dev's header
+section, itself flex-laid-out) re-translated the breadcrumb's containing
+box to its final position, correctly updating the InlineItem's own `X`/`Y`
+scalar, but leaving `NestedBox`'s internally-stored coordinates — and by
+extension, everything painted from them — stuck at their stale,
+pre-translation position.
+
+Fixed by making `translateBox` also recurse into `it.NestedBox` when
+translating a line's items, keeping the two representations in sync.
+**Caught a THIRD, smaller bug while writing the regression test for the
+whitespace-before-an-inline-flex case**: `layoutNestedInlineFlex` lays out
+the element's OWN content using the SAME layouter instance's
+`wsPending`/`wsEmitted` whitespace-tracking fields, which its internal
+layout call correctly mutates for ITS OWN text — but doing so silently
+clobbers the OUTER context's pending-whitespace state before the calling
+code can check it, dropping a real leading space. Fixed by capturing the
+outer state before the nested layout call.
+
+Verified live: the breadcrumb now renders as one line, positioned
+correctly below the header. **Bench: SSIM 0.616→0.642, pixdiff
+49.6%→33.4%** — a 16-point pixdiff drop, by far the largest single-round
+bench movement this session, confirming the cumulative-offset theory. This
+also moved developer.mozilla.org's and react.dev's page heights slightly
+(both also use `inline-flex` somewhere), not separately investigated this
+round.
+
+Six new regression tests across `layout/inlineflex_test.go` and a new
+`paint/inlineflex_test.go`, covering: inline flow (the base bug), the
+translateBox propagation bug, whitespace-before handling (and the
+wsPending-clobbering bug it caught), a `box-sizing:border-box` width-
+narrower-than-padding edge case, the `white-space:pre` code path, and
+paint's own recursion into a NestedBox — every one confirmed to fail via
+genuine revert-and-rerun before its corresponding fix.
+
+## 2026-09-05 (round 44) — a plain inline element's own `margin-left`/`margin-right` had NO EFFECT at all — `InlineItem` carries no margin field, so a browser-rendered gap between two adjacent inline elements with no source whitespace between them silently vanished (engine#124)
+
+news.ycombinator.com re-investigated fresh with a full top-to-bottom
+comparison (last touched round 33/38, via the general BlockBreak mechanism
+rather than a dedicated look at this page's own remaining diffs). Live at
+1024px, the header read "**Hacker News**new | past | comments | ..." — the
+site title and the first nav link ran together with no gap, where Chrome
+shows a clear space.
+
+Root cause, confirmed against the real source: `<b class="hnname"
+style="margin-right:5px">Hacker News</b><a href="newest">new</a>` — genuinely
+no whitespace at all between the two elements in the HTML. The margin-right
+IS the only source of the gap Chrome renders. `InlineItem` (the atom of
+inline layout) has no margin field of any kind, and nothing in inline
+collection ever reads `Style.Margin.Left`/`.Right` for a plain (non-replaced,
+non-atomic) inline element — its margin was simply never consulted.
+
+Fixed with a `pendingMargin` accumulator on the layouter: entering a plain
+inline element adds its `margin-left`, leaving one adds its `margin-right`,
+and whichever `InlineItem` is created next (in `appendWords`, or the
+img/svg and form-control atomic-item branches) takes the accumulated
+value into its `SpaceBefore` field via a new `takeMargin()` method — the
+same field collapsible whitespace already uses to represent "space before
+this item," reusing the existing line-layout machinery rather than adding a
+parallel code path. Adjacent inline elements' margins correctly ADD (not
+collapse, unlike block margins) since accumulation only resets at
+`takeMargin()`. Reset alongside the whitespace-collapsing state at a
+genuine break (a promoted block or forced `<br>`): a stale margin has
+nothing left on the same line to apply to once one interrupts.
+
+**A real, narrower limitation surfaced by the session's own OWN regression
+test, not shipped over**: an inline margin lands correctly whenever the
+margined element is not the very first item on its line — but
+`layoutInline`/`wrapOneLine`/`WrapItems` deliberately ignore `SpaceBefore`
+for a line's first item (so collapsible leading whitespace never creates a
+phantom indent), and a margin riding in that SAME field is ignored for the
+identical reason. A dedicated non-collapsible field would be needed to
+survive that case too, not attempted here absent any CONFIRMED live page
+needing it (this engine's real, confirmed use of inline margin-right is
+always between two things already sharing a line, as on this page) — the
+regression test suite covers the working case, documents the gap plainly in
+`pendingMargin`'s own doc comment, and does not claim more than what is
+actually fixed.
+
+Verified live: "Hacker News new | past | ..." now renders with the correct
+gap. **Bench is flat (SSIM 0.559→0.556, pixdiff ~16% either way)** — a
+single-word header spacing fix on a page whose overall diff is dominated by
+ordinary font-rasteriser variance across dozens of story-list rows, the
+same already-documented pattern as every other small, correctly-scoped
+fix this session that didn't move a shared-region score.
+
+Four new regression tests in a new `layout/inlinemargin_test.go`
+(margin-right, margin-left, adjacent-margins-add, and the block-break
+drops-pending-margin boundary case), all confirmed to fail via genuine
+revert-and-rerun before the fix.
+
+## 2026-09-05 (round 43) — `filter` had NO EFFECT on any `<img>` element, block or inline, because an image is never represented as a layout.Box (the only thing the filter/opacity group-buffer pipeline knows how to wrap) (engine#123)
+
+pkg.go.dev re-investigated fresh (last touched round 35, 8 rounds stale).
+Live at 1024px, the "Details" panel's Valid-go.mod/Redistributable-license/
+Tagged-version checkmark icons rendered as flat, uncoloured grey circles
+instead of Chrome's teal accent colour, alongside a "Latest" version badge
+missing its expected pill shape.
+
+Traced the icon colour gap first (the more clearly load-bearing of the two).
+pkg.go.dev ships each status icon as ONE shared, plain-grey SVG asset
+(`check_circle_gm_grey_24dp.svg`) referenced via an ordinary `<img src>`,
+then recolours it per context with the well-known "SVG-to-CSS-filter" idiom
+— `filter: brightness(0) invert(45%) sepia(94%) saturate(6735%)
+hue-rotate(176deg) brightness(94%) contrast(101%)` (the output of tools like
+the codepen "SVG to CSS filter" converter) — since an `<img src="...svg">`,
+unlike an inline `<svg>`, cannot be recoloured with `fill`/`currentColor`.
+
+Root cause, confirmed with a minimal reproduction (a solid greyscale test
+image via a `data:` URI, isolating the bug from the page's real assets)
+before touching any page-specific code: `layout`'s `contents()` represents
+EVERY `<img>` — whatever its `display` value — as an `InlineItem` with its
+`Image` field set (see `isReplacedTag`), never as an ordinary `layout.Box`.
+`paint`'s `filter`/opacity handling lives entirely in `paintBox`'s own
+group-buffer wrapping (render offscreen, apply the filter chain, composite)
+— which an `InlineItem` never passes through. Its own paint path,
+`paintItem`, blitted the decoded image bytes directly with no reference to
+`it.Style.Filters` (or opacity) at all. This is general, not specific to
+this one icon or even to `<img>` under an inline ancestor: `filter` on ANY
+image element had zero effect, block or inline.
+
+Fixed by applying the SAME `applyFilters` function `paintBox` already uses,
+directly in `paintItem`'s image branch, converting the decoded source to
+`*image.RGBA` first (a decoded JPEG or other non-RGBA `image.Image`
+implementation doesn't expose the raw pixel buffer `applyFilters`' colour-
+matrix math needs — a new `toRGBA` helper, pass-through for the common
+already-`*image.RGBA` case). Confirmed with the same minimal reproduction:
+the filtered pixel now matches an equivalent plain `<div>` with the
+identical `background-color`+`filter`, which was already correct — proving
+the filter MATH was never the problem, only the missing application point
+for images specifically.
+
+Verified live: pkg.go.dev's three Details-panel checkmarks now render in
+the correct teal accent colour. **Bench is flat (0.617→0.616 SSIM,
+49.6%→49.6% pixdiff)** — the icons are a tiny fraction of ink on an
+extremely tall (78,426px), text-and-code-block-dominated page whose
+comparison region (capped to 2500px) is overwhelmingly governed by
+font-rasteriser variance, the same already-documented pattern as Wikipedia
+and github.com's README. developer.mozilla.org moved slightly the OTHER
+way (13.5%→15.6% pixdiff) in this round's bench run — MDN also uses
+filtered icons, so this fix legitimately changed pixels there too; a small
+movement either direction from a real, independently-verified fix is
+consistent with this session's own repeated finding that SSIM/pixdiff
+comparison noise on real pages doesn't reliably track correctness at this
+scale.
+
+The "Latest" badge's missing pill shape is a SEPARATE, NOT-yet-investigated
+issue (looks like a border-radius or padding gap, not a filter one) —
+flagged for a future round rather than folded in speculatively.
+
+Two new regression tests in `paint/filter_test.go`
+(`TestInlineImageFilterApplied` and `TestInlineImageFilterConvertsNonRGBASource`,
+the latter specifically exercising `toRGBA`'s conversion branch with a
+decoded `*image.NRGBA` source), both confirmed to fail via genuine
+revert-and-rerun before the fix.
+
+## 2026-09-05 (round 42) — preferredWidth's max-content estimate summed a promoted block's contribution to zero instead of treating it as its own candidate line, collapsing a shadow-DOM header control down to nothing (engine#122)
+
+developer.mozilla.org re-investigated fresh (last touched round 34, 8 rounds
+stale). Live at 1024px, the header's "Theme" and "English (US)" controls
+rendered as invisible, zero-width boxes — their text labels never appeared —
+alongside a missing search-box outline, though the hamburger menu icon and
+breadcrumb text (mangled separately by the already-documented oksvg defect,
+round 25) were unaffected.
+
+Traced with the same throwaway-instrumentation approach as rounds 39-41,
+extended this time to dump declarative-shadow-DOM structure directly (an
+element's `Shadow` field and its children), since MDN's header controls are
+custom elements (`<mdn-color-theme>`, `<mdn-language-switcher>`) each hosting
+their own shadow tree, in some cases nesting a SECOND custom element
+(`<mdn-dropdown>`) with ITS OWN shadow tree and slots inside. Confirmed the
+shadow-attachment and slot-projection machinery itself is sound (already
+verified architecturally correct in earlier rounds, and re-confirmed here by
+instrumenting the actual live structure rather than assuming) — the real
+element ultimately at fault is an ordinary `<button>` with `display:flex`
+(matching MDN's own icon-plus-label button styling), nested a few levels
+down through the custom-element/shadow/slot chain, inside an otherwise-empty
+`display:inline` wrapper.
+
+Because the button computes to `display:flex` — a block-level value, per
+this engine's Display enum — it gets promoted by round 38's BlockBreak
+mechanism exactly like any other block-level element found under an inline
+ancestor. `preferredWidth`'s inline max-content estimate (`layout/floats.go`)
+summed ordinary inline items but skipped every non-floated BlockBreak
+entirely, on the reasoning (correct on its own terms, and true for a run of
+several sibling items) that a promoted block starts its own line and
+contributes nothing to a DIFFERENT line's width. But CSS max-content is
+properly defined as the WIDEST line, and a promoted block IS a line in its
+own right — when it is the wrapper's ONLY content, as here, excluding it
+left literally nothing to sum, reporting 0 instead of the button's real
+width and collapsing the `display:flex` custom element (and its
+`flex-shrink:0`-equivalent slot in the breadcrumbs-bar's flex row) down to
+nothing.
+
+Fixed by tracking a running MAX across candidate lines instead of a single
+sum: an ordinary inline item still accumulates into the current line; a
+floated BlockBreak still joins the current line (round 40's fix, unchanged);
+a non-floated BlockBreak flushes the current line into the running max, then
+independently recurses into its OWN preferred width as a second candidate —
+matching how a genuine mix of text and promoted blocks actually behaves. A
+`<br>` forced break is deliberately left as NOT a line boundary for this
+estimate, preserving this function's pre-existing convention
+(`TestPreferredWidthInlineWithBreak`, unaffected). *(Reversed in round 179:
+max-content is the widest line, so a forced break does end a line.)*
+
+An earlier version of a round-40 test (`TestNonFloatedBlockBreakStillExcludedFromPreferredWidth`)
+had asserted the OLD, now-understood-to-be-wrong behaviour (a promoted block
+contributes nothing); corrected in place
+(`TestNonFloatedBlockBreakIsItsOwnCandidateLine`) and joined by
+`TestMultipleNonFloatedBlockBreaksTakeTheWidestLine`, which specifically
+orders the wider block FIRST — a regression that tracked "the last block
+seen" instead of a true running max would still pass the single-block case
+but fail here.
+
+Verified live: MDN's "Theme" and "English (US)" text labels, and a
+search-box outline, now render. **Measured: SSIM 0.611→0.636, pixdiff
+17.9%→13.5%** — the mangled "mdn" wordmark (oksvg, round 25) and the missing
+`::before`/`::after` breadcrumb separators (documented gap, generated
+content not synthesised at all) remain, unrelated to this fix and not
+attempted here.
+
+## 2026-09-05 (round 41) — preferredWidth never special-cased form controls, so an `<input>` reached through an element ancestor (rather than through ordinary inline-content collection) measured as 0 width instead of its UA-default size (engine#121)
+
+Closes the last of the three github.com/golang/go header defects this session's rounds 39-40 flagged and left open: the "Go to file" search box and the "Code" button rendered overlapping instead of side by side.
+
+Root cause, found via the same throwaway-instrumentation approach as rounds 39-40: the search box's real markup is `<input>` inside a `<span style="display:flex">` inside a plain `<div>`, sitting in a `flex-shrink:0` container beside a shrinkable title. `preferredWidth` (`layout/floats.go`) is the function responsible for estimating how wide that `flex-shrink:0` container needs to be — and it reaches the `<span>` (block-level, since `display:flex` is a block-level display) via its OWN `hasBlockLevelChild → max of children` branch, which recurses into the span with a plain `l.preferredWidth(span, ...)` call. That call, in turn, is itself a `display:flex` row, so it takes the "flex row with element children" branch and recurses again — straight into the `<input>` node itself, calling `l.preferredWidth(input, ...)` directly.
+
+`preferredWidth` had no special case for a form control at all. Falling through to its generic "Inline: max-content" fallback, it calls `collectInline` on the `<input>` node's children — but an `<input>` is a void element with NO children to collect, so the estimate came out to 0. The control's real ~170px UA-default text-input width (already correctly modelled in `formControlSize`, and already correctly applied by `appendElementInline` and `contents()`'s own form-control branches) was never consulted, because THIS path into an `<input>`'s size — recursing through element ancestors via `preferredWidth`, rather than collecting it as one item of surrounding inline content — is a third entry point those two functions don't cover.
+
+Fixed by adding the same check `preferredWidth` already has for `<img>` (an atomic, non-recursible element) for any `isFormControlTag` element: return `formControlSize`'s width plus the node's own edges, instead of falling through to the empty-children measurement.
+
+Confirmed with a minimal, non-GitHub-specific reproduction (`<div style="flex-shrink:0"><span style="display:flex"><input></span></div>` inside a flex row) before touching the real page: the wrapping `flex-shrink:0` div reported 2px (its own edges only) instead of ~172px. Verified live: github.com's search box and "Code" button now render side by side, matching Chrome.
+
+**Bench: SSIM 0.551→0.550, pixdiff 30.2%→30.2% — essentially flat**, despite the fix being real and visually confirmed (screenshots before/after show the overlap resolved). Same pattern as round 39 on this identical page: a small, correctly-scoped toolbar fix doesn't move an aggregate score dominated by the rest of the page's content. This closes out the github.com header investigation chain rounds 39-41 worked through — no further known defects flagged on this page's header at this time.
+
+Regression test `TestFormControlSizeCountsTowardPreferredWidth` (`layout/formcontrol_test.go`, alongside the file's two existing form-control-entry-point tests), confirmed to fail via genuine revert-and-rerun before the fix (2px instead of 172px — exactly the input's real size going uncounted).
+
+## 2026-09-05 (round 40) — a floated element promoted out of an inline ancestor (round 38's BlockBreak mechanism) was placed as a plain in-flow block and excluded from its ancestor's preferred-width estimate, collapsing a flex-shrink:0 container to zero width (engine#120)
+
+Direct continuation of round 39's own honest disclosure: github.com/golang/go's repo-header action row (Notifications/Fork/Star) still overflowed the viewport's right edge after round 39's flex-shrink fix, and the header carried a large blank gap above the Code/Issues tab bar. Traced with the same instrumentation approach as round 39 (a throwaway program driving `css.CascadeVW`/`layout.LayoutDocument` directly against the real fetched page).
+
+github.com's action row is classic, pre-flexbox markup GitHub still ships: `<ul class="pagehead-actions ... d-md-inline">` (computed `display:inline` at this width — confirmed genuinely correct: the `.pagehead ul.pagehead-actions{float:right}` rule in GitHub's own CSS requires a `.pagehead` ancestor class that is no longer present anywhere in the current DOM, so `float:none` on the `<ul>` itself is right, not a bug) containing three `<li style="float:left">` buttons, sitting inside a `flex-shrink:0` container beside a shrinkable repo-name title.
+
+Each `<li>` is block-level (`display:list-item` computes block-outside here) nested under the inline `<ul>`, so round 38's BlockBreak mechanism correctly promotes it out of the inline flow — but BlockBreak promotion had only ever been exercised by genuine, non-floated blocks before, and was wrong in two ways for a floated one:
+
+- **Placement** (`placeInlineSegments`, `layout/layout.go`): every promoted BlockBreak was routed through the plain block `l.place()`, giving it a full in-flow block box. `contents()`'s own ordinary per-child dispatch already checks `Float != FloatNone` BEFORE the block-level check for exactly this reason (float participates in a completely different placement algorithm); the promotion path never had the same check.
+- **Sizing** (`preferredWidth`, `layout/floats.go`): the line-sum that estimates an inline container's max-content width skipped every BlockBreak item unconditionally, on the reasoning that a promoted block gets its own line and contributes nothing to the width of the surrounding text. True for a genuine block — wrong for a float, which does NOT start a new line and DOES consume horizontal space alongside its siblings. With the action row's entire content being three floated `<li>`s and nothing else, the estimate summed to zero, and a `flex-shrink:0` item that should have kept its full natural width collapsed to nothing instead.
+
+Fixed both: a BlockBreak item now checks its own `Style.Float` (the promotion path already stores the RAW, authoritative style for exactly this kind of non-inherited-property check, per the established convention from round 38's own Display fix) — floated, it goes through `l.placeFloat` and its own `preferredWidth` is added to the running estimate; non-floated, behaviour is unchanged from round 38.
+
+Verified live: the Notifications/Fork/Star row now renders fully on-screen, side by side, immediately below the repo title — and the blank gap above the tab bar is gone (both were the same root cause; page height 3173px→3051px). **Measured: SSIM 0.528→0.551, pixdiff 34.0%→30.2%** — a real, visible improvement this time, unlike round 39's flat aggregate score on the same page.
+
+The remaining, separately-flagged "Go to file" search-box/"Code"-button overlap on this same page is still not fixed — confirmed structurally unrelated (a different subtree, the newer React `OverviewContent-module` toolbar, not this classic float-based action row) and left for a future round.
+
+Two new regression tests in `layout/blockinline_test.go`
+(`TestFloatedBlockBreakGetsFloatPlacementAndCountsTowardPreferredWidth` and
+its non-floated counterpart `TestNonFloatedBlockBreakStillExcludedFromPreferredWidth`, added to keep the branch covered), the floated one confirmed to fail via a genuine revert-and-rerun before the fix (0 width and an off-container child position instead of the correct 100px/340px).
+
+## 2026-09-05 (round 39) — flex-shrink resolved in a single, non-iterative pass, so a line where one item bottoms out at its floor left the container overflowing instead of passing the shortfall to its sibling (engine#119)
+
+github.com/golang/go re-investigated fresh (last touched round 24, 15 rounds
+stale, and round 24's own diagnosis was reached through a much simpler,
+synthetic markup shape than the site's CURRENT real header — worth
+re-verifying from scratch rather than assuming it still applies). Live at
+1024px, "Sign in" and "Sign up" were entirely missing from the top nav, and
+the nav items themselves were spread across huge, uneven gaps — despite the
+CSS driving both being correctly parsed and cascaded (checked directly: the
+mobile-only fallback controls compute `display:none` as they should, and the
+container's `flex-direction` correctly switches to row at this width; this is
+NOT a repeat of the CSS Media Queries Level 4 range-syntax gap engine#61
+already closed for this exact site back on 2026-08-31).
+
+Traced it to layout, not CSS: `github.com`'s marketing header lays out a
+small logo item beside a nav+search+sign-in/up group in one flex row. Once
+the mobile-only controls are correctly hidden, the visible content is a
+narrow logo and a much wider nav group — together wider than the 1024px
+viewport. `resolveMainRow` (`layout/flex.go`) distributed the resulting
+negative free space across both items in a single pass, weighted by
+`flex-shrink`, then clamped each one independently to its floor (0) or
+min/max-width. The logo's proportional share pushed it below 0, so it
+clamped to 0 — but the portion of its share that the floor refused to take
+was simply dropped, never handed to the nav group. The nav group therefore
+kept ~1421px of its ~1421px hypothetical (unshrunk) width in a 1024px
+container, carrying "Sign in"/"Sign up" off the right edge of the viewport
+entirely.
+
+This is CSS Flexbox §9.7 "Resolving Flexible Lengths": clamping is not a
+one-shot operation. An item that clamps at a bound must be frozen and
+removed from the flexible set, and the space it couldn't absorb (or give up)
+redistributed among the REMAINING flexible items — repeated until nothing
+new freezes. `resolveMainRow` now runs that loop (bounded to at most one
+iteration per item, since each iteration freezes at least one more): recompute
+the still-flexible items' combined factor and the current shortfall, share it
+out, freeze whichever item's clamp changed its value, repeat. The existing
+symmetric case — two items that both hit the SAME bound in the same round,
+so nothing is left over to redistribute (`TestFlexShrinkClampedByMinWidth`,
+already in the suite) — still passes unchanged; only the asymmetric cascade
+case was ever wrong.
+
+Not GitHub-specific: this is the general flex-shrink algorithm, so it applies
+to any flex row where a narrow item's shrink share would take it negative
+while a wider sibling remains room to give. Confirmed live: "Sign in" and
+"Sign up" now render on-screen at the top-right of the nav on
+github.com/golang/go, and the nav item spacing is no longer stretched across
+artificially inflated gaps.
+
+**Two other real, separate defects were confirmed on this same page during
+investigation but are NOT fixed here** — each looks structurally independent
+of the flex-shrink bug (different DOM subtrees, different symptom shape) and
+is flagged rather than folded in speculatively: (1) the repo header's
+Notifications/Fork/Star button row still overflows past the right edge of the
+1024px viewport instead of shrinking or wrapping; (2) the "Go to file" search
+input and the "Code" split-button overlap instead of sitting side by side.
+Both need their own root-causing against GitHub's Primer React markup before
+a fix is attempted.
+
+Regression test `TestFlexShrinkCascadesPastAFrozenItem`
+(`layout/features_test.go`) reproduces the general shape (a 10px item beside
+a 300px item in a 200px container) independent of GitHub's markup, confirmed
+to fail (245px instead of 200px — exactly the un-redistributed single-pass
+value) via a genuine revert-and-rerun before the fix was restored.
+
+## 2026-09-05 (round 38) — a block-level child nested under an inline-context ancestor got no real box at all, instead of the spec's anonymous-block-wrapper-plus-promotion behaviour (engine#118)
+
+This is the architectural gap round 36 (and round 33, and round 24
+before it) each independently found and explicitly declined as
+"comparable in scope to Shadow DOM slot projection" — three real pages
+hit the same missing mechanism, so this round did the bibliography the
+project's own standing rule requires (read the reference engines'
+source before implementing) and fixed it.
+
+**WebKit** used to solve this with "continuation": `RenderInline::splitInlines`
+physically split an inline box into anonymous pre/post fragments linked
+by a continuation pointer, so the "same" element kept answering
+geometry/hit-test queries consistently across the split. That mechanism
+is gone from WebKit's own main branch as of March 2026 (`8f520cb74d`,
+"[blocks-in-inline] Remove continuation code"; `506bc07aa8`, "Don't wrap
+sequences of blocks in anonymous block"). Current WebKit instead builds
+a flat inline-item list (`InlineItemsBuilder.cpp`) that tags a
+block-level descendant in place during a depth-first walk, and
+`InlineLineBuilder.cpp`'s `handleBlockContent` lays it out via a nested
+formatting context and ends the current line — no tree splitting, no
+persistent continuation identity.
+
+**Gecko** still runs its historical "ib-split" mechanism:
+`nsCSSFrameConstructor::ConstructInline` scans for the first block-level
+child and, if found, `CreateIBSiblings` physically materialises
+alternating anonymous-block/inline frame chains
+(`SetFrameIsIBSplit`/`IBSplitSibling`/`IBSplitPrevSibling`,
+`PseudoStyleType::mozBlockInsideInlineWrapper`). Its source comments
+cite CSS 2.1 §9.2.1.1 directly and work through a nested-`<span>`
+example that produces exactly this multi-fragment tree.
+
+Neither reference engine's persistent-identity machinery is needed
+here: go-webengine has no incremental DOM mutation and no persistent
+render tree — every render walks the DOM fresh in one recursive pass,
+and every `InlineItem`/`Box` already carries its own resolved style and
+node reference computed at collection time. That is architecturally
+closer to *current* WebKit's flat-item approach than to Gecko's, and
+explains why WebKit itself dropped continuation: a one-shot layout
+model doesn't need to keep re-answering "which fragment is this
+conceptually the same element as" once the box tree is built and
+thrown away per render.
+
+Implemented the same idea as a flat sentinel: a new
+`InlineItem.BlockBreak` field marks a slot in an otherwise-ordinary
+inline-item slice as "this is not inline content, it's a block-level
+element found while collecting inline content under an inline-context
+ancestor — promote it to a real sibling box" (`layout/box.go`). A new
+`placeInlineSegments` (`layout/layout.go`) consumes that flat sequence,
+splitting it into ordinary-item runs (each wrapped in its own anonymous
+box, matching the pre-existing block/inline mixing path) interleaved
+with real placed boxes for each sentinel — CSS 2.1 §9.2.1.1's algorithm,
+now firing at ANY nesting depth under an inline ancestor rather than
+only at a block container's direct children (which the pre-existing
+`hasBlockLevelChild` dispatch already handled). `appendElementInline`
+now checks the child's own resolved style for block-level `display`
+before recursing into it as inline content, emitting a `BlockBreak`
+sentinel instead when it is.
+
+That "own resolved style" check has to read the RAW `l.sm[el]` map
+entry, not the `cs` parameter `appendElementInline` was already passed —
+`cs` is the caller's already-substituted fallback (parent style when the
+child has no map entry of its own), correct for inherited properties but
+wrong for `display` (non-inherited; the true initial value for an
+unstyled element is always `inline`). Using `cs` directly broke the
+existing empty-style-map shadow-DOM tests, which deliberately rely on
+"no map entry = not block-level" throughout the codebase — the same
+convention the pre-existing out-of-flow check in the same function
+already follows a few lines above. Confirmed via a genuine revert (the
+tests failed with the wrong text order once every unstyled element in
+that tree got incorrectly promoted) before restoring the raw-map-entry
+version.
+
+The independent bibliography research (dispatched in parallel with the
+implementation, not strictly before it — an intentional partial
+divergence from "biblio d'abord," logged so it doesn't set a precedent)
+both validated the design against the two reference engines above and
+caught a second real bug I hadn't found yet: the new `BlockBreak`
+branch didn't reset the pending-whitespace state, so a promoted block
+followed by more text in the same wrapper gave the resumed text a
+spurious leading space. Fixed with the same two-line reset the
+pre-existing `<br>` case already applies, for the identical reason (a
+forced break also starts a fresh line). Confirmed via revert-and-rerun
+(`TestBlockBreakResetsPendingWhitespace` failed with `SpaceBefore=10,
+want 0` without the reset).
+
+Confirmed live for two of the three originally-documented cases:
+**news.ycombinator.com**'s upvote-triangle icon (a `display:block`
+background-image `<div>` inside an inline `<a>`) now gets a real box and
+paints (SSIM 0.564→0.579, pixdiff 15.6%→15.3%). **tailwindcss.com**'s
+syntax-highlighted code demo (each line a `display:block` `<span>`
+inside inline `<code>`) now renders one line per row instead of
+squashed onto one (page height 13273px→13585px; SSIM 0.666→0.704,
+pixdiff 14.3%→13.6%). The third case, **github.com**'s flex-container-
+under-an-unstyled-custom-element pattern from round 24, could not be
+re-verified live: the actual github.com/golang/go header content has
+changed since round 24 and no longer shows the originally-documented
+"Sign in"/"Sign up" buttons. Covered instead by a synthetic regression
+test built from the originally-documented markup shape
+(`TestFlexContainerUnderUnstyledInlineElementGetsRealLayout`). The small
+SSIM/pixdiff movement on github.com/golang/go in this round's bench run
+(0.532→0.528, 32.7%→33.9%) is unrelated to this fix — the page's current
+markup has no comparable block-in-inline structure — and is consistent
+with this project's already-documented live-fetch noise (page content
+and network timing vary between runs).
+
+Four regression tests in the new `layout/blockinline_test.go`, all
+confirmed to fail via genuine revert-and-rerun before the fix (and
+individually for the whitespace-reset sub-fix): the votearrow div, the
+flex container, the multi-line code spans, and the whitespace reset.
+
+## 2026-09-04 (round 36) — a compound combining an explicit `*` with a class ("*.line") was parsed as a LITERAL tag name "*", so it never matched any real element (engine#117)
+
+tailwindcss.com's own hero code demo — a syntax-highlighted, multi-line
+`<pre><code>` sample — rendered every line of code squashed onto a single
+row instead of one line per row.
+
+Fetched the real compiled CSS rather than guessing: Tailwind v4's
+`**:[.line]:isolate **:[.line]:block **:[.line]:not-last:min-h-lh`
+arbitrary-variant utilities (used to give each syntax-highlighted
+`<span class="line">` its own line) compile to
+`:is(.\*\*\:\[\.line\]\:block *).line{display:block}` — a compound `:is()`
+selector whose argument is itself a descendant chain. This engine's
+`:is()`/`:where()` handling (a general text-splicing mechanism, not true
+functional matching) correctly spliced this to
+`.\*\*\:\[\.line\]\:block *.line`, and correctly un-escaped the
+backslash-escaped class name — both already-solid, pre-existing
+mechanisms, confirmed working in isolation. The actual bug: the
+resulting `*.line` COMPOUND (a bare `*` immediately followed by `.line`,
+no separating space) was parsed by `scanCompound` as tag name literal
+`"*"` — `scanCompound` has no notion that `*` is special, only
+`parseSimple`'s narrow `if s == "*"` fast-path (for a BARE, standalone
+universal selector) ever recognised it. Since `compound.matches` compares
+`c.Tag` byte-for-byte against the real element's tag name, `"*" !=
+"span"` unconditionally, so a `*.foo`-shaped compound never matched ANY
+element — not just this one selector, but the general shape, which
+`:is(X *).foo` splicing (and any literal `*.foo` compound written
+directly in a stylesheet) can both produce.
+
+Fixed by treating a leading `"*"` tag from `scanCompound` as the
+universal selector (dropped, imposing no tag constraint) rather than a
+literal tag name, whether it appears bare (already handled) or fused
+with further qualifiers.
+
+**Root-caused the CSS side fully — confirmed via an isolated internal
+test that the fix makes the cascade correctly compute `display:block`
+for the real `.line` span — but the VISIBLE symptom persists for a
+different, already-known reason**: `<code>` is inline by default, and
+each `.line` span is one of its direct children. A live box-tree
+instrumentation confirmed the `.line` node never gets its own `Box` at
+all (not even as a flattened `InlineItem` — it vanishes entirely into
+its parent's text run). This is a THIRD confirmed instance of the
+"inline flattens block content" architectural gap already found and
+correctly declined on github.com (round 24) and news.ycombinator.com
+(round 33): a genuinely block-level child nested under an inline-context
+ancestor gets no real box, rather than the spec's anonymous-block-wrapper-
+plus-promotion behaviour. Not fixed here either, for the same reason as
+before (comparable in scope to Shadow DOM slot projection).
+
+The CSS selector fix itself is shipped regardless — it is real,
+independently confirmed, and broadly applicable (any `*.foo`-shaped
+compound, from `:is()` splicing or written directly), even though its
+visible effect on THIS specific page is masked by the separate,
+already-declined layout gap.
+
+Regression test (`TestUniversalCompoundWithClass`) uses tailwindcss.com's
+own real selector as one fixture and a bare `.parent *.foo` compound as a
+second, confirmed to fail on both via a genuine revert-and-rerun check
+before the fix was restored.
+
+## 2026-09-04 (round 35) — `:empty` was an unmodelled pseudo-class, so `.Documentation-toc:empty{display:none}` degraded to hiding a genuinely non-empty table of contents on pkg.go.dev (engine#116)
+
+pkg.go.dev/net/http's "Overview" section was missing its own table of
+contents ("Clients and Transports", "Servers", "HTTP/2") entirely — Chrome
+shows all three as a short link list directly under the "Overview" heading.
+
+Root-caused a much bigger red herring first before finding the real cause
+(documented in full for anyone reading this investigation later): the
+initial hypothesis was that pkg.go.dev's outer page skeleton
+(`.go-Main{display:grid;grid-template-areas:"banner" "header" "aside" "nav"
+"article" "footer"}`) needed a client-side JavaScript flip of a
+`data-layout` attribute to reach its wide, multi-column form. Traced this
+all the way through: confirmed the site's dynamically-`document.
+createElement`-injected `<script src>` chain (a ResourceLoader-style
+pattern this engine's `runScripts`/`RunPending` architecture is explicitly
+designed to support across settle passes) DOES land in the final DOM: 5
+external scripts present after a full render. But then found the
+`data-layout="responsive"` attribute is already present in the STATIC SSR
+HTML on `<html>` itself — no JavaScript involved at all — and the relevant
+grid override requires `width >= 80rem` (1280px), well above the bench's
+1024px viewport. Re-checked Chrome's OWN reference render at the same
+1024px and confirmed it ALSO shows the single-column stacked layout — there
+never was a layout bug here; the whole `.go-Main`/`data-layout` line of
+investigation was a wrong premise about which class governed the visible
+symptom.
+
+The REAL cause, found by then re-reading the actual missing content's
+markup precisely: `.Documentation-toc:empty{display:none}` (main.min.css) —
+meant to hide the table of contents ONLY on package pages that have no
+headings to link to. `:empty` had never been modelled anywhere in
+`css/selector.go` (confirmed via grep). Per this file's own established
+"reduce, don't drop" convention for an unmodelled PLAIN (non-`:not()`)
+pseudo-class, the compound degrades to matching its base alone —
+`.Documentation-toc:empty` became unconditionally `.Documentation-toc`,
+hiding the real, non-empty `<ul>` on every package page regardless of
+whether it actually had any table-of-contents entries. This is the SAME
+systemic bug class as round 31's `:first-child` fix (a real,
+sometimes-true structural fact wrongly treated like an always-false
+dynamic pseudo), just on the "plain compound" side of the pattern instead
+of the "`:not()` argument" side.
+
+Fixed by modelling `:empty` as a genuine structural pseudo (a new
+`compound.Empty` field, checked as `len(n.Children) != 0` in `matches()`)
+— this engine's DOM tree has no comment-node type, so "no children at all"
+is the complete, spec-correct check with no comment/PI nuance to handle.
+
+**Verified live: "Clients and Transports", "Servers", and "HTTP/2" now
+render under "Overview"**, matching Chrome exactly.
+
+Regression test (`TestEmptyPseudo`) uses pkg.go.dev's own real rule shape
+against both a non-empty and a genuinely empty `<ul class="Documentation-
+toc">`, confirmed to fail (matching the non-empty list) via a genuine
+revert-and-rerun check before the fix was restored.
+
+## 2026-09-04 (round 34) — `background-color: initial`/`unset` were unrecognised, so a real `<button>`'s UA-default gray chrome survived an author's own reset unchanged (engine#115)
+
+developer.mozilla.org's header showed the "Theme" toggle and "English (US)"
+language-switcher as visible gray PILL/BUTTON boxes — Chrome renders both as
+plain text links with no visible box at all.
+
+Fetched the real markup and CSS rather than guessing: both are backed by
+declarative-Shadow-DOM web components (`<mdn-color-theme>`,
+`<mdn-language-switcher>`) whose light-DOM slotted content is a real
+`<button>` — `.color-theme__button{background-color:initial;border:none;
+color:inherit;...}`. `border:none` already worked (confirmed via an
+isolated cascade check: `Border.Top.Width` correctly zeroed), but
+`background-color:initial` did not — `css/parse.go`'s `background-color`
+case had no handling for the CSS-wide keywords `initial`/`unset` at all
+(only `inherit` is handled generically, at the very top of `apply`), so the
+declaration was silently ignored like any other unrecognised value, leaving
+the UA-default `<button>` background (`#efefef`) untouched underneath.
+
+Fixed narrowly: `background-color: initial` or `:unset` (a non-inherited
+property, so `unset` behaves like `initial`) now resets to `Transparent` —
+the property's actual CSS-spec initial value — mirroring the SAME reset
+idiom the `background` shorthand already handles for a value with no colour
+token (`background:0 0`/`background:transparent`, confirmed load-bearing on
+github.com's own nav buttons in an earlier round). Scoped to
+`background-color` only: the fetched CSS confirmed exactly two real uses of
+`initial` on this page (`.color-theme__button`, `.color-theme__option`),
+both on this one property; a general per-property "initial value" table for
+every CSS property would be substantially bigger scope with no confirmed
+need.
+
+**Verified live: both the "Theme" and "English (US)" controls now render as
+plain text**, matching Chrome (the still-missing breadcrumb `>` separator
+between "Web" and "CSS" is a separate, already-documented gap — this
+engine does not synthesise `::before`/`::after` generated content at all —
+correctly left untouched by this fix).
+
+Regression test (`TestCascadeBackgroundColorInitialResetsUAButton`) uses
+MDN's own real rule shape as the fixture, confirmed to fail with the exact
+predicted UA-default gray value (`{239,239,239,255}`) via a genuine
+revert-and-rerun check before the fix was restored.
+
+## 2026-09-04 (round 32) — table `colspan` was entirely unmodelled — a row mixing a spanning cell with plain ones split every story on news.ycombinator.com into two misaligned side-by-side blocks (engine#112)
+
+news.ycombinator.com's front page rendered every story split into two
+columns: a narrow left block stacking each story's rank number and its
+"N points by user | hide | N comments" subtext, and a wide right block
+holding just the title links — visually unrelated to their own row's
+subtext, with heights drifting out of sync story by story.
+
+Fetched the real markup rather than guessing: HN's own table structure
+shapes each story as TWO `<tr>`s — `<tr class=athing><td>1.</td><td
+class=votelinks>...</td><td class=title>Title</td></tr>` followed by
+`<tr><td colspan="2"></td><td class=subtext>...</td></tr>`. `layout/table.go`
+had never modelled `colspan` at all: a cell's column index was just its
+position in the row's own cell list. In the title row (3 plain cells)
+that happened to line up correctly, but in the subtext row the SECOND
+cell (raw position 1) is really the THIRD column (after the colspan=2
+empty cell) — the old code put it in position 1's column instead,
+which is the narrow vote-arrow column shared by every title row. Every
+subtext line thus rendered in the wrong, narrow column, and the column-
+width algorithm (which takes each column's cells' MAX natural width
+across all rows) inflated that shared column to the subtext's own wide
+content width, splitting the whole table into two misaligned blocks.
+
+Fixed by tracking each cell's real starting column index and span in
+`tableRow` (a new `colStart`/`colSpan` pair, populated in `makeRow` by
+advancing a running column cursor by each PRECEDING cell's own colspan,
+not by 1 per cell), and using those — not raw cell position — for
+natural-width attribution, column-width lookup, and final cell
+placement. A `colspan` attribute of 0, negative, or non-numeric defaults
+to 1, per the HTML spec's own "invalid value default" for this
+attribute (`cellColSpan`). A colspan>1 cell is deliberately excluded
+from natural-width attribution — distributing its content need across
+the columns it spans is the full spec algorithm, well past this table
+layout's own documented "basic auto layout" scope — but it still
+occupies those columns so a later plain cell in the same row is not
+shifted out of alignment with the other rows' columns.
+
+**Verified live: the page now renders as one flowing title+subtext
+column per story**, matching Chrome's own layout exactly.
+
+This is a general table-layout bug, not an HN-specific quirk: any table
+mixing a `colspan` cell with plain ones in different rows — an invoice
+line-item table, a spec-comparison table, any "label row then a spanning
+detail row" shape — would trigger the identical misalignment. Confirmed
+no existing test exercised any table with a `colspan` attribute at all.
+
+Two new regression tests: `TestTableColspanAlignsFollowingCellWithLaterRow`
+(HN's own real row shape, confirmed to fail with the exact predicted wrong
+column position via a genuine revert-and-rerun check) and
+`TestCellColSpanInvalidValueDefault` (a bogus/zero colspan must not shift
+a later cell, closing a coverage gap the first test's own guard clauses
+left open).
+
+## 2026-09-04 (round 31) — `:first-child` was an unmodelled pseudo-class, so `:not(:first-child)` — the standard "hide every item but the first" idiom — degraded to matching EVERY item, hiding content that should have stayed visible (engine#111)
+
+caniuse.com's "Did you know?" section showed only its heading, with the tip
+paragraph entirely missing — Chrome shows the first tip's real text ("If a
+feature you're looking for is not available on the site, you can vote to
+have it included...").
+
+Fetched the real CSS rather than guessing: `.home__section--dyk.is-static
+.home__list-item:not(:first-child), .home__section--dyk.is-static
+.home__next-dyk-button { display: none; }` — the progressive-enhancement,
+no-JS fallback for a "Did you know?" tip rotator, meant to show only the
+first `<li>` of a list and hide the rest (plus the "Next" button, until JS
+takes over). `:first-child` had never been modelled as a real structural
+pseudo-class (only `:root`/`:checked`/dynamic-interaction pseudos/`:not()`/
+`:host` are); the generic "unmodelled `:not()` argument imposes no
+constraint" rule — correct for a genuinely always-false dynamic pseudo like
+`:hover` (negating an always-false condition is always true) — was silently
+also applied to `:first-child`, which is a real, SOMETIMES-true structural
+fact, not an always-false one. `:not(:first-child)` therefore degraded to
+`.home__list-item` with no negation at all, matching every list item
+including the first, so the `display:none` rule hid the ENTIRE tip list
+instead of all-but-the-first.
+
+Fixed by modelling `:first-child` as a real structural pseudo-class: a new
+`compound.FirstChild` field, set when the pseudo is `:first-child`, checked
+in `matches()` against the element's previous element sibling (reusing the
+existing `prevElementSibling` helper `+`/`~` combinator matching already
+relies on) — `:first-child` matches iff there is none. `:last-child`/
+`:nth-child(...)` remain unmodelled; only `:first-child` was confirmed
+live-load-bearing, and it requires no new sibling-walking machinery beyond
+what already exists (`:last-child` would need a new forward-walking helper
+that doesn't exist yet, a bigger step not justified by any confirmed need).
+
+**Verified live: the "Did you know?" tip text now renders**, matching
+Chrome's first-tip text exactly.
+
+Regression test (`TestFirstChildPseudo` in `css/selector_test.go`) uses
+caniuse.com's own real rule shape (`.home__list-item:not(:first-child)`)
+against a real two-`<li>` DOM built via `dom.Parse`, confirmed to fail (a
+bare `:first-child` refusing to even parse) via a genuine
+`git diff > patch; git checkout --; go test; git apply patch` cycle. `css`
+held its 99.5% coverage floor exactly.
+
+This fix lives entirely in `css/selector.go`'s own compound-matching types —
+nothing here is a general-purpose utility usable outside HTML rendering, so
+no extraction to a shared package applies.
+
+## 2026-09-04 (round 30) — a content-less `<button>` (an icon-only submit button) rendered a fabricated literal "Submit" instead of no text at all — a fallback correct for `<input type=button/submit>` but wrong when copied onto the `<button>` tag (engine#109)
+
+pkg.go.dev/net/http's header showed a stray "Submit"/"Sub" overlapping its
+search box, and the breadcrumb read "httpSubmit" instead of just "http" —
+both immediately visible at full resolution.
+
+Fetched the real markup rather than guessing: the search-submit control is
+`<button aria-label="Submit search"><img ... alt="" /></button>` — an
+`<img>` icon, no text content at all. Chrome (fetched and compared directly)
+renders no text for it whatsoever, just the icon. This engine's
+`formControlDefaultSize`/`formControlDisplayText` (layout.go, paint.go)
+special-cased an EMPTY `<button>` label to fall back to the literal string
+"Submit" — a rule that IS correct for `<input type=button/submit>` with no
+`value` attribute (a real, cross-browser UA default, handled separately by
+`controlLabel`), but was mistakenly copied onto the `<button>` TAG case too.
+No major browser fabricates default text for a content-less `<button>`
+element; it simply renders empty, sized to its own padding.
+
+The existing test suite had encoded the wrong behavior as intentional
+(`TestFormControlButtonTagUsesTextContent`'s "empty <button> falls back to
+Submit" case, justified by a comment citing "the real-world unstyled-button
+case go-aiquota's own login flow uses") — checked this claim against
+go-aiquota's actual capstone test (`e2e_login_test.go`) rather than trusting
+the comment, per bibliographie-avant, and found its real login button has
+visible text ("Log in"), never empty; the "Submit" fallback was never
+actually validated against a real downstream need.
+
+Fixed by removing the button-tag-specific fallback in both `layout.go`
+(sizing) and `paint.go` (drawing) — `<input type=button/submit>`'s own,
+separate, still-correct "Submit"/"Reset" default via `controlLabel` is
+untouched.
+
+**Verified live: the "Submit" text is gone from the search button, and the
+breadcrumb correctly reads just "http".**
+
+Removing the button-tag fallback also removed the ONLY test case (an
+implicitly-labeled `<button>`) exercising `paintFormControl`'s button-label
+horizontal-centering draw path, dropping `paint`'s coverage below its 100%
+floor; fixed by giving `TestPaintFormControlButtonBackground` an explicit
+non-empty label so that path stays covered on its own terms rather than as
+a side effect of the bug being fixed.
+
+Three existing tests updated to the corrected expectation
+(`TestFormControlButtonTagUsesTextContent`, `TestFormControlDisplayText`'s
+button case, `TestPaintFormControlButtonBackground`), each confirmed to
+fail with the exact predicted wrong value (84px / "Submit") via a genuine
+revert-and-rerun check before the fix was restored.
+
+This fallback is engine-specific glue between this codebase's own DOM/CSS
+node types and its layout/paint pipeline — nothing about it is a
+general-purpose utility, so no extraction to a shared package applies here.
+
+## 2026-09-04 (round 29) — CSS logical margin/padding properties (`margin-block-start`, `margin-block-end`, `margin-inline-*`, and the `-block`/`-inline` axis shorthands) had zero support — every declaration using them was silently dropped (engine#108)
+
+go.dev/blog's blog-listing page rendered each entry (title/date/author, then
+a separate summary paragraph) with extra, unwanted vertical whitespace
+between the author line and the summary — Chrome fits 6 full entries plus an
+interstitial cookie-consent banner in the same ~900px of vertical space where
+this engine's render fit only 5.
+
+Fetched the real page HTML and CSS rather than guessing from the screenshot
+alone: go.dev's stylesheet uses
+```css
+#blogindex p.blogsummary { margin-block-start: 0px; }
+#blogindex p.blogtitle   { margin-block-end: 0px; }
+```
+to zero out the gap *between* a listing's title-block and its own summary,
+while leaving the UA-default `<p>` margin on the *outer* edges (the gap
+before the next entry's title). This engine's declaration-apply switch had
+no case for any CSS Logical Property on margin or padding at all — direct
+grep confirmed zero matches for `margin-block`, `margin-inline`,
+`padding-block`, or `padding-inline` anywhere in `css/parse.go` — so both
+declarations were silently dropped as unrecognised, leaving the default
+`<p>` UA margin (16px, both sides) on both edges of the gap that should have
+collapsed to 0.
+
+The analogous logical *inset* properties (`inset-inline`/`inset-block`) were
+already supported, via an established precedent: this engine has no
+bidi/vertical writing-mode support anywhere, so a logical axis always maps
+directly to the same physical edges regardless of any writing-mode or
+direction context (block → top/bottom, inline → left/right). Extended that
+exact precedent to margin and padding: `margin-block-start`/`-end` →
+`Margin.Top`/`Margin.Bottom`, `margin-inline-start`/`-end` →
+`Margin.Left`/`Margin.Right` (honouring `auto`, exactly like `margin-left`/
+`margin-right` already do), plus the two-value `margin-block`/`margin-inline`
+axis shorthands, and the six padding equivalents (`padding-block-start/end`,
+`padding-inline-start/end`, `padding-block`, `padding-inline`) — the padding
+side wasn't confirmed load-bearing on this specific page, but the
+implementation cost was near-zero given how directly it mirrors the margin
+case, and leaving it out would have reintroduced the exact same silent-drop
+gap the moment a real page used a logical padding property instead.
+
+Verified live: re-rendering go.dev/blog after the fix shows 7 full entries
+fitting in the same 900px region the pre-fix render fit 5 into, matching
+Chrome's tight per-entry spacing.
+
+Regression tests use go.dev's own real rule shape as the fixture
+(`TestCascadeMarginLogicalProperties`, `TestCascadeMarginBlockInlineShorthand`,
+`TestCascadePaddingLogicalProperties` in `css/cascade_test.go`), confirmed to
+fail with the exact predicted wrong values (the UA-default 16px leaking
+through) via a genuine revert-and-rerun check before the fix was restored.
+
+## 2026-09-04 (round 28) — `@media not all and (...)`, Tailwind v4's compiled form of every `max-*:` breakpoint variant, was silently un-negated — every narrow-viewport-only rule matched at every wider viewport instead (engine#107)
+
+tailwindcss.com's own homepage rendered a stray line of grey monospace text
+("text-4xl text-5xl text-white") above its hero headline, and its header's
+"Docs / Blog / Showcase / Partners / Plus" navigation links were entirely
+missing — both at full resolution, immediately visible.
+
+Fetched the real compiled CSS rather than guessing: the stray text is an
+`aria-hidden="true"` decorative annotation Tailwind's marketing site uses
+throughout to show which literal utility class produces a given effect —
+several `<span>` elements, each gated on a DIFFERENT responsive variant
+(`max-sm:inline`, `sm:max-md:inline`, `lg:max-xl:inline`, `xl:inline`),
+designed so exactly ONE is visible at any given viewport width. Root cause,
+found by tracing the ACTUAL compiled selector rather than assuming Tailwind
+still emits a plain `@media (max-width:...)`: Tailwind v4 compiles every
+`max-*:` variant (and the upper bound of a compound range like
+`sm:max-md:`) to **`@media not all and (min-width:...)`** — CSS's own idiom
+for negating a single feature test, since `all` (a media type that always
+matches) reduces `not all and (X)` to `not (X)`. `mediaMatches` had no
+concept of `not` at all: it scanned the condition text for a `min-width`
+feature, found one, and evaluated it completely normally — silently
+ignoring the negation, so a rule meant for viewports BELOW a breakpoint
+matched at every viewport AT OR ABOVE it instead, the exact opposite of
+its meaning. At the bench's 1024px viewport this made BOTH `max-sm:` and
+`sm:max-md:`'s narrower-than-1024px variants match simultaneously (hence
+two stray class-name labels appearing together, "text-4xl" AND
+"text-5xl"), and — far more consequentially — hid the header's own
+responsive nav links, which use the identical `max-*:`/`sm:max-*:` idiom
+to swap between a mobile menu and the desktop link row.
+
+Fixed with a single new regex (`notAllAndPrefix`, matching a leading
+`not all and` case-insensitively) checked at the very top of `mediaMatches`:
+when it matches, the REST of the condition is evaluated recursively through
+the same function and the result negated — no new evaluation logic needed,
+since everything after "not all and" is exactly the ordinary feature-test
+text `mediaMatches` already understands. A first attempt anchored the regex
+to the very start of the string with no allowance for leading whitespace
+(`^not\s+all\s+and\s+`) and consequently DID NOT FIRE at all — verified
+live before assuming success (per this session's "verify live even after a
+green test suite" discipline): `mediaMatches` receives its condition as
+`lower[len("@media"):]`, which always carries the single space that
+followed "@media" in the source text, so the anchored `^not` never matched
+a real caller's string even though a hand-typed test omitted that leading
+space and passed. Fixed by allowing (and requiring nothing of) leading
+whitespace in the regex itself, confirmed against the exact real
+leading-space-carrying string this time.
+
+**Verified live: the stray class-name line now shows the single correct
+label for a 1024px viewport ("text-6xl text-white text-balance"), and the
+full "Docs / Blog / Showcase / Partners / Plus" navigation — plus a
+previously-invisible "Get started" button — now render.** This is a
+broadly-applicable fix, not tailwindcss.com-specific: Tailwind v4's
+`max-*:` variants are used constantly across any site built with it (this
+session's OWN earlier `min-width`/rem/range-comparison/multi-term-`calc()`
+media-query fixes were ALL, similarly, first found on Tailwind-built sites
+and later confirmed to matter broadly). Three regression tests
+(`TestMediaMatchesNotAllAnd` — the real leading-space-carrying string, the
+case-insensitive/no-space `<link media>` form, and a confirmed-unrelated
+`not screen` left alone; `TestParseStylesheetNestedNotAllAnd` — the real
+NESTED shape `sm:max-md:` compiles to, an outer plain `min-width` wrapping
+an inner `not all and`), confirmed to fail with the exact wrong values
+predicted via a real `git diff > patch; git checkout --; go test; git apply
+patch` cycle. `css` held its 99.5% coverage floor.
+
+## 2026-09-03 (cont., round 26) — a missing vendor-prefixed pseudo-element wrongly hid a `<details>`'s whole summary; the legacy `clip: rect(...)` property implemented (engine#106)
+
+pkg.go.dev/net/http's "Details" panel (four checkmark rows: "Valid go.mod
+file", "Redistributable license", "Tagged version", "Stable version") was
+COMPLETELY MISSING — not misaligned, just absent — and separately, its
+header's "Skip to Main Content" accessibility link rendered as literal
+visible text overlapping the real search box. Two independent, unrelated
+bugs, both root-caused live rather than guessed at.
+
+**Bug 1 — `isPseudoElement` did not recognise `-webkit-details-marker`.**
+Each checkmark row is `<li><details class="go-Tooltip"><summary>…icon +
+"Valid go.mod file" + help icon…</summary><p role="tooltip">…</p></details>
+</li>` — a real, load-bearing `<details>`/`<summary>` pair this engine
+already has UA-stylesheet support for (`details:not([open]) > :not(summary)
+{display:none}`, added in an earlier round specifically for this exact
+tooltip pattern). Confirmed via TWO successive offline `css.CascadeVW` dumps
+(the real fetched markup + the real fetched stylesheets, no live pipeline)
+that this existing rule correctly does NOT match `<summary>` in isolation —
+so the regression had to be elsewhere. Found it by walking every parsed
+rule that matches `<summary>` and printing its declarations: the site's own
+CSS carries `.go-Tooltip>summary::-webkit-details-marker,.go-Tooltip>
+summary::marker{display:none}` — hiding WebKit's native disclosure-triangle
+marker, paired with the standard `::marker` for cross-browser coverage, a
+completely ordinary and harmless author rule in any real browser.
+`isPseudoElement` recognises `"marker"` but not `"-webkit-details-marker"` —
+an oversight, not a declined feature (the function already carries several
+OTHER vendor-prefixed pseudo-elements: `-moz-selection`, `-webkit-input-
+placeholder`, `-webkit-scrollbar` and its sub-parts). Unrecognised, it fell
+through `parseSimple`'s "reduce, don't drop" default: the compound reduced
+to plain `summary`, matching the REAL element and hiding its entire visible
+content, not just a marker glyph this engine never draws anyway. Fixed with
+a one-line addition to `isPseudoElement`'s recognised list.
+
+**Bug 2 — the legacy `clip: rect(...)` property was not implemented at
+all.** pkg.go.dev's own "skip to main content" link uses `clip:rect(0 0 0
+0)` (position:absolute, no explicit small width/height) — the CSS2-era
+screen-reader-only idiom that PREDATES the now-more-common `width:1px;
+height:1px;overflow:hidden` version this engine already handles (see
+`Overflow.Clips`'s own doc comment, which only ever mentions that variant).
+Unrecognised, the link kept its natural (large, readable) auto size and
+painted its real text in place, overlapping the real search box. Added
+`css.Style.HasClip`/`ClipRect` (parsed by a new `parseClipRect`, accepting
+both the CSS2-required comma-separated `rect(0, 0, 0, 0)` form and the
+later space-separated relaxation — a bare `auto` edge or anything else
+`parseLength` cannot resolve leaves the whole declaration unrecognised
+rather than guessed at, since real-world usage of this property
+overwhelmingly hard-codes all four edges to 0) and a new
+`paint.intersectClipRect`, applied at the very top of `paintBoxContent` —
+before background/border/text/children — scoped to `position:absolute`/
+`fixed` per spec, matching the property's own real-world semantics exactly:
+the element keeps its normal layout box and position, only its PAINTED
+region shrinks to nothing.
+
+**Verified live: pkg.go.dev's four checkmark rows now render with their
+icons, and "Skip to Main Content" no longer overlaps the search box** —
+both confirmed independently on the real page (each fix's effect is
+localised to its own element; neither masks the other). Four regression
+tests: `TestPseudoElementMatchesNothing` extended with the exact
+`summary::-webkit-details-marker` shape; `TestParseClipRect` (both
+separator forms, an unresolvable `auto` edge, wrong argument count);
+`TestCascadeClipDeclaration` (the full cascade-apply path, not just the
+parser in isolation); `TestClipRectHidesContent`/
+`TestClipRectIgnoredWithoutPositioning` (paint-level, confirming the
+position:absolute/fixed spec-scoping in both directions). All confirmed to
+fail without their fix via a real `git diff > patch; git checkout --; go
+test/vet; git apply patch` cycle — the css package failed to even BUILD
+without Bug 2's fix (`cascade_test.go` references the new `HasClip` field),
+the same "compile-time signal" class of confirmation as round 24's
+`InlineItem.Label`. `css`/`layout`/`paint`/`dom` all held their coverage
+floors (99.5%/100%/100%/98.1%); `paint.intersectClipRect`'s first draft
+carried two defensive clamp branches copied from `descendantClip`'s
+pattern that turned out to be dead code here (`image.Rectangle.Intersect`
+already returns the zero rectangle for a non-overlapping pair, unlike
+`descendantClip`'s own per-axis intersection, which really can end up
+inverted on just one axis) — removed rather than covered with a forced test,
+per this session's "don't add handling for scenarios that can't happen"
+discipline.
+
+Remaining visible differences on this page (the breadcrumb — "Discover
+Packages / Standard library / net / http" — stacking vertically with no
+">" separators between items, and the header's "Submit" text appearing
+where Chrome shows only icon buttons) were investigated and confirmed to be
+the SAME already-documented, deliberately-deferred gaps from round 24
+(`display:inline-flex`/`inline-grid`/`inline-table` losing their "atomic
+inline box, real layout inside" outer behaviour, conflated with the block-
+level `flex`/`grid`/`table` values; `::before`/`::after` generated content
+not synthesised at all) rather than new defects — not re-investigated from
+scratch, per the existing Known Gaps entries.
+
+## 2026-09-03 (cont., round 25) — `display:contents` implemented at layout's one shared child-iteration chokepoint; a media-query `calc()` evaluator upgraded from two terms to general arithmetic (engine#105); a genuine third-party SVG-rasteriser defect found, isolated, and documented, not fixed
+
+developer.mozilla.org's reference-article table-of-contents ("In this
+article: Beginner's tutorials, Guides, How to, ...") rendered stacked BELOW
+the article body instead of beside it in its own sidebar column, as Chrome
+shows. Live-fetched the real markup/CSS and found TWO independent, unrelated
+bugs sharing this one page.
+
+**Bug 1 — `display: contents` was not implemented at all.** MDN's article
+layout is `<div class="layout__2-sidebars-inline"><main class="layout__content"
+style="display:contents"><div class="layout__header" style="grid-area:header">
+...</div></main><aside class="layout__right-sidebar" style="grid-area:sidebar">
+...</aside></div>` — the grid container's actual children ARE `<main>` and
+`<aside>`, but `<main>` sets `display:contents` specifically so it drops out
+of the grid's item list, letting its OWN child (`.layout__header`, which
+carries the real `grid-area`) take its place instead. Confirmed via an
+offline `css.CascadeVW` of the exact real markup + real fetched stylesheets
+(no live pipeline involved) that this engine's cascade computed the grid
+container's `grid-template-columns`/`grid-template-areas` correctly, and
+`<aside>`'s own `grid-area:sidebar` correctly — the bug was purely that
+`<main>` (unrecognised `display:contents`, defaulting to `DisplayBlock`)
+became an unnamed grid item, auto-placed into a cell of its own, while its
+child's `grid-area:header` was silently ignored (a `grid-area` only matters
+on a DIRECT grid item) — corrupting the whole layout's column placement, not
+just hiding one element.
+
+Fixed at the ONE existing chokepoint every layout algorithm already shares:
+`renderedChildren` (`layout/shadow.go`, the same function Shadow DOM slot
+projection already substitutes through) is now a `*layouter` method (needed
+the style map to check each child's computed `Display`) and calls a new
+`flattenContents`, which replaces any `display:contents` child with ITS OWN
+rendered children, recursively — so it never itself reaches box placement,
+matching CSS's real behaviour (the element generates no box at all). Adding
+`css.DisplayContents` to the `Display` enum and `"contents"` to
+`css/parse.go`'s display-keyword switch was the only other change needed;
+every one of the 10 production call sites (block/inline layout, flex, grid,
+table row/cell collection) picked up the fix automatically by construction,
+without being touched individually beyond the mechanical `renderedChildren(x)`
+→ `l.renderedChildren(x)` rename. A page with no `display:contents` anywhere
+takes the exact same `return children` path as before, unchanged.
+
+**Bug 2 — the media-query `calc()` evaluator only ever handled a bare
+two-term expression.** Even with display:contents fixed, the sidebar STILL
+didn't move — a second, unrelated live-cascade dump showed the grid
+container's OWN `display` resolving to `DisplayBlock`, not `DisplayGrid`,
+at the bench viewport (1024px). Root cause: MDN's own breakpoint for this
+is `@media (width < calc(1rem * 2 + 15rem + 2rem + 31rem))` (mobile-only,
+real width 800px) — a MULTIPLICATION by a bare scalar plus a chain of FOUR
+additive terms. `mediaCalcRe`, added in an earlier round for GitHub's
+`calc(48rem - .02px)` pattern, only ever matched a single `calc(A ± B)` with
+exactly two operands; MDN's five-term product-and-sum expression fell
+through unparsed, so `mediaWidthCmpRe` found no width feature in the
+condition at all, and `mediaMatches` applied its (deliberate, otherwise
+correct) "unknown feature: assume it matches" default — permanently
+activating a MOBILE breakpoint's `display:block` override at every
+viewport, including a 1024px desktop one.
+
+Fixed by DELETING `mediaCalcRe` entirely and routing media-query calc()
+evaluation through `resolveCalc`'s own general arithmetic evaluator
+(`evalCalcExpr`, `css/calc.go`) — already used for ordinary property values
+(it is what makes Tailwind v4's `calc(var(--spacing) * 48)` spacing scale
+work) and already handles the full `+ - * /` grammar with nested parens and
+correct length/scalar rules, so no new parser was needed once this was
+noticed (a first draft duplicated a smaller version of the same evaluator
+directly in `css/parse.go` before this was caught and deleted in favour of
+the existing one — see "Errors and fixes" discipline: check for existing
+machinery before writing new). `containerConditionMatches` (`@container`
+queries, `css/container.go`) shared the exact same two-term-only regex and
+was fixed the same way, since nothing about `@container`'s size features is
+different from `@media`'s width feature here.
+
+**Verified live: MDN's table-of-contents now renders in its own left-side
+column, matching Chrome exactly**, both fixes confirmed necessary together
+(with only Bug 1 fixed, the grid still collapsed to `display:block`; with
+only Bug 2 fixed, `<main>` still corrupted the column placement). Four
+regression tests (`TestDisplayContentsPromotesGridChildren`,
+`TestDisplayContentsRecursesThroughNesting` — a `display:contents` nested
+inside another, `TestDisplayContentsPlainBlockUnaffected` — the no-op case;
+`TestMediaMatchesSimpleCalc` extended with MDN's exact five-term expression
+plus the original two-term cases), confirmed to fail without the fix via a
+real `git diff > patch; git checkout --; go test; git apply patch` cycle
+(the layout tests failed as a BUILD error, since `renderedChildren` becoming
+a method is itself part of the fix; the css test failed behaviourally, with
+the exact wrong values predicted). `css`/`layout`/`paint`/`dom` all held
+their coverage floors (99.5%/100%/100%/98.1%) — two new small test cases
+were needed to restore `css` and `layout` to their floors after the
+refactor shrank each package's total statement count slightly.
+
+**A third, genuinely unrelated defect was found on the same page and is NOT
+fixed: this engine's third-party SVG rasteriser (`github.com/srwiley/oksvg`,
+pinned at its latest available commit, `be6e8873`) mis-renders MDN's own
+logo**, a small (83×24 viewBox) `<svg>` whose "mdn" wordmark is drawn as a
+single complex multi-subpath vector `<path>` (a common technique for brand
+wordmarks, avoiding a web-font dependency for three letters) — real
+letterforms render as overlapping, doubled glyph shapes. Isolated with an
+INCREASING series of reproductions, each ruling out one layer of this
+engine's own code: (1) the bug reproduces identically when the ENTIRE page
+minus this one `<svg>` is stripped away (a bare `RenderHTML` of just the
+logo markup); (2) it reproduces with EACH of the logo's three `<path>`s
+rendered alone (isolating it to the "mdn" text path specifically, not the
+separate "M" mark or cursor rectangle, both of which render correctly); (3)
+it reproduces in a THROWAWAY Go program calling `oksvg.ReadIconStream` +
+`rasterx` DIRECTLY, with no go-webengine code in the call path at all —
+conclusive proof this is not a bug this engine's own `svg.go` (path
+extraction, viewBox scaling, target sizing) could cause or fix. Checked
+whether a newer oksvg commit already fixes it (per this session's own
+"check if the real fix is smaller than it looks" discipline): the pinned
+commit IS the repository's newest available commit, so no upstream fix
+exists to pick up by bumping the dependency. Not attempted here: fixing (or
+forking) a third-party rasteriser's own path-fill-rule/subpath handling is
+outside this engine's own codebase and a materially different kind of task
+than every other fix this session has scoped and shipped.
+
+## 2026-09-03 (cont., round 24) — a `<button>`'s label no longer includes text under a `display:none` descendant (engine#104); a bigger, related layout gap found and documented, not fixed
+
+github.com/golang/go's site-header search trigger rendered its visible text
+as **"Search/"** — Chrome shows only a magnifying-glass icon at this
+viewport width. Live-fetched the real markup and CSS (`github.githubassets.com`'s
+`lazy-react-partial-marketing-header*.css`) rather than guessing: the button
+nests `<span class="…label…">Search</span><kbd class="…kbd…">/</kbd>`, each
+shown at a DIFFERENT responsive breakpoint via `display:none`/`display:block`
+on the nested span/kbd (`@media (width>=63.25rem) and (width<=87.499rem)`
+hides both text and the shortcut hint, showing only the icon) — never both at
+once in a real browser.
+
+Root cause: this engine treats every `<input>`/`<button>`/`<select>`/
+`<textarea>` as an ATOMIC box (`layout.go`'s `isFormControlTag` branch — "a
+`<button>`'s children become its LABEL, not child boxes", by design, not a
+bug in itself). A `<button>`'s label was `dom.TextContent(node)` — a raw,
+style-blind concatenation of every descendant text node, in both the width
+calculation (`formControlDefaultSize`) and the paint step
+(`formControlDisplayText`). Confirmed via an offline cascade of the real
+markup + real CSS (`css.CascadeVW`, no live pipeline involved) that the
+label span and kbd hint were BOTH correctly resolving to
+`Display: DisplayNone` at this viewport — the cascade was never the
+problem; `dom.TextContent` simply has no notion of computed style and
+walks every text node regardless.
+
+Fixed narrowly, reusing the style map layout already has (`l.sm`) rather
+than threading one into `paint`, which has none: added
+`layouter.buttonLabel`/`appendVisibleText` (mirrors `dom.TextContent`'s own
+recursive walk in `dom/mutate.go`, just pruning a `display:none` element's
+entire subtree instead of recursing into it), called at BOTH of a
+button's two `InlineItem`-construction sites (`contents()`'s
+`display:block` entry point and `appendElementInline`'s ordinary-inline
+entry point — the codebase's own established pattern of covering both, see
+the hidden-input tests). The result is stored on a new
+`InlineItem.Label` field, computed once at layout time; `paint`'s
+`formControlDisplayText` now takes that precomputed label instead of
+re-deriving it from `dom.TextContent` itself (paint has no style map to
+redo a display:none-aware walk from the DOM node alone). Verified live:
+the button's rendered text is now empty of visible content (an icon-only
+button, so it falls back to "Submit" — the SAME pre-existing fallback
+every icon-only/empty button already had; this fix does not add or change
+that fallback, it just stops "Search/" from ever reaching it).
+Regression tests: `TestFormControlButtonLabelSkipsDisplayNoneDescendants`
+and its `display:block` counterpart, confirmed to fail (a build failure,
+since `InlineItem.Label` and `formControlDisplayText`'s new parameter are
+themselves part of the fix) via a real `git diff > patch; git checkout --;
+go test; git apply patch` cycle. layout and paint both hold their 100%
+coverage floor.
+
+**A bigger, related gap surfaced during this same investigation and is
+NOT fixed**: two sibling `<a>` buttons ("Sign in", "Sign up") in the same
+header render with **zero gap** between them ("Sign inSign up"), despite
+the real CSS giving the wrapping element `margin-right: 8px` (confirmed,
+via the same offline-cascade technique used above, to resolve correctly —
+this is not a `var()` or cascade bug). Root-caused by instrumenting the
+live layout box tree directly: GitHub wraps its entire marketing header in
+`<react-partial>`, an unstyled CUSTOM ELEMENT (falls back to this engine's
+default `display:inline`, since nothing in the UA stylesheet or any
+fetched CSS targets it) — and this engine's inline-content collector
+(`appendElementInline`'s `default:` case, `layout.go`) has NO check for a
+nested element's OWN display resolving to block-level: it unconditionally
+recurses via `appendInline`, flattening the `<react-partial>`'s ENTIRE
+subtree — including a real `<header>`, `<nav>`, and a `display:flex` CTA
+row several levels down — into one inline run of words and atomic
+(image/form-control) items. A block/flex/grid box nested under an inline
+ancestor this way never reaches `l.place()`/`l.flex()` at all, so it never
+gets a real box, margin, or flex-layout pass; two adjacent `<a>` elements
+with no text node between them in the DOM (the exact shape here) then
+render with the bare "no whitespace between them" spacing inline content
+would have, not their own margin. This is architecturally the same class
+of gap as this engine's already-documented, deliberately-deferred ones
+(Shadow DOM's slot projection, the reskin/orphaned-node case above): CSS's
+real behaviour here is to generate an anonymous block wrapper splitting
+the inline run around the nested block box and promote that box to a real
+sibling (CSS 2.1 §9.2.1.1) — a genuine layout feature, not a narrow bug fix,
+and this session's "no speculative capability" discipline argues against a
+narrower special case (e.g. hardcoding `<react-partial>` by tag name) that
+would only cover the one custom element anticipated in advance rather than
+the general "unstyled/inline wrapper around real block content" shape a
+future page could hit just as easily with a `<div>` inside a `<span>`.
+
+news.ycombinator.com's story subtext ("N points by user … | hide | N
+comments") rendered CENTERED under each title instead of left-aligned like
+Chrome. Root-caused live: HN's whole page is `<html lang="en" op="news">` —
+**no `<!DOCTYPE>` at all** — wrapped in `<center><table id="hnmain" ...>`,
+the classic legacy pattern for horizontally centering a fixed-width table on
+the page. A missing doctype triggers real browsers' "quirks mode", whose UA
+stylesheet resets `table { text-align: initial; … }` — WITHOUT this, this
+engine's normal (correct, standards-mode) inheritance carried `<center>`'s
+centered-text-align all the way down into every `<td>`, centering content
+the page never intended to center.
+
+This engine had **zero quirks-mode concept anywhere** — `dom.Parse` (per its
+own doc comment) discarded any `DoctypeNode` outright. Added the minimum
+needed, scoped narrowly rather than implementing the HTML spec's full quirks
+algorithm: `dom.Node` gained a `Quirks bool`, set true when the source has
+NO `<!DOCTYPE ...>` at all (the single most common real-world trigger; the
+spec's rarer legacy-doctype-identifier triggers are not modelled — a page
+reaching this engine either has `<!DOCTYPE html>` or none at all in
+practice). `css.CascadeVW` reads it once and threads it into `uaDeclarations`,
+which now adds `text-align:left` to `<table>`'s UA default in quirks mode —
+only that one property, of the several the spec's quirks-mode `table{...}`
+rule actually resets (font-weight/style/variant/size/line-height/white-space
+too), since only `text-align` has a confirmed live defect to fix; adding the
+others would be guessing, not fixing.
+
+**This interacted with an existing mechanism and needed care to get right**:
+`AlignCenterBlocks` (this engine's value for legacy `<center>`/`align=center`)
+already does double duty — it both centers a definite-width block/table AS
+A BLOCK within its container (`layout.go`'s width-resolution switch) AND
+centers INLINE TEXT like ordinary `text-align:center` (`alignOffset`). My
+first attempt (a bare UA-level `text-align:left` on `<table>`) broke
+`TestTableFixedWidthCentredInCenter`: overriding the table's OWN TextAlign
+also destroyed the "am I inside a `<center>`, so should I be block-centered"
+signal the width-resolution code read from that SAME field, un-centering
+the table itself. Real browsers keep the two questions independent (a
+`<table>`'s own computed `text-align` genuinely does become `start` in
+quirks mode per spec, yet the table still visually centers) — so this
+engine now does too: `Style.CenterAsBlock` is `TextAlign==AlignCenterBlocks`
+for every element EXCEPT a quirks-mode `<table>`, which also stays true
+when its PARENT (the `parent Style` cascade already passes in, unaffected
+by the table's own reset) is centered. Layout's
+block-centering check now reads `CenterAsBlock`, not `TextAlign` directly.
+
+**Verified live: HN's subtext now renders left-aligned under each title,
+matching Chrome**, while a table-in-`<center>` still centers correctly
+(confirmed both live and via the pre-existing test that first caught the
+regression). Measured: news.ycombinator.com SSIM 0.598→0.596, pixdiff
+12.9%→13.1% — a small, WITHIN-NOISE move in the "wrong" direction, honestly
+reported: Hacker News is a live, constantly-updating front page (its story
+list, points, and comment counts differ between the two measurement runs,
+confirmed by the differing page heights: 2261px vs 2280px) — this is the
+SAME live-content-drift category already documented for tailwindcss.com and
+others this session, not a regression from the fix itself (confirmed
+separately, directly, via the two dedicated before/after screenshots this
+entry is based on).
+
+New regression tests: `TestParseQuirksMode` (`dom/dom_test.go` — a document
+with no doctype is flagged `Quirks`; one with `<!DOCTYPE html>` is not) and
+`TestQuirksTableCellTextNotCentered` (`layout/table_pres_test.go` — a `<td>`
+inside a quirks-mode `<center><table>` must NOT have its text centered).
+Both confirmed to fail with the exact wrong (missing `Quirks` field /
+centered-not-left-aligned) result before this fix, via a temporary revert of
+`dom/dom.go`, `css/cascade.go`, `css/ua.go`, `css/value.go`, and
+`layout/layout.go` together.
+
+## 2026-09-03 (cont.) — a list-item marker inside a flex/grid/table/float item was left at its pre-layout position (engine#102)
+
+caniuse.com's "Most searched features" numbered list (`<ol style="list-
+style:decimal">`, one of three columns in a `display:flex` section) showed
+no visible "1."/"2."/… markers at all where Chrome shows a clean numbered
+list. Root-caused with a live dump of the actual `Marker.X` values rather
+than guessing from the screenshot: they were small, near-zero-ish numbers —
+nowhere near the ~370px the list's real flex-column position should put
+them at.
+
+`attachMarker` (`layout/marker.go`) computes a marker's absolute X/Y once,
+from the box's `ContentX`/first-line `Y` at the moment it runs — the SAME
+absolute-coordinate convention every other field in this package uses. But
+several layout algorithms lay a subtree out at a temporary, near-origin
+position FIRST and only afterward call `translateBox` to shift it into its
+real place: `flex.go`'s row cross-axis and column main-axis placement,
+`grid.go`'s item placement, `table.go`'s cell placement, and `floats.go`'s
+own `placeFloat`. `translateBox` shifted every field it knew about
+(`X`/`Y`/`ContentX`/`ContentY`, every line, every inline item) but never
+`Box.Marker` — so a list whose `<li>` got repositioned by ANY of these four
+mechanisms AFTER `attachMarker` ran kept its marker glued to the
+pre-translation coordinates, rendering it off in whatever happened to sit
+at the box's OLD position (usually nothing, since the intervening space is
+typically empty gutter) rather than beside its own item.
+
+Fixed with a two-line addition to `translateBox` itself — shift
+`box.Marker.X`/`.Y` by the same `(dx, dy)` as everything else — rather than
+patching each of the four call sites separately, since the bug is in the
+one shared function all of them go through.
+
+**Verified live: caniuse.com's numbered list now shows "1. AVIF", "2. WebP",
+"3. CSS Grid", "4. dvh (…)", matching Chrome.** Measured: caniuse.com SSIM
+0.653→0.652, pixdiff 21.7%→21.8% — essentially flat, honestly reported: five
+small digit-plus-period markers are a tiny fraction of the page's total ink,
+and general font-rasteriser noise dominates the aggregate score either way.
+The fix is broadly applicable — ANY marker-bearing list (`<ol>`/`<ul>`, or
+any `display:list-item`) placed inside a flex item, grid item, table cell,
+or float anywhere on any page, not specific to this one list.
+
+New regression tests: `TestTranslateBoxMovesMarker` (a direct unit check
+that `translateBox` shifts a box's `Marker` field, not just its other
+fields) and `TestFlexItemListMarkerPositionedInItsOwnColumn` (an end-to-end
+check — a numbered list as the SECOND item in a flex row must have its
+marker positioned inside its OWN column, not left behind near the first
+item's position). Both confirmed to fail with the exact wrong (pre-
+translation) coordinates before this fix, via a temporary revert of
+`layout/floats.go`.
+
+## 2026-09-03 (cont.) — go.dev/blog's nav shows raw icon-ligature text ("arrow_drop_down"); root-caused as a genuine but out-of-scope gap, not fixed
+
+Chased go.dev/blog's pixdiff (28.0%) visually, at full resolution from the
+start (per round 19's own "don't trust the thumbnail" lesson). Immediately
+visible: the top nav shows literal text "arrow_drop_down" three times where
+Chrome shows small dropdown-caret triangles.
+
+Root cause, confirmed against the real page's markup and CSS: this is
+Google's Material Icons convention — `<i class="material-icons">
+arrow_drop_down</i>`, where the element's TEXT CONTENT is a semantic
+keyword a custom `@font-face` TTF (fetched from `fonts.googleapis.com`)
+substitutes for a single glyph via its own OpenType GSUB ligature table,
+entirely at the font level. `css/parse.go` skips `@font-face` wholesale
+(like any unrecognised at-rule), so `font-family:'Material Icons'` falls
+back to this engine's normal font stack, which has no matching glyph and
+no ligature mechanism to invoke — the raw keyword renders literally.
+
+**Checked whether this was smaller than it looked before writing it off**:
+`go-opentype/opentype` (already a dependency) has real GSUB support
+(`gsub.go`), and a sibling `go-opentype/shape` package exists specifically
+to drive it — but `paint/fonts.go`'s `Measure`/`Metrics` call
+`opentype.Face` directly (plain per-rune cmap+advance lookups) for every
+one of this engine's existing bundled fonts; `go-opentype/shape` is not
+used anywhere in this engine yet. A real fix needs BOTH a wholly new
+capability (fetch and load an arbitrary `@font-face` TTF by its declared
+family name, the way a browser does) AND rewiring text measurement/painting
+through real shaping instead of the current no-shaping model — genuinely
+comparable in scope to Shadow DOM or the reskin-orphaned-node architecture
+already deferred this session, not a narrow bug fix.
+
+**Not fixed.** Considered and rejected a narrower mitigation (hide text for
+a hardcoded list of well-known icon-font family names) as the same kind of
+speculative, name-guessing special case this session has avoided
+elsewhere — it would only ever cover icon fonts anticipated in advance.
+Documented as a new Known Gap below rather than forced into an unfitting
+narrow fix.
+
+## 2026-09-03 (cont.) — react.dev's washed-out homepage prose re-investigated: the SAME known gap, a far bigger blast radius, still not fixed
+
+react.dev is the corpus's worst page by pixdiff (47.6%). Chased visually
+rather than assuming the existing "hero h1/one button" Known Gap entry
+already covered it fully: nearly every heading and paragraph on the
+homepage, not just the hero, renders washed-out/low-contrast against the
+dark background.
+
+Ruled out two live hypotheses BEFORE settling on the real one, per this
+session's own "verify empirically, don't stop at plausible-sounding CSS
+reasoning" discipline:
+
+- **Not a `:is()`/escaped-class-name selector bug.** react.dev's design uses
+  Tailwind's `--tw-text-opacity` CSS-variable colour pattern gated by
+  `:is(.dark .dark\:text-primary-dark)`-shaped dark-mode selectors. Traced
+  this engine's own selector parser line by line (`splitPseudos` skips a
+  backslash-escaped colon when finding pseudo boundaries; `scanCompound`
+  correctly unescapes it back to a literal `:` in the stored class name) —
+  the mechanism is correct. Confirmed empirically too: with `DisableJS`,
+  the light-mode colour resolves exactly as expected.
+- **The real cause: with JS enabled, `<html class="dark">` IS correctly
+  present, but the settled DOM has ZERO `<h2>` elements at all.** The SAME
+  router-failure script pass documented for the hero (engine#92's
+  `reskin()` Known Gap) unmounts the ENTIRE marketing homepage content, not
+  just the hero — a much bigger blast radius than that entry's own wording
+  suggested. Every unmounted node keeps its pre-failure (light-mode) style
+  forever, per `reskin()`'s existing, correct-as-far-as-it-goes behaviour:
+  a node absent from the rejected pass's freshly-cascaded style map has
+  nothing to update its `Style` pointer TO.
+
+**Not fixed this round.** A real fix needs either a DOM diff across the
+rejected pass (to tell "removed, keep last-known style" apart from "still
+present, re-cascade normally") or re-cascading an orphaned subtree against
+a synthetic root that reproduces its lost ancestor chain — `dom.RemoveChild`
+nulls a node's own `.Parent` at the moment of removal, so that chain is not
+recoverable after the fact without having snapshotted it beforehand. Either
+is a real architectural addition, assessed (again) as bigger than this
+session's per-round scope — but the Known Gaps entry below is corrected to
+the true, now-measured scope, which is materially larger than previously
+documented and makes this a stronger candidate for a dedicated future
+session than the old wording implied.
+
+## 2026-09-03 (cont.) — the `background` shorthand didn't reset colour when it had none, so engine#98's own fix survived only partway (engine#99)
+
+Verifying engine#98 live (github.com's nav `<button>`s no longer painting a
+hardcoded grey box) turned up a SECOND bug in the same spot: the grey box
+was still there, just now sourced from a genuinely CASCADED value rather
+than a hardcoded one — engine#98's own new UA-default background-color for
+`<button>` was surviving the author's own reset unchanged.
+
+Root cause, found by dumping the live cascade result rather than assuming
+engine#98 alone was sufficient: GitHub's reset is `background:0 0;border:0`
+— the `background` SHORTHAND, not `background-color`. Per CSS, a shorthand
+resets every sub-property it represents to its initial value when the given
+value doesn't mention it — `background-color`'s initial value is
+transparent. `css/parse.go`'s `background` case never modelled this: it
+only assigned `s.Background` when it found an actual colour token in the
+value, and silently left whatever was there before (a prior declaration, or
+now, a UA default) untouched otherwise. `background:0 0` (bare position,
+GitHub's own exact value), `background:url(x) no-repeat` (image only, a
+common real pattern for layering an icon over a differently-coloured
+ancestor), and `background:none` all hit this — none carry a colour token,
+so none ever reset a stale background-color, regardless of what author CSS
+actually says.
+
+Fixed by resetting `s.Background` to `Transparent` FIRST, unconditionally,
+then overwriting it with a parsed colour token if the value has one —
+matching the shorthand's real reset semantics with a two-line change.
+`border`'s own shorthand handler (`applyBorderShorthand`) already had this
+right (it builds a fresh zero-value `BorderSide` and blanket-assigns all
+four edges, so an unrecognised `border:0` correctly ends up `BorderNone`
+regardless) — confirmed by checking it before assuming the same class of
+bug existed there too, rather than fixing both defensively.
+
+**Verified live: github.com's nav buttons now render as genuinely
+transparent, matching Chrome.** Measured: github.com/golang/go SSIM
+0.531→0.532, pixdiff 32.9%→32.8% — essentially flat two rounds in a row now
+for the SAME reason both times (a small header fraction of a long,
+text-dense page dominated by font-rasteriser noise) — the fix is general
+(any page whose CSS resets a background/image-only shorthand on a control
+or any other element), not specific to this one page's number.
+
+New regression test `TestBackgroundShorthandResetsColorWhenAbsent`
+(`css/modern_test.go`) covers all three colour-less shorthand shapes
+(`0 0`, `url(...) no-repeat`, `none`) against a PRIOR non-transparent
+background-color, confirmed to fail with the exact wrong (un-reset) colour
+before this fix.
+
+**Lesson: verifying a fix live caught what the unit tests alone did not** —
+engine#98's own tests all passed (they exercise `paintFormControl` reading
+`Style.Background` correctly; none of them exercised the CASCADE producing
+a wrong `Style.Background` in the first place from this specific shorthand
+shape). A live render is what surfaced that the visible bug persisted
+despite a "correct and tested" fix landing — the same discipline this
+session has applied to every prior round, now caught a defect in this
+session's OWN immediately-preceding work, not just in the code being
+investigated.
+
+## 2026-09-03 (cont.) — a form control's background/border now comes from its own cascaded style, not a hardcoded colour (engine#98)
+
+github.com/golang/go's top navigation ("Platform", "Solutions", "Resources",
+"Open Source", "Enterprise") rendered as solid grey pill buttons — but a raw
+fetch of the real page shows these are literal `<button>` elements styled by
+GitHub's own CSS with `background:0 0;border:0`, meant to look like plain
+text links with a dropdown caret, not visible buttons at all.
+
+Root cause: engine#95's new form-control paint step (`paintFormControl`)
+drew every button/select's background and border from two flat, hardcoded
+package-level colours (`formButtonBg`, `formBorder`), completely independent
+of `it.Style` — so ANY author reset of a control's default appearance (an
+extremely common pattern; virtually every professionally-designed site
+restyles its buttons rather than accepting the raw UA look) was silently
+overridden by fake generic chrome. This is a broadly-applicable regression,
+not specific to this one page's header.
+
+Fixed at the source rather than special-casing paint: `css/ua.go` never gave
+`button`/`select`/`input`/`textarea` a background-color or border UA default
+at all (only `display:inline`) — so the cascade had NOTHING for an author
+rule to actually override; `Style.Background`/`Style.Border` were always
+empty/transparent for these tags regardless of styling, which is why paint
+had to hardcode its own colours in the first place. Added real UA defaults
+(matching paint's own prior hardcoded values exactly, so an unstyled
+control's appearance is unchanged): `button`/`select` get a light-grey
+background + grey border, `input`/`textarea` get white + grey border,
+narrowed by two new `uaDescendantRules` attribute-selector overrides —
+`input[type=button/submit/reset]` gets the button look, `input[type=
+checkbox/radio]` gets no generic background/border at all (paint's own
+checkbox-square renderer never consults these fields for them). `paint/
+paint.go`'s `paintFormControl` now reads `it.Style.Background`/`.Border`
+directly instead of choosing between the two hardcoded constants, painting
+nothing for a zero-alpha background or a `border:0`/`border-style:none`
+side — exactly the mechanism every other element's background/border
+already uses in this engine, just newly extended to form controls.
+
+**Verified live: github.com's nav items no longer render as grey pills.**
+Measured: github.com/golang/go SSIM 0.531→0.532, pixdiff 32.9%→32.8% —
+barely moved in the aggregate, honestly reported rather than oversold: the
+fixed header is a small fraction of a long (2989px), text-dense page whose
+diff is dominated by ordinary font-rasteriser variance, the same category of
+noise already documented for Wikipedia and several other pages this
+session. The fix's real value is general (any styled button/select/input on
+ANY page, not just this one), independently of this page's own number.
+
+New regression tests confirmed to fail against engine#95's original
+hardcoded-colour implementation before this fix (reverted via a temporary
+`git checkout` of `css/ua.go`/`paint/paint.go` covering just this round's
+diff): `TestPaintFormControlHonoursAuthorReset` (a zero-alpha background and
+a zero-width border must paint nothing, not the UA fallback colours) is the
+core new case; `TestPaintFormControlDrawsBackgroundAndBorder` and
+`TestPaintFormControlButtonBackground` were updated to pass an explicit,
+realistic cascaded style (matching what `css/ua.go` now actually produces)
+instead of relying on paint's own hardcoded fallback, so they keep testing
+the same visible-box contract through the new mechanism rather than around
+it.
+
+## 2026-09-03 (cont.) — `<select>` sizes to its widest option and shows the correct one, matching the real cross-engine pattern (engine#96)
+
+Round engine#94 (below) fixed pkg.go.dev's garbled index block by hiding
+`<option>` (`display:none`) — a real fix, but left EVERY `<select>` on any
+page showing nothing at all. Asked directly whether that fix had been
+checked against Firefox/WebKit source (per this project's own bibliography
+discipline) — it had not been, only against this engine's own prior
+`<template>` precedent and live pkg.go.dev diagnosis. Reading both engines'
+source afterward (`searchfox.org`'s `nsListControlFrame`/
+`nsComboboxControlFrame` for Firefox, `RenderMenuList.cpp` for WebKit — a
+`RenderFlexibleBox` subclass) showed the real common pattern: a `<select>`
+is a replaced, widget-backed element with a dedicated render object that (1)
+measures every option's label to size the control to its widest possible
+entry (WebKit's `updateOptionsWidth()`), and (2) paints only the currently
+selected option's label, on one line.
+
+**Between diagnosing this and shipping it, a different session merged
+engine#95, which independently built exactly the box+paint infrastructure
+this needed** — `isFormControlTag`/`formControlSize` in `layout/layout.go`
+and `paintFormControl`/`selectedOptionLabel` in `paint/paint.go`, covering
+`input`/`button`/`select`/`textarea` generically. Its own `select` handling
+was a placeholder, though: a flat `170px` width regardless of any option
+(the same constant used for a plain text `<input>`), and its
+`selectedOptionLabel` picked the FIRST `<option selected>` rather than the
+LAST, with no disabled-option or `<optgroup>` handling — a reasonable first
+cut for the PR's own driving goal (making a login form's text fields and
+buttons clickable), just not spec-correct for `<select>` specifically.
+Discovered this by re-syncing with `origin/main` mid-round (`gh pr list`
+showed #95 had landed) rather than by re-diagnosing from scratch, and
+rebuilt this round's fix ON TOP of it instead of shipping a second,
+competing atomic-box mechanism.
+
+Implemented per the HTML standard's own normative algorithms (read at
+https://html.spec.whatwg.org/multipage/form-elements.html, not reconstructed
+from memory):
+
+- **`layout/select.go`** (new): `optionLabel` (an option's `label` attribute
+  if present and non-empty, else its text content) and `selectOptionLabels`
+  (every option's — and each `<optgroup>`'s own — label, for sizing).
+- **`layout/layout.go`**: `formControlDefaultSize`'s `"select"` case now
+  measures every option's label via the existing `Measurer` and sizes to the
+  widest, falling back to the flat default ONLY when there are no options to
+  measure at all — not as a floor a real, narrower option set gets clamped
+  up to (a `<select><option>x</option></select>` really is a tiny box in a
+  real browser).
+- **`paint/paint.go`**: `selectedOptionLabel` rewritten to the standard's
+  option selectedness algorithm
+  (https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-selectedness):
+  the LAST `<option selected>` wins for a non-`multiple` select; with none
+  selected, the FIRST option that is not itself `disabled` and whose
+  ancestor `<optgroup>` (if any) is not disabled wins instead; a new
+  `optionLabel` (duplicated from layout's, matching this file's own existing
+  `controlLabel` duplication convention) applies the `label`-attribute
+  override.
+
+**Verified live on pkg.go.dev/net/http**: its platform selector shows
+"linux/amd64" inside a real, visible box (matching Chrome) instead of a flat
+170px empty field; its version/tab-switcher `<select>` sizes to its actual
+label instead of the generic text-input default.
+
+New regression tests (`layout/formcontrol_test.go`, `paint/formcontrol_test.go`)
+cover: sizing to the widest option (including through `<optgroup>` nesting
+and a `label`-attribute override), staying narrower than the flat default
+when real options are all short, last-selected-wins, disabled-option and
+disabled-`<optgroup>`-inheritance skipping for the default case, and the
+`label`-attribute override on the displayed value. Confirmed each of the
+four `paint` behavioural tests and three `layout` sizing tests fails against
+engine#95's original placeholder implementation (reverted via a temporary
+`git checkout`/file-move covering just this round's changes) before
+restoring the fix — one wrong answer per broken standard rule, not a
+generic "something's off" failure.
+
+**Deliberately not attempted**: an actual popup/listbox surface (this engine
+never renders anything interactively beyond what a settle pass produces),
+`<optgroup>` rendering as a visually distinct row in that non-existent
+popup, and the HTML spec's exact "text" IDL attribute whitespace-collapsing
+rule (approximated with a plain trim, matching this engine's existing text
+handling elsewhere).
+
+**Lesson, worth repeating alongside round 14/15's own version of it**: this
+is the THIRD time in three consecutive rounds that another session merged
+a PR touching the exact area under investigation between diagnosis and
+shipping (#89-91 during round 14, #93 during round 15, #95 during this one)
+— `gh pr list` before every `gh pr create` on this repo is no longer an
+occasional courtesy check, it is load-bearing.
+
+## 2026-09-03 — pkg.go.dev's garbled top-of-page text block root-caused: `<option>` had no user-agent styling at all
+
+pkg.go.dev/net/http had the corpus's highest pixdiff (45.8%) after the
+react.dev flex-bare-text fix. Chased visually: a dense, unbroken block of
+concatenated identifier text ("DocumentationSourceFilesDirectoriesOverview
+IndexExamplesConstantsVariablesFunctionsTypesCrossOriginProtectionFileServer…")
+rendered near the top of the page, overlapping the sidebar's "Details/
+Repository/Links" section — not the page's real, legitimate `Documentation-
+index` symbol list (confirmed present and correctly positioned much further
+down, at the same place a real browser puts it).
+
+Root-caused with a live box-tree dump (a temporary white-box `_test.go` in
+package `engine`, calling the same internal `renderCore` pipeline `Render`/
+`RenderHTML` use, walking the real box tree for any text containing a marker
+string unique to the garbled block) rather than guessing from the screenshot —
+the same technique used in round 4's tailwindcss.com grid investigation. The
+match traced straight to a `<select class="go-Select js-selectNav">`
+(pkg.go.dev's version/tab-switcher dropdown, `go-Main-navMobile`) whose
+`<option>` children include the page's entire alphabetical symbol/example
+index as option text.
+
+**This engine's user-agent stylesheet has never had any special case for
+`<option>`** (`css/ua.go`) — `<select>` itself falls into the same generic
+`display:inline` bucket as `<button>`/`<input>`/`<textarea>`, but unlike those
+(which are void or have no meaningful child text), a `<select>`'s `<option>`
+children carry real, visible text nodes. A real `<select>` is a replaced,
+OS-native control that shows only the currently selected option on one line,
+entirely opaque to CSS box layout; without any UA rule saying so, this
+engine laid out every `<option>`'s text as ordinary inline content, wrapping
+across ~19 lines/455px at the select's DOM position. Fixed with one addition
+to `uaDeclarations`: `option { display: none }` — the exact same "honest
+about the gap" precedent already used for `<template>`'s inert content just
+above it in the same file (this engine has no native form-control rendering
+at all; an `<input>`'s `value` going unshown is an existing, accepted
+simplification this now matches rather than diverges from).
+
+**Verified live:** the garbled block is completely gone from
+`cmd/render`'s output; the page's real content (Overview, code examples,
+Clients and Transports, Servers, …) now lines up closely with Chrome's
+rendering from the very top of the page.
+
+**Measured:** pkg.go.dev/net/http SSIM 0.530→0.616, pixdiff 45.8%→40.0%.
+Confirmed via a full 10-page bench corpus re-run that nothing else regressed;
+every other page's number held within its already-documented noise band.
+
+Regression test `TestSelectOptionsDoNotLeakIntoLayout` (`layout/cover2_test.go`)
+reproduces the failure shape directly (a `<select>` with two long `<option>`
+texts, asserting neither string appears in ANY box's laid-out text anywhere
+in the tree — the first version of this test only checked the document
+root's own `Lines` field, which is always empty for a root `<html>` box, and
+so passed even without the fix; walking the full tree was needed to actually
+exercise the regression, caught by reverting the fix locally and watching the
+corrected test fail with the predicted leaked text before restoring it).
+`css/ua_test.go`'s `TestUADeclarationsAllBranches` was extended to cover the
+new `option` branch, holding the `css` package's coverage-ratchet gate at
+its 99.5% floor.
+
+## 2026-09-02 (cont. 3) — a real flexbox layout bug fixed: a `display:flex` element with bare text content collapsed to zero size
+
+react.dev held the corpus's highest pixdiff for a while: its hero `<h1>React</h1>`
+and both CTA buttons ("Learn React", "API Reference") rendered as empty
+space — not hidden, not the wrong colour, simply ABSENT, with none of their
+layout space reserved either.
+
+Root-caused as a genuine flexbox layout engine bug, confirmed with a live
+box-tree dump then isolated to a minimal repro
+(`<h1 style="display:flex">React</h1>`) BEFORE touching any code — two
+compounding gaps, both in code that only ever expected a flex container's
+content to be wrapped in element children:
+
+- **`preferredWidth`'s flex-row branch summed only `Element` children's
+  widths**, so a flex container whose content is bare text with no wrapping
+  element at all (forming a single anonymous flex item per spec — a very
+  common Tailwind/utility-CSS pattern: `display:flex` added to an element
+  purely for `align-items`/`gap`, with nothing else inside) counted zero
+  children and returned a bare `0`, collapsing the element's shrink-to-fit
+  width to zero.
+- **`flexItems` has the identical Element-only blind spot**, so `flex()`
+  itself collected zero items for such a container and returned immediately
+  having laid out nothing at all — collapsing height to zero too, independent
+  of the width bug.
+
+Fixed both by falling back to the SAME inline-formatting-context path
+`contents()` already uses for a plain, non-flex, no-block-child element:
+correct for the common single-line case (there is only ever one synthetic
+item, so justify-content/align-items/gap have nothing to distribute across,
+and are not modelled for it — a genuinely empty container, no element AND no
+text, still correctly collapses to zero, unaffected by this fix).
+
+**Verified live:** the "Learn React" button now renders with its real text
+and pill shape at the correct size. The `<h1>` and "API Reference" button
+now ALSO occupy correct, non-zero layout space with the right text content —
+but remain visually invisible for a SEPARATE, already-diagnosed reason:
+react.dev's client-side router failure (the same failure `reskin()`,
+engine#84, already guards against) removes these specific DOM nodes from the
+live tree in the same script pass that ALSO toggles dark mode; `reskin`
+correctly preserves such an orphaned node's PRE-failure style (its node is
+no longer in the newly-cascaded style map at all, so there's nothing for it
+to update to), which for these ones predates the dark-mode class add,
+leaving them stuck in `text-primary`'s light-mode colour on a dark
+background. This is a real, narrower limitation of the reskin mechanism
+(fixing it well would need diffing the DOM before/after a rejected pass
+rather than a single before/after style map) — noted here rather than
+chased into a much larger redesign this round.
+
+**Measured:** `bench/cmd/compare`: SSIM 0.587→0.605, pixdiff 49.5%→47.6%.
+Confirmed via the full 10-page bench corpus that go.dev/blog ALSO improved as
+an unplanned side effect (pixdiff 31.1%→28.1%) — this bug was never specific
+to react.dev, and likely affects any page using the same common
+`display:flex`-on-a-text-only-element pattern.
+
+## 2026-09-02 (cont. 2) — CSS `mask-image` implemented, and background/mask SVG sources now actually decode
+
+en.wikipedia.org held the corpus's lowest SSIM (0.422) since long before this
+week's fixes. Chased visually: the entire top toolbar's icons (hamburger
+menu, search, language switcher, user/notification icons) rendered as plain
+solid-coloured squares instead of their real shapes.
+
+- **CSS `mask-image` (and `-webkit-mask-image`) was entirely unimplemented.**
+  Modern MediaWiki's Vector-2022 skin — like a great many icon systems across
+  the web — renders EVERY toolbar icon as an empty `<span>`, sized to a small
+  square, painted with a solid `background-color`, and cut into its real
+  shape by `mask-image: url(...)` (an alpha stencil over everything the
+  element paints, not a second background layer) — precisely so the icon can
+  recolour for dark mode from CSS alone, with no second image asset. Without
+  mask support, the `<span>` simply painted as a solid square. Implemented:
+  `css.Style.MaskImage` (only a single `url()` mask is modelled — a gradient
+  or multi-layer mask is left unsupported, this engine's one deliberate
+  simplification, matching how narrowly `transform: translate()` was scoped
+  two entries above), and `paint.applyMask`, which reuses the SAME
+  offscreen-group-buffer mechanism `opacity`/`filter` already use (render the
+  element's subtree into an isolated buffer, then multiply its alpha by the
+  mask's alpha before compositing) rather than inventing new paint
+  machinery. The mask is stretched to fill the element's own border box —
+  the real `mask-size`/`mask-position`/`mask-repeat` grammar is not modelled
+  — and anything a child paints OUTSIDE that border box is fully masked out,
+  matching the spec's "mask affects the whole element" rule.
+- **Found and fixed a SECOND, deeper bug the first one exposed: `mask-image`
+  (and, it turns out, ordinary `background-image`) URLs pointing at an SVG
+  document never actually decoded — at all, regardless of this fix.**
+  `loadOneBackground` only ever called the raster-only `codec.Decode`; the
+  `<img>`/inline-`<svg>` path's own SVG rasteriser (`svgToBitmap`) was never
+  wired in for background/mask sources. Worse: even the URL-based
+  vector/raster BUDGET check (`srcLooksLikeSVG`) matches only a literal
+  `.svg` path or an `image/svg` string in the URL — Wikipedia's icon service
+  serves SVG from an extensionless, query-string-driven URL
+  (`load.php?...&image=menu&format=original`, `Content-Type: image/svg+xml`
+  only in the HTTP response), which that heuristic cannot see. Fixed by
+  routing `loadOneBackground` through `looksLikeSVG` (the SAME helper
+  `<img>` loading already uses, which falls back to sniffing an `<svg`
+  tag in the fetched bytes when the URL gives no hint) before falling back
+  to raster decode.
+- **Verified live:** every toolbar icon (hamburger menu, search, language
+  switcher, and more) now renders its real shape.
+- **Honest measurement note:** the aggregate SSIM/pixdiff for
+  en.wikipedia.org barely moved (0.422 unchanged, 22.4%→22.4%) despite this
+  real, visually-confirmed fix — the icons affected are a tiny fraction of a
+  very tall (24818px), extremely text-dense page, and the region comparison
+  is dominated by inherent font-rasteriser variance between this engine and
+  Chrome across that dense body text (a long-documented, expected,
+  never-reaches-zero source of "difference" on prose-heavy pages — see this
+  file's `Reproduce`/`Visual-fidelity protocol` sections). `mask-image` and
+  SVG background/mask decoding are real, general capabilities confirmed to
+  matter for at least one live site's entire icon system, independent of
+  whether they moved this specific page's score.
+
+## 2026-09-02 (cont.) — pkg.go.dev's header overlay closed: `transform: translate()` and native `<details>`/`<summary>` hiding
+
+pkg.go.dev/net/http had the corpus's highest pixdiff (47.1%) after the
+tailwindcss.com fix below. Chased visually: a mobile navigation drawer
+rendered permanently expanded across the whole page, overlapping the header
+and content, and a help tooltip's real text rendered permanently visible in
+a bordered box at the very top-left of the page. Two separate, unrelated
+root causes:
+
+- **This engine had NO CSS `transform` support at all** (still true in
+  general — see Known gaps below), but pulled out ONE well-scoped subset:
+  `translate`/`translateX`/`translateY`, a pure 2D offset with no layout-flow
+  effect, applied exactly like a relative-position shift. pkg.go.dev's
+  mobile nav drawer hides itself off-screen with
+  `transform: translate(100%)` (only brought into view by a JS-toggled
+  `.is-active` class setting `translate(0)`); its OWN `display:none` is
+  gated behind `@media (width >= 65rem)`, which correctly does NOT apply at
+  this engine's 1024px (64rem) test viewport — matching a real browser,
+  which relies on the transform, not `display`, to hide it there. Without
+  transform support, the drawer's real `display:block` at this viewport
+  rendered it fully in place instead of pushed off-screen. Implemented in
+  `css/parse.go` (`parseTransformTranslate`) + `layout/position.go`
+  (`applyTransformTranslate`, threaded through the existing relative-offset
+  pass and, separately, applied AFTER an absolutely/fixed-positioned box's
+  final placement — applying it any earlier gets exactly cancelled by the
+  placement math, caught by a dedicated regression test). A `transform`
+  naming any OTHER function (rotate, scale, skew, matrix, 3D, or a mix
+  including translate) is left entirely unsupported, same as before.
+- **Native `<details>`/`<summary>` disclosure semantics were entirely
+  unimplemented** — a closed `<details>` (the default; no `open` attribute)
+  rendered ALL its content, not just the `<summary>`. pkg.go.dev's help
+  tooltips are exactly `<details class="go-Tooltip"><summary>...</summary>
+  <p role="tooltip">the tooltip text</p></details>`, only ever opened by a
+  click a static render never triggers. Fixed as a genuine UA-stylesheet
+  rule (`details:not([open]) > :not(summary) { display: none }`, added to
+  `uaDescendantRules` — expressible directly with this engine's existing
+  attribute-selector and `:not()` support, no new selector feature needed),
+  matching a real browser's own native rendering rule for the element,
+  applied at UA precedence so any author rule targeting the hidden content
+  still overrides it.
+
+**Verified live:** the nav drawer and every tooltip are gone from the
+rendered page; `bench/cmd/compare`: pixdiff 47.1%→45.4%, SSIM roughly held
+(0.539→0.534, within this page's already-documented live-content-drift
+noise band). The improvement is real but modest in the AGGREGATE score
+because a separate, larger, NOT-yet-chased issue dominates this page's
+remaining diff: its genuine "Index" section (an always-visible, real content
+list of every exported symbol) appears to render at a different vertical
+position than Chrome's, most likely from a deeper multi-column grid/flex
+layout difference in the page shell — flagged for a future session rather
+than guessed at further this round.
+
+## 2026-09-02 — tailwindcss.com's whole layout ROOT-CAUSED and fixed: THREE independent, foundational CSS gaps (calc(), `inherit`, `inset`)
+
+tailwindcss.com was the worst score in the bench corpus after the MDN fix
+below (SSIM 0.364, pixdiff 55.2%). Chased it visually rather than guessing
+from the number: a decorative avatar image rendered many times too large, a
+whole row of sponsor logos rendered in plain browser-default link blue
+instead of their real colours, and an unrelated feature-card photo rendered
+at the very top of the page, overlapping the hero title, instead of inside
+its own card far below. Three separate, unrelated root causes, each
+confirmed live by dumping the actual box tree and computed styles (not
+guessed from the screenshot):
+
+- **`calc()` was entirely unimplemented — every `calc(...)` value failed to
+  parse and its declaration was dropped.** Tailwind v4 compiles its ENTIRE
+  numeric spacing scale this way (`--spacing: .25rem` once at `:root`, then
+  every sized/spaced utility — `size-48`, `h-48`, `p-4`, `gap-4`, `mt-4`, …
+  — as `calc(var(--spacing) * 48)`), so this single gap broke width, height,
+  padding, margin, and gap on nearly every utility-classed element on the
+  page. An `<img class="size-48">` (meant to be a 192×192px avatar) fell back
+  to its raw intrinsic pixel size instead. Implemented (`css/calc.go`): a
+  small recursive-descent evaluator for `+`/`-`/`*`/`/` over lengths and bare
+  numbers, with nested parens — run after var() substitution, so
+  `calc(var(--spacing) * 48)` is plain arithmetic by the time it evaluates. A
+  calc() mixing a percentage (or `vw`/`vh`, approximated as a percentage
+  elsewhere in this package) with an absolute length is deliberately left
+  unresolved — percentages resolve only against a containing block at LAYOUT
+  time, which this text-level pass has no access to — dropping the
+  declaration exactly as before calc() was understood at all, not a
+  regression for that subset.
+- **The CSS-wide `inherit` keyword was not understood at all.** Tailwind's
+  (and virtually every modern framework's) preflight reset ships
+  `a{color:inherit}` to cancel the browser's default link-blue — but `color`
+  being inherited BY DEFAULT was not enough to fix this: this engine's own
+  UA stylesheet declares `a{color:#0000ee}` at lower cascade precedence, so
+  by the time the author's `inherit` declaration runs, the field has already
+  been overwritten and needs to be explicitly copied from the parent again.
+  Every `fill="currentColor"` SVG icon inside such a reset anchor (a common
+  pattern for a linked logo — confirmed live: every sponsor-logo `<svg>` on
+  tailwindcss.com sits inside exactly such an anchor) inherited that wrong
+  blue too. Fixed (`inheritProperty` in `css/parse.go`, threaded a `parent
+  *Style` into `Style.apply`): covers the properties this engine already
+  gives explicit inheritance semantics to in `inheritFrom` — `color`,
+  `visibility`, `font-weight`, `text-align`, `white-space`, `line-height`,
+  `list-style-type`, `list-style-position`. `inherit` on any other property
+  is a no-op (unchanged from before), not a guess.
+- **The `inset` shorthand (and its logical-axis siblings `inset-inline`/
+  `inset-block`) was entirely unimplemented** — only the `top`/`right`/
+  `bottom`/`left` longhands were. `inset-0` (`inset:0`) is Tailwind's, and
+  most modern CSS's, standard way to pin an absolutely-positioned element to
+  fill its containing block; without it, `top`/`right`/`bottom`/`left` all
+  stayed at their initial `auto`, so the box fell back to CSS's "static
+  position" rule (roughly, "where it would have landed in normal flow") —
+  landing at the very top of the whole document instead of inside its
+  intended card. Confirmed via `resolveContainingBlock`/`placeAbsolute`
+  tracing that containing-block RESOLUTION was already correct (the nearest
+  `position:relative` ancestor was found and used correctly every time) — the
+  bug was purely that `inset` never populated the offset fields it resolves
+  against. Fixed: the 1-to-4-value box-edge shorthand for `inset` (same
+  expansion order as margin/padding, but preserving `auto`/percentage rather
+  than collapsing them to 0 the way margin/padding's shorthand does — position
+  resolution depends on telling them apart), plus the 1-or-2-value
+  `inset-inline`/`inset-block` logical shorthands (mapped directly to
+  left/right and top/bottom respectively — this engine has no bidi/vertical
+  writing-mode support anywhere, matching every other physical-only
+  assumption it already makes).
+
+**Verified live:** the avatar renders at its correct size, every sponsor logo
+renders in its real colour, and the previously-misplaced feature photo now
+sits correctly inside its own card. `bench/cmd/compare`: SSIM 0.364→0.646,
+pixdiff 55.2%→15.0%, page height 12958px vs Chrome's 13280px (up from
+11858px). Confirmed via a full 10-page bench corpus re-run that nothing else
+regressed — developer.mozilla.org even improved slightly further as a side
+effect (0.596→0.613 SSIM), plausibly from the same `inherit`/`calc()` fixes
+applying elsewhere on that page too.
+
+## 2026-09-01 (cont. 2) — MDN's whole design-token system ROOT-CAUSED and fixed: a spec-valid empty custom-property value was being silently dropped at parse time
+
+developer.mozilla.org was the worst score in the bench corpus after the
+react.dev fix below (SSIM 0.128, pixdiff 95.9%): the page rendered as plain
+unstyled HTML — no colours, no card borders, default browser typography —
+even though all 17 of its external stylesheets fetched successfully and their
+selectors (confirmed directly: `.page-layout{display:grid}` really did match
+`<body class="page-layout">`) were being applied.
+
+Root-caused by reading MDN's real, live CSS rather than guessing from the
+screenshot. MDN's build (`postcss-preset-env`'s `light-dark()` polyfill) ships
+nearly its entire colour system as a "CSS toggle": a guard custom property is
+set unconditionally to `initial`, then overridden to **empty** inside
+`@media (prefers-color-scheme:dark)`; an intermediate property threads the
+guard through `var(--guard) var(--gray-40)`, and the real colour property
+reads that intermediate with a fallback: `var(--toggle, var(--gray-60))`. This
+"initial vs. empty" pair is real, common CSS — the same mechanism a plain
+`color-scheme: light dark` + `light-dark()` pair compiles down to for browsers
+needing the fallback path — not something exotic to MDN.
+
+The declaration parser's `ParseDeclarations` dropped **any** declaration with
+an empty value (`prop == "" || val == ""`) to skip meaningless input like
+`color: ;`. That rule is correct for an ordinary property but wrong for a
+**custom** property: `--guard: ;` is a real, spec-valid, load-bearing value,
+different from `--guard` being unset. Dropping it left every guard variable
+stuck at its unconditional (`initial`) branch forever, regardless of which
+`@media`/attribute condition should have overridden it — collapsing MDN's
+entire colour, border, and spacing token system at once. Fixed: an empty
+value is now kept for custom properties, dropped only for ordinary ones
+(engine#85).
+
+Two smaller, genuinely real but NOT independently load-bearing for this page
+were found and fixed in the same investigation:
+- **`var(--a, fallback)` failed outright when `--a` existed but was itself
+  invalid** (recursively referenced another unresolvable var()), instead of
+  trying `fallback` — the CSS Custom Properties spec treats a
+  guaranteed-invalid referenced property as equivalent to unset for this
+  purpose. Real and independently useful (a different arrangement of the same
+  toggle pattern depends on it), verified via `git stash`-isolated bisection
+  to NOT be what fixed MDN itself, since MDN's guard resolves to *empty*
+  (valid-but-blank), not invalid, once the parser fix lands.
+- **The CSS Color Module 5 `light-dark(light, dark)` function was entirely
+  unimplemented.** Added (always resolves to the dark branch, matching the
+  same "assume dark" convention `js/window.go`'s `matchMedia` already uses for
+  the bench suite's real dark-appearance reference Chromium). Also not
+  load-bearing for MDN specifically: its native `light-dark()` usage sits
+  behind `@supports (color: light-dark(...))`, which this engine still skips
+  wholesale like every other unrecognised at-rule — a separate, larger,
+  not-yet-attempted gap (see "Known gaps").
+
+**Verified live:** developer.mozilla.org now renders MDN's real dark theme —
+dark navy background, purple headings, correctly-coloured nav/breadcrumb bars
+— matching the Chrome reference's overall look (residual diff is a real,
+separate gap: the two-column sidebar layout collapses to one column at this
+viewport width, `bench/REPORT.md` has detail). `bench/cmd/compare`: SSIM
+0.128→0.596, pixdiff 95.9%→17.6% — the worst page in the corpus is now
+comfortably mid-pack, with zero regressions elsewhere in the 10-page corpus
+(confirmed by a full before/after run, not a single-page spot check).
+
+## 2026-09-01 (cont.) — react.dev's white background ROOT-CAUSED and fixed: the empty-render guard was throwing away good styles along with bad geometry
+
+react.dev was the worst score in the bench corpus (93.1% pixdiff, SSIM 0.256):
+it rendered with a white/light background instead of its real dark navy theme,
+even though the final DOM plainly showed `<html class="client-js dark
+platform-win">` — the site's own dark-mode toggle had visibly worked.
+
+Root cause was in the `settle()` loop's empty-render guard (added by the
+engine#46 fix for react.dev's *other* bug, a client-side router failing to
+mount and unmounting the whole app tree while leaving the DOM "changed"). That
+guard is still correct to keep the PRE-SCRIPT geometry when a later pass
+empties the page — but on this page, the SAME script batch that emptied the
+tree also ran the harmless, unrelated `matchMedia('(prefers-color-scheme:
+dark)')` + `classList.add('dark')` theme toggle. The guard rejected the whole
+pass to protect the geometry, and in doing so also discarded that pass's
+entirely correct, entirely harmless dark-theme cascade — so the page stayed on
+its pre-JS light background forever, independent of what the DOM said.
+
+Confirmed via a from-scratch `css.CascadeVW` against the final (post-wipe) DOM
+that the cascade/selector logic itself has no bug: it correctly computes the
+dark background. The guard's granularity — "accept the whole pass or reject
+the whole pass" — was the actual defect.
+
+Fixed (engine#84) by adding `reskin()`: when the guard fires, it now walks the
+PRESERVED (good) box tree and swaps each box's, marker's, and inline text
+run's `Style` to the rejected pass's freshly computed value, touching no
+geometry (`X/Y/W/H/Children/Lines` untouched). Safe because DOM node identity
+survives an in-place mutation like `classList.add` — only the style lookup
+needs to catch up, not the tree shape. Inline text color needed its own
+handling since it lives on `InlineItem.Style`, not the enclosing box's.
+
+**Verified live:** react.dev's dark navy background and code-block panels now
+render correctly end to end; `bench/cmd/compare` shows pixdiff 93.1% → 49.5%,
+SSIM 0.256 → 0.587 (`bench/REPORT.md`). Remaining diff on this page is
+unrelated pre-existing gaps (video thumbnail `<img>`s render blank, some
+code-block syntax-highlight colour contrast) — not this bug.
+
+## 2026-09-01 — github.com's header nav CLOSED: two independent real fixes, neither was Shadow DOM
+
+Followed up on the correction below (github.com's permanently-expanded header
+was reattributed away from Shadow DOM but left undiagnosed). Root-caused it
+properly by fetching the real page's actual `<link>` tags and CSS instead of
+guessing:
+
+- **`visibility` was completely unimplemented** — no parsing, no `Style`
+  field, no paint-time effect, and `getComputedStyle('visibility')` hardcoded
+  `"visible"` regardless of the real CSS (engine#80). Genuine, independent
+  gap: github.com's dropdown menus and full-viewport backdrop both pair
+  `visibility:hidden` with `opacity:0`, so opacity alone happened to already
+  cover them here, but a real site relying on `visibility` alone would have
+  rendered incorrectly. Implemented properly (inherited, but overridable per
+  descendant, unlike `display:none`/`opacity:0`).
+- **The actual root cause: `maxExternalSheets` was 20; github.com/golang/go
+  ships 38 `<link rel=stylesheet>` tags** (per-component CSS modules plus
+  several mutually-exclusive colour-scheme variants), and the ONE sheet
+  holding the header's hide/sr-only rules (a `visuallyHidden` utility class,
+  the mega-menu's visibility/position:fixed toggle) happened to be 38th —
+  dropped past the old cap. Without it, the header's raw markup — every
+  dropdown menu's full text, concatenated — rendered fully unstyled and
+  visible at the top of the page. Raised to 64 (engine#81).
+
+**Verified live:** github.com/golang/go's header now renders as a compact
+"Platform / Solutions / Resources / Open Source / Enterprise / Pricing" bar,
+matching a real browser, instead of a multi-line wall of every menu's
+contents dumped at the top of the page.
+
+## 2026-08-31 (cont. 5) — Shadow DOM: declarative shadow roots, `<slot>` projection, `:host` scoping
+
+Ships the largest single gap this engine had (comparable in scope to the
+original JS-engine work): declarative Shadow DOM attachment, `<slot>`
+distribution, and `:host`/`:host()` CSS scoping — engine#73, #75, #77, #78.
+
+- **`dom.Node.Shadow`/`ShadowHost`** (engine#73): a `<template
+  shadowrootmode="open"|"closed">` that is the first element child of its
+  host is hoisted out of the light DOM at parse time (matching real browser
+  parser timing — the `<template>` never becomes part of the live tree, only
+  its `.content` does, as the new shadow root's children) into
+  `Node.Shadow`, distinct from the host's ordinary `Children`. "open" and
+  "closed" render identically (the distinction is JS-introspection-only, out
+  of scope). No imperative `attachShadow()`/`customElements.define()` path —
+  see below for why that's the right call for now.
+- **Slot projection** (engine#75): `layout.renderedChildren(n)` is the one
+  substitution point every block/inline tree walk now goes through instead
+  of `n.Children` directly — a host with a shadow root renders that tree's
+  content instead of its own light children (unslotted light content
+  correctly renders NOWHERE, per spec, not even a fallback position); a
+  `<slot>` renders its assigned light-DOM nodes (recomputed fresh every
+  layout pass, so a settle-loop re-layout after a script mutation picks up
+  automatically) or, absent any, its own fallback content. No separate "flat
+  tree" structure was needed — a slotted node's box is simply built as part
+  of laying out the shadow tree it now sits inside, so box-index
+  (`getBoundingClientRect`) and paint needed zero changes.
+- **`:host`/`:host()` + shadow-scoped cascade** (engine#77): a new
+  `Selector.MatchesHost(n, host)` threads a host binding through the whole
+  combinator chain, so `:host(:not([open])) slot {display:none}` — the exact
+  idiom real custom elements use to hide slotted content until an
+  interactive state toggles — actually works; `Matches(n)` is exactly
+  `MatchesHost(n, nil)`, so every pre-existing call site is provably
+  unaffected. Cascade now recurses into an attached shadow root with a NEW
+  scope (that shadow's own `<style>` rules, host bound to it), so a shadow
+  tree's stylesheet applies only within that tree — never leaking in from,
+  or out to, the surrounding document — except via the sanctioned
+  `:host`/`:host()` escape onto the host itself. No caching: the settle
+  loop's ordinary re-cascade after a script toggles a host attribute (e.g.
+  `open`) picks up the visibility change with zero additional wiring,
+  verified directly (two sequential `Cascade()` calls over the same mutated
+  DOM, and an end-to-end settle-loop test where a `<script>` calls
+  `setAttribute('open', '')` on the host).
+
+**Live verification, done properly** (not "it compiles" — measured against
+real markup, per this repo's culture):
+
+- **developer.mozilla.org**: confirmed via a raw fetch of the exact page
+  (`curl`, no JS) that it uses declarative shadow DOM for real — 23
+  `<template shadowrootmode="open">` instances, one of them an
+  `<mdn-dropdown>` component whose own shadow `<style>` is *exactly*
+  `:host(:not([loaded],:focus-within)) slot[name=dropdown]{display:none}`,
+  i.e. the idiom this PR set out to support. Rendered the identical frozen
+  HTML snapshot through the engine before and after this work (same file,
+  only the code differs — controlled, not live-site noise): the page's
+  "Help improve MDN" feedback module goes from showing only "Learn how to
+  contribute" (before) to correctly also showing "Was this page helpful to
+  you?  Yes   No" (after) — light-DOM content that requires slot
+  distribution to reach its rendered position. Reproduced twice.
+- **github.com**: this is where the original diagnosis (recorded in the
+  previous "Known gaps" bullet below, now corrected) turned out to be
+  **wrong**. A raw fetch of `github.com/golang/go`'s markup shows **zero**
+  occurrences of `shadowrootmode` or `attachShadow` anywhere in the page —
+  its header is plain React (`MarketingHeader-module__*` CSS-module classes)
+  with the mega-menu dropdown gated by an ordinary class-conditional
+  selector pair,
+  `.NavDropdown-module__dropdown{visibility:hidden;position:fixed}` /
+  `.NavDropdown-module__container.open .NavDropdown-module__dropdown{visibility:visible}`.
+  There is no Shadow DOM anywhere in the path, so this PR set correctly does
+  not change github.com's render at all (confirmed: byte-identical header
+  region before/after) — and, more importantly, **could not have fixed it
+  regardless of how it was written**. github.com's permanently-expanded
+  header nav remains open as a real, distinct bug (see "Known gaps"), now
+  correctly attributed to something else — most likely this engine's
+  handling of `visibility` interacting with `position:fixed` and/or
+  multiple same-specificity conflicting declarations for one class, not
+  investigated further here since it is out of scope for Shadow DOM.
+- Re-rendered the first 6 pages of `bench/urls.txt` (Chrome was not
+  available in this environment for the full `cmd/compare` pixel-diff tool)
+  to sanity-check no regression: all six still render without error, at
+  materially unchanged content heights.
+
+**Scope / known gaps, precisely**: declarative shadow DOM only, not the
+imperative `attachShadow()`/`customElements.define()` JS API (both confirmed
+real sites use the declarative form exclusively, so this covers the actual
+need); `::slotted()` and `:host-context()` are parsed as unmodelled and
+safely dropped (a compound that is ONLY `:host-context(...)` drops its whole
+selector rather than ever matching too broadly — verified by test); no
+`display:contents` (so a shadow host that declares `:host{display:contents}`,
+as `<mdn-dropdown>` does, still generates its own wrapping box instead of
+being transparent to the layout — a real, separate, undramatic gap, not
+blocking the visibility mechanics above).
+
+New tests: `dom/shadow_test.go`, `layout/shadow_test.go`,
+`css/hostselector_test.go`, `css/shadowdom_test.go`,
+`shadowdom_test.go` (engine-level end-to-end, including the settle-loop
+attribute-toggle case). `dom` coverage 97.7% → 98.1%; `layout` stays 100%;
+`css` stays 99.5% (both gate floors maintained or improved). Full suite
+green throughout.
+
+## 2026-08-31 (cont. 4) — CSS Container Queries (`@container`) implemented
+
+Closed the "No CSS `@container` queries" gap flagged in the entry below (and
+in "Known gaps"): the at-rule was previously unrecognised and fell into
+`parseRules`' wholesale-skip bucket, the same class of bug `@layer` had before
+engine#56 — any rule gated behind `@container` was silently dropped in full,
+regardless of its condition.
+
+Landed as two PRs. The first (engine#74) is parsing + cascade-time evaluation
+only: `container-type` (`normal`/`inline-size`/`size`), `container-name`, and
+the `container` shorthand parse into new `Style` fields; `@container`'s body
+is always included (like `@layer`) but, unlike `@media` — resolved once
+against the viewport at parse time — each inner rule carries a
+`ContainerCondition` evaluated per matched element during cascade, because a
+container's size is per-ancestor-element and only known once layout has run.
+The size-feature syntax (width/min-width/max-width, the Level 4 range-
+comparison operators, `calc()`) is reused near-verbatim from this session's
+`@media` work (engine#58/#61), generalised to height features for a
+`container-type: size` container (both axes; querying an axis without
+containment always fails, matching spec). Named lookup walks past a nearer
+ancestor container with the wrong name to find a qualifying one further out;
+an unnamed query uses the nearest container of any name.
+
+The second PR wires this into the render pipeline: a `@container` condition
+cannot be resolved by a single cascade+layout pass the way `@media` can,
+because the size it depends on doesn't exist until AFTER layout. This mirrors
+the chicken-and-egg problem `dynamic.go`'s JS settle loop already solves for
+script-driven geometry feedback — same shape, same discipline: a new
+`layoutWithContainers` loop (measure every query container's real laid-out
+size → re-cascade with that information → re-layout → repeat) runs after the
+first real (post-image-load) layout, bounded by `maxContainerPasses` (4) so it
+can never hang, converging to a fixpoint (or accepting the last pass if the
+cap is hit) the same way `maxSettlePasses` does. It also re-runs inside the JS
+settle loop itself (a script's class/DOM mutation can change which elements
+are containers or their sizes) and after the settle loop's final image
+reload. A crafted fixture in the new top-level `container_test.go`
+(`TestLayoutWithContainersMultiPassConvergence`) proves this genuinely needs
+more than one pass: an ancestor container's condition widens a nested
+container's own measured size, which only then satisfies a SECOND condition
+keyed on that nested container — deterministic, no live network or JS
+involved, same pattern as `TestSettleFixpointCap` for the JS case.
+
+**Verified live on tailwindcss.com** (1024px viewport, `DisableJS` off):
+`contentHeight` went from 14113px to 11858px (−16%). Visually confirmed this
+is real, not incidental — Tailwind's own homepage includes a live "container
+queries" demo (a property listing card grid): before this fix it rendered
+permanently in its narrow/single-column fallback state (images stacked full-
+width, one per row); after, it correctly reflows into the multi-column card
+layout its container's real width qualifies it for. Screenshots of both
+states are in this PR's description.
+
+Checked the other two `@container`-relevant pages `bench/urls.txt` names:
+MDN's CSS index page rendered **pixel-identical** before/after (no `@container`-
+gated content visible at this viewport/width, so correctly a no-op — verified
+by diffing the two PNGs, not just eyeballing). github.com/golang/go's
+`contentHeight` was unchanged; a pixel diff found one small, unrelated, and
+strictly *positive* difference — a pre-existing ghost/overlap text-rendering
+artifact on the repo's file-tab labels (README/Code of conduct/Contributing/…)
+is gone after this change, most likely because a tab component's markup is
+itself conditioned on a `@container` rule that previously left a stale
+duplicate in place. Did not re-run the Chrome-based SSIM comparison
+(`bench/cmd/compare`) this session — the `bench/` module's `go.sum` needs a
+`go mod tidy` unrelated to this change (a pre-existing drift, not caused or
+fixed here) and `go run` refuses to proceed without it; the tailwindcss.com
+height delta and the direct pixel diffs above stand in for it.
+
+**Known, honestly-scoped gaps** (also reflected below in "Known gaps"):
+`@container style(...)` ("container style queries", a separate/newer part of
+the spec) is not supported and its body is dropped wholesale, like any other
+unrecognised at-rule — this was a deliberate scope cut, not an oversight.
+Container query length units (`cqw`/`cqh`/`cqi`/`cqb`/…) are a different,
+related CSS feature (using a container's size as a *unit basis* rather than a
+*condition*) and are not implemented. `container-name` only ever compares as
+a single token (no space-separated multiple names per element). The measured
+container size is the element's border-box (matching how this engine already
+reports geometry elsewhere, e.g. `getBoundingClientRect`); a browser measures
+the content box, so a container with a non-trivial border/padding could
+resolve a boundary condition slightly differently than Chrome.
+
+## 2026-08-31 (cont. 3) — a stale THIRD-PARTY dependency caught a real number-formatting bug
+
+Same audit as the entry below, extended past this org's own sibling
+repos to the JS engine itself (`dop251/goja`, third-party, no local
+checkout to read — checked its GitHub commit log for the gap since this
+engine's pinned version instead). Found `ftoa`'s shortest-mode digit
+rounding incrementing the current digit BEFORE checking whether it had
+become `'9'` (the carry case) instead of after, corrupting the decimal
+tail for specific doubles. **Confirmed live, not just from the diff:**
+`(0.7016570306969449).toString()` rendered as `"0.701657030696945"`
+(missing a digit) before the bump, correct after. engine#71.
+
+Also attempted bumping `dop251/goja_nodejs` (pinned since 2021, ~4.5
+years stale) alongside it — `go mod tidy` correctly dropped it entirely
+instead: nothing in this engine actually imports it, so it was dead
+weight in `go.sum`, not a real dependency worth the risk of such a large
+jump.
+
+## 2026-08-31 (cont. 2) — two stale sibling-org dependencies caught unclaimed perf fixes
+
+Bumping `go-widgets/painter` from its very first tagged release (v0.2.0) to
+v0.12.0 (engine#68) picked up ten releases of accumulated paint-primitive
+work at once, including `FillRect fills rows, not pixels` (v0.8.0): a
+per-pixel loop replaced by a row built once and doubled by `copy()`.
+Similarly, `go-gfx/gfx` v0.5.0 → v0.19.0 (engine#69) picked up
+`raster.FromImage` reading `*image.YCbCr` (what every JPEG decodes to) from
+its own bytes instead of the generic interface-based colour-model path —
+upstream measured 69ms and 3,840,002 heap allocations for a single
+1200×1600 page before that fix. Neither bump changed the engine's own
+code; both were caught only because pprof showed the OLD, unoptimised
+implementation still running in a profile taken today. **Lesson: a
+pinned sibling-org dependency can silently miss real fixes for a long
+time — `go list -m -u all` after any profiling session, not just when
+something looks broken.**
+
+One expected, verified-as-a-fix visual change came with the painter bump:
+`StrokeRect`/`StrokeRoundRect` previously always painted a 1px border
+regardless of the requested width (v0.11.0 fixed this) — a `border: 2px
+solid` now genuinely renders 2px. Regenerated the affected golden and
+`testdata/renders/*.png` files rather than leaving them stale.
+
+pkg.go.dev/net/http (the largest page in the corpus, 88659px tall, so paint
+cost dominates): ~3.4s → ~2.8s across both bumps together.
+
+## 2026-08-31 (cont.) — the grid bug from the entry below fixed, plus a sandbox-escape and two dedupe wins
+
+Two real CSS Grid bugs, found by dumping the live box tree (a temporary
+white-box test, not committed) rather than guessing from a screenshot:
+
+- **The "Maximize Tracks" step of CSS Grid's track-sizing algorithm only grew
+  `fr` tracks.** A non-flexible track with room below its max cap — e.g.
+  `minmax(0,1536px)`, exactly tailwindcss.com's own page-shell content column
+  (`md:grid-cols-[var(--gutter-width)_minmax(0,var(--breakpoint-2xl))_var(--gutter-width)]`)
+  — never grew past its 0px base. Fixed: `growCappedTracks` in `layout/grid.go`
+  now splits free space among such tracks first, then hands whatever's left to
+  the `fr` step, engine#63.
+- **`grid-row: 1 / -1` (Tailwind's `row-span-full`) resolved to a zero-row
+  span**, because the row axis always resolved a negative end line against an
+  unknown track count, even though the explicit `grid-template-rows` count is
+  known before placement. The item (a decorative full-height background)
+  reserved no occupancy, so the page's actual content wrapper slid into the
+  gutter column instead. Fixed by threading the known row count through,
+  engine#63. **Together: tailwindcss.com's content column went from 40px wide
+  at ~22450px document height to 944px wide at ~12000px** — verified with the
+  same box-tree dump before/after.
+
+Separately, profiling the two slowest remaining pages (the performance half of
+this session's work) surfaced a genuine sandbox-escape, not just a slowdown:
+
+- **esbuild's module bundler used `ResolveDir: "/"` — the real filesystem
+  root — everywhere.** The `webengine-http` plugin fully intercepts ordinary
+  import resolution, but esbuild's bundler special-cases a *glob* dynamic
+  import (`import(\`./${lang}/index.js\`)`, ordinary bundler-emitted i18n/
+  route code-splitting) by resolving it directly against `ResolveDir` on the
+  real filesystem, entirely bypassing the plugin. A page merely containing
+  such an import made the engine recursively walk the host's entire real root
+  filesystem hunting for "matches" — independent of the cost, a remote page
+  should never cause this engine to read the host's real directory tree.
+  Fixed with an isolated, always-empty `os.MkdirTemp`'d directory, engine#65.
+  **developer.mozilla.org: ~14.7s → ~0.56s (26x).**
+- **`dom.Node.Classes()` had no caching and `css.compound.matches` allocated a
+  fresh map on every single selector check** — the hottest path in the
+  cascade, checked once per candidate rule per element. Fixed by memoizing
+  the class split and using a linear scan instead of a map (both lists are
+  tiny). engine#64. **tailwindcss.com: ~5.7s → ~2.2s.**
+- **A page's images were fetched twice within one render** — the settle loop
+  reloads images unconditionally after any script-driven relayout, with no
+  cache even though `e.ImageCache` (opt-in, nil by default) only ever governed
+  cross-render reuse. Fixed with an ephemeral per-render cache threaded via
+  `context.Context`. engine#66. **caniuse.com: 19 requests → 16, ~4.16s →
+  ~3.64s** (its remaining ~3.6s is server-side connection pacing on caniuse.com's
+  own origin, confirmed by reproducing the identical clustering with a bare
+  concurrent fetch outside the engine entirely — not a client bug).
+
+## 2026-08-30 — chaos audit: two live regressions, a live hang, two conformance gaps
+
+This file and `bench/REPORT.md` had not been updated since Phase 2.6 (2026-08-05)
+despite ~40 PRs landing in the meantime — the numbers and gap list below had gone
+stale relative to the code. Re-measuring against real, live pages (not the
+committed renders) surfaced five concrete, independently verified defects rather
+than a vague "it's probably fine":
+
+- **react.dev rendered fully blank** (`contentHeight=0`) — a client-side router
+  failing to load its own error route unmounted the whole app tree mid-settle,
+  and the settle loop accepted the empty result over the good pre-script layout.
+  The bench tool's `maxheight`-capped SSIM scored the blank page a **0.729→0.903
+  "win"** by comparing only its dark background against Chrome's dark hero fold
+  — a regression that a naive metric read as an improvement. Fixed: engine#46.
+- **pkg.go.dev/net/http took 27.8s — 5x slower than headless Chrome.** 11 small
+  (16–23px) `filter`/`opacity` elements each allocated a group buffer the size
+  of the whole 1024×88631 page canvas and ran the filter math over all 90M
+  pixels. Fixed by bounding the buffer to each box's own ink bounds: **27.85s →
+  5.38s (5.2x)**, byte-identical output verified. Fixed: engine#47.
+- **developer.mozilla.org never completed rendering** (120s+, still confirmed
+  stuck inside `esbuild.api.Build` by a `SIGQUIT` goroutine dump). `api.Build`
+  is synchronous and uncancellable; the existing budget bounded `OnLoad` but not
+  `OnResolve`, so a large import graph kept being enumerated long past the
+  bundle stage's own deadline. Fixed by running the call in its own goroutine
+  and abandoning the *wait* (not the call) once the budget expires: **never
+  completing → 15.8s**. Fixed: engine#48.
+- **`!important` was parsed and discarded.** A real site's forced state
+  (`.left-sidebar{display:none!important}`, MDN's default-collapsed drawer)
+  could be — and was — overridden by an unrelated, later, higher-specificity
+  rule meant for a different responsive state. Now modelled as its own cascade
+  tier above every non-important declaration, regardless of origin/specificity.
+  Fixed: engine#50.
+- **`<template>` content rendered as normal markup.** A `<template>`'s children
+  are inert per the HTML spec (they live in `.content`, never the document
+  tree); this engine parsed them straight into the light DOM. Concretely, MDN's
+  23 `<template shadowrootmode="open">` declarative-shadow-DOM blocks (its
+  header/menu web components) painted their shadow markup inline, unstyled and
+  unscoped. Fixed: engine#54 (adds `template` to the tag-keyed `display:none`
+  UA-default list). This does **not** implement Shadow DOM — see "Known gaps".
+
+**Diagnosed but not fixed — the next real lever:** MDN still overlaps after all
+five fixes above, because its mega-menu dropdowns (Tools/References/Learn) use
+genuine Shadow DOM `<slot>` projection: light-DOM children (`<div slot="dropdown">`)
+are meant to be distributed into a shadow tree and hidden by a `:host(...)
+slot{display:none}` rule scoped to that shadow root. This engine has no custom-
+element upgrade, no shadow-root attachment, and no slot distribution at all, so
+those panels render permanently expanded rather than hidden-until-interaction.
+Implementing this is a materially bigger feature (comparable in scope to Phase 2's
+JS engine) than any of the five fixes above — deliberately not attempted here;
+tracked as the next major gap below rather than papered over.
+
+Refreshed corpus and numbers: [`bench/REPORT.md`](bench/REPORT.md),
+`bench/urls.txt` (widened from 5 to 10 URLs the same day — see its own log).
+
+## 2026-08-30 (cont.) — three more conformance bugs, found chasing tailwindcss.com's 0.051
+
+The widened corpus's worst score (tailwindcss.com, 0.051 SSIM, rendering at
+~2x Chrome's height) was flagged above as "not yet root-caused." Following it
+through the actual cascade — not guessing from the screenshot — turned up
+three independent, unrelated CSS-parsing bugs, each verified in isolation
+before being confirmed live:
+
+- **`@layer` content was dropped wholesale.** The parser recursed into
+  `@media` but treated every other at-rule, `@layer` included, as opaque.
+  Tailwind v4's default output puts nearly all of its CSS inside
+  `@layer utilities` — on tailwindcss.com, one such block held 94% of the
+  690KB stylesheet. Only 181 of 5334 real rules were ever reaching the
+  cascade. Fixed: engine#56 (`@layer` bodies are now unwrapped and included,
+  the same way `@media` bodies are — cross-layer cascade *priority* is not
+  modelled, which is a materially smaller gap than dropping the content).
+- **A common `:is()`/`:where()` idiom expanded to the wrong selector.**
+  `PREFIX:where(X, X *)` — "the tested element is X itself, OR has an
+  ancestor X", Tailwind's class-based dark-mode variant strategy
+  (`.dark\:hidden:where(.dark,.dark *)`) — was spliced by naive text
+  concatenation into `PREFIX X *` ("some element with an ancestor matching
+  BOTH X and PREFIX at once"), an almost-never-matching selector. A
+  light/dark caption pair rendered both halves simultaneously regardless of
+  theme. Fixed: engine#57 (`stripTrailingSelfCombinator` re-roots the chain
+  onto the real prefix instead of concatenating text).
+- **`min-width`/`max-width` media features only recognised `px`.** Tailwind
+  v4's default breakpoints are all in `rem` (`min-width:80rem` for `xl`).
+  An unrecognised unit wasn't just left unconverted, it made the whole
+  feature invisible to the matcher, which then defaulted to "assume it
+  matches" — so every responsive breakpoint was permanently active at once,
+  and the cascade fell back to picking whichever was declared last (usually
+  the largest). The hero headline's `xl:text-8xl` applied at a 1024px render
+  width, nowhere near its real 1280px breakpoint. Fixed: engine#58 (`rem`
+  parsed and converted at the same 16px root font-size `parseLength` already
+  assumes elsewhere).
+
+**Measured result: tailwindcss.com 0.051 → 0.699 SSIM (13.7x), pixdiff 97.2%
+→ 11.2%, height 26453px → 18154px (Chrome: 13280px — still ~37% taller,
+residual not yet root-caused; likely `@container` queries, which Tailwind v4
+also uses and this engine does not evaluate at all, or a flex/grid track-
+sizing gap).** None of the three fixes are Tailwind-specific — `@layer` and
+`:where()`'s self-or-descendant idiom are used by many frameworks, and any
+site with rem-based breakpoints was equally affected.
+
+**github.com/golang/go's mega-menu overlap is confirmed the same Shadow-DOM
+gap as MDN**, not a hypothesis anymore: its header ("Platform", "AI",
+"Enterprise", …) renders as one long permanently-expanded block for the
+identical reason (light-DOM panels meant to be slotted into a shadow tree
+and hidden until interaction). SSIM held flat (0.114→0.058) rather than
+improving, for an unrelated, NEW, undiagnosed reason found while checking
+this: **the actual repository content — file listing, README — never
+renders at all.** After the header and the Code/Issues/PRs tab bar, the page
+jumps straight to the footer; contentHeight is just 535px. Not yet
+investigated (a heavy-SPA module-bundle gate cutting off too aggressively is
+the first hypothesis, unconfirmed) — flagging honestly rather than folding
+it into the Shadow-DOM gap it is very unlikely to share a cause with.
+
+## 2026-08-31 — github.com's missing content ROOT-CAUSED and fixed; a genuine grid bug found
+
+Chased the github.com missing-repository-content finding from the entry above
+to ground instead of leaving it as an open hypothesis. Root cause, confirmed by
+tracing the real cascade against github.com's actual fetched CSS: a SECOND bug
+compounding the Shadow-DOM one, in a completely different part of the engine.
+
+- **Attribute selectors (`[attr]`, `[attr=value]`, …) were unconditionally
+  dropped** — "the constraint is not modelled, the compound reduces to its
+  tag/class/id prefix", the same simplification applied to genuinely unmodelled
+  pseudos, but wrong here because an attribute selector degrades a
+  *conditional* rule into an *unconditional* one. Concretely:
+  `.ContentWrapper:where([data-is-hidden-narrow=true])
+  {display:none}` degraded to plain `.ContentWrapper{display:none}` once the
+  attribute selector inside `:where()` was dropped — hiding the entire
+  repository content unconditionally, regardless of the real
+  (`data-is-hidden-narrow="false"`) value on the actual element. Fixed:
+  engine#60 (presence, `=`, `^=`, `$=`, `*=`, `~=`, `|=` all modelled; also
+  makes `:not([attr])` a real negation for the first time, rather than a
+  no-op that happened to give the right answer only when the attribute was
+  absent).
+- **`min-width`/`max-width` media features only recognised the colon syntax.**
+  GitHub's Primer design system expresses its PageLayout breakpoints with the
+  CSS Media Queries Level 4 range-comparison syntax instead
+  (`width<=48rem`/`width>=48rem`, plus a `calc(48rem - .02px)` value creating a
+  hair's-width gap between adjacent breakpoints) — invisible to the matcher for
+  the same reason the missing `rem` unit was (falls through to "unknown
+  feature, assume it matches"). Fixed: engine#61. Verified independent of the
+  attribute-selector fix (identical output built with and without it on both
+  github.com and tailwindcss.com) — it closes a real gap for range-syntax sites
+  that neither page in the corpus happens to need for its *current* rendering.
+
+**Measured: github.com/golang/go's contentHeight went from 535px (header + tab
+bar, then straight to the footer) to 3451px** (the full file listing, commit
+count, and README now render). The header mega-menu overlap (the Shadow-DOM
+gap) is unaffected by either fix and still present, as expected — this closes
+the *other*, unrelated defect on the same page.
+
+**A third, genuine finding, NOT caused by either fix above (bisected against
+the commit before attribute selectors landed — identical result either way):**
+tailwindcss.com's residual too-tall render is dominated by a CSS Grid bug, not
+`@container` queries as earlier suspected. A `grid-cols-1` container
+(`grid-template-columns: repeat(1, minmax(0, 1fr))`) laid out at 40px wide
+instead of its parent's full 1024px — `css/grid.go`'s track-list parser handles
+this track correctly (verified directly), so the bug is in the layout-time
+fr-distribution, not parsing. Not fixed this session — it needs work in a
+different subsystem (grid track sizing) than the selector/media-matching bugs
+above, and is flagged precisely rather than re-guessed at.
+
+## Phase 2.6 — line-height inheritance + mixed-size line boxes (text-overlap fix)
+
+**Date: 2026-08-07.** A downstream consumer (the go-news-reader preview) reported
+**overlapping text** on real pages. Reproduced at preview width (400px) with a page
+mixing headings, wrapped body copy and inline spans of different `font-size` under a
+unitless `line-height` (`scripts/compare/pages/overlap.html`). Two independent root
+causes, both fixed in the pure-logic layer (no paint hack):
+
+- **CSS — unitless `line-height` was collapsed to pixels too early.** `line-height`
+  stored only a resolved `Px`, so a unitless value like `1.5` on `<body>` was
+  computed to `1.5 × 16 = 24px` at the body and that *pixel* value was **inherited**
+  by every descendant. A 28–40px inline span therefore got a 24px line-height
+  instead of `1.5 × its own size`, so its line box was far too short and the big
+  glyphs spilled into the next line. Per CSS 2.1 §10.8.1 a unitless value computes
+  to the *number* and inherits as the number; each element re-multiplies by its own
+  font-size. `LineHeight` now carries a `Factor` and resolves via
+  `LineHeight.Resolve(fontSize)`; length/percentage values still compute to a fixed
+  `Px` that inherits unchanged.
+- **Layout — a line box advanced by `max(item.LineHeight)`.** On a line mixing
+  metrics, the tallest ascent and the deepest descent can come from *different*
+  items, so `max(LineHeight)` under-sizes the line and lets a glyph spill. The line
+  box now advances by `maxAscent + maxDescentBelow`, which bounds every item's
+  glyph extent exactly (`[baseline−ascent, baseline+(lineHeight−ascent)]`). For a
+  single-font line this is identical to the old value (no regression); for mixed
+  lines it guarantees successive lines never overlap.
+
+Regression tests assert the geometry directly, not just "it renders":
+`lineMetrics` with independent ascent/descent maxima; end-to-end non-overlap over
+every laid-out line (each line top ≥ previous bottom, every item within its line
+box) for the mixed-size, multi-paragraph and heading cases; and unitless
+`line-height` inheriting as a factor across differently-sized descendants.
+
+**Measured vs headless Chromium (this machine), `overlap.html` at width 400:**
+
+| page | MAD before | MAD after |
+|------|-----------:|----------:|
+| `overlap` (whole page) | 0.0542 | 0.0551 |
+| `overlap` (mixed-size band, y∈[315,420]) | 0.1930 | 0.1887 |
+
+The whole-page MAD is essentially flat because this coarse metric is dominated by
+font-antialiasing differences vs Chromium and the fix is a *localised* vertical-
+spacing correction — before the fix the big inline glyphs merely painted **on top
+of** the neighbouring line (an overlap the averaged score barely registers). The
+side-by-side confirms the crash is gone, and the definitive proof is the geometric
+non-overlap unit tests. `layout` and `paint` stay at 100.0% statement coverage.
+
+## Phase 2.5 — list-item markers (`<ul>` / `<ol>` bullets and numbers)
+
+**Date: 2026-08-05.** The one visible gap the Phase-2.4 Chromium compare recorded
+was that `<li>` items laid out and painted their content but with **no marker** —
+no disc, no number. This phase closes it end-to-end across `css`/`layout`/`paint`.
+
+- **UA defaults** — `<li>` is now `display:list-item`; `<ul>` defaults to
+  `list-style-type:disc`, `<ol>` to `decimal`; both keep the 40px indent. Marker
+  glyph inherits, so an item picks up its container's type. Nested `<ul>` alternate
+  **disc → circle → square** by depth via UA descendant rules (`ul ul`, `ul ul ul`)
+  matched at UA origin, exactly like a browser's UA sheet.
+- **CSS** — `list-style-type` (`disc`/`circle`/`square`/`decimal`/`none`),
+  `list-style-position` (`outside`/`inside`), and the `list-style` shorthand are
+  parsed and cascaded (all three inherit). A `display:list-item` box carries a new
+  `ListItem` flag; other display values clear it.
+- **Layout** — a list-item box gets a `Marker` positioned (for the default
+  `outside`) in the indent to the LEFT of the content box, vertically centred on
+  the first line (falling back to the content-box top for an empty item). `<ol>`
+  runs a per-list counter honouring `<ol start>` and `<li value>`; nested lists get
+  a fresh counter (so a nested `<ol>` restarts at 1). Marker coordinates are unit-
+  tested to exact values relative to the content box.
+- **Paint** — a disc is a full-radius `FillRoundRect`, a hollow circle a
+  `StrokeRoundRect`, a square a `FillRect`; a decimal marker reuses the inline text
+  painter for its ordinal ("1.", "2.", …) in the item's own face/colour. `none`
+  paints nothing (no marker is even attached).
+
+**Deferred (documented):** `list-style-position:inside` is parsed and cascaded but
+rendered with the same outside geometry — reserving inline space for an inside
+marker is left for a later pass. `list-style-image` (bitmap markers) and non-
+decimal ordered styles (`lower-roman`, `lower-alpha`, …) are out of scope; an
+unknown `list-style-type` keeps the inherited/UA default.
+
+**Proven deterministically (offline).** `TestListMarkersGolden` renders a `<ul>`
+(discs) + `<ol>` (decimals) and asserts painted ink in the gutter left of the
+content plus a byte-exact golden PNG (`testdata/golden/list_markers.png`);
+`TestListStyleNonePaintsNoMarker` proves an identical layout with
+`list-style-type:none` paints **zero** gutter pixels. Full unit coverage of the
+new code in `css`/`layout`/`paint` (each at or above its ratchet floor: layout and
+paint stay at **100%**, css at 99.6% ≥ 99.5%).
+
+**Measured vs headless Chromium (this machine).** New compare page
+`scripts/compare/pages/lists.html` exercises nested `<ul>` (disc→circle→square),
+nested `<ol>` (counter restart) and `<ol start="10">`. At width 640
+(`scripts/compare/chromium-compare.sh`):
+
+| page | MAD before | MAD after |
+|------|-----------:|----------:|
+| `lists` (this phase) | *(marker gap: no bullets/numbers)* | **0.0065** |
+| `js-dom-mutation` (baseline, re-measured) | 0.0131 | 0.0132 |
+| `typography` (baseline, re-measured) | 0.0113 | 0.0113 |
+
+The list page now scores **below** the static-text baseline: the markers match
+Chromium down to font-antialiasing noise, and the disc/circle/square-by-depth,
+decimal counters, nested restart and `start` offset all line up glyph-for-glyph in
+the side-by-side. The marker gap flagged in Phase 2.4 is **closed**. One minor
+residual remains, unrelated to markers: our nested lists carry slightly more
+vertical spacing than Chromium (a nested-list block-margin/collapsing nuance), a
+small delta well within the page's MAD.
+
+## Phase 2.4 — JavaScript DOM mutation on the hit-map (`RenderWithLinks`) path
+
+**Date: 2026-08-05.** Phase 2.2 wired the layout↔JS settle loop into
+`RenderDocument`, but the anchor-hit-map entry points `RenderWithLinks` /
+`RenderDocumentWithLinks` (used by the wasmdesk browserproxy to turn a click into
+a navigation) still ran the **old JS-free** pipeline: cascade → layout → paint
+with no script pass. A page whose links (or their positions, or the whole body)
+are built by JavaScript therefore produced an **empty or stale hit-map** — a click
+landed nowhere. This phase makes both paths share one pipeline.
+
+- `RenderDocument` and `RenderDocumentWithLinks` now both call a single
+  `renderCore` (`engine.go`): `MarkJSEnabled` → initial cascade/layout → the
+  Phase-2.2 `settle` loop → final layout. The painted image and the returned
+  `[]Link` are guaranteed to describe the **same JS-settled DOM and geometry**, and
+  the with-links image is now byte-identical to `Render`'s (both use `PaintFull`,
+  so background images paint on the hit-map path too).
+- `document.title` set by a script is now reflected in `RenderInfo.Title` on both
+  paths (`renderCore` re-derives the title after the settle loop).
+
+**Proven deterministically (offline goldens, engine package):**
+
+- `TestJSInjectedLinkInHitMap` — a script that does
+  `createElement('a')` + `setAttribute('href', …)` + `textContent` +
+  `body.appendChild` yields exactly one link (`https://example.com/injected`) with a
+  non-empty painted rect through `RenderDocumentWithLinks`; with `DisableJS` the
+  hit-map is empty. This is the regression the phase fixes, asserted directly.
+- `TestJSTitleReflectedInRenderInfo` — a script `document.title = 'new title'` is
+  reflected in `RenderInfo.Title` on both the plain and the with-links paths.
+- The pre-existing `enginejs_test.go` invariants (JS-injected paragraphs grow the
+  laid-out page; the `client-js` signal reaches the cascade; `DisableJS` leaves the
+  no-JS fallback) all still hold. `css`/`layout`/`paint`/`dom` coverage floors
+  unchanged and green; the new `renderCore`/`viewportSize`/`newCanvas`/`renderInfo`
+  helpers are at 100% statement coverage.
+
+**Measured vs headless Chromium (this machine).** New compare page
+`scripts/compare/pages/js-dom-mutation.html` builds all of its visible content at
+parse time from JavaScript — `document.title`, `getElementById`, `createElement`,
+`createTextNode`, `textContent`, `setAttribute`, `appendChild`, an `innerHTML`
+list, an inline `style`, and a `querySelector` read-back-and-edit. At width 640
+(`scripts/compare/chromium-compare.sh`):
+
+| page | MAD (0 = identical) |
+|------|---------------------|
+| `js-dom-mutation` (this phase) | **0.0131** |
+| `typography` (static baseline) | 0.0113 |
+
+The JS page scores within noise of the static-text baseline — i.e. the DOM the
+engine renders after running the scripts is the same DOM Chromium renders, down to
+the `.box` CSS class applied to a JS-created element and the "(edited via
+querySelector)" text on the first list item. The residual is the documented
+font-antialiasing delta. (The one **pre-existing, JS-unrelated** gap noted here in
+Phase 2.4 — that the engine did not paint `<li>` `list-style` bullet discs — is
+**closed in Phase 2.5** above; list markers now render.) The engine reports
+`title="DOM mutated by JS", contentHeight=306` for this page; with JS disabled only
+the static `<h1>` remains.
+
+## Bugfix — a childless box's own explicit width was invisible to `preferredWidth`
+
+**Date: 2026-09-04.** Found while rendering a print report with an
+HTML-table-based bar chart: a chart row was `<td>label</td><td><div
+style="width:200px;height:15px">…fill…</div></td><td>9,4 k$</td>`, and the
+middle column collapsed to 0 width, so the third column's cells were
+positioned on top of the bar instead of after it.
+
+**Root cause** (`layout/floats.go`, `preferredWidth`): the max-content-width
+estimator only ever measured a node's *children* — the widest block child, or
+the widest unwrapped inline run. A node's own definite (non-auto,
+non-percentage) `width` was never consulted. That is fine for a normal element
+sized by its content, but a box with no text and no image — a bar-chart fill,
+a spacer, a colour swatch — has no children to measure either, so it reported
+a preferred width of exactly 0. `layout/table.go`'s column-sizing feeds
+`preferredWidth` straight into each column's natural width, so that column
+scaled to 0 and the next column's `X` landed on top of it. The same function
+backs a flex item's basis (`flex.go: mainBaseRow`), so an auto-basis flex item
+with an explicit width and no text content was equally at risk of a 0 base
+size.
+
+**Fix**: `preferredWidth` now checks the node's own resolved width first — a
+definite width (content-box: width + edges; border-box: width as-is) is
+returned outright, exactly as CSS max-content sizing requires when the author
+has already fixed the width; only an auto/percentage width falls through to
+measuring children. `TestTableColumnWidthFromChildlessExplicitWidthBox`
+(`layout/features_test.go`) pins a 3-column table with a childless
+explicit-width middle cell and asserts all three columns land at their scaled
+natural widths with no overlap, plus that the inner div keeps its own 200px
+(not clamped by the column).
+
+**A related symptom that turned out not to be a bug**: the same report also
+had `<dt>`/`<dd>` pairs inside `display:flex` items rendering with the `dd`
+shifted right of its `dt` instead of stacked underneath it. That is the
+standard user-agent default (`dd { margin-inline-start: 40px }`) doing exactly
+what a real browser does absent a `dd { margin: 0 }` reset — confirmed by
+reproducing both with and without the reset
+(`layout/floats_test.go`-style ad hoc cases, not committed, both matched
+expectation). Flex `gap` itself, tested in isolation with plain text flex
+items, was already correct. Recorded here so the same false lead isn't
+re-walked.
+
+## Phase 2.3 — CSS `:checked` + `:not()` (the checkbox-hack that collapses MediaWiki's dropdowns)
+
+**Date: 2026-08-05.** Phase 2.2's honest residual was that Wikipedia's collapsed
+Vector-2022 **dropdown contents** still painted, because the CSS checkbox-hack was
+not honoured. This phase closes it with three selector features (`css/selector.go`):
+
+- **Sibling combinators `~` / `+`** — already matched (Phase 1.7); reconfirmed with
+  positive + negative tests. They were never the gap.
+- **`:checked`** — at static render an element is checked iff it carries the default
+  `checked` attribute (checkbox/radio) or is an `<option selected>`; there is no
+  interaction to toggle it. A default-unchecked toggle therefore does **not** match.
+- **`:not(...)`** — negation over a simple/compound selector or a comma list
+  (including `:not(:checked)`); the compound matches only when no negated selector
+  matches. Critically, an argument the engine cannot model (an attribute-only
+  `:not([attr])`, a pseudo-element, an empty `:not()`) imposes **no constraint**
+  rather than dropping the rule — the same "reduce, don't drop" rule already used
+  for unknown pseudos and bare `[attr]`. `:not(:hover)` (never matches statically)
+  also imposes no constraint.
+- A **paren/bracket-aware tokenizer + pseudo splitter** so the space/comma in
+  `:not(.a, .b)`, the nested `:` in `:not(:checked)`, and a `:` inside an attribute
+  value are all literal (not split points).
+
+The bug was that `:checked` and `:not(:checked)` were previously *dropped*, so
+MediaWiki's paired reveal (`…:checked ~ … {display:block}`) and hide
+(`…:not(:checked) ~ … {display:none}`) rules both collapsed to the same selector
+and the reveal won — the panel rendered open. Now the unchecked toggle fails
+`:checked` and matches `:not(:checked)`, so the panel defaults to hidden.
+
+**Regression found and fixed along the way (measured).** A first cut made a
+`:not()` with an unmodelled argument *drop the whole selector*. That silently
+disabled the dark theme on go.dev / pkg.go.dev, whose design system gates its
+dark custom properties on `:root:not([data-theme])`-shaped rules — dropping that
+rule fell the page back to **light** while Chrome renders **dark** (a full-page
+inversion, SSIM ≈ 0.24). The fix is the "reduce, don't drop" rule above: the
+unmodelled attribute negation degrades `:root:not([data-theme])` to `:root`, so
+the rule still applies. Verified offline: after the fix `go.dev/blog` renders its
+`#202224` dark background again (it was `#ffffff` white before). This is exactly
+the "don't silently drop rules it shouldn't" hazard the task flagged.
+
+**Wikipedia verdict — montage-verified.** A cropped top-left montage compare (this
+change vs the committed baseline render) confirms the expanded "Main menu / Main
+page / Contents / Current events / Random article / …" list and the right-hand
+"Tools" list are **gone** — the render matches Chrome's collapsed state. That is
+the deliverable, and it holds. **Residual (honest):** the small *text labels* of
+the collapsed toggles ("Main menu", "Toggle the table of contents", the skip link)
+still render as text where Chrome shows icons — an icon-font / `visually-hidden`
+gap, not the checkbox hack. The Wikipedia **windowed SSIM** is the documented
+noisy metric (it swings run-to-run on the variable infobox-logo region); across
+interactive runs it measured 0.41–0.45 around the 0.441 baseline, i.e. flat within
+its noise band while the *targeted* defect (open dropdown lists) is visibly fixed.
+**The full 5-URL bench was not re-run/committed in this pass** (`bench/` is
+unchanged); the feature's correctness rests on the deterministic goldens below and
+the montage inspection, not on the noisy live number.
+
+### Proven deterministically (offline golden, JS disabled)
+
+- `checkbox_hack.html` → `TestCheckboxHackGolden` — a `display:none` menu that a
+  default-unchecked `:checked` toggle leaves **hidden**, the same menu **shown**
+  when the toggle carries `checked`, and a `:not(:checked) ~ x` inverse hiding a
+  menu while unchecked. Asserts the FINAL rendered pixels (solid-colour blocks,
+  font-independent). Plus exact unit tests in `css/selector_test.go` for every new
+  branch (including malformed `:not()`). `layout`/`paint` 100%; `css` ≥ 99.5% floor.
+
+## Phase 2.2 — dynamic rendering (layout↔JS feedback + settle-then-render)
+
+**Date: 2026-08-05.** Phase 2 ran JavaScript, but only *before* any layout, so a
+page whose final visual state is produced at runtime by JS reading layout metrics
+could never reach it. This phase adds the feedback loop.
+
+**1. Real layout metrics to JS.** After an initial cascade+layout, the JS DOM
+returns real numbers instead of stubs: `getBoundingClientRect()` (x/y/width/
+height/top/left/right/bottom), `offsetWidth/Height`, `clientWidth/Height`,
+`scrollWidth/Height`, `offsetTop/Left` (relative to the offset parent), and
+`window.getComputedStyle(el)` resolving **used** values (width/height/display/
+position/margins/padding/font-size/line-height/color/…). These read from the
+actual laid-out box tree via a new `layout.BuildIndex` (border-box rect per
+element; inline elements get the union of their fragments). `window.innerWidth/
+innerHeight` were already wired. This is what responsive scripts and MediaWiki's
+`mw.loader` consult to decide what to collapse or reveal.
+
+**2. Dynamic `<script>` execution.** A `<script>` inserted into the DOM at runtime
+(inline text or `src`) is fetched through `e.Client` (so the SSRF guard applies)
+and executed in the same goja runtime, in document order, once each — the
+ResourceLoader mechanism. Bounded by the existing script-count / byte / wall-clock
+limits.
+
+**3. Injected `<style>`/`<link>` + inline-style mutations take effect.** The
+re-cascade re-collects `<style>` text and `<link>` sheets from the *mutated* DOM
+(not a stale snapshot), so `document.createElement('style')`+append, `el.style.*`
+writes, `setAttribute('class'|'style')` and `classList` changes all show up on the
+next layout. Injected `<link>` sheets are refetched only when the link set
+changes.
+
+**4. Settle-then-render.** `RenderDocument` now: initial cascade+layout → run
+scripts + drain the async loop (timers/promises/fetch/XHR + injected scripts) →
+re-cascade + re-layout → **iterate to a bounded fixpoint** (≤3 passes; a pass runs
+only when a DOM/attribute/text signature changed, so a page whose JS mutates
+nothing pays no extra layout). Deterministic and always terminating: a pass cap
+plus a wall-clock deadline guard (an expensive page keeps its pre-settle layout
+rather than risk a timeout). A budget-gated final resource refresh reloads
+theme-specific images/backgrounds the pre-JS layout never fetched.
+`DisableJS` bypasses the whole loop for the byte-deterministic offline fixtures.
+
+### Proven deterministically (offline goldens, JS enabled)
+
+- `dynamic_metrics_toggle.html` — a script reads `offsetWidth === 200` and toggles
+  a class that grows+recolours a box. The rendered pixels show the widened box;
+  the `DisableJS` control does not. Proves **real metric read-back drives layout**.
+- `dynamic_style_inject.html` — `createElement('style')` + `appendChild` injects a
+  rule that recolours/resizes an element; the next cascade re-collects it.
+- `dynamic_script_inject.html` — a dynamically appended inline `<script>` executes
+  and mutates the DOM; the mutation reaches the final paint.
+
+### Measured effect (see `bench/REPORT.md`)
+
+**Wikipedia (the target): 0.413 → 0.441 SSIM, pixdiff 23.0% → 22.4%.** Instrumented,
+`mw.loader` now runs — 3 scripts injected at runtime and executed, 0 errors — and
+sets Vector-2022 to its collapsed/unpinned feature-class state (Chrome's mode),
+realigning the article to the top. **Residual (honest):** the collapsed
+main-menu dropdown's *contents* still paint on the left — a **CSS selector gap**
+(the `#…-checkbox ~ .vector-unpinned-container { display:none }` checkbox-hack is
+not applied), not a JS or ES-modules gap. example.com/pkg.go.dev/go.dev hold;
+react.dev is flat within its live-SPA noise band; no page regresses. Timing rises
+(one or two extra layouts for JS-mutating pages) but stays well within budget.
+
+## Phase 2.1 — SVG rendering (`<img src=*.svg>`, `data:image/svg+xml`, inline `<svg>`)
+
+**Date: 2026-08-05.** The next-ranked visible gap was **SVG**: the react.dev React
+atom logo (an inline `<svg>`) and any SVG raster/logo art rendered **blank**
+because go-images only decodes PNG/JPEG. This phase adds a real, pure-Go SVG
+rasteriser and wires it into both the `<img>` image path and inline `<svg>`.
+
+### SVG-library survey and decision (measured, not assumed)
+
+The brief said reuse a maintained CGO=0 rasteriser, not hand-write one. Candidates
+evaluated:
+
+| Library | CGO | License | Verdict |
+|---------|-----|---------|:-------|
+| **`github.com/srwiley/oksvg` + `github.com/srwiley/rasterx`** | **0** | **BSD-3-Clause** | **chosen** |
+| `github.com/tdewolff/canvas` | 0 for the SVG path, but pulls a large multi-backend surface (PDF/HTML/fonts, some rasterisers need cgo) | MIT | heavier; more than needed |
+
+**Chosen: `oksvg` + `rasterx` (both BSD-3-Clause, both pure-Go / CGO=0).**
+Reasons: it is the standard Go SVG-icon rasteriser, licence-compatible with our
+BSD-3 (no copyleft), a tiny two-package surface, and — verified empirically — it
+renders real SVGs correctly: **paths, basic shapes, fills, strokes, linear and
+radial gradients (`url(#id)`), transforms and viewBox scaling** to an `image` we
+composite. A 100×100 test SVG rasterised at 2× target confirmed gradient
+interpolation (top-left `#5cd6f7`, bottom-right `#0e82a8`), path fills and stroke
+geometry, all under `CGO_ENABLED=0`, and it cross-builds on all six 64-bit arches
+(amd64/arm64/ppc64le/riscv64/loong64/s390x). No vendoring — a normal go.mod
+dependency (BSD-3, "build from source").
+
+**What oksvg does / doesn't do (documented, not faked):** it handles the drawing
+subset above plus `currentColor` (we feed the element's computed CSS `color` via
+`ReadReplacingCurrentColor`, so `fill="currentColor"` logos take their real
+colour). (Since the engine moved to the fleet fork `github.com/go-gfx/oksvg`,
+`<clipPath>` and the `clip-path` property are implemented, with `clip-rule`,
+and arc commands with several parameter sets are drawn correctly.) It does
+**not** implement SVG `<filter>` effects, `<mask>` compositing, `<pattern>` fills, embedded raster `<image>`, `<text>`/font shaping,
+CSS `<style>` selectors inside the SVG, or animation. Such features degrade to
+"drawn without them" or empty, never a crash.
+
+### What Phase 2.1 implements
+
+- **`<img src="*.svg">` and `data:image/svg+xml`** (`images.go`, `svg.go`):
+  SVG is detected by extension, the `image/svg` media hint, or an `<svg` content
+  sniff. It is rasterised at the element's **used size** — CSS width/height win,
+  then the HTML `width`/`height` presentation attributes, then the viewBox
+  intrinsic size, with a single specified axis deriving the other from the
+  viewBox aspect ratio; an image wider than the viewport is scaled down. A
+  non-base64 `data:` payload is now **percent-decoded** (RFC 2397), which the
+  previous code skipped — that alone was why `data:image/svg+xml,%3Csvg…` images
+  were blank.
+- **Inline `<svg>`** (`images.go`, `svg.go`, `layout/`): the `<svg>` subtree is
+  **serialised back to SVG text** from the DOM (restoring the handful of
+  mixed-case names the HTML parser/DOM lowercased — `viewBox`, `linearGradient`,
+  `radialGradient`, `gradientUnits`, `gradientTransform`, `spreadMethod` — with
+  deterministic attribute ordering and XML-escaped values), rasterised, and
+  treated as a **replaced element** with intrinsic size from its
+  width/height/viewBox. Layout emits it exactly like an `<img>` box, so paint
+  composites it through the existing image-blit path (no new paint branch).
+- **Graceful degradation + cost bounds**: a document that fails to parse or has
+  no usable intrinsic size renders as empty space (a `recover` turns any
+  rasteriser panic into a clean skip — rasterx does panic on some degenerate
+  geometries); the rasterised bitmap is capped at 4096 px per axis.
+
+### Before → after vs headless Chromium (this machine, OS-dark)
+
+| URL | SSIM before | SSIM after | pixdiff before | pixdiff after | Verdict |
+|-----|-----------:|-----------:|---------------:|--------------:|:-------|
+| example.com/ | 0.954 | 0.954 | 1.5% | 1.5% | held (no SVG) |
+| en.wikipedia.org/wiki/Go | 0.413 | 0.413 | 23.0% | 23.0% | held |
+| pkg.go.dev/net/http | 0.628 | 0.628 | 36.5% | 36.5% | held exactly |
+| go.dev/blog/ | 0.666 | **0.670** | 33.2% | 33.2% | **improved** (Go wordmark + gopher + social icons now render at the right size) |
+| react.dev/ | 0.719 | **0.729** | 30.2% | **26.1%** | **improved** (the hero React atom + nav atom render) |
+
+**react.dev — the target — improves: +0.010 SSIM, pixdiff 30.2%→26.1% (−4.1pp).**
+The inline-`<svg>` React atom in the hero (a `currentColor` circle + three
+`rotate()`-transformed orbital ellipses over a `viewBox="-10.5 -9.45 21 18.9"`)
+and the small nav atom now render where Chrome paints them. go.dev/blog improves
+slightly: its Go wordmark, the footer gopher and the Bluesky/Mastodon/GitHub
+social icons are `<img src="*.svg">` that now rasterise — at their **own**
+16×16/82×32 intrinsic size, not the raw viewBox (Bluesky's viewBox is 568×501),
+which is the sizing rule this phase got right. example.com, Wikipedia and
+pkg.go.dev hold exactly. The authoritative regenerated numbers live in
+`bench/REPORT.md`.
+
+**Honest remaining gaps.** oksvg renders the atom's orbits a touch thinner than
+Chrome's and does not composite SVG `<filter>`/`<mask>`/`<pattern>`/embedded
+`<image>`/`<text>`; a handful of react.dev's ~120 icons fall past the per-page
+image budget (`MaxImages`); and an SVG whose display size lives only in CSS a
+selector we don't resolve still falls back to its intrinsic size. None regress
+the five pages.
+
+### Tests
+
+`testdata/svg_golden.html` is a text-free byte-golden fixture (inline `<svg>`
+with a linear gradient, a solid fill, a `currentColor` stroke and a path fill,
+its viewBox scaled 2×) behind `TestSVGGolden`, which asserts exact sampled
+colours at known points (gradient endpoints, the solid rect, the path fill and
+the `currentColor` stroke). `svg_test.go` unit-tests the glue to 100% statement
+coverage including every error path: SVG sniffing, attribute-dimension parsing,
+`currentColor` formatting, the used-size resolver, SVG serialisation/escaping,
+parse-error and sizeless-SVG failures, the `recover` guard (via a substitutable
+rasteriser seam), dimension clamping, and `data:` percent-decoding. End-to-end
+tests cover inline-`<svg>` intrinsic-size layout, `<img>`-SVG attribute sizing
+and a broken `<svg>` degrading to empty. `layout` and `paint` hold **100%**
+statement coverage; `css` holds its floor.
+
+## Phase 2.0 — CSS gradients, `background-image: url()`, box-shadow, opacity
+
+**Date: 2026-08-05.** Phase 1.9 closed the dark/colour gap and left one ranked
+backlog item (rank 5): the paint-only decorations — **gradients**,
+**`background-image: url()`**, **box-shadow** and **opacity**. This phase
+implements them, confirming the ranking first by pixel-sampling the Chrome
+reference montages.
+
+### Ranking confirmation (measured, before implementing)
+
+Re-running the pre-change engine on this machine reproduced the committed numbers
+exactly (react.dev **0.710**, go.dev/blog 0.666, pkg.go.dev 0.628, Wikipedia
+0.423, example.com 0.954), and the react.dev montage shows the remaining
+divergences precisely where the task predicted: the right-hand demo panels render
+**flat grey** where Chrome paints **teal→blue→green gradients**, and the
+rounded controls sit **shadowless**. Counting the real CSS confirmed the target:
+react.dev's stylesheet has **4 `linear-gradient` + 1 `radial-gradient`**, **39
+`box-shadow`** and **2 `background-image:url()`** declarations. So gradients +
+`url()` backgrounds were implemented first, then box-shadow and opacity. (The
+big centre React atom is an **inline `<svg>`** — SVG rasterisation stays out of
+scope, documented below — and the hero demo panels' *corner* shading is
+`conic-gradient`, also deferred; the panel **fills** are linear/radial and now
+paint.)
+
+### Before → after vs headless Chromium (this machine, OS-dark)
+
+| URL | SSIM before | SSIM after | pixdiff before | pixdiff after | Verdict |
+|-----|-----------:|-----------:|---------------:|--------------:|:-------|
+| example.com/ | 0.954 | 0.954 | 1.5% | 1.5% | held (no gradients/images) |
+| en.wikipedia.org/wiki/Go | 0.423 | 0.413 | 22.9% | 23.0% | ~flat (−0.010; box-shadows now paint on its chrome; JS-`mw.loader`-confounded) |
+| pkg.go.dev/net/http | 0.628 | 0.628 | 36.5% | 36.5% | held exactly |
+| go.dev/blog/ | 0.666 | 0.666 | 33.2% | 33.2% | held exactly |
+| react.dev/ | 0.710 | **0.719** | 33.4% | **30.2%** | **improved** (gradient panels paint) |
+
+**react.dev is the target and moves the right way: +0.009 SSIM, pixdiff
+33.4%→30.2% (−3.2pp).** The right-hand demo panels that rendered flat grey now
+show the navy→teal→green linear gradient Chrome paints, and the teal pill buttons
+gain their gradient/rounded fill (see the montage). The residual gap is the
+inline-`<svg>` React atom (out of scope) and the larger-centred hero typography
+(a font/layout gap, not a paint gap). example.com, pkg.go.dev and go.dev/blog hold
+to three decimals; Wikipedia's −0.010 is a marginal, measured move — its Vector
+chrome box-shadows now paint, nudging pixels on a page whose SSIM has always swung
+on the un-run `mw.loader` sidebar. The authoritative regenerated numbers live in
+`bench/REPORT.md`.
+
+### What Phase 2.0 implements (each measured, tested, 6-arch clean)
+
+- **CSS gradients** (`css/background.go`, `css/gradient_sample.go`): `linear-gradient`
+  (explicit angles in deg/grad/rad/turn, `to <side>` and the box-dependent
+  `to <corner>` "magic corners", multi-stop with px/%/unpositioned stops
+  normalised per spec, hex/`rgb()`/`hsl()`/named/transparent colours,
+  premultiplied-alpha interpolation so transparent stops don't bleed) and
+  `radial-gradient` (circle/ellipse, `closest/farthest-side/corner` + explicit
+  radii, `at <position>`). Painted into the element's background box and **clipped
+  to the `border-radius` rounded rect**. Multiple layers are stacked
+  first-on-top; vendor-prefixed and `repeating-` names parse.
+- **`background-image: url(...)`** (`images.go`, `paint/paint.go`): resolved
+  against the document base and fetched through `e.Client` (bounded, deduped,
+  data-URI aware), decoded via **go-images**, painted honouring `background-size`
+  (`auto`/`cover`/`contain`/px/%, one-axis `auto` keeps the aspect ratio),
+  `background-position` (keywords + px/%) and `background-repeat`
+  (`no-repeat`/`repeat`/`repeat-x`/`repeat-y`), clipped to the rounded box.
+- **`box-shadow`** (`css/shadow.go`, `paint/paint.go`): comma-separated drop and
+  `inset` layers with offset, blur, spread and colour. The blur is an **exact
+  Gaussian-blurred box** via the error function (`erf`), so the soft extent is
+  offset+spread+blur and is unit-test-checkable; a drop shadow paints behind the
+  box, an inset shadow as a soft inner band clipped to the box.
+- **`opacity`** (`paint/paint.go`): true **group opacity** — an element with
+  `0 < opacity < 1` and its whole subtree render into an offscreen buffer that is
+  then alpha-composited, so overlapping descendants fade as one group (not
+  double-blended); `opacity: 0` skips the subtree.
+
+### Deliberate simplifications (documented, not faked)
+
+- **`conic-gradient` is not modelled** — the layer is dropped and the element
+  falls back to its background colour (react's demo-panel corner shading uses it).
+- **SVG `<img>`/inline `<svg>` are not rasterised** — go-images decodes PNG/JPEG;
+  the go.dev logo and the react.dev hero atom are SVG and stay blank. PNG/JPEG
+  bitmaps (react's `uwu.png`, the conf-2021 JPGs) do render.
+- **Gradient border-radius clip is a hard rounded-rect test** (no corner AA);
+  the painter's own `FillRoundRect` still AA-clips solid-colour rounded fills.
+- **box-shadow blur ignores the corner radius** (a soft rectangle) and its extent
+  is an `erf` box, not a per-corner rounded blur — visually indistinguishable at
+  these blur radii.
+- **`background-size`/`position`/`repeat` from the `background` shorthand** are
+  not parsed (only the colour and the image layer are); the longhand properties
+  are honoured. Gradient layers always fill the box (auto size).
+
+### Reproduce (offline)
+
+```
+go run ./cmd/render -file testdata/gradients_demo.html   -out /tmp/gradients_demo.png   -w 740 -h 380
+go run ./cmd/render -file testdata/gradients_golden.html -out /tmp/gradients_golden.png -w 200 -h 260
+```
+
+`testdata/gradients_golden.html` is the byte-golden fixture behind
+`TestGradientsGolden` (exact sampled colours at each gradient's start/mid/end, a
+box-shadow halo, a border-radius-clipped background and a `url()` data-URI
+bitmap). `testdata/gradients_demo.html` is the labelled visual montage.
+
+## Phase 1.9 — CSS breadth: modern colour syntax, Tailwind variants, border-radius
+
+**Date: 2026-08-05.** The engine is strong on layout; the remaining gaps on
+styled pages were **CSS breadth**. This phase was **measure-first**: for each
+bench page I (a) fetched the page's real HTML + external CSS and tallied every
+declaration, flagging the properties/constructs the cascade dropped; and (b)
+**sampled the Chrome reference montage's own pixels** to see what actually
+diverged, rather than trusting a description. That second step corrected a wrong
+assumption and reshaped the ranking.
+
+### The diagnosis (what actually drives the divergence — measured)
+
+**Ground-truth correction found by pixel-sampling the montages:** this
+machine runs macOS in **Dark** appearance and the reference headless Chromium
+**follows it**, so Chrome renders pkg.go.dev `rgb(32,34,36)`, go.dev
+`rgb(32,34,36)` and react.dev `rgb(35,39,47)` — all **dark**. example.com (no
+dark theme) stays light. So the engine's job on these pages is to render **dark
+too**, and the pre-existing optimistic `@media (prefers-color-scheme: dark)`
+matching was already doing the right thing for pkg/go.dev (they matched Chrome).
+The one page that did **not** match was react.dev — and that turned out to be the
+single biggest, cleanest win, for a reason none of the initial "likely suspects"
+named:
+
+| Rank | Gap (measured) | Evidence | Fixed |
+|-----:|----------------|----------|:-----:|
+| **1** | **Modern space-separated `rgb()/hsl()` colour syntax** — `rgb(R G B / A)`. The cascade only parsed the legacy comma form, so **every** Tailwind colour dropped. | react.css: **192/192** `rgb()` use the space form, **0** comma. `background-color` was doubly broken (it split the value at the first space). Dark react sections rendered **white**. | ✅ |
+| **2** | **Tailwind variant classes don't match**: `dark:bg-…`, `sm:…`, `lg:…` compile to escaped-colon class names inside **`:is(.dark …)`** wrappers. The selector parser broke at the first `:` and on the space inside `:is()`. | react.css: **110** `.dark ` rules, **87** `:is(` wrappers. The dark page backdrop is `body.dark\:bg-wash-dark` under `:is(.dark …)`. | ✅ |
+| **3** | **`matchMedia()` always returned `false`**, so react.dev's theme script never added `<html class="dark">` → engine stayed light while Chrome (OS-dark) was dark. | react's inline theme script calls `matchMedia('(prefers-color-scheme: dark)')`. | ✅ |
+| **4** | **`border-radius` not painted** — rounded cards/buttons/code panels render square. | 34–60 `border-radius` decls **per page** (all five). | ✅ |
+| 5 | `box-shadow`, `transform`, `opacity`, `object-fit`, `text-transform`, `letter-spacing`, `::before/::after content`, gradient/`url()` backgrounds | present but lower measured pixel ROI on these five pages (gradients 1–5/page; `::before` mostly decorative/icon-mask on Wikipedia). | ⏳ next |
+
+**Following the data, not the guesses.** The task's prior expected the top win to
+be `::before/::after` pseudo-elements or gradients. Measurement said otherwise:
+the dominant react.dev divergence was a **whole-page dark/light inversion** whose
+root causes were (1) the modern `rgb()` syntax, (2) Tailwind `:is()`/escaped
+variant selectors, and (3) `matchMedia` — a chain that, once closed, flips
+react.dev to the dark theme Chrome renders. `border-radius` is the broad,
+every-page polish item and was implemented too.
+
+### What Phase 1.9 implements (each measured, tested, 6-arch clean)
+
+- **Modern colour syntax** (`css/value.go`): `rgb()/rgba()/hsl()/hsla()` in both
+  the legacy comma form **and** the modern space-separated `R G B / A` form
+  (numbers or percentages; `/`-alpha as number or percent), plus `#rgba` and
+  `#rrggbbaa` hex. `background-color` now parses the whole value; the `background`
+  shorthand extracts a leading functional colour; the `border` shorthand and
+  `border-color` keep functional tokens intact (a paren-aware tokenizer).
+- **Tailwind variant selectors** (`css/selector.go`): backslash escapes in
+  identifiers are honoured, so `.dark\:bg-wash-dark` parses as the class
+  `dark:bg-wash-dark`; `:is()` / `:where()` / `:matches()` wrappers are expanded
+  (paren-aware comma splitting, then splicing each alternative in place), so
+  `:is(.dark .dark\:bg-wash-dark)` becomes the descendant selector it means.
+- **`matchMedia()`** (`js/window.go`): evaluates the query instead of returning a
+  constant — `prefers-color-scheme: dark` → `true` (consistent with the CSS
+  cascade's optimistic dark and the dark Chrome reference), width features against
+  the real viewport — which lets react.dev's theme script add `<html class="dark">`.
+- **`border-radius`** (`css/…`, `paint/paint.go`): rounded-rect background fills
+  and rounded **uniform** borders via `go-widgets/painter`'s anti-aliased
+  `FillRoundRect`/`StrokeRoundRect`; `%` radii resolve against the box's smaller
+  side (so a square + `50%` is a disc, a large px is a pill).
+
+### Before → after vs headless Chromium (this machine, OS-dark)
+
+| URL | SSIM before | SSIM after | pixdiff before | pixdiff after | Verdict |
+|-----|-----------:|-----------:|---------------:|--------------:|:-------|
+| example.com/ | 0.954 | 0.954 | 1.5% | 1.5% | held (no dark theme / Tailwind) |
+| en.wikipedia.org/wiki/Go | 0.423 | 0.423 | 22.9% | 22.9% | held (JS `mw.loader` confound, unchanged) |
+| pkg.go.dev/net/http | 0.628 | _see REPORT_ | 36.5% | _see REPORT_ | ~flat (hex-colour theme; residual is layout) |
+| go.dev/blog/ | 0.666 | _see REPORT_ | 33.2% | _see REPORT_ | ~flat (already dark-matched) |
+| react.dev/ | 0.263 | **0.710** | 90.5% | **33.4%** | **major win** (dark theme recovered) |
+
+The numeric table in `bench/REPORT.md` is the authoritative, regenerated record.
+react.dev's **+0.45 SSIM / pixdiff 90.5%→33.4%** is the headline: with the four
+fixes, its dark backdrop, white text, teal rounded controls and dark code panels
+now line up with Chrome (see the montage). No page regressed.
+
+### Deliberate simplifications (documented, not faked)
+
+- **`border-radius` is a single uniform radius.** Tailwind `rounded-*`, pills and
+  circles set all four corners equal (the real common case); differing per-corner
+  radii collapse to the last-applied value, and the elliptical `h / v` form keeps
+  the horizontal radius. Rounded borders are stroked only when all four edges are
+  identical; otherwise straight per-edge fills are used.
+- **`:where()` specificity** is approximated as its argument's (should be 0); a
+  minor over-count that does not affect these pages.
+- **`matchMedia` dark** is a fixed signal consistent with the optimistic CSS
+  cascade and the dark reference; it is not derived from a live OS-appearance
+  probe.
+- Gradients, `background-image:url()`, `box-shadow`, `transform`, `opacity` and
+  `::before/::after content` remain **unimplemented** (rank 5) — the next phase.
+
+## Phase 1.8 — CSS `position` + dynamic-pseudo suppression
+
+The bench pinned the go.dev/blog regression to two missing features that let a
+site's sticky/dropdown nav chrome render **in flow**, pushing real content far
+down: no `position` support, and dynamic pseudo-classes (`:hover`/`:focus`)
+effectively always-on. Phase 1.8 adds both, with **exact-geometry unit tests**
+(`layout` and `paint` hold **100%** statement coverage; `css` at 99.7%).
+
+### CSS `position`
+- **`relative`** — the box stays in normal flow (reserves its space) and is
+  painted shifted by `top`/`left`/`right`/`bottom` (`left` wins over `right`,
+  `top` over `bottom`; px/em/% offsets, % resolved against the containing block).
+- **`absolute`** — removed from normal flow (reserves **no** space), placed
+  against the **padding box of the nearest positioned ancestor**, else the
+  initial containing block. `top`/`left`/`right`/`bottom`, a `left`+`right` pair
+  fixing the width, shrink-to-fit auto width, and `min/max-width` clamping.
+- **`fixed`** — removed from flow and resolved against the initial containing
+  block; for a full-page static shot it paints once at its place (document
+  coordinates) and never reserves flow space.
+- **`z-index`** — positioned boxes paint after in-flow content, ordered by
+  z-index (stable within a tie). This is a correct-enough stacking order, not the
+  full CSS stacking-context algorithm (see simplifications).
+
+### Dynamic pseudo-classes are suppressed in the static render
+`:hover`, `:active`, `:focus`, `:focus-within`, `:focus-visible` and `:target`
+**never match** (a screenshot has nothing hovered/focused/targeted), so a
+`display:none`-until-`:hover` submenu stays hidden exactly as in Chrome's default
+shot. The non-dynamic parts are unaffected: `.btn:hover` does not match but
+`.btn` base rules still apply, `.menu:hover .sub` simply does not apply, and in a
+selector list (`a:hover, .base`) the other members still match.
+
+Two offline fixtures back this: `testdata/position_demo.html` (relative /
+absolute / fixed + z-index overlap, golden `position_demo.png`) and
+`testdata/dropdown_hover_demo.html` (a `:hover`/`:focus-within` dropdown that must
+render hidden, golden `dropdown_hover_demo.png`).
+
+### Deliberate simplifications (documented, not faked)
+- **`sticky`** is approximated as **`relative`** for a static full-page shot
+  (there is no scroll position to stick to).
+- **Stacking** paints all positioned boxes after in-flow content and orders them
+  by z-index; it does not implement per-element stacking contexts, negative
+  z-index painting behind the in-flow layer, or `opacity`/`transform`-induced
+  contexts.
+- **Initial containing block height** — this entry point has no separate viewport
+  height, so `fixed`/`absolute` bottom/right offsets and viewport-anchored
+  percentages resolve against the **in-flow document height** as the ICB height.
+- **Static position** — an out-of-flow box with all offsets `auto` is placed at
+  its containing block's origin (the true in-flow static position is not
+  reconstructed). Auto margins on out-of-flow boxes are treated as zero.
+- Out-of-flow boxes inside `<table>` internals are not collected (rare); the
+  block/inline/flex/grid paths all handle them.
+
+## Phase 1.7 — flexbox completeness + CSS grid
+
+The bench harness identified CSS **flex/grid layout** (not JavaScript) as the
+dominant remaining fidelity gap on modern Tailwind-driven pages. Phase 1.7
+closes most of it. All of the following land with **exact-geometry unit tests**
+(`layout` and `paint` stay at **100%** statement coverage; `css` at 99.7%).
+
+### Flexbox — now complete enough for real Tailwind layouts
+- **`flex-wrap`** (`wrap` / `wrap-reverse`) breaking items into multiple flex
+  lines; **`flex-flow`** shorthand.
+- **`gap` / `row-gap` / `column-gap`** between items (main axis) and lines
+  (cross axis), including the two-value `gap` shorthand.
+- **`align-content`** (start / end / center / space-between / around / evenly)
+  distributing lines across a definite cross size.
+- **`align-self`** overriding `align-items` per item; **`order`** reordering
+  items within the container.
+- **`min/max-width`** and **`min/max-height`** resolved within flex (clamping
+  grow/shrink on the main axis and stretch on the cross axis).
+- Nested flex containers, percentage bases against the container, `flex:1` /
+  `flex:0 0 200px` shorthands.
+
+### CSS grid (`display:grid`) — new
+- **`grid-template-columns` / `grid-template-rows`** with `px`, `%`, **`fr`**,
+  `auto`, **`repeat(n, …)`** and **`minmax(min, max)`** (incl. `minmax(_, 1fr)`).
+- **`gap` / `row-gap` / `column-gap`** between tracks.
+- **Explicit placement**: `grid-column` / `grid-row` with line numbers
+  (positive and negative), `/`-ranges and **`span N`**; `grid-area` line form.
+- **Auto-placement**: row-major flow for items without explicit placement, plus
+  fixed-column-auto-row and fixed-row-auto-column items.
+- **`grid-template-areas`** with `grid-area: <name>` placement.
+- **`justify-items` / `align-items` / `place-items`** and per-item
+  **`justify-self` / `align-self` / `place-self`** (stretch fills the cell,
+  otherwise the item keeps its size and is positioned within the cell);
+  **`justify-content`** distributes/centres the whole track band.
+- `grid-auto-rows` / `grid-auto-columns` for implicit tracks; a lone `auto`
+  column stretches to fill the container (matching browsers).
+
+### Deliberately out of scope this phase (→ Phase 1.8, not faked)
+- `repeat(auto-fill / auto-fit, …)`, `fit-content()`, `subgrid`, named grid
+  **lines** (named **areas** *are* supported), and `masonry` — parsed values
+  that reference these leave the property unset rather than guessing.
+- `grid-auto-flow: dense` and `column` flow are parsed but auto-placement is
+  always sparse **row-major** at this fidelity.
+- Intrinsic (`auto`/`min/max-content`) track sizing only counts items that lie
+  **within a single track**; a multi-track spanner does not grow the tracks it
+  crosses (fixed/`fr`/`%` tracks and explicit sizes are exact).
+- `fr` **rows** distribute space only when the container has a **definite
+  height**; otherwise they behave as `auto` (content-sized).
+- Cross-axis `min/max-height` and grid `min/max` bounds are treated as
+  **border-box** limits (box-sizing is not distinguished on that axis).
+- Baseline alignment, and `justify-content` spacing distribution on grid columns
+  when `auto` tracks are present (auto tracks stretch instead).
+
+## What Phase 1 added (all with exact-geometry unit tests)
+
+- **Box model**: `max-width`/`min-width` clamping, `width:auto` + `margin:auto`
+  centring (CSS 10.3.3), `box-sizing:border-box`, `line-height` (px/em/%/unitless
+  and `normal`), painted `border` (shorthand + per-side + width/style/colour),
+  `height`.
+- **Vertical margin collapsing**: adjacent siblings collapse to the larger
+  margin; a parent with no top/bottom border or padding collapses through its
+  first/last child; negative margins follow the max-positive-plus-min-negative
+  rule.
+- **Floats**: `float:left`/`right` with text flowing around them (line boxes
+  shorten over a float's vertical band), float stacking when there is no room
+  beside, and `clear:left`/`right`/`both`.
+- **Flexbox**: `display:flex` with `flex-direction` row/column,
+  `justify-content` (start/end/center/space-between/around/evenly), `align-items`
+  (stretch/start/end/center) and `flex-grow`/`shrink`/`basis`.
+- **Tables**: `display:table`/`<table>` auto layout — column widths from cell
+  max-content scaled to the table width, row heights from the tallest cell,
+  `thead`/`tbody`, `th`/`td`.
+- **CSS breadth**: descendant / child (`>`) / adjacent (`+`) / general-sibling
+  (`~`) combinators with full specificity; `@media (min-width/max-width)` width
+  queries evaluated against the render width (so desktop rules apply); `vw`/`vh`
+  (approximated as a percentage of the containing width) and `rem` units;
+  `background-color` and `border` on any element.
+
+## Per-page before → after
+
+### 1. `https://example.com/` — `example.com.png`
+- **Before (Phase 0):** the page flowed full-width to the left; no centred
+  column, because `margin:auto`, `max-width` and viewport units were unsupported.
+- **After (Phase 1):** example.com's current CSS centres the **body** with
+  `width:60vw; margin:15vh auto`. Both `vw` and `margin:… auto` now resolve, so
+  the content sits in a centred ~614 px column (`60vw` of 1024), matching the real
+  page's centred layout. *(example.com changed its markup since Phase 0: the
+  centred element is the body via `60vw`, not a fixed 600 px div — both paths are
+  now handled.)*
+- **Remaining:** the browser's `system-ui` font is substituted by the bundled
+  sans; `border-radius`/`box-shadow` on the panel are not painted.
+
+### 2. `https://en.wikipedia.org/wiki/Go_(programming_language)` — `wikipedia_go.png`
+- **Before (Phase 0):** the right-hand infobox **stacked above** the article
+  prose as a full-width block; the whole page linearised.
+- **After (Phase 1):** the infobox now **floats to the right and the article
+  prose flows down its left side** — Paradigm / Designed by / Developer / First
+  appeared / Typing discipline / License etc. sit in a 22 em right column while
+  the lead and *History* paragraphs wrap beside it. This works because the
+  infobox's `float:right; width:22em` lives in an in-document `<style>` behind
+  `@media (min-width:640px)`, which the new media-query evaluation now applies.
+  The gopher mascot figure also floats within the prose. Verified in the
+  committed PNG around y≈4600.
+- **Remaining:** the top **navigation sidebar, TOC and 63-language list still
+  linearise** — that chrome is collapsed/flex/grid- and JS-driven and its rules
+  live in *external* stylesheets the engine does not fetch (see Known gaps).
+  There is minor text overlap at the very top edge of the infobox where the first
+  lead line was placed before the float registered. All text content is present
+  and legible.
+
+### 3. `https://www.rfc-editor.org/rfc/rfc1866.html` — `rfc1866.png`
+- **Before / After:** essentially unchanged, and correctly so — the RFC is one
+  large `<pre>` block with no floats/flex/tables to place. `white-space:pre` is
+  honoured: the right-aligned author header, centred title, dot-leader table of
+  contents and indentation all line up, and inline `<a>` cross-references render
+  in link-blue. This confirms the new positioning layer did not regress the
+  inline/`pre` path.
+
+### 4. `testdata/floats_demo.html` — `floats_demo.png` *(new, float-heavy)*
+A self-contained fixture proving the float + box-model work crisply and
+deterministically. It shows: a `max-width` page **centred** with painted
+left/right borders; a **right-floated info panel** (bordered, background-filled)
+with prose wrapping down its left; a **left-floated figure** with text wrapping to
+its right; margins between paragraphs **collapsing** to a single gap; `h2`
+underline via `border-bottom`; and a **cleared footer** sitting below both floats.
+
+### 5. `testdata/flex_table_demo.html` — `flex_table_demo.png` *(new, flex + table)*
+A self-contained fixture proving flex and tables. It shows: a **flex navbar**
+(`justify-content:space-between`, `align-items:center`) with the brand at the
+left, nav links centred and a call-to-action button at the right; a **flex
+two-column** body where a fixed-width sidebar (`flex-shrink:0`) sits beside a
+`flex-grow:1` main panel; and a **data table** whose columns are sized from
+content, with a styled header row, per-cell borders and right-aligned numeric
+columns.
+
