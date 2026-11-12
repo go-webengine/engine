@@ -1070,6 +1070,30 @@ func TestDocumentImplementationCreateHTMLDocument(t *testing.T) {
 		"base=BASE href=https://example.com/")
 }
 
+func TestDocumentImplementationCreateDocument(t *testing.T) {
+	// document.implementation.createDocument was entirely absent, so
+	// @azure/core-xml's own XML-building helper — bundled into github.com's
+	// own Support app (`const xe = document.implementation.
+	// createDocument(null, null, null)`, called unconditionally at
+	// module-evaluation time) — threw "Object has no member
+	// 'createDocument'" and aborted the WHOLE chunk before any of its code
+	// ran, which is why the page's own i18n helper further down the SAME
+	// chunk fell back to a raw object instead of the resolved string
+	// (engine#418, confirmed live).
+	_, logs, _ := runJS(t, page(`
+		var none = document.implementation.createDocument(null, null, null);
+		console.log('de='+none.documentElement);
+		var el = none.createElement('foo');
+		console.log('el='+el.tagName);
+		var svg = none.createElementNS('http://www.w3.org/2000/svg', 'rect');
+		console.log('ns='+svg.tagName);
+
+		var named = document.implementation.createDocument(null, 'root', null);
+		console.log('named-de='+named.documentElement.tagName);
+	`))
+	mustHave(t, logs, "de=null", "el=FOO", "ns=RECT", "named-de=ROOT")
+}
+
 func TestTreeWalkerNextNode(t *testing.T) {
 	// document.createTreeWalker returned a bare empty object, so calling
 	// nextNode() on it threw "Object has no member 'nextNode'" — confirmed

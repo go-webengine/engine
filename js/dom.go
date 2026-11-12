@@ -1021,8 +1021,65 @@ func (b *binder) newDOMImplementation() *goja.Object {
 	o.Set("createHTMLDocument", func(call goja.FunctionCall) goja.Value {
 		return b.newDetachedHTMLDocument()
 	})
+	o.Set("createDocument", func(call goja.FunctionCall) goja.Value {
+		return b.newDetachedXMLDocument(argStringOrEmpty(call.Argument(1)))
+	})
 	o.Set("hasFeature", func(goja.FunctionCall) goja.Value { return b.vm.ToValue(true) })
 	return o
+}
+
+// argStringOrEmpty is call.Argument(n).String() that treats a null/
+// undefined argument as "" rather than the literal strings "null"/
+// "undefined" goja's own String() would otherwise give — the shape
+// createDocument's real caller needs (`createDocument(null, null,
+// null)`, confirmed below).
+func argStringOrEmpty(v goja.Value) string {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return ""
+	}
+	return v.String()
+}
+
+// newDetachedXMLDocument builds the minimal document-shaped object
+// createDocument's one confirmed real caller needs: @azure/core-xml's own
+// XML-building helper (`const xe = document.implementation.
+// createDocument(null, null, null)`), reached unconditionally at
+// module-evaluation time on github.com's own Support app — with
+// createDocument previously entirely absent, this threw and aborted the
+// WHOLE chunk before any of its code ran, which is what left that page's
+// own i18n helper falling back to a raw object instead of the resolved
+// string (engine#418 — a quite different-looking symptom from its own
+// real, narrow cause, the same shape as this file's other "one missing
+// method aborts everything downstream" fixes).
+//
+// qualifiedName, when non-empty, becomes a real root element
+// (documentElement) — the spec's own behaviour for a non-null qualified
+// name; empty (the real caller's own case) leaves documentElement null,
+// also per spec. namespace/doctype are accepted but not modelled (this
+// engine has no XML-namespace tracking at all — createElementNS already
+// ignores its own namespace argument the same way, dom.go:1351).
+// createAttribute/NamedNodeMap.setNamedItem/createCDATASection — the
+// SAME real caller's own deeper XML-request-building helpers
+// (buildAttributes/buildNode in that module), only reached once a user
+// actually triggers an Azure Blob Storage attachment upload, not
+// confirmed reachable on page load — are a separate, NOT-yet-confirmed
+// gap, deliberately left unimplemented here (this file's own established
+// "confirmed real usage only" discipline, matching newDetachedHTMLDocument
+// and newTreeWalker's own doc comments just above/below).
+func (b *binder) newDetachedXMLDocument(qualifiedName string) *goja.Object {
+	d := b.vm.NewObject()
+	if qualifiedName != "" {
+		d.Set("documentElement", b.wrap(dom.NewElement(qualifiedName)))
+	} else {
+		d.Set("documentElement", goja.Null())
+	}
+	d.Set("createElement", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(dom.NewElement(call.Argument(0).String()))
+	})
+	d.Set("createElementNS", func(call goja.FunctionCall) goja.Value {
+		return b.wrap(dom.NewElement(call.Argument(1).String()))
+	})
+	return d
 }
 
 // newDetachedHTMLDocument builds the minimal document-shaped object
