@@ -27,7 +27,17 @@ env:
   # Certificate.Verify, reachable from cmd/render) was unfixed, fixed in
   # go1.27.3. Raising go.mod alone would leave this lane building the
   # vulnerable toolchain.
-  GO_VERSION: "1.27.3"
+  # Bumped 2026-11-13 to go1.27.4 (released 2026-11-10 — confirmed directly,
+  # go.dev/doc/devel/release#go1.27.4 — "security fixes to cgo, the go
+  # command, the compiler, the linker, and the net/http package"; net/http
+  # is this engine's own transport). The immediate trigger was vuln.yml's
+  # own "govulncheck, judged by vulngate" job breaking repo-wide: its
+  # `vulngate@latest` install is deliberately unpinned (see that workflow's
+  # own comment on why), and go-fleettools/fleettools v0.108.0 raised ITS
+  # floor to go>=1.27.4 — confirmed the SAME commit (d19afd4) went from
+  # green (2026-11-10) to red (2026-11-11, 2026-11-12) with zero code
+  # change, ruling out anything in this repo as the cause.
+  GO_VERSION: "1.27.4"
 
 jobs:
   test:

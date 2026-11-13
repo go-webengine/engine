@@ -1,6 +1,6 @@
 module github.com/go-webengine/engine/bench
 
-go 1.27.3
+go 1.27.4
 
 // Local parent engine module. Keeps chromedp out of the engine's CGO=0,
 // 6-arch build and coverage gate.
