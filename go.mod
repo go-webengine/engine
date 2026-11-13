@@ -1,6 +1,6 @@
 module github.com/go-webengine/engine
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9
