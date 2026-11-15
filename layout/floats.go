@@ -185,7 +185,23 @@ func (l *layouter) placeFloat(parent *Box, node *dom.Node, st *css.Style, cx, cw
 	clone.MarginLeftAuto, clone.MarginRightAuto = false, false
 	fb := &bfc{}
 	box := l.place(node, &clone, 0, fcw+hExtra, fb)
-	fb.commit()
+	// A float establishes its own block formatting context (CSS 2.1
+	// §9.4.1), so a child's margin collapsing through to either edge must
+	// land inside the float's own height here rather than escape past it —
+	// see layoutIsolated's own doc comment (flex.go) for the confirmed real
+	// trigger this mirrors exactly, and for why both the leading and
+	// trailing case need separate handling.
+	if len(box.Children) > 0 && box.Y != 0 {
+		extra := box.Y
+		translateBox(box, 0, -extra)
+		box.H += extra
+		box.ContentH += extra
+	}
+	if bottom := fb.commit(); bottom > box.Y+box.H {
+		extra := bottom - (box.Y + box.H)
+		box.H += extra
+		box.ContentH += extra
+	}
 	l.floats = saved
 
 	outerW := box.W + st.Margin.Left + st.Margin.Right

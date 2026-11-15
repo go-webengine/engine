@@ -625,7 +625,46 @@ func (l *layouter) layoutIsolated(node *dom.Node, st *css.Style, contentW float6
 	clone.PaddingPct, clone.MarginVPct = css.Pct4{}, css.Pct4{}
 	fb := &bfc{}
 	box := l.place(node, &clone, 0, contentW, fb)
-	fb.commit()
+	// node establishes its own block formatting context (a table cell, a
+	// flex/grid item, a replaced element's own box) — CSS 2.1 §8.3.1's own
+	// margin-collapsing rule stops there, so a descendant's margin that
+	// collapses all the way through to EITHER edge of this isolated layout
+	// has nowhere further to go and must land inside the box's own height,
+	// not escape past it uncommitted. Found live on news.ycombinator.com:
+	// `.votearrow{width:10px;height:10px;margin:3px 2px 6px}` inside a
+	// table cell's `<center><a>` wrapper (an <a> isn't normally a block-
+	// margin context, but promoting a block child out of an inline
+	// ancestor reaches this same code path) came out 10px tall instead of
+	// the real browser's 19px (3+10+6, confirmed via a live Chromium
+	// comparison).
+	//   - Leading (top): place() already folds an absorbed top margin into
+	//     box's own Y (firstContentTop) — correct for an ORDINARY nested
+	//     block sharing its parent's own bfc, where that Y shift is real
+	//     position within the parent. This box IS the outermost one in its
+	//     own fresh bfc, though, so there is no real position for it to
+	//     shift INTO: fold it back into height, pinning Y to the isolated
+	//     origin (translateBox carries every descendant's own coordinates
+	//     along, so nothing inside the box moves relative to its new top).
+	//     Scoped to a BLOCK first child specifically (firstContentTop's own
+	//     box.Children branch): an ordinary line of INLINE content can also
+	//     leave box.Y non-zero (ascent/half-leading, nothing to do with a
+	//     margin escaping anything), and folding THAT into height as well
+	//     would double-count it — confirmed live: doing this unconditionally
+	//     inflated a plain, marginless "<span>1.</span>" vote-rank cell from
+	//     its correct ~16px to 22px.
+	if len(box.Children) > 0 && box.Y != 0 {
+		extra := box.Y
+		translateBox(box, 0, -extra)
+		box.H += extra
+		box.ContentH += extra
+	}
+	//   - Trailing (bottom): place() defers it into fb's own pending carry
+	//     instead, materialised only by this commit, otherwise discarded.
+	if bottom := fb.commit(); bottom > box.Y+box.H {
+		extra := bottom - (box.Y + box.H)
+		box.H += extra
+		box.ContentH += extra
+	}
 	l.floats = saved
 	return box
 }
