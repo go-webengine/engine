@@ -1050,6 +1050,13 @@ func (s *Style) apply(d Declaration, emRef float64, parent *Style, vw ...float64
 				s.BorderSpacingH, s.BorderSpacingV = h.Resolve(0), vv.Resolve(0)
 			}
 		}
+	case "border-collapse":
+		switch lv {
+		case "collapse":
+			s.BorderCollapse = true
+		case "separate":
+			s.BorderCollapse = false
+		}
 	case "float":
 		switch lv {
 		case "left":
@@ -1604,6 +1611,8 @@ func (s *Style) inheritProperty(prop string, parent *Style) {
 		s.LetterSpacing = parent.LetterSpacing
 	case "border-spacing":
 		s.BorderSpacingH, s.BorderSpacingV = parent.BorderSpacingH, parent.BorderSpacingV
+	case "border-collapse":
+		s.BorderCollapse = parent.BorderCollapse
 	case "list-style-type":
 		s.ListStyleType, s.ListStyleString = parent.ListStyleType, parent.ListStyleString
 	case "list-style-position":

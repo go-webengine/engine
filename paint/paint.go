@@ -201,7 +201,11 @@ func paintBoxContent(dst *image.RGBA, pp *painter.PixelPainter, box *layout.Box,
 		}
 	}
 	// 5. Borders (real element boxes only; anonymous boxes carry no border).
-	if !hidden && box.Style != nil && !box.Anonymous && box.W > 0 && box.H > 0 {
+	// SuppressOwnBorder skips a border-collapse:collapse table's own box —
+	// see its own doc comment (layout/box.go): the outermost cells already
+	// paint the table's perimeter border, so painting this one too would
+	// double it.
+	if !hidden && box.Style != nil && !box.Anonymous && box.W > 0 && box.H > 0 && !box.SuppressOwnBorder {
 		paintBorders(pp, box, clip)
 	}
 	// A box's own inline content and children are clipped to its padding box when

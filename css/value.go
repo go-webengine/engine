@@ -822,17 +822,30 @@ type Style struct {
 	// en.wikipedia.org's own infobox (`.infobox{border-spacing:3px}`, cells
 	// styled with only a `border-bottom` — the gap this property adds
 	// between rows IS the infobox's visible row-to-row breathing room, not
-	// merely a cosmetic nicety). layout.table applies it unconditionally,
-	// without checking `border-collapse` (not modelled at all yet, so every
-	// table is implicitly always "separate", the default) — spec says
-	// border-spacing has no effect under `border-collapse:collapse`, but
-	// both of this engine's own confirmed real cases are unaffected by that
-	// simplification: Wikipedia's infobox never sets border-collapse at all
-	// (stays at the default 'separate' this engine already assumes), and
-	// pkg.go.dev's own `table{border-collapse:collapse;border-spacing:0}`
-	// reset sets spacing to zero anyway, so applying it unconditionally
-	// there is a no-op regardless.
+	// merely a cosmetic nicety). layout.table forces both to 0 when
+	// BorderCollapse is set (spec: border-spacing has no effect under
+	// `border-collapse:collapse`, regardless of what a rule declares),
+	// otherwise applies the value unconditionally.
 	BorderSpacingH, BorderSpacingV float64
+
+	// BorderCollapse is `border-collapse: collapse` (true) vs. the initial
+	// `separate` (false, the zero value). Inherited, per spec, alongside
+	// BorderSpacingH/V. Confirmed real and load-bearing on Wikipedia's own
+	// `.wikitable` class (used 88 times on, e.g., the "List of countries by
+	// population" article): its rule sets an identical 1px border on BOTH
+	// the `<table>` itself and every `<td>`/`<th>` — under this engine's
+	// own always-"separate" model (the pre-existing default, before this
+	// field existed), the table's own border paints as an extra, separate
+	// stroke OUTSIDE the outermost cells' own borders, which already supply
+	// the same edge, doubling the table's visible perimeter to roughly 2px
+	// where a real browser's collapsed model merges them into one — a
+	// different, concretely wrong rendering of one of the most common table
+	// styles on Wikipedia. layout.table's own doc comment and
+	// Box.SuppressOwnBorder (layout/box.go) cover the scoped fix:
+	// cell-vs-table conflict only (the confirmed case), not the full CSS 2.1
+	// border-conflict-resolution algorithm (cell/row/row-group/column/
+	// column-group precedence), which has no confirmed trigger yet.
+	BorderCollapse bool
 
 	// CenterAsBlock is TextAlign == AlignCenterBlocks for every element,
 	// EXCEPT it stays true for a <table> whose PARENT has TextAlign ==
@@ -1593,6 +1606,7 @@ func inheritFrom(parent Style) Style {
 		LetterSpacing:  parent.LetterSpacing,  // inherited
 		BorderSpacingH: parent.BorderSpacingH, // inherited
 		BorderSpacingV: parent.BorderSpacingV, // inherited
+		BorderCollapse: parent.BorderCollapse, // inherited
 		ImageRendering: parent.ImageRendering, // inherited
 		// list-style-type / list-style-position inherit; list-item does not.
 		ListStyleType:     parent.ListStyleType,
