@@ -248,6 +248,13 @@ type binder struct {
 	// otherwise silently loses whatever a page's own closure captured from
 	// the first call). See canvas.go.
 	canvasCtx map[*dom.Node]*goja.Object
+	// iframeDoc/iframeWin cache an <iframe>'s own contentDocument/
+	// contentWindow object, keyed by the iframe's node — same identity
+	// requirement and reason as canvasCtx above (a script comparing
+	// `f.contentDocument === f.contentDocument` must see it hold). See
+	// iframe.go.
+	iframeDoc map[*dom.Node]*goja.Object
+	iframeWin map[*dom.Node]*goja.Object
 	// executed records which <script> elements have already run, so a settle pass
 	// runs only scripts injected since the previous pass (in document order),
 	// never re-running a script.

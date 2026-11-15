@@ -101,6 +101,12 @@ func (e *Engine) loadIframe(ctx context.Context, baseURL string, n *dom.Node) *L
 		return nil
 	}
 
+	// Keep the nested tree reachable from the iframe's own node, independent
+	// of whether painting it succeeds below — js/iframe.go's
+	// contentDocument/contentWindow read this directly, genuinely live DOM
+	// access to the same nodes the render used, not a snapshot.
+	n.IframeDoc = doc.Root
+
 	img, _, err := e.RenderDocument(nested, doc, image.Rect(0, 0, w, h))
 	if err != nil {
 		return nil
