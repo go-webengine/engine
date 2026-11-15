@@ -44,7 +44,7 @@ func TestIframeSrcFetchesAndRendersARealDocument(t *testing.T) {
 	defer srv.Close()
 
 	html := `<html><body style="margin:0"><iframe id="f" width="30" height="30" src="` + srv.URL + `/frame.html"></iframe></body></html>`
-	e := &Engine{Client: http.DefaultClient, MaxIframes: 4}
+	e := &Engine{Client: newHTTPClient(), MaxIframes: 4}
 	img, _, err := e.RenderHTML(context.Background(), html, "https://example.com/", image.Rect(0, 0, 60, 60))
 	if err != nil {
 		t.Fatalf("RenderHTML error: %v", err)
@@ -72,7 +72,7 @@ func TestMaxIframesBoundsHowManyAreRendered(t *testing.T) {
 		`<iframe width="10" height="10" src="` + srv.URL + `/b"></iframe>` +
 		`<iframe width="10" height="10" src="` + srv.URL + `/c"></iframe>` +
 		`</body></html>`
-	e := &Engine{Client: http.DefaultClient, MaxIframes: 1}
+	e := &Engine{Client: newHTTPClient(), MaxIframes: 1}
 	_, _, err := e.RenderHTML(context.Background(), html, "https://example.com/", image.Rect(0, 0, 100, 100))
 	if err != nil {
 		t.Fatalf("RenderHTML error: %v", err)
@@ -96,7 +96,7 @@ func TestIframeDepthCapStopsSelfEmbedding(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	e := &Engine{Client: http.DefaultClient, MaxIframes: 4}
+	e := &Engine{Client: newHTTPClient(), MaxIframes: 4}
 	ctx, cancel := context.WithTimeout(context.Background(), 10_000_000_000) // 10s
 	defer cancel()
 	_, _, err := e.Render(ctx, srv.URL+"/", image.Rect(0, 0, 100, 100))
