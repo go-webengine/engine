@@ -272,12 +272,16 @@ func (e *Engine) loadImageSet(ctx context.Context, doc *Document, sm css.StyleMa
 	var reps []*dom.Node
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
-		if n.Type == dom.Element && (n.Tag == "img" || n.Tag == "svg") {
+		if n.Type == dom.Element && (n.Tag == "img" || n.Tag == "svg" || n.Tag == "canvas") {
 			if st := sm[n]; st == nil || st.Display != css.DisplayNone {
 				reps = append(reps, n)
 			}
-			if n.Tag == "svg" {
-				return // treat the SVG subtree as an opaque replaced element
+			if n.Tag == "svg" || n.Tag == "canvas" {
+				// Opaque replaced element: a <canvas>'s DOM children are its
+				// fallback content (HTML Standard §4.12.5), never rendered
+				// once the element itself is — the same treatment <svg>'s
+				// subtree already gets, for the same reason.
+				return
 			}
 		}
 		for _, c := range n.Children {
@@ -300,6 +304,14 @@ func (e *Engine) loadImageSet(ctx context.Context, doc *Document, sm css.StyleMa
 	raster, vector := 0, 0
 	var jobs []*dom.Node
 	for _, n := range reps {
+		if n.Tag == "canvas" {
+			// A <canvas>'s bitmap is already in memory (drawn by script,
+			// never fetched or decoded) — zero-cost, so it charges neither
+			// budget, matching why neither budget loop above needs it
+			// bounded the way a page full of <img> tags does.
+			jobs = append(jobs, n)
+			continue
+		}
 		if n.Tag == "svg" {
 			// Inline <svg>: no src, charged to the vector budget.
 			if vector >= e.MaxVectorImages {
@@ -353,6 +365,22 @@ func (e *Engine) loadImageSet(ctx context.Context, doc *Document, sm css.StyleMa
 func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int, n *dom.Node) *LoadedImage {
 	if ctx.Err() != nil {
 		return nil // respect cancellation before any work
+	}
+	// <canvas>: its bitmap is whatever script last drew to its 2D context
+	// (js/canvas.go), already in memory — nothing to fetch or decode. An
+	// undrawn canvas (CanvasPixels nil) returns ok=false, the same "no maps
+	// entry" outcome a src-less <img> gets, so it paints nothing and
+	// layout.imageSize falls back to its own 300x150 default.
+	if n.Tag == "canvas" {
+		if len(n.CanvasPixels) == 0 || n.CanvasW <= 0 || n.CanvasH <= 0 {
+			return nil
+		}
+		bmp := &image.NRGBA{
+			Pix:    n.CanvasPixels,
+			Stride: n.CanvasW * 4,
+			Rect:   image.Rect(0, 0, n.CanvasW, n.CanvasH),
+		}
+		return &LoadedImage{Size: [2]float64{float64(n.CanvasW), float64(n.CanvasH)}, Bitmap: bmp}
 	}
 	// Inline <svg>: serialise the subtree and rasterise it.
 	if n.Tag == "svg" {

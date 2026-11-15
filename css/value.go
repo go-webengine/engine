@@ -1641,6 +1641,13 @@ func inheritFrom(parent Style) Style {
 	}
 }
 
+// ParseColor is parseColor, exported for a context with no stylesheet or
+// cascade to resolve a colour through — Canvas2D's fillStyle/strokeStyle
+// (js/canvas.go), set directly from a script as a plain string.
+func ParseColor(s string) (Color, bool) {
+	return parseColor(s)
+}
+
 // parseColor parses a colour value: named colours, #rgb / #rgba / #rrggbb /
 // #rrggbbaa, and the rgb()/rgba()/hsl()/hsla() functional notations in BOTH the
 // legacy comma syntax and the modern space-separated `R G B / A` syntax (the

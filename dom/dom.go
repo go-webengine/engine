@@ -116,6 +116,21 @@ type Node struct {
 	// undefined" the moment real cloning code touches it.
 	Content *Node
 
+	// CanvasPixels backs a <canvas> element once script has drawn to its
+	// 2D context (CanvasRenderingContext2D) — nil until then, so an
+	// undrawn canvas paints nothing, matching a real browser's transparent
+	// default. Straight (non-premultiplied) RGBA, row stride CanvasW*4 —
+	// go-widgets/painter's own PixelPainter writes this exact format (see
+	// paint/vector.go's raster(), the same convention this engine's own
+	// filter/shadow/gradient rasterisation already uses for a raw pixel
+	// buffer). Runtime-only field, the same shape as Indeterminate/
+	// CustomValidity above: there is no "canvaspixels" content attribute,
+	// and CanvasW/CanvasH are independent of the width/height content
+	// attributes (script can set .width/.height without drawing anything,
+	// which clears this to nil per the HTML Standard).
+	CanvasPixels     []byte
+	CanvasW, CanvasH int
+
 	// classCache/classCacheRaw memoize Classes()'s split of Attr["class"],
 	// keyed by the exact string it was split from — a scripted className/
 	// classList write goes through Attr["class"] directly with no dedicated

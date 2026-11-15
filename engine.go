@@ -634,6 +634,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 			rp = fb
 		}
 	}
+	refreshCanvasImages(doc.Root, rp.imgSize, rp.imgs)
 	return rp, sess, stopHeap
 }
 
