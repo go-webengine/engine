@@ -139,6 +139,12 @@ type Node struct {
 	// Runtime-only field, the same shape as CanvasPixels above: there is no
 	// "iframedoc" content attribute.
 	IframeDoc *Node
+	// IframeURL is the base URL IframeDoc's own content was loaded against —
+	// needed to re-resolve any relative resource (a background-image, a
+	// further nested <img>) a post-mutation re-render of the SAME tree
+	// performs, independent of IframeDoc itself. Set alongside it; empty
+	// until then.
+	IframeURL string
 
 	// classCache/classCacheRaw memoize Classes()'s split of Attr["class"],
 	// keyed by the exact string it was split from — a scripted className/

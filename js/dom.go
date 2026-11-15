@@ -232,7 +232,6 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 		b.defineIframe(o, n)
 	}
 
-
 	if n.Tag == "form" {
 		o.Set("requestSubmit", func(call goja.FunctionCall) goja.Value {
 			ev := b.newEvent("submit")

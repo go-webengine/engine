@@ -650,6 +650,7 @@ func (e *Engine) renderCoreStaged(ctx context.Context, doc *Document, vpW, vpH i
 		}
 	}
 	refreshCanvasImages(doc.Root, rp.imgSize, rp.imgs)
+	e.refreshIframeImages(ctx, doc.Root, rp.imgSize, rp.imgs)
 	return rp, sess, stopHeap
 }
 
