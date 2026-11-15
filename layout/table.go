@@ -13,18 +13,21 @@ import (
 )
 
 // tableRow is one row and its cells (both with resolved styles), plus each
-// cell's starting column index and column span (colspan="N", default 1).
-// These can diverge from a cell's raw position in cells: a row mixing a
-// spanning cell with plain ones — e.g. news.ycombinator.com's own real
-// markup, a title row of 3 plain cells followed by a subtext row of
-// `<td colspan=2></td><td class=subtext>...</td>` — must still align its
-// non-spanning cells with the SAME columns every other row uses.
+// cell's starting column index, column span (colspan="N", default 1), and
+// row span (rowspan="N", default 1). colStart can diverge from a cell's raw
+// position in cells: a row mixing a spanning cell with plain ones — e.g.
+// news.ycombinator.com's own real markup, a title row of 3 plain cells
+// followed by a subtext row of `<td colspan=2></td><td class=subtext>...</td>`
+// — must still align its non-spanning cells with the SAME columns every
+// other row uses, and so must a row whose earlier sibling row left a
+// rowspan>1 cell still occupying one of its columns.
 type tableRow struct {
 	node     *dom.Node
 	style    *css.Style
 	cells    []*dom.Node
 	colStart []int
 	colSpan  []int
+	rowSpan  []int
 }
 
 // cellColSpan returns a table cell's colspan attribute, defaulting to 1 for a
@@ -32,6 +35,24 @@ type tableRow struct {
 // value default" for this attribute).
 func cellColSpan(cell *dom.Node) int {
 	v, ok := cell.Attribute("colspan")
+	if !ok {
+		return 1
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil || n < 1 {
+		return 1
+	}
+	return n
+}
+
+// cellRowSpan is cellColSpan for the rowspan attribute — same defaulting
+// rule, same HTML spec provision. Confirmed real trigger: Wikipedia's own
+// chemical-element infobox template (`{{Infobox element}}`, e.g. the Carbon
+// article) uses rowspan repeatedly for its multi-row property groupings —
+// without it, every cell below a spanning one shifts one column left of
+// where a real browser puts it, visibly misaligning the whole infobox.
+func cellRowSpan(cell *dom.Node) int {
+	v, ok := cell.Attribute("rowspan")
 	if !ok {
 		return 1
 	}
@@ -222,13 +243,38 @@ func (l *layouter) isAnonTableParent(node *dom.Node, st *css.Style) bool {
 	return found && !l.hasDirectText(node)
 }
 
-// tableRows places the rows of a table whose column widths are colW at colX.
+// rowspanDeficit is a rowSpan>1 cell whose own natural height was computed in
+// tableRows' first pass but could not yet be reconciled against the rows it
+// spans, since later rows' own heights weren't known yet.
+type rowspanDeficit struct {
+	rowIdx   int // the cell's own starting row
+	span     int // rowspan count
+	naturalH float64
+}
+
+// tableRows places the rows of a table whose column widths are colW at colX,
+// in two passes. Pass 1 computes every row's own height (tallest ordinary,
+// rowSpan==1 cell, or the row's own CSS height) while deferring any
+// rowSpan>1 cell's natural height into rowspanDeficit — a spanning cell
+// cannot grow ITS OWN starting row without also shifting every other
+// ordinary cell beside it; MDN's own HTML table spec examples agree the
+// usual behaviour browsers converge on is to grow the row the span ENDS on
+// instead, so any height a span needs beyond what its spanned rows already
+// give it (CSS 2.1 doesn't define this split; this is a disclosed
+// simplification versus a real browser's own proportional distribution
+// across the spanned rows) is added there once every row's base height is
+// known. Pass 2 places every cell: an ordinary cell within its own row's
+// slot exactly as before rowspan existed; a rowSpan>1 cell across the SUM of
+// its spanned rows' heights plus their internal border-spacing gaps —
+// mirroring exactly how a colspan>1 cell already sums colW across the
+// columns it spans, just down rows instead of across columns.
 func (l *layouter) tableRows(box *Box, rows []tableRow, cx, cw, top, hs, vs float64, colW, colX []float64) float64 {
-	y := top + vs
-	for _, r := range rows {
-		rowBox := &Box{Node: r.node, Style: r.style, X: cx, Y: y, W: cw, ContentX: cx, ContentY: y, ContentW: cw}
-		var cellBoxes []*Box
-		var rowH float64
+	rowH := make([]float64, len(rows))
+	cellBoxes := make([][]*Box, len(rows))
+	var deficits []rowspanDeficit
+	for i, r := range rows {
+		boxes := make([]*Box, len(r.cells))
+		var h float64
 		for j, cell := range r.cells {
 			cs := l.cellStyle(cell)
 			bw := cs.Border.Widths()
@@ -244,25 +290,71 @@ func (l *layouter) tableRows(box *Box, rows []tableRow, cx, cw, top, hs, vs floa
 			}
 			contentW := spanW - hEdges - cs.Margin.Left - cs.Margin.Right
 			cbox := l.layoutIsolated(cell, cs, contentW)
-			cellBoxes = append(cellBoxes, cbox)
-			if h := cbox.H + cs.Margin.Top + cs.Margin.Bottom; h > rowH {
-				rowH = h
+			boxes[j] = cbox
+			cellH := cbox.H + cs.Margin.Top + cs.Margin.Bottom
+			if r.rowSpan[j] > 1 {
+				deficits = append(deficits, rowspanDeficit{rowIdx: i, span: r.rowSpan[j], naturalH: cellH})
+				continue
+			}
+			if cellH > h {
+				h = cellH
 			}
 		}
+		cellBoxes[i] = boxes
 		// A row's own CSS height is a minimum (CSS 2.1 §17.5.3), not just its
 		// cells' content. Confirmed live: news.ycombinator.com's spacer rows are
 		// `<tr class="spacer" style="height:5px">`, which laid out at 0px.
-		if rs := r.style; rs != nil && !rs.Height.Auto && !rs.Height.IsPercent && rs.Height.Px > rowH {
-			rowH = rs.Height.Px
+		if rs := r.style; rs != nil && !rs.Height.Auto && !rs.Height.IsPercent && rs.Height.Px > h {
+			h = rs.Height.Px
 		}
-		for j, cbox := range cellBoxes {
+		rowH[i] = h
+	}
+	for _, d := range deficits {
+		end := d.rowIdx + d.span
+		if end > len(rowH) {
+			// Malformed markup: a rowspan reaching past the table's last
+			// row. Clamp to what actually exists rather than indexing past it.
+			end = len(rowH)
+		}
+		var spanH float64
+		for i := d.rowIdx; i < end; i++ {
+			spanH += rowH[i]
+		}
+		spanH += vs * float64(end-d.rowIdx-1)
+		if d.naturalH > spanH {
+			rowH[end-1] += d.naturalH - spanH
+		}
+	}
+
+	rowY := make([]float64, len(rows))
+	y := top + vs
+	for i, h := range rowH {
+		rowY[i] = y
+		y += h + vs
+	}
+
+	for i, r := range rows {
+		rowBox := &Box{Node: r.node, Style: r.style, X: cx, Y: rowY[i], W: cw, ContentX: cx, ContentY: rowY[i], ContentW: cw}
+		for j, cbox := range cellBoxes[i] {
 			cs := l.cellStyle(r.cells[j])
+			slotH := rowH[i]
+			if r.rowSpan[j] > 1 {
+				end := i + r.rowSpan[j]
+				if end > len(rowH) {
+					end = len(rowH)
+				}
+				slotH = 0
+				for k := i; k < end; k++ {
+					slotH += rowH[k]
+				}
+				slotH += vs * float64(end-i-1)
+			}
 			naturalH := cbox.H
-			translateBox(cbox, (colX[r.colStart[j]]+cs.Margin.Left)-cbox.X, (y+cs.Margin.Top)-cbox.Y)
+			translateBox(cbox, (colX[r.colStart[j]]+cs.Margin.Left)-cbox.X, (rowY[i]+cs.Margin.Top)-cbox.Y)
 			// vertical-align:middle/bottom shifts the cell's own CONTENT down
-			// within the row-height slot — the box's own outer rect (its
+			// within its slot — the box's own outer rect (its
 			// background/border, painted from cbox.X/Y/W/H directly) still
-			// spans the FULL row height regardless, matching a real
+			// spans the FULL slot height regardless, matching a real
 			// browser's own table box model, where vertical-align never
 			// affects a cell's own background fill, only where its content
 			// sits inside it. Only top/middle/bottom move anything; every
@@ -271,7 +363,7 @@ func (l *layouter) tableRows(box *Box, rows []tableRow, cx, cw, top, hs, vs floa
 			// real trigger on a table cell and keeps the pre-existing
 			// top-aligned behaviour, same as this field's own general
 			// doc comment already discloses for non-table contexts.
-			if slack := rowH - cs.Margin.Top - cs.Margin.Bottom - naturalH; slack > 0 {
+			if slack := slotH - cs.Margin.Top - cs.Margin.Bottom - naturalH; slack > 0 {
 				var offset float64
 				switch cs.VerticalAlign {
 				case css.VAlignMiddle:
@@ -285,22 +377,27 @@ func (l *layouter) tableRows(box *Box, rows []tableRow, cx, cw, top, hs, vs floa
 					cbox.ContentY -= offset
 				}
 			}
-			// Stretch the cell to the row height (content stays aligned per
+			// Stretch the cell to its slot height (content stays aligned per
 			// the offset just applied above, top by default).
-			cbox.H = rowH - cs.Margin.Top - cs.Margin.Bottom
+			cbox.H = slotH - cs.Margin.Top - cs.Margin.Bottom
 			rowBox.Children = append(rowBox.Children, cbox)
 		}
-		rowBox.H = rowH
-		rowBox.ContentH = rowH
+		rowBox.H = rowH[i]
+		rowBox.ContentH = rowH[i]
 		box.Children = append(box.Children, rowBox)
-		y += rowH + vs
 	}
 	return y
 }
 
-// collectRows gathers the table's rows, descending into row groups.
+// collectRows gathers the table's rows, descending into row groups. rowOccupancy
+// is shared across every row in the table (not reset per row group — a
+// rowspan cell in the last row of a <thead> occupying a column in the first
+// row of <tbody> is real markup this engine has no reason to special-case
+// against) so a rowspan>1 cell's occupied column is correctly skipped by
+// every later row's own makeRow call, however many rows down it reaches.
 func (l *layouter) collectRows(node *dom.Node) []tableRow {
 	var rows []tableRow
+	occ := map[int]int{} // column -> how many MORE rows after the current one it stays blocked
 	for _, c := range l.renderedChildren(node) {
 		if c.Type != dom.Element {
 			continue
@@ -311,7 +408,7 @@ func (l *layouter) collectRows(node *dom.Node) []tableRow {
 		}
 		switch cs.Display {
 		case css.DisplayTableRow:
-			rows = append(rows, l.makeRow(c, cs))
+			rows = append(rows, l.makeRow(c, cs, occ))
 		case css.DisplayTableRowGroup:
 			for _, r := range l.renderedChildren(c) {
 				if r.Type != dom.Element {
@@ -319,7 +416,7 @@ func (l *layouter) collectRows(node *dom.Node) []tableRow {
 				}
 				rs := l.sm[r]
 				if rs != nil && rs.Display == css.DisplayTableRow {
-					rows = append(rows, l.makeRow(r, rs))
+					rows = append(rows, l.makeRow(r, rs, occ))
 				}
 			}
 		}
@@ -330,8 +427,19 @@ func (l *layouter) collectRows(node *dom.Node) []tableRow {
 // makeRow collects the table-cell children of a row, tracking each one's
 // starting column index by advancing a running cursor by the PRECEDING
 // cells' own colspan — not by cell position — so a colspan>1 cell shifts
-// every cell after it into the correct later column.
-func (l *layouter) makeRow(node *dom.Node, st *css.Style) tableRow {
+// every cell after it into the correct later column. occ carries forward
+// which columns an EARLIER row's rowspan>1 cell still occupies, as "rows
+// after THIS one that stay blocked": consulted as-is while placing this
+// row's own cells (so a column an earlier row is still blocking is skipped
+// in THIS row too), extended for any NEW rowspan>1 cell this row starts,
+// and only THEN decremented — and only the entries that already existed
+// when this row began, never ones this same row just added, which must
+// survive unconsumed into the row right after this one.
+func (l *layouter) makeRow(node *dom.Node, st *css.Style, occ map[int]int) tableRow {
+	existing := make(map[int]bool, len(occ))
+	for col := range occ {
+		existing[col] = true
+	}
 	row := tableRow{node: node, style: st}
 	col := 0
 	for _, c := range l.renderedChildren(node) {
@@ -340,11 +448,28 @@ func (l *layouter) makeRow(node *dom.Node, st *css.Style) tableRow {
 		}
 		cs := l.sm[c]
 		if cs != nil && cs.Display == css.DisplayTableCell {
+			for occ[col] > 0 {
+				col++
+			}
 			span := cellColSpan(c)
+			rspan := cellRowSpan(c)
 			row.cells = append(row.cells, c)
 			row.colStart = append(row.colStart, col)
 			row.colSpan = append(row.colSpan, span)
+			row.rowSpan = append(row.rowSpan, rspan)
+			if rspan > 1 {
+				for k := 0; k < span; k++ {
+					occ[col+k] = rspan - 1
+				}
+			}
 			col += span
+		}
+	}
+	for col := range existing {
+		if occ[col] <= 1 {
+			delete(occ, col)
+		} else {
+			occ[col]--
 		}
 	}
 	return row
