@@ -241,6 +241,13 @@ type binder struct {
 	// getBoundingClientRect / offset* / getComputedStyle. Nil = report zeros /
 	// inline styles (the legacy Run path with no layout feedback).
 	metrics Metrics
+	// canvasCtx caches each <canvas> element's own 2D rendering context
+	// object, keyed by its node — HTMLCanvasElement.getContext("2d") must
+	// return the SAME object on every call for one element (CanvasHelper's
+	// own cache-and-check idiom, `canvas.getContext("2d") || canvas.getContext("2d")`,
+	// otherwise silently loses whatever a page's own closure captured from
+	// the first call). See canvas.go.
+	canvasCtx map[*dom.Node]*goja.Object
 	// executed records which <script> elements have already run, so a settle pass
 	// runs only scripts injected since the previous pass (in document order),
 	// never re-running a script.

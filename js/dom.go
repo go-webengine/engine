@@ -224,6 +224,10 @@ func (b *binder) defineElement(o *goja.Object, n *dom.Node) {
 	// later page to navigate TO), not a new one introduced here. submit()
 	// (the legacy method) fires no event at all, per spec — correspondingly
 	// an even more complete no-op here than requestSubmit().
+	if n.Tag == "canvas" {
+		b.defineCanvas(o, n)
+	}
+
 	if n.Tag == "form" {
 		o.Set("requestSubmit", func(call goja.FunctionCall) goja.Value {
 			ev := b.newEvent("submit")

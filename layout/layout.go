@@ -1097,15 +1097,20 @@ func (l *layouter) appendElementInline(el *dom.Node, cs *css.Style, items *[]*In
 		l.outOfFlow = append(l.outOfFlow, outOfFlowItem{node: el})
 		return
 	}
-	switch el.Tag {
-	case "br":
+	switch {
+	case el.Tag == "br":
 		*items = append(*items, &InlineItem{LineBreak: true, Style: cs, Node: el})
 		// A forced break starts a new line: leading whitespace after it
 		// collapses, and any pending margin has nothing left on this line to
 		// apply to (same reasoning as the BlockBreak case below).
 		l.wsPending, l.wsEmitted, l.pendingMargin = false, false, 0
 		l.preCol = 0
-	case "img", "svg":
+	case isReplacedTag(el.Tag):
+		// img/svg/canvas, via the SAME isReplacedTag this file's other
+		// replaced-element call sites already share — this one used to
+		// check the tag names directly, which is exactly how <canvas>'s own
+		// addition here was first missed: isReplacedTag said true, but
+		// nothing here asked it.
 		w, h := l.imageSize(el)
 		if w > 0 && h > 0 {
 			dw, dh := resolvedReplacedSize(cs, w, h, cw)
@@ -1559,9 +1564,11 @@ func letterSpacingWidth(text string, st *css.Style) float64 {
 }
 
 // isReplacedTag reports whether an element is a replaced box laid out at an
-// intrinsic size (a raster/SVG <img>, or an inline <svg> rasterised upstream).
+// intrinsic size (a raster/SVG <img>, an inline <svg> rasterised upstream, or
+// a <canvas>, whose intrinsic size is its own width/height IDL attributes
+// rather than anything decoded).
 func isReplacedTag(tag string) bool {
-	return tag == "img" || tag == "svg"
+	return tag == "img" || tag == "svg" || tag == "canvas"
 }
 
 // isFormControlTag reports whether an element is a form control laid out as
@@ -1838,7 +1845,19 @@ func (l *layouter) imageSize(el *dom.Node) (float64, float64) {
 			return wh[0], wh[1]
 		}
 	}
-	return attrFloat(el, "width"), attrFloat(el, "height")
+	w, h := attrFloat(el, "width"), attrFloat(el, "height")
+	if el.Tag == "canvas" {
+		// HTML Standard §4.12.5: a <canvas> with no width/height content
+		// attribute defaults to 300x150 CSS pixels — unlike <img>, which has
+		// no intrinsic size at all to fall back to when nothing is loaded.
+		if w <= 0 {
+			w = 300
+		}
+		if h <= 0 {
+			h = 150
+		}
+	}
+	return w, h
 }
 
 // resolvedReplacedSize computes a replaced element's (img/svg) DISPLAY size
