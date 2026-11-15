@@ -18,6 +18,16 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
+## 2026-11-15 (round 43) — CLOSED for react.dev's own "reskin" orphaned-node gap (engine#84/#92): no longer reproduces, for the same underlying reason round 38 already found — pure documentation, no code change
+
+Surveyed the whole "Known gaps" section fresh, bibliography-first, looking for the next confirmed-real-trigger item rather than guessing. One bullet's own confirmed trigger — react.dev's settle-loop reskin guard failing to restyle nodes a rejected script pass had removed, first found round 19 (2026-09-03) as leaving the WHOLE page below the hero on a stale, washed-out light-mode style on a dark background — is the SAME page, and very plausibly the SAME underlying mechanism, round 38 (2026-11-15, earlier today) already confirmed no longer crashes at all.
+
+- **Re-checked directly, not assumed from the adjacency alone**: rendered the live production `react.dev` right now and counted real content, not just absence of errors — round 19's own measurement was "after settle, react.dev's DOM has ZERO `<h2>` elements at all." Today: **15 `<h2>` elements**, and both of round 19's own named missing sections ("Create user interfaces from components," "Write components with code and markup") are present in the real text.
+- **The causal chain closes cleanly**: the reskin guard only ever fires when a script pass is REJECTED (throws) and the settle loop falls back to the pre-failure layout rather than lose all content — round 38 already established that react.dev's own hydration no longer throws at all (zero `JSLog` errors, confirmed live). No rejected pass means the guard's own orphaned-node path is simply never reached on this page any more — not a separate fix, the same root cause's own downstream consequence resolving itself.
+- **What this does NOT close**: the general architectural gap itself — `reskin()` still cannot restyle a node a rejected pass removed, `dom.RemoveChild` still nulls `.Parent` at the moment of removal with no snapshot taken beforehand — remains exactly as true in the code as it was. Only the one confirmed, cited, real-world trigger this bullet named is now gone; the bullet is corrected to say so rather than left to describe a two-month-old symptom as current, the same stale-citation shape round 38 and the round-144 multi-column recheck both already caught elsewhere in this same file.
+- No other item surveyed in this pass had both a still-standing confirmed real trigger AND a tractable scope: `rowspan`/`border-collapse` explicitly have no trigger that currently produces a visible difference; `subgrid`, the animation-timeline gap, and `min()`/`max()`-on-width-like-properties are each explicitly flagged in their own existing entries as needing a materially larger architectural change than a round's own budget covers; the oksvg/Go-Mono-font items are third-party dependency defects outside this engine's own codebase. This round's own finding was the one genuinely new, cheaply-verifiable thing the survey turned up.
+- Pure verification, no code change. `go build`/`go vet`/`gofmt -l`/`govulncheck ./...` clean (nothing to run them against); the scratch investigation file (a direct live render + DOM walk counting `<h2>` elements) was deleted after use, `git status --porcelain` empty before commit.
+
 ## 2026-11-15 (round 42) — a parent script's mutation through `contentDocument` now actually RE-RENDERS the iframe's own visible bitmap — round 41's own last disclosed limitation, closed the same day
 
 - **`refreshIframeImages` (`iframe.go`) mirrors round 39's own `refreshCanvasImages` exactly**: walk every `<iframe>` whose `IframeDoc` is already loaded, after the parent's settle loop has run every script, and re-paint its CURRENT tree (whatever a parent script's `contentDocument` access left it as) into the SAME `imgSize`/`imgs` maps `paint.PaintFull`/`PaintVector` read for the final composite. A canvas has no content until a script draws it; an iframe's content can be REWRITTEN by a script after `loadIframe`'s own one-shot load, and nothing before this round ever looked again.
@@ -1834,9 +1844,18 @@ byte for byte. A round mentioned below by number (e.g. "round 105", "round
   synthetic root reproducing its lost ancestor chain (its OWN `.Parent` is
   nulled by `dom.RemoveChild` at the moment of removal, so the chain isn't
   recoverable after the fact without having snapshotted it before) — still
-  not attempted: a real architectural addition, not a narrow fix, and now a
-  stronger candidate for a dedicated future session given the corrected,
-  much larger measured scope.
+  not attempted: a real architectural addition, not a narrow fix.
+  **CLOSED for this confirmed trigger (round 43, 2026-11-15): react.dev no
+  longer reproduces it at all.** Round 38 (same day) independently found
+  react.dev's own hydration no longer throws (zero `JSLog` errors, real
+  content) — the reskin guard's orphaned-node path only ever fires on a
+  REJECTED pass, so with nothing rejecting any more, it is simply never
+  reached. Re-measured directly: 15 `<h2>` elements (not the zero round 19
+  found), both named missing sections present in the real text. The
+  general architectural gap itself is untouched — `reskin()` still cannot
+  restyle a node a rejected pass removed — only its one confirmed,
+  reproducible real-world trigger is gone; revisit if another page
+  surfaces one.
 
 Several bullets that stood here since Phase 0/1 were flatly wrong by the time of
 the 2026-08-30 audit — JavaScript, external stylesheets, `overflow` clipping,
