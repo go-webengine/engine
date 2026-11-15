@@ -155,6 +155,22 @@ type Engine struct {
 	// silently wrong" convention (MaxWasmModuleBytes/MaxWasmMemoryBytes/
 	// MaxJSHeapBytes above).
 	MaxResponseBytes int64
+	// MaxScriptBytes bounds a single external <script src> body. Zero
+	// selects the 4 MiB default. Found genuinely too small for a real
+	// workload, not hypothetical: react.dev's own unminified dev-mode
+	// `main.js` bundle (6.2 MiB, first encountered when this engine was
+	// pointed at a LOCAL Next.js dev server rather than a production
+	// site) was SILENTLY TRUNCATED mid-string-literal before this field
+	// existed — the truncated body then failed to even compile, with a
+	// SyntaxError that named no size limit at all, nothing pointing at
+	// the real cause. Raise this for a page that legitimately serves
+	// larger scripts; a script that still exceeds the (default or
+	// configured) cap now skips execution with a clear, logged reason
+	// naming the limit (firing the element's own "error" event, the same
+	// outcome a failed fetch already produces) rather than silently
+	// handing goja a truncated, corrupt body — matching MaxResponseBytes'
+	// own "always bounded, never silently wrong" convention above.
+	MaxScriptBytes int64
 	// MaxRequests bounds how many fetch()/XMLHttpRequest requests a
 	// single render may issue. Zero selects the 100 default. Found
 	// genuinely too small for a real workload, not hypothetical:

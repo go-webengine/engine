@@ -66,6 +66,10 @@ type Options struct {
 	// body; zero selects defaultMaxResponseBytes. See engine.Engine's own
 	// field of the same name for the full rationale.
 	MaxResponseBytes int64
+	// MaxScriptBytes bounds a single external <script src> body; zero
+	// selects defaultMaxScriptBytes. See engine.Engine's own field of the
+	// same name for the full rationale.
+	MaxScriptBytes int64
 	// MaxRequests bounds how many fetch()/XMLHttpRequest requests one
 	// render may issue; zero selects defaultMaxRequests. See
 	// engine.Engine's own field of the same name for the full rationale.
@@ -826,8 +830,24 @@ func (b *binder) fetchScript(src string) (string, bool) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", false
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxScriptBytes))
+	limit := b.maxScriptBytes()
+	// Read ONE byte past the limit, matching doRequest's own pattern
+	// (js/net.go): io.ReadAll(io.LimitReader(resp.Body, limit)) alone
+	// returns a nil error at exactly `limit` bytes whether or not more
+	// data existed beyond it, so a caller could never tell a complete
+	// small script apart from a truncated large one. The real, confirmed
+	// defect this fixed: a dev-mode build's own unminified bundle (over
+	// six megabytes, well past the old hardcoded 4 MiB cap) came back
+	// silently truncated mid-string-literal, which then failed to even
+	// compile with a confusing SyntaxError that named no size limit at
+	// all — never surfaced as "this script was too large," the actual
+	// cause.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
+		return "", false
+	}
+	if int64(len(body)) > limit {
+		b.logf("script %s: body exceeds the configured size limit (%d bytes)", src, limit)
 		return "", false
 	}
 	return string(body), true
@@ -835,8 +855,21 @@ func (b *binder) fetchScript(src string) (string, bool) {
 
 const (
 	scriptFetchTimeout = 8 * time.Second
-	maxScriptBytes     = 4 << 20
+	// defaultMaxScriptBytes is Options.MaxScriptBytes' zero-value default,
+	// matching MaxResponseBytes' own "zero selects a sane default,
+	// configurable for a larger real workload" convention (js/net.go).
+	defaultMaxScriptBytes = 4 << 20
 )
+
+// maxScriptBytes resolves Options.MaxScriptBytes: zero (or negative)
+// selects defaultMaxScriptBytes, matching maxResponseBytes' own resolver
+// shape (js/net.go).
+func (b *binder) maxScriptBytes() int64 {
+	if b.opt.MaxScriptBytes <= 0 {
+		return defaultMaxScriptBytes
+	}
+	return b.opt.MaxScriptBytes
+}
 
 // resolveURL resolves ref against base.
 func resolveURL(base, ref string) (string, bool) {

@@ -2025,6 +2025,109 @@ func TestFetchScriptConnectError(t *testing.T) {
 	}
 }
 
+// TestFetchScriptRejectsBodyOverTheLimit mirrors
+// TestDoRequestRejectsResponseOverTheLimit's own real fix (js/net.go), now
+// applied to <script src> loading too: the real, confirmed defect was a
+// dev-mode Next.js bundle (react.dev's own unminified main.js, 6.2 MiB)
+// coming back SILENTLY TRUNCATED mid-string-literal under the old,
+// unconditional 4 MiB cap — io.ReadAll(io.LimitReader(resp.Body, limit))
+// alone cannot tell "the script was exactly this size" from "it was
+// larger and got cut off". It must now reject outright and log the real
+// cause, rather than handing goja a truncated body that then fails to
+// compile with a confusing SyntaxError naming no size limit at all.
+func TestFetchScriptRejectsBodyOverTheLimit(t *testing.T) {
+	srv := exactSizeServer(11)
+	defer srv.Close()
+	var logs []string
+	b := &binder{opt: Options{
+		PageURL:        srv.URL + "/",
+		Client:         http.DefaultClient,
+		Ctx:            context.Background(),
+		MaxScriptBytes: 10,
+		Log:            func(s string) { logs = append(logs, s) },
+	}}
+	if _, ok := b.fetchScript(srv.URL + "/body"); ok {
+		t.Fatal("an 11-byte script over a 10-byte limit should fail")
+	}
+	found := false
+	for _, l := range logs {
+		if strings.Contains(l, "exceeds the configured size limit") && strings.Contains(l, "10 bytes") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a logged reason naming the limit, got: %v", logs)
+	}
+}
+
+// TestFetchScriptAcceptsBodyExactlyAtTheLimit is
+// TestFetchScriptRejectsBodyOverTheLimit's own boundary control: a script
+// of EXACTLY the configured limit must succeed intact — guards against an
+// off-by-one in the "read limit+1, reject if that extra byte arrived"
+// detection.
+func TestFetchScriptAcceptsBodyExactlyAtTheLimit(t *testing.T) {
+	srv := exactSizeServer(10)
+	defer srv.Close()
+	b := &binder{opt: Options{
+		PageURL:        srv.URL + "/",
+		Client:         http.DefaultClient,
+		Ctx:            context.Background(),
+		MaxScriptBytes: 10,
+	}}
+	src, ok := b.fetchScript(srv.URL + "/body")
+	if !ok {
+		t.Fatal("a script exactly at the limit should succeed")
+	}
+	if len(src) != 10 {
+		t.Fatalf("script length = %d, want 10 (truncated or corrupted)", len(src))
+	}
+}
+
+// TestMaxScriptBytesRaisedAcceptsALargerScript is react.dev's own confirmed
+// need, directly: raising Options.MaxScriptBytes past the default lets a
+// real fetch of a script bigger than 4 MiB (its own unminified dev-mode
+// main.js bundle) succeed intact, where it used to come back silently
+// truncated with no way to configure around it at all.
+func TestMaxScriptBytesRaisedAcceptsALargerScript(t *testing.T) {
+	const size = 5 << 20 // bigger than the OLD hardcoded 4 MiB cap
+	srv := exactSizeServer(size)
+	defer srv.Close()
+	b := &binder{opt: Options{
+		PageURL:        srv.URL + "/",
+		Client:         http.DefaultClient,
+		Ctx:            context.Background(),
+		MaxScriptBytes: size,
+	}}
+	src, ok := b.fetchScript(srv.URL + "/body")
+	if !ok {
+		t.Fatal("a script raised to the new limit should succeed")
+	}
+	if len(src) != size {
+		t.Fatalf("script length = %d, want %d (truncated or corrupted)", len(src), size)
+	}
+}
+
+// TestMaxScriptBytesResolution mirrors TestMaxResponseBytesResolution's own
+// three cases (js/net_test.go): unset and negative both select the
+// default; a positive value is used as-is.
+func TestMaxScriptBytesResolution(t *testing.T) {
+	cases := []struct {
+		name string
+		opt  int64
+		want int64
+	}{
+		{"unset", 0, defaultMaxScriptBytes},
+		{"negative treated as unset", -1, defaultMaxScriptBytes},
+		{"explicit value used as-is", 123, 123},
+	}
+	for _, c := range cases {
+		b := &binder{opt: Options{MaxScriptBytes: c.opt}}
+		if got := b.maxScriptBytes(); got != c.want {
+			t.Errorf("%s: maxScriptBytes() = %d, want %d", c.name, got, c.want)
+		}
+	}
+}
+
 func TestSiblingEdgeHelpers(t *testing.T) {
 	p := dom.NewElement("div")
 	a := dom.NewElement("a")
