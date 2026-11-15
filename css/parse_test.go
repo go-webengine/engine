@@ -1183,6 +1183,47 @@ func TestApplyBorderSpacing(t *testing.T) {
 	}
 }
 
+// TestApplyBorderCollapse covers border-collapse: the initial value is
+// "separate" (false), explicit collapse/separate set the field, an unknown
+// value leaves it unchanged, and it inherits (per spec, alongside
+// border-spacing) both by default and via the explicit "inherit" keyword.
+func TestApplyBorderCollapse(t *testing.T) {
+	if initialStyle().BorderCollapse {
+		t.Error("initialStyle().BorderCollapse = true, want false (separate)")
+	}
+
+	s := initialStyle()
+	apply := func(v string) { s.apply(Declaration{Property: "border-collapse", Value: v}, 16, nil) }
+
+	apply("collapse")
+	if !s.BorderCollapse {
+		t.Error("border-collapse:collapse did not set BorderCollapse")
+	}
+	apply("separate")
+	if s.BorderCollapse {
+		t.Error("border-collapse:separate did not clear BorderCollapse")
+	}
+
+	apply("collapse")
+	apply("bogus")
+	if !s.BorderCollapse {
+		t.Error("border-collapse:bogus (invalid) changed the property, want unchanged (collapse)")
+	}
+
+	parent := initialStyle()
+	parent.BorderCollapse = true
+	child := inheritFrom(parent)
+	if !child.BorderCollapse {
+		t.Error("inheritFrom(parent).BorderCollapse = false, want inherited true")
+	}
+
+	s2 := initialStyle()
+	s2.apply(Declaration{Property: "border-collapse", Value: "inherit"}, 16, &parent)
+	if !s2.BorderCollapse {
+		t.Error("border-collapse:inherit = false, want parent's true")
+	}
+}
+
 func TestApplyWordBreak(t *testing.T) {
 	s := initialStyle()
 	apply := func(v string) { s.apply(Declaration{Property: "word-break", Value: v}, 16, nil) }

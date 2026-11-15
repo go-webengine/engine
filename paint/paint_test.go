@@ -421,6 +421,52 @@ func TestPaintAnonymousSkipsBorder(t *testing.T) {
 	}
 }
 
+// TestPaintTableSuppressesOwnBorderWhenCollapsed covers the confirmed real
+// defect border-collapse fixes (see css.Style.BorderCollapse's own doc
+// comment): Wikipedia's `.wikitable` sets an identical border on BOTH the
+// table and every cell with 0 border-spacing, so the table's own border box
+// sits immediately OUTSIDE the outermost cell's own border box. Without
+// SuppressOwnBorder, pixel (0,0) — reachable only by the table's OWN top-left
+// border stroke, since the cell's border starts one pixel in — paints red
+// (doubling the table's visible perimeter); with it set (what layout.table
+// does once border-collapse:collapse has a real cell), that stroke never
+// happens and the pixel stays the background colour, matching a real
+// browser's single merged line.
+func TestPaintTableSuppressesOwnBorderWhenCollapsed(t *testing.T) {
+	f := NewFonts()
+	side := css.BorderSide{Width: 1, Style: css.BorderSolid, Color: css.Color{R: 255, A: 255}}
+	mk := func(suppress bool) *layout.Box {
+		cell := &layout.Box{
+			Node:  &dom.Node{Type: dom.Element, Tag: "td"},
+			Style: &css.Style{Border: css.Borders{Top: side, Right: side, Bottom: side, Left: side}},
+			X:     1, Y: 1, W: 8, H: 8,
+		}
+		return &layout.Box{
+			Node:  &dom.Node{Type: dom.Element, Tag: "table"},
+			Style: &css.Style{Border: css.Borders{Top: side, Right: side, Bottom: side, Left: side}},
+			X:     0, Y: 0, W: 10, H: 10,
+			SuppressOwnBorder: suppress,
+			Children:          []*layout.Box{cell},
+		}
+	}
+
+	separate := white(10, 10)
+	Paint(separate, mk(false), f, nil)
+	if c := separate.RGBAAt(0, 0); c.R != 255 || c.G != 0 {
+		t.Errorf("separate (not suppressed): corner pixel = %+v, want red (the table's own border stroke)", c)
+	}
+
+	collapsed := white(10, 10)
+	Paint(collapsed, mk(true), f, nil)
+	if c := collapsed.RGBAAt(0, 0); c.R != 255 || c.G != 255 || c.B != 255 {
+		t.Errorf("collapsed (suppressed): corner pixel = %+v, want white (no doubled border)", c)
+	}
+	// The cell's own border still paints — collapse doesn't lose the edge.
+	if c := collapsed.RGBAAt(1, 1); c.R != 255 || c.G != 0 {
+		t.Errorf("collapsed: cell's own border pixel = %+v, want red", c)
+	}
+}
+
 func TestPaintNilAndEmpty(t *testing.T) {
 	f := NewFonts()
 	dst := white(4, 4)

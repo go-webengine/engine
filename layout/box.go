@@ -54,6 +54,17 @@ type Box struct {
 	// display:list-item box whose list-style-type is not `none`. Its coordinates
 	// are in document space, positioned relative to this box's content box.
 	Marker *Marker
+
+	// SuppressOwnBorder is true on a border-collapse:collapse table's own
+	// box when it has at least one rendered cell: the outermost cells
+	// already paint a border along the table's whole perimeter (CSS 2.1's
+	// conflict resolution prefers a cell's border over the table's own at
+	// equal-or-greater width — the only case this engine resolves; see
+	// css.Style.BorderCollapse's own doc comment for the full scope), so
+	// painting the table's OWN border as well would double it. Set by
+	// layout.table, read by paint's generic per-box border step; never set
+	// on any other box.
+	SuppressOwnBorder bool
 }
 
 // Marker is a laid-out outside list-item marker (an inside one is an inline

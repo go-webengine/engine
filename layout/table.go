@@ -129,7 +129,19 @@ func (l *layouter) table(box *Box, node *dom.Node, st *css.Style, cx, cw, top fl
 	// model's own box accounting. BorderSpacingV works identically down the
 	// rows. Zero for a table that never sets border-spacing, so this is a
 	// no-op reproducing the exact previous flush-column/row layout.
+	//
+	// border-collapse:collapse forces both to 0 regardless of any declared
+	// border-spacing (CSS 2.1: spacing has no effect once collapsed), and
+	// marks the table's OWN border box to not paint — see
+	// Box.SuppressOwnBorder's own doc comment for why (the confirmed real
+	// trigger is Wikipedia's `.wikitable`, whose table-level and cell-level
+	// borders are otherwise painted as two separate, doubled strokes at the
+	// table's perimeter).
 	hs, vs := st.BorderSpacingH, st.BorderSpacingV
+	if st.BorderCollapse {
+		hs, vs = 0, 0
+		box.SuppressOwnBorder = true
+	}
 	avail := cw - hs*float64(ncols+1)
 	if avail < 0 {
 		avail = 0
