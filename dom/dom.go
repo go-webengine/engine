@@ -131,6 +131,15 @@ type Node struct {
 	CanvasPixels     []byte
 	CanvasW, CanvasH int
 
+	// IframeDoc is the root of an <iframe>'s own nested document tree, once
+	// loaded (engine's loadIframe) — nil until then, or if loading failed.
+	// Lets a parent script's contentDocument/contentWindow (js/iframe.go)
+	// read and mutate the SAME nodes the iframe's own render used — real,
+	// live DOM access scoped to the nested tree, not a snapshot or copy.
+	// Runtime-only field, the same shape as CanvasPixels above: there is no
+	// "iframedoc" content attribute.
+	IframeDoc *Node
+
 	// classCache/classCacheRaw memoize Classes()'s split of Attr["class"],
 	// keyed by the exact string it was split from — a scripted className/
 	// classList write goes through Attr["class"] directly with no dedicated

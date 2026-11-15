@@ -82,6 +82,35 @@ func TestMaxIframesBoundsHowManyAreRendered(t *testing.T) {
 	}
 }
 
+// TestIframeContentDocumentWorksEndToEnd confirms loadIframe's own
+// n.IframeDoc assignment (iframe.go) is what js/iframe.go's
+// contentDocument/contentWindow actually read — the real pipeline, not
+// just the js package's own unit tests, which set IframeDoc by hand.
+func TestIframeContentDocumentWorksEndToEnd(t *testing.T) {
+	var logs []string
+	html := `<html><body>
+		<iframe id="f" srcdoc="&lt;body&gt;&lt;p id=&quot;greeting&quot;&gt;hello from the nested document&lt;/p&gt;&lt;/body&gt;"></iframe>
+		<script>
+			var d = document.getElementById('f').contentDocument;
+			console.log('greeting=' + d.getElementById('greeting').textContent);
+		</script>
+	</body></html>`
+	e := &Engine{MaxIframes: 4, JSLog: func(s string) { logs = append(logs, s) }}
+	_, _, err := e.RenderHTML(context.Background(), html, "https://example.com/", image.Rect(0, 0, 60, 60))
+	if err != nil {
+		t.Fatalf("RenderHTML error: %v", err)
+	}
+	found := false
+	for _, l := range logs {
+		if l == "log: greeting=hello from the nested document" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the parent script to read the nested document's real content, got logs=%v", logs)
+	}
+}
+
 // TestIframeDepthCapStopsSelfEmbedding is the real safety property: a page
 // whose iframe src points back at ITSELF (an accident or a tracking-pixel
 // style construction, either way a real hazard) must not recurse past
