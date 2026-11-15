@@ -18,7 +18,7 @@ The committed PNGs under `testdata/renders/` back every claim here. Reproduce
 them with the commands at the bottom. The measured-vs-Chrome numbers live in
 [`bench/REPORT.md`](bench/REPORT.md).
 
-## 2026-11-15 (round 46) — a descendant's margin collapsing through to the edge of an ISOLATED layout (a table cell, a float) was silently dropped instead of landing inside that box's own height
+## 2026-11-15 (round 46) — a descendant's margin collapsing through to the edge of an ISOLATED layout (a table cell, a float) was silently dropped instead of landing inside that box's own height (engine#440)
 
 User picked the open "HN title row is ~3px shorter than Chrome's" Known-gaps item (round 149) to investigate. Re-reading round 149's own text first (bibliography-first, this session's own rule): it had ALREADY corrected round 148's "Verdana font-metrics" theory as WRONG, leaving the real cause of the remaining 3px gap genuinely unexplained — a different, narrower question than the Verdana-substitution framing this round started from.
 
