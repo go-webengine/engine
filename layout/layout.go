@@ -1564,11 +1564,11 @@ func letterSpacingWidth(text string, st *css.Style) float64 {
 }
 
 // isReplacedTag reports whether an element is a replaced box laid out at an
-// intrinsic size (a raster/SVG <img>, an inline <svg> rasterised upstream, or
-// a <canvas>, whose intrinsic size is its own width/height IDL attributes
-// rather than anything decoded).
+// intrinsic size (a raster/SVG <img>, an inline <svg> rasterised upstream, a
+// <canvas>, or an <iframe> — the latter two sized from their own
+// width/height IDL attributes rather than anything decoded).
 func isReplacedTag(tag string) bool {
-	return tag == "img" || tag == "svg" || tag == "canvas"
+	return tag == "img" || tag == "svg" || tag == "canvas" || tag == "iframe"
 }
 
 // isFormControlTag reports whether an element is a form control laid out as
@@ -1846,10 +1846,11 @@ func (l *layouter) imageSize(el *dom.Node) (float64, float64) {
 		}
 	}
 	w, h := attrFloat(el, "width"), attrFloat(el, "height")
-	if el.Tag == "canvas" {
-		// HTML Standard §4.12.5: a <canvas> with no width/height content
-		// attribute defaults to 300x150 CSS pixels — unlike <img>, which has
-		// no intrinsic size at all to fall back to when nothing is loaded.
+	if el.Tag == "canvas" || el.Tag == "iframe" {
+		// HTML Standard §4.12.5/§4.8.5: a <canvas> OR an <iframe> with no
+		// width/height content attribute defaults to 300x150 CSS pixels —
+		// unlike <img>, which has no intrinsic size at all to fall back to
+		// when nothing is loaded.
 		if w <= 0 {
 			w = 300
 		}

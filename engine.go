@@ -106,6 +106,16 @@ type Engine struct {
 	// DOM exhausts a single shared budget and starves the actual content photos
 	// (raster) further down (the DeepMind hero black-void bug).
 	MaxVectorImages int
+	// MaxIframes bounds how many <iframe src="..."/srcdoc="..."> elements
+	// are fetched and FULLY RENDERED (their own cascade/layout/paint, and
+	// their own JavaScript — iframe.go's loadIframe recurses into this
+	// engine's own top-level Fetch/RenderDocument) per render. Each one
+	// costs far more than a raster image, so it gets its own small,
+	// separate budget rather than sharing MaxImages — zero (the
+	// zero-value for a plain &Engine{}, matching MaxImages/MaxVectorImages'
+	// own zero-means-none shape, not a "zero selects a default" one) means
+	// no iframe is rendered at all; New()'s own default is 4.
+	MaxIframes int
 
 	// DisableJS turns off the JavaScript pass. Offline fixture tests that must
 	// stay byte-deterministic set this; the default (false) runs page scripts.
@@ -348,6 +358,11 @@ func New() *Engine {
 		// initial DOM) while still bounding a pathological page — each vector
 		// rasterisation is bounded work, so 400 caps runaway cost.
 		MaxVectorImages: 400,
+		// A real recursive render per iframe is far costlier than a raster
+		// image; 4 comfortably covers a page with a few embedded widgets
+		// (a video, an ad unit, a payment form) without letting a page full
+		// of ad iframes multiply render cost unboundedly.
+		MaxIframes: 4,
 		// A normal page's whole render stays well under a few hundred MB; 768MB of
 		// growth during the script stage means a runaway module bundle, so cut it
 		// off there and keep the good pre-script layout.

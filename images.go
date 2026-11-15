@@ -272,15 +272,17 @@ func (e *Engine) loadImageSet(ctx context.Context, doc *Document, sm css.StyleMa
 	var reps []*dom.Node
 	var walk func(n *dom.Node)
 	walk = func(n *dom.Node) {
-		if n.Type == dom.Element && (n.Tag == "img" || n.Tag == "svg" || n.Tag == "canvas") {
+		if n.Type == dom.Element && (n.Tag == "img" || n.Tag == "svg" || n.Tag == "canvas" || n.Tag == "iframe") {
 			if st := sm[n]; st == nil || st.Display != css.DisplayNone {
 				reps = append(reps, n)
 			}
-			if n.Tag == "svg" || n.Tag == "canvas" {
+			if n.Tag == "svg" || n.Tag == "canvas" || n.Tag == "iframe" {
 				// Opaque replaced element: a <canvas>'s DOM children are its
-				// fallback content (HTML Standard §4.12.5), never rendered
-				// once the element itself is — the same treatment <svg>'s
-				// subtree already gets, for the same reason.
+				// fallback content (HTML Standard §4.12.5), and an
+				// <iframe>'s are its OWN fallback content for a user agent
+				// that does not support frames (§4.8.5) — neither is ever
+				// rendered once the element itself is, the same treatment
+				// <svg>'s subtree already gets, for the same reason.
 				return
 			}
 		}
@@ -301,9 +303,21 @@ func (e *Engine) loadImageSet(ctx context.Context, doc *Document, sm css.StyleMa
 	// ORDER, BEFORE any fetch is dispatched — so the accepted set is exactly the
 	// same regardless of the concurrent scheduling below (determinism), and both
 	// fetch and decode work stay bounded even on a page of only-failing images.
-	raster, vector := 0, 0
+	raster, vector, iframes := 0, 0, 0
 	var jobs []*dom.Node
 	for _, n := range reps {
+		if n.Tag == "iframe" {
+			// A real recursive page render (fetch + its own cascade/layout/
+			// paint, even its own JavaScript, via loadIframe) — far more
+			// expensive than a raster image, so it gets its own small,
+			// dedicated budget rather than sharing MaxImages.
+			if iframes >= e.MaxIframes {
+				continue
+			}
+			iframes++
+			jobs = append(jobs, n)
+			continue
+		}
 		if n.Tag == "canvas" {
 			// A <canvas>'s bitmap is already in memory (drawn by script,
 			// never fetched or decoded) — zero-cost, so it charges neither
@@ -365,6 +379,14 @@ func (e *Engine) loadImageSet(ctx context.Context, doc *Document, sm css.StyleMa
 func (e *Engine) loadOneImage(ctx context.Context, doc *Document, sm css.StyleMap, viewportW int, n *dom.Node) *LoadedImage {
 	if ctx.Err() != nil {
 		return nil // respect cancellation before any work
+	}
+	// <iframe>: a real recursive render of its own document (iframe.go's
+	// loadIframe), depth-capped so an iframe's own nested iframes are never
+	// rendered. nil (not ok) for one with no src/srcdoc, an unfetchable/
+	// unparseable document, or past the depth cap — the same "no maps
+	// entry" outcome a src-less <img> gets.
+	if n.Tag == "iframe" {
+		return e.loadIframe(ctx, doc.URL, n)
 	}
 	// <canvas>: its bitmap is whatever script last drew to its 2D context
 	// (js/canvas.go), already in memory — nothing to fetch or decode. An
