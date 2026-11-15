@@ -51,7 +51,10 @@ func withIframeDepth(ctx context.Context, d int) context.Context {
 // called from) is not re-rendered — the same disclosed boundary a
 // script-swapped `<img src>` already has, not a new one introduced here.
 // `src="about:blank"` (or no src/srcdoc at all) renders nothing, matching a
-// real browser's own empty initial document.
+// real browser's own empty initial document. A MUTATION of the already-
+// loaded tree (via contentDocument, after this pass) is a different case,
+// handled separately by refreshIframeImages below — this function only
+// ever (re-)loads from `src`/`srcdoc` itself.
 // replacedDim parses a width/height content attribute as a non-negative
 // integer, or def if absent/invalid — the HTML Standard's own default for
 // <canvas> (js/canvas.go's canvasDim) and <iframe> alike (both default to
@@ -101,15 +104,68 @@ func (e *Engine) loadIframe(ctx context.Context, baseURL string, n *dom.Node) *L
 		return nil
 	}
 
-	// Keep the nested tree reachable from the iframe's own node, independent
-	// of whether painting it succeeds below — js/iframe.go's
-	// contentDocument/contentWindow read this directly, genuinely live DOM
-	// access to the same nodes the render used, not a snapshot.
+	// Keep the nested tree (and the base URL it resolves relative resources
+	// against) reachable from the iframe's own node, independent of whether
+	// painting it succeeds below — js/iframe.go's contentDocument/
+	// contentWindow read IframeDoc directly, genuinely live DOM access to
+	// the same nodes the render used, not a snapshot; refreshIframeImages
+	// below reads both to re-render after a parent script mutates it.
 	n.IframeDoc = doc.Root
+	n.IframeURL = doc.URL
 
 	img, _, err := e.RenderDocument(nested, doc, image.Rect(0, 0, w, h))
 	if err != nil {
 		return nil
 	}
 	return &LoadedImage{Size: [2]float64{float64(w), float64(h)}, Bitmap: img}
+}
+
+// refreshIframeImages re-paints every ALREADY-LOADED iframe's CURRENT tree
+// (n.IframeDoc — the same nodes a parent script's contentDocument may have
+// just mutated) into rp's own replaced-element maps, after the parent's own
+// settle loop has run every script — the same timing, and the same reason,
+// as canvas.go's refreshCanvasImages: a canvas has no content until a
+// script draws it; an iframe's content can be rewritten by a script AFTER
+// loadIframe's own one-shot load, and loadAllImages never runs a second
+// time to notice.
+//
+// Deliberately does NOT re-run the nested document's own JavaScript — it
+// already ran once, inside loadIframe's own recursive RenderDocument call;
+// running it again would re-execute the nested page's scripts a second
+// time (a real correctness hazard: a counter incremented again, a resource
+// re-fetched) for a case — the nested document's OWN behaviour changing on
+// its own — this round has no confirmed trigger for. A COPY of e with
+// DisableJS forced on gives exactly cascade→layout→paint of the tree AS IT
+// NOW STANDS, nothing more; the nested document's own JavaScript, if it is
+// ever rewritten here, stays exactly as this round found it: already run,
+// never re-run.
+func (e *Engine) refreshIframeImages(ctx context.Context, root *dom.Node, imgSize map[*dom.Node][2]float64, imgs map[*dom.Node]image.Image) {
+	static := *e
+	static.DisableJS = true
+	var walk func(n *dom.Node)
+	walk = func(n *dom.Node) {
+		if n.Type == dom.Element && n.Tag == "iframe" {
+			if n.IframeDoc != nil {
+				w, h := replacedDim(n, "width", 300), replacedDim(n, "height", 150)
+				if w > 0 && h > 0 {
+					nested := withIframeDepth(ctx, maxIframeDepth)
+					doc := &Document{URL: n.IframeURL, Root: n.IframeDoc}
+					if img, _, err := static.RenderDocument(nested, doc, image.Rect(0, 0, w, h)); err == nil {
+						imgSize[n] = [2]float64{float64(w), float64(h)}
+						imgs[n] = img
+					}
+				}
+			}
+			return // opaque replaced element, matching loadImageSet's own walk
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+		if n.Shadow != nil {
+			for _, c := range n.Shadow.Children {
+				walk(c)
+			}
+		}
+	}
+	walk(root)
 }

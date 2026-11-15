@@ -111,6 +111,59 @@ func TestIframeContentDocumentWorksEndToEnd(t *testing.T) {
 	}
 }
 
+// TestIframeMutationThroughContentDocumentRerenders is the real end-to-end
+// path this round added: a parent script mutates a node reached through
+// contentDocument, and the iframe's own FINAL visible bitmap reflects the
+// change — not the content loadIframe's own one-shot pre-script load
+// produced.
+func TestIframeMutationThroughContentDocumentRerenders(t *testing.T) {
+	html := `<html><body style="margin:0">
+		<iframe id="f" width="40" height="40" srcdoc="&lt;body style=&quot;margin:0;background:#ff0000&quot;&gt;&lt;/body&gt;"></iframe>
+		<script>
+			document.getElementById('f').contentDocument.body.style.background = '#00ff00';
+		</script>
+	</body></html>`
+	e := &Engine{MaxIframes: 4}
+	img, _, err := e.RenderHTML(context.Background(), html, "https://example.com/", image.Rect(0, 0, 60, 60))
+	if err != nil {
+		t.Fatalf("RenderHTML error: %v", err)
+	}
+	r, g, b, a := img.At(10, 10).RGBA()
+	if r>>8 != 0 || g>>8 != 255 || b>>8 != 0 || a>>8 != 255 {
+		t.Fatalf("pixel at (10,10) = (%d,%d,%d,%d), want opaque green — the parent's mutation through contentDocument never reached the iframe's final bitmap", r>>8, g>>8, b>>8, a>>8)
+	}
+}
+
+// TestIframeNestedScriptDoesNotRerunOnRefresh confirms refreshIframeImages'
+// own stated guarantee: re-rendering after a parent mutation must NOT
+// re-execute the nested document's own JavaScript a second time. The
+// nested document's own JSLog output shares this engine's single Log
+// callback (refreshIframeImages copies *e, including JSLog), so a nested
+// script's console.log appearing twice would mean its script ran twice.
+func TestIframeNestedScriptDoesNotRerunOnRefresh(t *testing.T) {
+	var logs []string
+	html := `<html><body>
+		<iframe id="f" width="20" height="20" srcdoc="&lt;body&gt;&lt;script&gt;console.log('nested-ran')&lt;/script&gt;&lt;/body&gt;"></iframe>
+		<script>
+			document.getElementById('f').contentDocument.body.setAttribute('data-touched', '1');
+		</script>
+	</body></html>`
+	e := &Engine{MaxIframes: 4, JSLog: func(s string) { logs = append(logs, s) }}
+	_, _, err := e.RenderHTML(context.Background(), html, "https://example.com/", image.Rect(0, 0, 60, 60))
+	if err != nil {
+		t.Fatalf("RenderHTML error: %v", err)
+	}
+	n := 0
+	for _, l := range logs {
+		if l == "log: nested-ran" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("'nested-ran' logged %d time(s), want exactly 1 — refreshIframeImages must not re-execute the nested document's own JavaScript", n)
+	}
+}
+
 // TestIframeDepthCapStopsSelfEmbedding is the real safety property: a page
 // whose iframe src points back at ITSELF (an accident or a tracking-pixel
 // style construction, either way a real hazard) must not recurse past
