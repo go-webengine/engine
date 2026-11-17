@@ -80,7 +80,8 @@ type Fonts struct {
 	// styleAxes caches, per style, the weight axis of the font font() answers
 	// with ({min, max, 1} when it has one); register clears it.
 	styleAxes map[styleKey]weightAxis
-	// instances caches the static instances glyphFont builds.
+	// instances is this render's lock-free view of the process-wide
+	// sharedInstances cache glyphFont draws from.
 	instances map[instanceKey]*opentype.Font
 }
 
@@ -404,7 +405,7 @@ func (f *Fonts) glyphFont(style styleKey, weight int) *opentype.Font {
 	if inst, hit := f.instances[key]; hit {
 		return inst
 	}
-	inst, err := instantiate(ft, map[string]float64{"wght": float64(w)})
+	inst, err := sharedInstance(ft, w)
 	if err != nil {
 		inst = ft // an instance that cannot be built draws as the default master
 	}
@@ -418,11 +419,6 @@ func (f *Fonts) glyphFont(style styleKey, weight int) *opentype.Font {
 // instantiate builds a static instance of a variable font; a variable so a test
 // can make it fail.
 var instantiate = (*opentype.Font).Instance
-
-type instanceKey struct {
-	font *opentype.Font
-	wght int
-}
 
 // styleFace maps a CSS weight/italic to the concrete face.
 func (f *Fonts) styleFace(fam css.FontFamily, sizePx float64, weight int, italic bool) *opentype.Face {

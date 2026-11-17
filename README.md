@@ -298,7 +298,9 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   install typefaces of its own with **`Engine.FontFaces`** (built with
   `ParseFontFace`), as a browser's system fonts; parsed fonts are shared
   across renders, so a page set in the same faces as the last one does not
-  parse them again. The raster painter draws text at the exact size with a
+  parse them again, and so are the static instances a vector export builds
+  of a variable font (one per family and weight, a bounded process-wide
+  cache), so a 100-page export builds each once, not once per page. The raster painter draws text at the exact size with a
   fractional pen and quarter-pixel glyph origins, so word positions and widths
   agree with Chrome to within half a pixel (v0.45.12). A **variable font** (an `fvar` `wght` axis) is drawn at each
   `font-weight` the page asks for, in raster and PDF alike, and so are the
