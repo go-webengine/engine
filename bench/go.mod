@@ -18,8 +18,8 @@ require (
 	github.com/andybalholm/brotli v1.2.8 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
-	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
-	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9 // indirect
+	github.com/dlclark/regexp2/v2 v2.11.0 // indirect
+	github.com/dop251/goja v0.0.0-20261121162556-79d6ad37b976 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
 	github.com/evanw/esbuild v0.28.2 // indirect
