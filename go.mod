@@ -3,7 +3,7 @@ module github.com/go-webengine/engine
 go 1.27.4
 
 require (
-	github.com/dop251/goja v0.0.0-20260926152631-39ec2650adc9
+	github.com/dop251/goja v0.0.0-20261121162556-79d6ad37b976
 	github.com/evanw/esbuild v0.28.2
 	github.com/go-browserhttp/browserhttp v0.2.0
 	github.com/go-gfx/gfx v0.37.0
@@ -27,7 +27,7 @@ require (
 require (
 	github.com/andybalholm/brotli v1.2.8 // indirect
 	github.com/breml/rootcerts v0.3.7 // indirect
-	github.com/dlclark/regexp2/v2 v2.5.2 // indirect
+	github.com/dlclark/regexp2/v2 v2.11.0 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/ebitengine/purego v0.11.3 // indirect
 	github.com/go-images/gif v0.2.0 // indirect
