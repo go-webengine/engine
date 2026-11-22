@@ -2576,9 +2576,18 @@ func (b *binder) gpuValidateIndexedVertexBuffers(pipeline *gpuRenderPipelineStat
 			b.panicValidation(fmt.Sprintf("drawIndexed: no vertex buffer bound for slot %d", slot.index))
 		}
 	}
-	if indexCount <= 0 {
-		return
-	}
+	// No "indexCount <= 0: return" guard here (mutsweep flagged its
+	// absence as unobserved, not the other way around — deleted as
+	// proven dead, not waived): both gpuDrawIndexed call sites below
+	// already guarantee the two things such a guard would protect. `ib`
+	// is never nil here (gpuDrawIndexed's own "no index buffer is set"
+	// check, just above its call to this function, panics first), so
+	// ib.buf.Bytes() is always safe to call; and indexCount is never
+	// negative here (gpuDrawIndexed's own negative-value check, also
+	// above its call to this function, panics first), so the for loop
+	// below already runs zero iterations on its own for indexCount == 0 —
+	// exactly what an early return would have produced, with no
+	// observable difference either way.
 	raw := ib.buf.Bytes()
 	for i := 0; i < indexCount; i++ {
 		off := byteOffset + i*4

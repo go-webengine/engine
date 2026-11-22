@@ -325,9 +325,17 @@ func (tr *translator) emitIOStruct(name string, vars []wgsl.IOVar, stage wgsl.St
 // parameter, not accessed through a struct) needs no rewrite at all, so
 // this is a no-op for that case.
 func (tr *translator) registerStageInputAccessor(ep *wgsl.EntryPoint, in wgsl.IOVar, accessor string) {
-	if in.Member == "" {
-		return
-	}
+	// No "in.Member == \"\": return" guard here (mutsweep flagged its
+	// absence as unobserved by any test, not a defect: deleted as proven
+	// dead, not waived). Without it, a bare top-level builtin input (one
+	// with in.Member == "") still writes a harmless orphan entry,
+	// tr.inputFlatten[po][""], because go-gfx/wgsl's own IOVar.Param is a
+	// valid parameter index for every input, struct field or not (its own
+	// doc comment: "-1 for outputs" only). That entry is never read back:
+	// memberExpr (expr.go) only ever looks up flat[m.Name] for an actual
+	// WGSL `x.name` member access, and WGSL's own grammar has no syntax
+	// for a member access with an empty name, so the "" key can never be
+	// the one a lookup asks for.
 	po := ep.Func.Params[in.Param]
 	if tr.inputFlatten[po] == nil {
 		tr.inputFlatten[po] = map[string]string{}

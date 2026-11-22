@@ -333,6 +333,16 @@ fn vmain() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0
 // step (wgsl.Parse) surfaces a syntactically malformed source as a
 // rejection, not a panic.
 func TestTranslateRenderRejectsParseError(t *testing.T) {
+	// A deleted guard at render.go:117 lets a nil *wgsl.Module reach
+	// wgsl.Check below it, which crashes the whole test binary before
+	// this test's own assertion ever runs (mutsweep would read that as
+	// "caught by panic", luck rather than a test). This local recover
+	// converts such a crash into an ordinary failed assertion instead.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("TranslateRender panicked: %v", r)
+		}
+	}()
 	if _, err := TranslateRender("not valid wgsl {{{", RenderOptions{}); err == nil {
 		t.Fatal("TranslateRender succeeded, want a parse error")
 	}
@@ -357,12 +367,27 @@ func TestTranslateRenderRejectsCheckError(t *testing.T) {
 // independently — TranslateRender needs both, so a module missing either
 // one is its own distinct rejection.
 func TestTranslateRenderRejectsMissingVertexEntryPoint(t *testing.T) {
+	// A deleted guard at render.go:126 lets a nil vep reach
+	// vtr.translateStageEntry below it, crashing the whole test binary
+	// before the assertion runs — see TestTranslateRenderRejectsParseError's
+	// own recover comment for why this matters.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("TranslateRender panicked: %v", r)
+		}
+	}()
 	if _, err := TranslateRender(fragmentStub, RenderOptions{}); err == nil {
 		t.Fatal("TranslateRender succeeded, want a rejection: no @vertex entry point")
 	}
 }
 
 func TestTranslateRenderRejectsMissingFragmentEntryPoint(t *testing.T) {
+	// Same reasoning, for the deleted guard at render.go:130 and fep.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("TranslateRender panicked: %v", r)
+		}
+	}()
 	if _, err := TranslateRender(vertexStub, RenderOptions{}); err == nil {
 		t.Fatal("TranslateRender succeeded, want a rejection: no @fragment entry point")
 	}
@@ -416,6 +441,16 @@ func TestTranslateRenderRejectsWrongStageEntryPointName(t *testing.T) {
 // @builtin(frag_depth), a genuinely valid WGSL fragment-output builtin) —
 // this package's own bounded scope only ever recognizes position.
 func TestTranslateRenderRejectsFragmentOutputBuiltin(t *testing.T) {
+	// A deleted guard at render.go:232 falls through to `*io.Location`
+	// below it, which is nil for a builtin-typed IOVar — a nil-pointer
+	// panic that crashes the whole test binary before this test's own
+	// assertions run. Same reasoning as the recover in
+	// TestTranslateRenderRejectsParseError.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("TranslateRender panicked: %v", r)
+		}
+	}()
 	src := vertexStub + `
 		struct FOut {
 			@location(0) color: u32,
@@ -471,6 +506,18 @@ func TestTranslateRenderStructFragmentOutputUsesColorAttribute(t *testing.T) {
 // bool/i32/u32/f32 — so an f16 uniform resource used by a @fragment entry
 // is rejected downstream of resolveResources, not by it.
 func TestTranslateRenderRejectsF16UniformResource(t *testing.T) {
+	// A deleted guard at render.go:436 (translateStageEntry's own
+	// resolveResources error check) lets translation continue past an
+	// unresolved resource: x is never added to tr.bindings/tr.resources,
+	// so a later lookup like tr.bindings[tr.resources[x]] panics with an
+	// out-of-range index instead of this test's own assertions ever
+	// running. Same reasoning as the recover in
+	// TestTranslateRenderRejectsParseError.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("TranslateRender panicked: %v", r)
+		}
+	}()
 	src := `
 		enable f16;
 	` + vertexStub + `
@@ -790,6 +837,17 @@ func TestTranslateRenderRejectsTextureLoadOnLocalAlias(t *testing.T) {
 // reaches): this package's bounded scope never recognizes textureSample or
 // any sampler at all, only textureLoad against a texture_2d<u32>.
 func TestTranslateRenderRejectsSamplerResource(t *testing.T) {
+	// A deleted guard at translator.go:588 (resolveResources's own
+	// "is this handle actually a texture?" type assertion) lets `tex`
+	// stay nil and falls through to `tex.Kind` right below it — a
+	// nil-pointer panic inside resolveResources itself, before this
+	// test's own assertion runs. Same reasoning as the recover in
+	// TestTranslateRenderRejectsParseError.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("TranslateRender panicked: %v", r)
+		}
+	}()
 	src := vertexStub + `
 		@group(0) @binding(0) var samp: sampler;
 		@group(0) @binding(1) var tex: texture_2d<f32>;

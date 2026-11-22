@@ -2841,6 +2841,17 @@ func TestGPUReadExtentSequenceFormMissingTrailingDefaultsToOne(t *testing.T) {
 // default over strict WebIDL enforcement" convention (gpuReadColor's own
 // doc comment) — obj.Get("g") absent must default to 0, not nil-deref.
 func TestGPUReadColorMissingGBADefaultToZero(t *testing.T) {
+	// A deleted guard at webgpu.go:1693 turns this missing-property read
+	// into a nil-pointer panic that would crash the whole test binary
+	// before the assertion below ever ran, masking the result (mutsweep
+	// would read it as "caught by panic", luck rather than a test). This
+	// local recover converts that crash into an ordinary failed
+	// assertion, same as any other wrong value.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("gpuReadColor({r:5}) panicked: %v", r)
+		}
+	}()
 	vm := goja.New()
 	obj := vm.NewObject()
 	obj.Set("r", 5.0)
@@ -2854,6 +2865,14 @@ func TestGPUReadColorMissingGBADefaultToZero(t *testing.T) {
 // TestGPUReadColorSequenceFormMissingTrailingDefaultsToZero is
 // gpuReadColor's sequence-form counterpart.
 func TestGPUReadColorSequenceFormMissingTrailingDefaultsToZero(t *testing.T) {
+	// Same reasoning as TestGPUReadColorMissingGBADefaultToZero's own
+	// recover: this exercises the same gpuGetFloat guard (webgpu.go:1693),
+	// just through the sequence-form branch's "1"/"2"/"3" keys.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("gpuReadColor([5]) panicked: %v", r)
+		}
+	}()
 	vm := goja.New()
 	obj := vm.NewObject()
 	obj.Set("0", 5.0)
@@ -2861,6 +2880,36 @@ func TestGPUReadColorSequenceFormMissingTrailingDefaultsToZero(t *testing.T) {
 	want := [4]float64{5, 0, 0, 0}
 	if got != want {
 		t.Fatalf("gpuReadColor([5]) = %v, want %v", got, want)
+	}
+}
+
+// TestGPUReadColorExplicitUndefinedGDefaultsToZero is
+// TestGPUReadColorMissingGBADefaultToZero's explicit-undefined
+// counterpart (engine#447 review, mutsweep gap on gpuGetFloat's
+// `v == nil || goja.IsUndefined(v)` guard at webgpu.go:1693): a property
+// set to the literal value `undefined` is NOT the Go nil that a merely
+// absent property produces — obj.Get("g") instead returns a non-nil
+// goja.Value for which goja.IsUndefined(v) is true. Without the
+// IsUndefined half of the guard, gpuGetFloat would call ToFloat() on
+// that value instead of defaulting to 0. vm.NewObject()+Set never
+// produces this shape (Set always assigns a concrete value), so this
+// needs a real script evaluation to get a property whose value is
+// `undefined` rather than one that was never set.
+func TestGPUReadColorExplicitUndefinedGDefaultsToZero(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("gpuReadColor({r:5, g:undefined, a:2.5}) panicked: %v", r)
+		}
+	}()
+	vm := goja.New()
+	v, err := vm.RunString(`({r: 5, g: undefined, a: 2.5})`)
+	if err != nil {
+		t.Fatalf("RunString: %v", err)
+	}
+	got := gpuReadColor(v)
+	want := [4]float64{5, 0, 0, 2.5}
+	if got != want {
+		t.Fatalf("gpuReadColor({r:5, g:undefined, a:2.5}) = %v, want %v", got, want)
 	}
 }
 
