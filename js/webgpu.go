@@ -307,6 +307,32 @@ func (b *binder) newGPUShaderStage() *goja.Object {
 	return o
 }
 
+// gpuTextureUsage* are WebGPU's own GPUTextureUsage flag values (WebGPU
+// §3.3: `namespace GPUTextureUsage { const GPUFlagsConstant COPY_SRC =
+// 0x01; … }`), named here (rather than inlined) so gpuCreateTexture's own
+// usage -> metal.TextureUsage mapping and newGPUTextureUsage's own object
+// literal cannot drift apart.
+const (
+	gpuTextureUsageCopySrc          = 0x01
+	gpuTextureUsageCopyDst          = 0x02
+	gpuTextureUsageTextureBinding   = 0x04
+	gpuTextureUsageStorageBinding   = 0x08
+	gpuTextureUsageRenderAttachment = 0x10
+)
+
+// newGPUTextureUsage builds the GPUTextureUsage namespace — engine#415's
+// own counterpart to newGPUBufferUsage, installed the same way (a global
+// alongside navigator.gpu, gated on Options.EnableWebGPU).
+func (b *binder) newGPUTextureUsage() *goja.Object {
+	o := b.vm.NewObject()
+	o.Set("COPY_SRC", gpuTextureUsageCopySrc)
+	o.Set("COPY_DST", gpuTextureUsageCopyDst)
+	o.Set("TEXTURE_BINDING", gpuTextureUsageTextureBinding)
+	o.Set("STORAGE_BINDING", gpuTextureUsageStorageBinding)
+	o.Set("RENDER_ATTACHMENT", gpuTextureUsageRenderAttachment)
+	return o
+}
+
 // newGPU builds navigator.gpu (HTML/WebGPU: `[Exposed=(Window, Worker)]
 // interface GPU`). Installed only when Options.EnableWebGPU is set — see
 // its own doc comment for the opt-in rationale.
@@ -519,11 +545,26 @@ func (b *binder) newGPUDevice(dev *metal.Device) *goja.Object {
 	o.Set("createCommandEncoder", func(call goja.FunctionCall) goja.Value {
 		return b.wrapGPUCommandEncoder(&gpuCommandEncoderState{dev: dev})
 	})
+	o.Set("createTexture", func(call goja.FunctionCall) goja.Value {
+		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
+			return b.gpuCreateTexture(dev, call)
+		})
+	})
+	o.Set("createRenderPipeline", func(call goja.FunctionCall) goja.Value {
+		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
+			return b.gpuCreateRenderPipeline(dev, call)
+		})
+	})
 
 	queue := b.vm.NewObject()
 	queue.Set("writeBuffer", func(call goja.FunctionCall) goja.Value {
 		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
 			return b.gpuQueueWriteBuffer(call)
+		})
+	})
+	queue.Set("writeTexture", func(call goja.FunctionCall) goja.Value {
+		return b.gpuGuard(dev, goja.Undefined(), func() goja.Value {
+			return b.gpuQueueWriteTexture(call)
 		})
 	})
 	queue.Set("submit", func(call goja.FunctionCall) goja.Value {
@@ -1195,9 +1236,10 @@ func (b *binder) gpuCreateBindGroup(call goja.FunctionCall) goja.Value {
 // GPUCommandEncoder/GPUCommandBuffer — this binding uses the SAME Go value
 // for both (finish() just stops further recording and hands back a new JS
 // object identity over the identical state), since nothing here needs them
-// to be distinct beyond that. Deliberately scoped to AT MOST ONE compute
-// pass per encoder — the realistic shape every test and real usage needs so
-// far; a second beginComputePass() is a clear, named rejection, not a
+// to be distinct beyond that. Deliberately scoped to AT MOST ONE pass per
+// encoder, compute OR render (engine#415 M7 added the render half) — the
+// realistic shape every test and real usage needs so far; a second
+// beginComputePass()/beginRenderPass() is a clear, named rejection, not a
 // silent no-op.
 type gpuCommandEncoderState struct {
 	dev       *metal.Device
@@ -1213,11 +1255,14 @@ type gpuCommandEncoderState struct {
 // directly needed by go-wasmcontainers for their own readback-via-
 // mapAsync batch path) interleave freely per spec, so both go through
 // this ONE ordered list rather than two separate ones gpuQueueSubmit
-// would otherwise have to merge by guesswork. Exactly one of
-// dispatch/copy is non-nil.
+// would otherwise have to merge by guesswork. engine#415 M7 added render
+// and textureCopy alongside the original dispatch/copy — exactly one of
+// the four is non-nil.
 type gpuRecordedCommand struct {
-	dispatch *gpuRecordedDispatch
-	copy     *gpuRecordedCopy
+	dispatch    *gpuRecordedDispatch
+	copy        *gpuRecordedCopy
+	render      *gpuRecordedRenderPass
+	textureCopy *gpuRecordedTextureCopy
 }
 
 // gpuRecordedDispatch is one dispatchWorkgroups() call, fully resolved at
@@ -1267,6 +1312,12 @@ func (b *binder) wrapGPUCommandEncoder(st *gpuCommandEncoderState) *goja.Object 
 	})
 	o.Set("copyBufferToBuffer", func(call goja.FunctionCall) goja.Value {
 		return b.gpuCopyBufferToBuffer(st, call)
+	})
+	o.Set("beginRenderPass", func(call goja.FunctionCall) goja.Value {
+		return b.gpuBeginRenderPass(st, call)
+	})
+	o.Set("copyTextureToBuffer", func(call goja.FunctionCall) goja.Value {
+		return b.gpuCopyTextureToBuffer(st, call)
 	})
 	o.Set("finish", func(call goja.FunctionCall) goja.Value {
 		if st.finished {
@@ -1491,8 +1542,38 @@ func (b *binder) gpuQueueSubmit(dev *metal.Device, call goja.FunctionCall) goja.
 		if err := runPending(); err != nil {
 			b.panicValidation(err.Error())
 		}
-		copy(c.copy.dst.Bytes()[c.copy.dstOffset:c.copy.dstOffset+c.copy.size],
-			c.copy.src.Bytes()[c.copy.srcOffset:c.copy.srcOffset+c.copy.size])
+		switch {
+		case c.copy != nil:
+			copy(c.copy.dst.Bytes()[c.copy.dstOffset:c.copy.dstOffset+c.copy.size],
+				c.copy.src.Bytes()[c.copy.srcOffset:c.copy.srcOffset+c.copy.size])
+		case c.render != nil:
+			err := dev.RunRender(metal.RenderPassDescriptor{
+				Target: c.render.target,
+				Load:   c.render.load,
+				Store:  c.render.store,
+				Clear:  c.render.clear,
+			}, func(e *metal.RenderEncoder) {
+				for _, d := range c.render.draws {
+					e.Use(d.pipeline)
+					for idx, vb := range d.vertexBuffers {
+						e.VertexBuffer(idx, vb.buf, vb.offset)
+					}
+					if d.indexed {
+						e.DrawIndexed(d.indexCount, d.instanceCount, d.indexBuffer, d.indexBufferOffset, d.baseVertex, d.firstInstance)
+					} else {
+						e.Draw(d.vertexCount, d.instanceCount, d.firstVertex, d.firstInstance)
+					}
+				}
+			})
+			if err != nil {
+				b.panicValidation(err.Error())
+			}
+		case c.textureCopy != nil:
+			tc := c.textureCopy
+			if err := tc.tex.GetBytes(tc.dst.Bytes()[tc.dstOffset : tc.dstOffset+tc.size]); err != nil {
+				b.panicValidation(err.Error())
+			}
+		}
 	}
 	if err := runPending(); err != nil {
 		b.panicValidation(err.Error())
@@ -1505,4 +1586,824 @@ func (b *binder) gpuQueueSubmit(dev *metal.Device, call goja.FunctionCall) goja.
 // rejection, never a silently wrong or partial translation" convention.
 func unsupportedJS(b *binder, msg string) goja.Value {
 	return b.vm.NewTypeError("webgpu: unsupported: " + msg)
+}
+
+// ---- engine#415 M7: textures and render pipelines ----
+
+// gpuTextureState is the Go-level state behind one GPUTexture: the real
+// Metal-backed 2D texture and the descriptor fields a GPUTexture's own
+// property getters report back. Deliberately bounded scope (see
+// gpuCreateTexture's own doc comment for exactly where each restriction
+// comes from): a single 2D texture, one mip level, one array layer,
+// go-macos/metal's own PixelFormatR8Uint.
+type gpuTextureState struct {
+	tex    *metal.Texture
+	width  int
+	height int
+	format string
+	usage  int
+}
+
+// gpuExtent is a resolved GPUExtent3D (`{width, height,
+// depthOrArrayLayers}` or the equivalent `[width, height,
+// depthOrArrayLayers]` sequence form — WebGPU lets either through its own
+// dictionary/union coercion) — shared by createTexture's own `size`,
+// writeTexture's own `size`, and copyTextureToBuffer's own `copySize`, so
+// the two argument shapes are resolved in exactly one place.
+type gpuExtent struct{ w, h, d int }
+
+func gpuReadExtent(v goja.Value) gpuExtent {
+	obj, ok := v.(*goja.Object)
+	if !ok {
+		return gpuExtent{}
+	}
+	if w := obj.Get("width"); w != nil && !goja.IsUndefined(w) {
+		d := 1
+		if dd := obj.Get("depthOrArrayLayers"); dd != nil && !goja.IsUndefined(dd) {
+			d = int(dd.ToInteger())
+		}
+		return gpuExtent{w: int(w.ToInteger()), h: int(obj.Get("height").ToInteger()), d: d}
+	}
+	d := 1
+	if dd := obj.Get("2"); dd != nil && !goja.IsUndefined(dd) {
+		d = int(dd.ToInteger())
+	}
+	return gpuExtent{w: int(obj.Get("0").ToInteger()), h: int(obj.Get("1").ToInteger()), d: d}
+}
+
+// gpuIsZeroOrigin reports whether v (a GPUOrigin3D: `{x, y, z}` or
+// `[x, y, z]`, every field defaulting to 0) is the all-zero origin — the
+// only one writeTexture/copyTextureToBuffer accept.
+func gpuIsZeroOrigin(v goja.Value) bool {
+	obj, ok := v.(*goja.Object)
+	if !ok {
+		return true
+	}
+	get := func(k string) int64 {
+		x := obj.Get(k)
+		if x == nil || goja.IsUndefined(x) {
+			return 0
+		}
+		return x.ToInteger()
+	}
+	return get("x") == 0 && get("y") == 0 && get("z") == 0 &&
+		get("0") == 0 && get("1") == 0 && get("2") == 0
+}
+
+// gpuVertexFormat maps a GPUVertexFormat string (WebGPU §9.1) to the
+// go-macos/metal MTLVertexFormat it corresponds to, plus the component
+// count/scalar kind wgslmsl.RenderResult.VertexInputs reports for the
+// shader side of the same attribute — the only 4 formats go-macos/metal
+// itself recognizes (metal.VertexFormat's own doc comment), so every other
+// GPUVertexFormat string is a named rejection here, never a silently wrong
+// MTLVertexFormat guess.
+func gpuVertexFormat(format string) (mf metal.VertexFormat, nComponents int, kind wgsl.ScalarKind, ok bool) {
+	switch format {
+	case "float32x2":
+		return metal.VertexFormatFloat32x2, 2, wgsl.KF32, true
+	case "float32x3":
+		return metal.VertexFormatFloat32x3, 3, wgsl.KF32, true
+	case "uint32":
+		return metal.VertexFormatUint32, 1, wgsl.KU32, true
+	case "uint32x4":
+		return metal.VertexFormatUint32x4, 4, wgsl.KU32, true
+	default:
+		return 0, 0, 0, false
+	}
+}
+
+// gpuReadColor resolves a GPUColor (`{r, g, b, a}` or `[r, g, b, a]`) —
+// clearValue's own two accepted shapes (WebGPU §19.1's own GPUColor
+// union), for beginRenderPass's own colorAttachments[0].clearValue.
+func gpuReadColor(v goja.Value) [4]float64 {
+	obj, ok := v.(*goja.Object)
+	if !ok {
+		return [4]float64{}
+	}
+	if r := obj.Get("r"); r != nil && !goja.IsUndefined(r) {
+		return [4]float64{r.ToFloat(), obj.Get("g").ToFloat(), obj.Get("b").ToFloat(), obj.Get("a").ToFloat()}
+	}
+	return [4]float64{obj.Get("0").ToFloat(), obj.Get("1").ToFloat(), obj.Get("2").ToFloat(), obj.Get("3").ToFloat()}
+}
+
+// gpuCreateTexture implements GPUDevice.createTexture(descriptor) —
+// engine#415 M7's own deliberately bounded scope: a single 2D texture (no
+// mip chain, no array layers, no 3D/cube), go-macos/metal's own only
+// supported GPUTextureFormat ("r8uint" -> metal.PixelFormatR8Uint — see
+// metal.PixelFormat's own doc comment for why that is the one format this
+// package's whole render path needs so far). A format/dimension/
+// mipLevelCount/sampleCount this binding does not support is a named
+// rejection (unsupportedJS), never a silently wrong texture; size.width/
+// height being non-positive is a WebIDL-level argument problem (TypeError,
+// matching createBuffer's own size<=0 check); an actual allocation failure
+// against go-macos/metal is GPU content validation (panicOutOfMemory,
+// matching createBuffer's own).
+func (b *binder) gpuCreateTexture(dev *metal.Device, call goja.FunctionCall) goja.Value {
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("createTexture: a GPUTextureDescriptor is required"))
+	}
+	fmtVal := desc.Get("format")
+	if fmtVal == nil || goja.IsUndefined(fmtVal) {
+		panic(b.vm.NewTypeError("createTexture: format is required"))
+	}
+	format := fmtVal.String()
+	if format != "r8uint" {
+		panic(unsupportedJS(b, "createTexture: unsupported texture format "+format))
+	}
+	if dim := desc.Get("dimension"); dim != nil && !goja.IsUndefined(dim) && dim.String() != "2d" {
+		panic(unsupportedJS(b, "createTexture: only dimension \"2d\" is supported"))
+	}
+	if m := desc.Get("mipLevelCount"); m != nil && !goja.IsUndefined(m) && m.ToInteger() != 1 {
+		panic(unsupportedJS(b, "createTexture: only mipLevelCount 1 is supported"))
+	}
+	if s := desc.Get("sampleCount"); s != nil && !goja.IsUndefined(s) && s.ToInteger() != 1 {
+		panic(unsupportedJS(b, "createTexture: only sampleCount 1 is supported"))
+	}
+	size := gpuReadExtent(desc.Get("size"))
+	if size.w <= 0 || size.h <= 0 {
+		panic(b.vm.NewTypeError("createTexture: size.width and size.height must be positive"))
+	}
+	if size.d != 1 {
+		panic(unsupportedJS(b, "createTexture: only a single 2D texture (depthOrArrayLayers 1) is supported"))
+	}
+	usage := int(desc.Get("usage").ToInteger())
+	var musage metal.TextureUsage
+	if usage&gpuTextureUsageTextureBinding != 0 {
+		musage |= metal.TextureUsageShaderRead
+	}
+	if usage&gpuTextureUsageStorageBinding != 0 {
+		musage |= metal.TextureUsageShaderWrite
+	}
+	if usage&gpuTextureUsageRenderAttachment != 0 {
+		musage |= metal.TextureUsageRenderTarget
+	}
+	tex, err := dev.NewTexture(size.w, size.h, metal.PixelFormatR8Uint, musage)
+	if err != nil {
+		b.panicOutOfMemory(err.Error())
+	}
+	return b.wrapGPUTexture(&gpuTextureState{tex: tex, width: size.w, height: size.h, format: format, usage: usage})
+}
+
+// wrapGPUTexture builds the JS GPUTexture surface over st, registering it
+// in b.gpuTextures (the same by-object-identity registry shape gpuBuffers
+// uses) so createView/writeTexture/copyTextureToBuffer/beginRenderPass can
+// all recover the real *metal.Texture from the JS object identity alone.
+func (b *binder) wrapGPUTexture(st *gpuTextureState) *goja.Object {
+	o := b.vm.NewObject()
+	if b.gpuTextures == nil {
+		b.gpuTextures = map[*goja.Object]*gpuTextureState{}
+	}
+	b.gpuTextures[o] = st
+	o.Set("width", st.width)
+	o.Set("height", st.height)
+	o.Set("depthOrArrayLayers", 1)
+	o.Set("format", st.format)
+	o.Set("usage", st.usage)
+	o.Set("dimension", "2d")
+	o.Set("mipLevelCount", 1)
+	o.Set("sampleCount", 1)
+	o.Set("createView", func(call goja.FunctionCall) goja.Value {
+		return b.gpuTextureCreateView(st, call)
+	})
+	o.Set("destroy", func(call goja.FunctionCall) goja.Value {
+		st.tex.Close()
+		return goja.Undefined()
+	})
+	return o
+}
+
+// gpuTextureCreateView implements GPUTexture.createView(descriptor) —
+// engine#415 M7's own bounded scope has no mip chain, no array layers and
+// no format reinterpretation, so a GPUTextureView is never independent
+// Go-level state of its own: it shares st (registered again, under the
+// view's own distinct JS object identity, in b.gpuTextureViews) exactly as
+// a real one-mip/one-layer texture's only possible view would. Every
+// descriptor field that would need this binding to behave differently from
+// "the whole texture, as-is" is a named rejection (unsupportedJS).
+func (b *binder) gpuTextureCreateView(st *gpuTextureState, call goja.FunctionCall) goja.Value {
+	if desc, ok := call.Argument(0).(*goja.Object); ok {
+		if f := desc.Get("format"); f != nil && !goja.IsUndefined(f) && f.String() != st.format {
+			panic(unsupportedJS(b, "createView: a view format different from the texture's own format is not supported"))
+		}
+		if d := desc.Get("dimension"); d != nil && !goja.IsUndefined(d) && d.String() != "2d" {
+			panic(unsupportedJS(b, "createView: only a \"2d\" view is supported"))
+		}
+		if a := desc.Get("aspect"); a != nil && !goja.IsUndefined(a) && a.String() != "all" {
+			panic(unsupportedJS(b, "createView: only the \"all\" aspect is supported"))
+		}
+		if m := desc.Get("baseMipLevel"); m != nil && !goja.IsUndefined(m) && m.ToInteger() != 0 {
+			panic(unsupportedJS(b, "createView: only baseMipLevel 0 is supported"))
+		}
+		if m := desc.Get("mipLevelCount"); m != nil && !goja.IsUndefined(m) && m.ToInteger() != 1 {
+			panic(unsupportedJS(b, "createView: only a single mip level is supported"))
+		}
+		if a := desc.Get("baseArrayLayer"); a != nil && !goja.IsUndefined(a) && a.ToInteger() != 0 {
+			panic(unsupportedJS(b, "createView: only baseArrayLayer 0 is supported"))
+		}
+		if a := desc.Get("arrayLayerCount"); a != nil && !goja.IsUndefined(a) && a.ToInteger() != 1 {
+			panic(unsupportedJS(b, "createView: only a single array layer is supported"))
+		}
+	}
+	o := b.vm.NewObject()
+	if b.gpuTextureViews == nil {
+		b.gpuTextureViews = map[*goja.Object]*gpuTextureState{}
+	}
+	b.gpuTextureViews[o] = st
+	return o
+}
+
+// gpuQueueWriteTexture implements GPUQueue.writeTexture(destination, data,
+// dataLayout, size) — restricted to one full-extent, tightly packed write
+// at mip 0 with a zero origin, the only shape engine#415 M7 needs so far
+// (go-macos/metal's own Texture.Replace has the same restriction — see its
+// own doc comment). Anything else is a named rejection (unsupportedJS); a
+// data size that does not match offset/copy size is GPU content validation
+// (panicValidation), matching writeBuffer's own convention for the same
+// kind of bounds mismatch.
+func (b *binder) gpuQueueWriteTexture(call goja.FunctionCall) goja.Value {
+	destObj, _ := call.Argument(0).(*goja.Object)
+	if destObj == nil {
+		panic(b.vm.NewTypeError("writeTexture: destination must be a GPUImageCopyTexture"))
+	}
+	texObj, _ := destObj.Get("texture").(*goja.Object)
+	var st *gpuTextureState
+	if texObj != nil {
+		st = b.gpuTextures[texObj]
+	}
+	if st == nil {
+		panic(b.vm.NewTypeError("writeTexture: destination.texture must be a GPUTexture"))
+	}
+	if mip := destObj.Get("mipLevel"); mip != nil && !goja.IsUndefined(mip) && mip.ToInteger() != 0 {
+		panic(unsupportedJS(b, "writeTexture: only mipLevel 0 is supported"))
+	}
+	if origin := destObj.Get("origin"); origin != nil && !goja.IsUndefined(origin) && !gpuIsZeroOrigin(origin) {
+		panic(unsupportedJS(b, "writeTexture: only a zero origin (a full-extent write) is supported"))
+	}
+	data, ok := bufferSourceBytes(call.Argument(1))
+	if !ok {
+		panic(b.vm.NewTypeError("writeTexture: data must be an ArrayBuffer or typed array view"))
+	}
+	layoutObj, _ := call.Argument(2).(*goja.Object)
+	if layoutObj == nil {
+		panic(b.vm.NewTypeError("writeTexture: dataLayout is required"))
+	}
+	offset := 0
+	if o := layoutObj.Get("offset"); o != nil && !goja.IsUndefined(o) {
+		offset = int(o.ToInteger())
+	}
+	bytesPerRow := st.width
+	if bpr := layoutObj.Get("bytesPerRow"); bpr != nil && !goja.IsUndefined(bpr) {
+		bytesPerRow = int(bpr.ToInteger())
+	}
+	if bytesPerRow != st.width {
+		panic(unsupportedJS(b, "writeTexture: only a tightly packed write (bytesPerRow == texture width) is supported"))
+	}
+	size := gpuReadExtent(call.Argument(3))
+	if size.w != st.width || size.h != st.height {
+		panic(unsupportedJS(b, "writeTexture: only a full-extent write is supported"))
+	}
+	want := st.width * st.height
+	if offset < 0 || offset+want > len(data) {
+		b.panicValidation("writeTexture: data is too small for the given offset and copy size")
+	}
+	if err := st.tex.Replace(data[offset : offset+want]); err != nil {
+		b.panicValidation(err.Error())
+	}
+	return goja.Undefined()
+}
+
+// gpuBoundVertexBuffer is one vertex- or index-buffer binding recorded by
+// setVertexBuffer/setIndexBuffer: the real *metal.Buffer and the byte
+// offset into it, copied by VALUE at bind time — so a later
+// setVertexBuffer rebinding the same slot never retroactively changes a
+// draw already recorded against the earlier binding (gpuDraw/
+// gpuDrawIndexed each copy the current map before appending their own
+// gpuRecordedDraw).
+type gpuBoundVertexBuffer struct {
+	buf    *metal.Buffer
+	offset int
+}
+
+// gpuRenderPipelineState is the Go-level state behind one
+// GPURenderPipeline: just the compiled go-macos/metal pipeline — unlike
+// gpuComputePipelineState, nothing here needs the wgslmsl.RenderResult
+// again after creation, since this binding's bounded render scope has no
+// bind groups (VertexBindings/FragmentBindings are required empty — see
+// gpuCreateRenderPipeline's own doc comment) and so no getBindGroupLayout
+// equivalent.
+type gpuRenderPipelineState struct {
+	pipe *metal.RenderPipeline
+}
+
+// gpuCreateRenderPipeline implements
+// GPUDevice.createRenderPipeline(descriptor) — engine#415 M7's own
+// deliberately bounded render-pipeline scope:
+//   - layout must be "auto" (no explicit GPUPipelineLayout for a render
+//     pipeline yet).
+//   - Neither the vertex nor the fragment entry point may read a WGSL
+//     resource (@group/@binding): go-macos/metal's own RenderEncoder has
+//     no fragment-stage buffer binding and no bind-group mechanism at all
+//     — a shader needing one is a named rejection (unsupportedJS), not a
+//     silently dropped binding.
+//   - Every vertex.buffers[].attributes[] entry's own GPUVertexFormat must
+//     be one of the 4 go-macos/metal itself recognizes (gpuVertexFormat)
+//     AND must match the shader's own @location input by both component
+//     count and scalar kind — a genuine content mismatch between the
+//     pipeline's own vertex state and its shader, so panicValidation
+//     (captured by an open error scope), not a thrown TypeError.
+//   - fragment.targets[0].format must be "r8uint" (go-macos/metal's own
+//     only supported color format) and there may be no depthStencil
+//     state (go-macos/metal's own RenderPipelineDescriptor has no
+//     counterpart — named rejection).
+func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCall) goja.Value {
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("createRenderPipeline: a GPURenderPipelineDescriptor is required"))
+	}
+	layout := desc.Get("layout")
+	if _, isObj := layout.(*goja.Object); isObj {
+		panic(unsupportedJS(b, "createRenderPipeline: an explicit GPUPipelineLayout is not supported for a render pipeline"))
+	} else if layout == nil || layout.String() != "auto" {
+		panic(b.vm.NewTypeError("createRenderPipeline: layout must be \"auto\""))
+	}
+	if ds := desc.Get("depthStencil"); ds != nil && !goja.IsUndefined(ds) {
+		panic(unsupportedJS(b, "createRenderPipeline: depthStencil is not supported"))
+	}
+	if prim, ok := desc.Get("primitive").(*goja.Object); ok {
+		if t := prim.Get("topology"); t != nil && !goja.IsUndefined(t) && t.String() != "triangle-list" {
+			panic(unsupportedJS(b, "createRenderPipeline: only \"triangle-list\" topology is supported"))
+		}
+	}
+
+	vertexObj, _ := desc.Get("vertex").(*goja.Object)
+	if vertexObj == nil {
+		panic(b.vm.NewTypeError("createRenderPipeline: a vertex stage (GPUVertexState) is required"))
+	}
+	vModObj, _ := vertexObj.Get("module").(*goja.Object)
+	vModState := b.gpuShaderModules[vModObj]
+	if vModState == nil {
+		panic(b.vm.NewTypeError("createRenderPipeline: vertex.module must be a GPUShaderModule"))
+	}
+	vEntryPoint := ""
+	if ep := vertexObj.Get("entryPoint"); ep != nil && !goja.IsUndefined(ep) {
+		vEntryPoint = ep.String()
+	}
+
+	fragmentObj, _ := desc.Get("fragment").(*goja.Object)
+	if fragmentObj == nil {
+		panic(b.vm.NewTypeError("createRenderPipeline: a fragment stage (GPUFragmentState) is required"))
+	}
+	fModObj, _ := fragmentObj.Get("module").(*goja.Object)
+	fModState := b.gpuShaderModules[fModObj]
+	if fModState == nil {
+		panic(b.vm.NewTypeError("createRenderPipeline: fragment.module must be a GPUShaderModule"))
+	}
+	fEntryPoint := ""
+	if ep := fragmentObj.Get("entryPoint"); ep != nil && !goja.IsUndefined(ep) {
+		fEntryPoint = ep.String()
+	}
+	if vModState.src != fModState.src {
+		panic(unsupportedJS(b, "createRenderPipeline: vertex.module and fragment.module must be the same GPUShaderModule"))
+	}
+
+	targetsArr, _ := fragmentObj.Get("targets").(*goja.Object)
+	if targetsArr == nil || int(targetsArr.Get("length").ToInteger()) != 1 {
+		panic(unsupportedJS(b, "createRenderPipeline: exactly one fragment.targets entry is supported"))
+	}
+	target0, _ := targetsArr.Get("0").(*goja.Object)
+	if target0 == nil || target0.Get("format").String() != "r8uint" {
+		panic(unsupportedJS(b, "createRenderPipeline: fragment.targets[0].format must be \"r8uint\""))
+	}
+
+	res, err := wgslmsl.TranslateRender(vModState.src, wgslmsl.RenderOptions{VertexEntryPoint: vEntryPoint, FragmentEntryPoint: fEntryPoint})
+	if err != nil {
+		b.panicValidation("createRenderPipeline: " + err.Error())
+	}
+	if len(res.VertexBindings) != 0 || len(res.FragmentBindings) != 0 {
+		panic(unsupportedJS(b, "createRenderPipeline: a shader resource (@group/@binding) is not supported in a render pipeline"))
+	}
+
+	byLocation := map[int]wgslmsl.VertexInputVar{}
+	for _, in := range res.VertexInputs {
+		byLocation[in.Location] = in
+	}
+	seen := map[int]bool{}
+	var attrs []metal.VertexAttribute
+	var layouts []metal.VertexLayout
+	buffersArr, _ := vertexObj.Get("buffers").(*goja.Object)
+	if buffersArr != nil {
+		n := int(buffersArr.Get("length").ToInteger())
+		for bi := 0; bi < n; bi++ {
+			bufLayout, _ := buffersArr.Get(strconv.Itoa(bi)).(*goja.Object)
+			if bufLayout == nil {
+				continue
+			}
+			stride := int(bufLayout.Get("arrayStride").ToInteger())
+			layouts = append(layouts, metal.VertexLayout{BufferIndex: bi, Stride: stride})
+			attrsArr, _ := bufLayout.Get("attributes").(*goja.Object)
+			if attrsArr == nil {
+				continue
+			}
+			an := int(attrsArr.Get("length").ToInteger())
+			for ai := 0; ai < an; ai++ {
+				attr, _ := attrsArr.Get(strconv.Itoa(ai)).(*goja.Object)
+				if attr == nil {
+					continue
+				}
+				formatStr := attr.Get("format").String()
+				mf, nc, kind, ok := gpuVertexFormat(formatStr)
+				if !ok {
+					panic(unsupportedJS(b, "createRenderPipeline: unsupported vertex format "+formatStr))
+				}
+				loc := int(attr.Get("shaderLocation").ToInteger())
+				in, found := byLocation[loc]
+				if !found {
+					b.panicValidation(fmt.Sprintf("createRenderPipeline: shader has no @location(%d) vertex input to match this attribute", loc))
+				}
+				if in.NComponents != nc || in.ScalarKind != kind {
+					b.panicValidation(fmt.Sprintf("createRenderPipeline: attribute at @location(%d) does not match the shader's own input type", loc))
+				}
+				seen[loc] = true
+				attrs = append(attrs, metal.VertexAttribute{
+					Index:       loc,
+					Format:      mf,
+					Offset:      int(attr.Get("offset").ToInteger()),
+					BufferIndex: bi,
+				})
+			}
+		}
+	}
+	for _, in := range res.VertexInputs {
+		if !seen[in.Location] {
+			b.panicValidation(fmt.Sprintf("createRenderPipeline: no vertex attribute given for the shader's own @location(%d) input", in.Location))
+		}
+	}
+
+	combinedMSL := res.VertexMSL + "\n" + res.FragmentMSL
+	lib, err := dev.Compile(combinedMSL)
+	if err != nil {
+		b.panicValidation("createRenderPipeline: Metal rejected the generated shader: " + err.Error())
+	}
+	pipe, err := lib.RenderPipeline(metal.RenderPipelineDescriptor{
+		VertexFunction:   res.VertexEntryPointName,
+		FragmentFunction: res.FragmentEntryPointName,
+		Attributes:       attrs,
+		Layouts:          layouts,
+		ColorFormat:      metal.PixelFormatR8Uint,
+	})
+	if err != nil {
+		b.panicValidation(err.Error())
+	}
+	return b.wrapGPURenderPipeline(&gpuRenderPipelineState{pipe: pipe})
+}
+
+func (b *binder) wrapGPURenderPipeline(st *gpuRenderPipelineState) *goja.Object {
+	o := b.vm.NewObject()
+	if b.gpuRenderPipelines == nil {
+		b.gpuRenderPipelines = map[*goja.Object]*gpuRenderPipelineState{}
+	}
+	b.gpuRenderPipelines[o] = st
+	return o
+}
+
+// gpuRecordedRenderPass is one beginRenderPass()...end() span, recorded as
+// a single entry in gpuCommandEncoderState's own ordered commands list
+// (gpuRecordedCommand's own doc comment) — the render pass's own target/
+// load/store/clear, plus every draw/drawIndexed call made before end(), in
+// order.
+type gpuRecordedRenderPass struct {
+	target *metal.Texture
+	load   metal.LoadAction
+	store  metal.StoreAction
+	clear  [4]float64
+	draws  []gpuRecordedDraw
+}
+
+// gpuRecordedDraw is one draw()/drawIndexed() call, fully resolved at
+// record time: the pipeline and every vertex buffer slot bound at that
+// moment (gpuBoundVertexBuffer's own doc comment for why each is copied by
+// value), plus either the non-indexed or the indexed draw's own arguments.
+type gpuRecordedDraw struct {
+	pipeline      *metal.RenderPipeline
+	vertexBuffers map[int]gpuBoundVertexBuffer
+	indexed       bool
+	// non-indexed (draw):
+	vertexCount, instanceCount, firstVertex, firstInstance int
+	// indexed (drawIndexed) — firstInstance is shared with the non-indexed
+	// fields above; indexBufferOffset already folds in firstIndex*4
+	// (uint32 indices only — see setIndexBuffer's own doc comment).
+	indexBuffer       *metal.Buffer
+	indexBufferOffset int
+	indexCount        int
+	baseVertex        int
+}
+
+// gpuRecordedTextureCopy is one copyTextureToBuffer() call — the texture-
+// side counterpart of gpuRecordedCopy, executed via go-macos/metal's own
+// Texture.GetBytes directly into the destination buffer's own zero-copy
+// backing memory at gpuQueueSubmit time (after flushing any pending
+// dispatch, exactly like gpuRecordedCopy, so a copy reading a render
+// pass's own output always sees the real, GPU-written bytes).
+type gpuRecordedTextureCopy struct {
+	tex       *metal.Texture
+	dst       *metal.Buffer
+	dstOffset int
+	size      int
+}
+
+// gpuBeginRenderPass implements
+// GPUCommandEncoder.beginRenderPass(descriptor) — engine#415 M7's own
+// bounded scope: exactly one color attachment (go-macos/metal's own
+// RenderPassDescriptor has a single Target, no depthStencilAttachment
+// counterpart), loadOp/storeOp mapped 1:1 to metal.LoadAction/
+// StoreAction, clearValue resolved by gpuReadColor. Reuses passOpen/
+// passEnded exactly as beginComputePass does (gpuCommandEncoderState's own
+// doc comment: at most one pass, compute OR render, per encoder).
+func (b *binder) gpuBeginRenderPass(st *gpuCommandEncoderState, call goja.FunctionCall) goja.Value {
+	if st.finished {
+		panic(b.vm.NewTypeError("beginRenderPass: this command encoder has already finished"))
+	}
+	if st.passOpen || st.passEnded {
+		panic(unsupportedJS(b, "beginRenderPass: only one pass (compute or render) per command encoder is supported"))
+	}
+	desc, _ := call.Argument(0).(*goja.Object)
+	if desc == nil {
+		panic(b.vm.NewTypeError("beginRenderPass: a GPURenderPassDescriptor is required"))
+	}
+	if ds := desc.Get("depthStencilAttachment"); ds != nil && !goja.IsUndefined(ds) {
+		panic(unsupportedJS(b, "beginRenderPass: depthStencilAttachment is not supported"))
+	}
+	colorsArr, _ := desc.Get("colorAttachments").(*goja.Object)
+	if colorsArr == nil || int(colorsArr.Get("length").ToInteger()) != 1 {
+		panic(unsupportedJS(b, "beginRenderPass: exactly one colorAttachments entry is supported"))
+	}
+	ca, _ := colorsArr.Get("0").(*goja.Object)
+	if ca == nil {
+		panic(b.vm.NewTypeError("beginRenderPass: colorAttachments[0] is required"))
+	}
+	viewObj, _ := ca.Get("view").(*goja.Object)
+	var texSt *gpuTextureState
+	if viewObj != nil {
+		texSt = b.gpuTextureViews[viewObj]
+		if texSt == nil {
+			texSt = b.gpuTextures[viewObj]
+		}
+	}
+	if texSt == nil {
+		panic(b.vm.NewTypeError("beginRenderPass: colorAttachments[0].view must be a GPUTextureView"))
+	}
+	if texSt.usage&gpuTextureUsageRenderAttachment == 0 {
+		b.panicValidation("beginRenderPass: the attachment's texture was not created with RENDER_ATTACHMENT usage")
+	}
+	load := metal.LoadActionLoad
+	if lv := ca.Get("loadOp"); lv != nil && !goja.IsUndefined(lv) {
+		switch lv.String() {
+		case "clear":
+			load = metal.LoadActionClear
+		case "load":
+			load = metal.LoadActionLoad
+		default:
+			panic(unsupportedJS(b, "beginRenderPass: unsupported loadOp "+lv.String()))
+		}
+	}
+	store := metal.StoreActionStore
+	if sv := ca.Get("storeOp"); sv != nil && !goja.IsUndefined(sv) {
+		switch sv.String() {
+		case "store":
+			store = metal.StoreActionStore
+		case "discard":
+			store = metal.StoreActionDontCare
+		default:
+			panic(unsupportedJS(b, "beginRenderPass: unsupported storeOp "+sv.String()))
+		}
+	}
+	var clear [4]float64
+	if cv := ca.Get("clearValue"); cv != nil && !goja.IsUndefined(cv) {
+		clear = gpuReadColor(cv)
+	}
+	st.passOpen = true
+	rp := &gpuRecordedRenderPass{target: texSt.tex, load: load, store: store, clear: clear}
+	return b.wrapGPURenderPassEncoder(st, rp)
+}
+
+// copyVertexBuffers copies vbs by value, so a draw recorded against the
+// CURRENT bindings is never retroactively changed by a later
+// setVertexBuffer on the same encoder (gpuBoundVertexBuffer's own doc
+// comment).
+func copyVertexBuffers(vbs map[int]gpuBoundVertexBuffer) map[int]gpuBoundVertexBuffer {
+	out := make(map[int]gpuBoundVertexBuffer, len(vbs))
+	for k, v := range vbs {
+		out[k] = v
+	}
+	return out
+}
+
+// wrapGPURenderPassEncoder builds the GPURenderPassEncoder surface —
+// engine#415 M7's own counterpart to wrapGPUComputePassEncoder. Bind
+// state (the current pipeline, every vertex buffer slot, the index
+// buffer) persists across multiple draw()/drawIndexed() calls within the
+// SAME pass, exactly as setPipeline/setBindGroup do for a compute pass.
+func (b *binder) wrapGPURenderPassEncoder(enc *gpuCommandEncoderState, state *gpuRecordedRenderPass) *goja.Object {
+	var curPipeline *gpuRenderPipelineState
+	vertexBuffers := map[int]gpuBoundVertexBuffer{}
+	var curIndexBuffer *gpuBoundVertexBuffer
+
+	o := b.vm.NewObject()
+	o.Set("setPipeline", func(call goja.FunctionCall) goja.Value {
+		pObj, _ := call.Argument(0).(*goja.Object)
+		p := b.gpuRenderPipelines[pObj]
+		if p == nil {
+			panic(b.vm.NewTypeError("setPipeline: expected a GPURenderPipeline"))
+		}
+		curPipeline = p
+		return goja.Undefined()
+	})
+	o.Set("setVertexBuffer", func(call goja.FunctionCall) goja.Value {
+		slot := int(call.Argument(0).ToInteger())
+		bufObj, _ := call.Argument(1).(*goja.Object)
+		bst := b.gpuBuffers[bufObj]
+		if bst == nil {
+			panic(b.vm.NewTypeError("setVertexBuffer: expected a GPUBuffer"))
+		}
+		offset := 0
+		if a := call.Argument(2); a != nil && !goja.IsUndefined(a) {
+			offset = int(a.ToInteger())
+		}
+		if offset < 0 || offset > bst.size {
+			panic(b.vm.NewTypeError("setVertexBuffer: offset out of range for this buffer"))
+		}
+		vertexBuffers[slot] = gpuBoundVertexBuffer{buf: bst.buf, offset: offset}
+		return goja.Undefined()
+	})
+	o.Set("setIndexBuffer", func(call goja.FunctionCall) goja.Value {
+		bufObj, _ := call.Argument(0).(*goja.Object)
+		bst := b.gpuBuffers[bufObj]
+		if bst == nil {
+			panic(b.vm.NewTypeError("setIndexBuffer: expected a GPUBuffer"))
+		}
+		format := call.Argument(1).String()
+		if format != "uint32" {
+			panic(unsupportedJS(b, "setIndexBuffer: only \"uint32\" indices are supported"))
+		}
+		offset := 0
+		if a := call.Argument(2); a != nil && !goja.IsUndefined(a) {
+			offset = int(a.ToInteger())
+		}
+		if offset < 0 || offset > bst.size {
+			panic(b.vm.NewTypeError("setIndexBuffer: offset out of range for this buffer"))
+		}
+		ib := gpuBoundVertexBuffer{buf: bst.buf, offset: offset}
+		curIndexBuffer = &ib
+		return goja.Undefined()
+	})
+	o.Set("draw", func(call goja.FunctionCall) goja.Value {
+		return b.gpuGuard(enc.dev, goja.Undefined(), func() goja.Value {
+			return b.gpuDraw(state, curPipeline, vertexBuffers, call)
+		})
+	})
+	o.Set("drawIndexed", func(call goja.FunctionCall) goja.Value {
+		return b.gpuGuard(enc.dev, goja.Undefined(), func() goja.Value {
+			return b.gpuDrawIndexed(state, curPipeline, vertexBuffers, curIndexBuffer, call)
+		})
+	})
+	o.Set("end", func(call goja.FunctionCall) goja.Value {
+		enc.passOpen = false
+		enc.passEnded = true
+		enc.commands = append(enc.commands, gpuRecordedCommand{render: state})
+		return goja.Undefined()
+	})
+	return o
+}
+
+// gpuDraw implements GPURenderPassEncoder.draw(vertexCount,
+// [instanceCount, [firstVertex, [firstInstance]]]).
+func (b *binder) gpuDraw(state *gpuRecordedRenderPass, pipeline *gpuRenderPipelineState, vbs map[int]gpuBoundVertexBuffer, call goja.FunctionCall) goja.Value {
+	if pipeline == nil {
+		b.panicValidation("draw: no pipeline is set")
+	}
+	vertexCount := int(call.Argument(0).ToInteger())
+	instanceCount := 1
+	if a := call.Argument(1); a != nil && !goja.IsUndefined(a) {
+		instanceCount = int(a.ToInteger())
+	}
+	firstVertex := 0
+	if a := call.Argument(2); a != nil && !goja.IsUndefined(a) {
+		firstVertex = int(a.ToInteger())
+	}
+	firstInstance := 0
+	if a := call.Argument(3); a != nil && !goja.IsUndefined(a) {
+		firstInstance = int(a.ToInteger())
+	}
+	state.draws = append(state.draws, gpuRecordedDraw{
+		pipeline: pipeline.pipe, vertexBuffers: copyVertexBuffers(vbs),
+		vertexCount: vertexCount, instanceCount: instanceCount,
+		firstVertex: firstVertex, firstInstance: firstInstance,
+	})
+	return goja.Undefined()
+}
+
+// gpuDrawIndexed implements GPURenderPassEncoder.drawIndexed(indexCount,
+// [instanceCount, [firstIndex, [baseVertex, [firstInstance]]]]).
+// firstIndex*4 is folded into the recorded indexBufferOffset (uint32
+// indices only, this binding's own setIndexBuffer restriction) since
+// go-macos/metal's own RenderEncoder.DrawIndexed has no separate
+// firstIndex parameter.
+func (b *binder) gpuDrawIndexed(state *gpuRecordedRenderPass, pipeline *gpuRenderPipelineState, vbs map[int]gpuBoundVertexBuffer, ib *gpuBoundVertexBuffer, call goja.FunctionCall) goja.Value {
+	if pipeline == nil {
+		b.panicValidation("drawIndexed: no pipeline is set")
+	}
+	if ib == nil {
+		b.panicValidation("drawIndexed: no index buffer is set")
+	}
+	indexCount := int(call.Argument(0).ToInteger())
+	instanceCount := 1
+	if a := call.Argument(1); a != nil && !goja.IsUndefined(a) {
+		instanceCount = int(a.ToInteger())
+	}
+	firstIndex := 0
+	if a := call.Argument(2); a != nil && !goja.IsUndefined(a) {
+		firstIndex = int(a.ToInteger())
+	}
+	baseVertex := 0
+	if a := call.Argument(3); a != nil && !goja.IsUndefined(a) {
+		baseVertex = int(a.ToInteger())
+	}
+	firstInstance := 0
+	if a := call.Argument(4); a != nil && !goja.IsUndefined(a) {
+		firstInstance = int(a.ToInteger())
+	}
+	state.draws = append(state.draws, gpuRecordedDraw{
+		pipeline: pipeline.pipe, vertexBuffers: copyVertexBuffers(vbs), indexed: true,
+		indexBuffer: ib.buf, indexBufferOffset: ib.offset + firstIndex*4,
+		indexCount: indexCount, instanceCount: instanceCount,
+		baseVertex: baseVertex, firstInstance: firstInstance,
+	})
+	return goja.Undefined()
+}
+
+// gpuCopyTextureToBuffer implements
+// GPUCommandEncoder.copyTextureToBuffer(source, destination, copySize) —
+// the texture-side counterpart of gpuCopyBufferToBuffer, with the same
+// "only a tightly packed, full-extent, mip-0, zero-origin copy"
+// restriction writeTexture itself has (see its own doc comment). Recorded
+// into enc.commands, not copied immediately — gpuRecordedTextureCopy's
+// own doc comment for why ordering relative to a render pass matters.
+func (b *binder) gpuCopyTextureToBuffer(enc *gpuCommandEncoderState, call goja.FunctionCall) goja.Value {
+	if enc.finished {
+		panic(b.vm.NewTypeError("copyTextureToBuffer: this command encoder has already finished"))
+	}
+	srcObj, _ := call.Argument(0).(*goja.Object)
+	if srcObj == nil {
+		panic(b.vm.NewTypeError("copyTextureToBuffer: source must be a GPUImageCopyTexture"))
+	}
+	texObj, _ := srcObj.Get("texture").(*goja.Object)
+	var texSt *gpuTextureState
+	if texObj != nil {
+		texSt = b.gpuTextures[texObj]
+	}
+	if texSt == nil {
+		panic(b.vm.NewTypeError("copyTextureToBuffer: source.texture must be a GPUTexture"))
+	}
+	if mip := srcObj.Get("mipLevel"); mip != nil && !goja.IsUndefined(mip) && mip.ToInteger() != 0 {
+		panic(unsupportedJS(b, "copyTextureToBuffer: only mipLevel 0 is supported"))
+	}
+	if origin := srcObj.Get("origin"); origin != nil && !goja.IsUndefined(origin) && !gpuIsZeroOrigin(origin) {
+		panic(unsupportedJS(b, "copyTextureToBuffer: only a zero origin (a full-extent copy) is supported"))
+	}
+	dstObj, _ := call.Argument(1).(*goja.Object)
+	if dstObj == nil {
+		panic(b.vm.NewTypeError("copyTextureToBuffer: destination must be a GPUImageCopyBuffer"))
+	}
+	bufObj, _ := dstObj.Get("buffer").(*goja.Object)
+	var bufSt *gpuBufferState
+	if bufObj != nil {
+		bufSt = b.gpuBuffers[bufObj]
+	}
+	if bufSt == nil {
+		panic(b.vm.NewTypeError("copyTextureToBuffer: destination.buffer must be a GPUBuffer"))
+	}
+	offset := 0
+	if o := dstObj.Get("offset"); o != nil && !goja.IsUndefined(o) {
+		offset = int(o.ToInteger())
+	}
+	bytesPerRow := texSt.width
+	if bpr := dstObj.Get("bytesPerRow"); bpr != nil && !goja.IsUndefined(bpr) {
+		bytesPerRow = int(bpr.ToInteger())
+	}
+	if bytesPerRow != texSt.width {
+		panic(unsupportedJS(b, "copyTextureToBuffer: only a tightly packed copy (bytesPerRow == texture width) is supported"))
+	}
+	size := gpuReadExtent(call.Argument(2))
+	if size.w != texSt.width || size.h != texSt.height {
+		panic(unsupportedJS(b, "copyTextureToBuffer: only a full-extent copy is supported"))
+	}
+	want := texSt.width * texSt.height
+	if offset < 0 || offset+want > bufSt.size {
+		panic(b.vm.NewTypeError("copyTextureToBuffer: destination range out of bounds"))
+	}
+	enc.commands = append(enc.commands, gpuRecordedCommand{textureCopy: &gpuRecordedTextureCopy{
+		tex: texSt.tex, dst: bufSt.buf, dstOffset: offset, size: want,
+	}})
+	return goja.Undefined()
 }

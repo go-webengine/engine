@@ -101,6 +101,7 @@ func (b *binder) install() {
 		g.Set("GPUShaderStage", b.newGPUShaderStage())
 		g.Set("GPUBufferUsage", b.newGPUBufferUsage())
 		g.Set("GPUMapMode", b.newGPUMapMode())
+		g.Set("GPUTextureUsage", b.newGPUTextureUsage())
 	}
 	// __webengineDone(value) — opt-in (Options.EnableDoneSignal), installed
 	// as a global only when set, so a caller not using this feature sees no
