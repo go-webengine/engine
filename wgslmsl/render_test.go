@@ -506,16 +506,19 @@ func TestTranslateRenderRejectsF16VertexInput(t *testing.T) {
 
 // TestTranslateRenderRejectsF16FragmentBareOutput confirms the same f16
 // asymmetry once more on a bare (non-struct) fragment return type: Check
-// accepts f16 as a @location(0) bare output's type. It does NOT isolate
+// accepts f16 as a @location(0) bare output's type, but
 // translateStageEntry's own "m, err := mslType(ep.Func.Ret); if err !=
-// nil" check on that return type (hand-mutation-confirmed: neutralizing
-// it still fails the same input, now with "fragment entry \"fmain\":
-// ... literal of scalar kind 6" instead): any f16-typed VALUE the body
-// returns needs mslType too, for its own expression translation — a
-// literal (as here), a resource (TestTranslateRenderRejectsF16UniformResource's
-// own line) or a parameter (TestTranslateRenderRejectsF16VertexInput's own
-// line) — so the return type's own mslType call can never be reached
-// first with f16 still in play. Left untested as a structural invariant.
+// nil" check (render.go) rejects it. This check runs while retMSL is
+// still being determined, before tr.stmtBlock(ep.Func.Decl.Body) ever
+// translates the body's own "return 1.0h" literal — which independently
+// fails the same way once this check is bypassed (hand-mutation-confirmed:
+// neutralizing it still fails the same input, with "literal of scalar
+// kind 6" instead of this check's own "scalar type 6 (only
+// bool/i32/u32/f32)" via mslScalar). The specific message distinguishes
+// them: only this check's own mslType(ep.Func.Ret) call produces
+// "only bool/i32/u32/f32" for this input, so asserting it (not just
+// err != nil) isolates render.go's own propagation line from the body's
+// later, independent literal-translation rejection.
 func TestTranslateRenderRejectsF16FragmentBareOutput(t *testing.T) {
 	src := `
 		enable f16;
@@ -527,8 +530,77 @@ func TestTranslateRenderRejectsF16FragmentBareOutput(t *testing.T) {
 	if err == nil {
 		t.Fatal("TranslateRender succeeded, want a rejection: f16 bare fragment output")
 	}
-	if strings.Contains(err.Error(), "parse:") {
-		t.Fatalf("error = %v, want a type rejection, not a parse error", err)
+	if !strings.Contains(err.Error(), "only bool/i32/u32/f32") {
+		t.Fatalf("error = %v, want mslType(ep.Func.Ret)'s own rejection, not a later one", err)
+	}
+}
+
+// TestTranslateRenderRejectsF16StructOutputField confirms emitIOStruct's
+// own "fieldMSL, err := mslType(io.Type); if err != nil" check (render.go)
+// is independently reachable, unlike
+// TestTranslateRenderRejectsF16FragmentBareOutput's bare-return shape: a
+// struct-typed fragment output's field types are all emitted by
+// emitIOStruct while translateStageEntry is still building retMSL, before
+// tr.stmtBlock(ep.Func.Decl.Body) ever translates a single body statement
+// — so an f16 struct field fails here first, with nothing in the body
+// (which never assigns the field at all) able to trip any other f16
+// rejection ahead of it.
+func TestTranslateRenderRejectsF16StructOutputField(t *testing.T) {
+	src := `
+		enable f16;
+	` + vertexStub + `
+		struct FOut {
+			@location(0) v: f16,
+		}
+		@fragment
+		fn fmain() -> FOut {
+			var out: FOut;
+			return out;
+		}
+	`
+	_, err := TranslateRender(src, RenderOptions{})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: f16 struct output field")
+	}
+	if !strings.Contains(err.Error(), "only bool/i32/u32/f32") {
+		t.Fatalf("error = %v, want the mslScalar f16 rejection", err)
+	}
+}
+
+// TestTranslateRenderRejectsSwitchInHelperFunction confirms
+// translateStageEntry's own "if err := tr.emitHelperFuncs(ep); err != nil"
+// propagation (render.go) is independently reachable — unlike
+// TestTranslateRenderRejectsMatrixHelperFunctionParam's helper-parameter
+// shape (hand-mutation-confirmed redundant with the entry body's own
+// matrix-constructor translation), a switch statement is unsupported only
+// inside a function BODY (stmt.go's own stmt dispatch), never as part of a
+// parameter or return type a caller's own expression translation would
+// also have to check — so a helper whose own body uses switch, called
+// from a vertex entry whose own body never does, exercises this
+// propagation line and nothing else: emitHelperFuncs runs (and fails)
+// before the entry's own body is ever translated.
+func TestTranslateRenderRejectsSwitchInHelperFunction(t *testing.T) {
+	src := `
+		fn helper(x: u32) -> f32 {
+			var out: f32 = 0.0;
+			switch (x) {
+				case 0u: { out = 1.0; }
+				default: { out = 2.0; }
+			}
+			return out;
+		}
+		@vertex
+		fn vmain() -> @builtin(position) vec4<f32> {
+			let y = helper(0u);
+			return vec4<f32>(y, 0.0, 0.0, 1.0);
+		}
+	` + fragmentStub
+	_, err := TranslateRender(src, RenderOptions{})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: switch statement in helper function")
+	}
+	if !strings.Contains(err.Error(), "unsupported: statement") {
+		t.Fatalf("error = %v, want stmt's own unsupported-statement rejection", err)
 	}
 }
 
