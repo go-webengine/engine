@@ -615,8 +615,16 @@ func (b *binder) gpuCreateBuffer(dev *metal.Device, call goja.FunctionCall) goja
 	if desc == nil {
 		panic(b.vm.NewTypeError("createBuffer: a GPUBufferDescriptor is required"))
 	}
-	size := int(desc.Get("size").ToInteger())
-	usage := int(desc.Get("usage").ToInteger())
+	sizeVal := desc.Get("size")
+	if sizeVal == nil || goja.IsUndefined(sizeVal) {
+		panic(b.vm.NewTypeError("createBuffer: size is required"))
+	}
+	usageVal := desc.Get("usage")
+	if usageVal == nil || goja.IsUndefined(usageVal) {
+		panic(b.vm.NewTypeError("createBuffer: usage is required"))
+	}
+	size := int(sizeVal.ToInteger())
+	usage := int(usageVal.ToInteger())
 	mappedAtCreation := optBool(desc, "mappedAtCreation")
 	if size <= 0 {
 		panic(b.vm.NewTypeError("createBuffer: size must be positive"))
@@ -981,6 +989,27 @@ func (b *binder) gpuBuildComputePipeline(dev *metal.Device, call goja.FunctionCa
 	} else {
 		result = modState.result
 	}
+	// engine#447 review bug #5: wgslmsl itself legitimately accepts a
+	// texture_2d<u32> handle resource in a @compute entry point (a direct
+	// go-macos/metal caller can bind a real Metal texture at its
+	// resolved index — see wgslmsl's own TestTranslateTextureLoadEndToEnd),
+	// but THIS binding's own dispatch path cannot: gpuDispatchWorkgroups
+	// treats every resolved Binding as a Metal buffer, and
+	// gpuCreateBindGroup only ever accepts a GPUBufferBinding resource
+	// (its own "samplers/textures are not supported" rejection below).
+	// Left unrejected, a texture resource's Metal index — allocated from
+	// the SEPARATE tr.textureCount counter inside wgslmsl, independent of
+	// tr.bufferCount — collides with a real buffer resource assigned the
+	// same index, and gpuDispatchWorkgroups' buffers map silently
+	// delivers one resource's bytes under the other's binding instead of
+	// failing. Named rejection here, exactly like
+	// gpuCreateRenderPipeline's own "a shader resource is not supported"
+	// check just below it.
+	for _, bnd := range result.Bindings {
+		if bnd.Kind == wgslmsl.BindingTexture {
+			return nil, b.vm.NewTypeError("createComputePipeline: a texture resource (@group/@binding) is not supported in a compute pipeline")
+		}
+	}
 	lib, err := dev.Compile(result.MSL)
 	if err != nil {
 		b.panicValidation("createComputePipeline: Metal rejected the generated shader: " + err.Error())
@@ -1314,14 +1343,27 @@ func (b *binder) wrapGPUCommandEncoder(st *gpuCommandEncoderState) *goja.Object 
 		return b.gpuCopyBufferToBuffer(st, call)
 	})
 	o.Set("beginRenderPass", func(call goja.FunctionCall) goja.Value {
-		return b.gpuBeginRenderPass(st, call)
+		return b.gpuGuard(st.dev, goja.Undefined(), func() goja.Value {
+			return b.gpuBeginRenderPass(st, call)
+		})
 	})
 	o.Set("copyTextureToBuffer", func(call goja.FunctionCall) goja.Value {
-		return b.gpuCopyTextureToBuffer(st, call)
+		return b.gpuGuard(st.dev, goja.Undefined(), func() goja.Value {
+			return b.gpuCopyTextureToBuffer(st, call)
+		})
 	})
 	o.Set("finish", func(call goja.FunctionCall) goja.Value {
 		if st.finished {
 			panic(b.vm.NewTypeError("finish: this command encoder has already finished"))
+		}
+		// engine#447 review bug #7: a pass begun but never end()ed must
+		// not be silently dropped — every dispatch/draw recorded against
+		// it is either already in st.commands (dispatchWorkgroups) or
+		// still sitting unflushed in the render pass's own state.draws,
+		// about to be lost the moment finish() hands back a command
+		// buffer with no reference to it at all.
+		if st.passOpen {
+			panic(b.vm.NewTypeError("finish: a pass (compute or render) is still open"))
 		}
 		st.finished = true
 		cbObj := b.vm.NewObject()
@@ -1366,10 +1408,27 @@ func (b *binder) wrapGPUComputePassEncoder(enc *gpuCommandEncoderState) *goja.Ob
 	})
 	o.Set("dispatchWorkgroups", func(call goja.FunctionCall) goja.Value {
 		return b.gpuGuard(enc.dev, goja.Undefined(), func() goja.Value {
+			// engine#447 review bug #7: dispatchWorkgroups records
+			// directly into enc.commands (gpuDispatchWorkgroups's own
+			// append), so unlike a render pass's draws a call after
+			// end() would not just be ignored — it would still run,
+			// against an encoder whose pass has already been handed to
+			// gpuQueueSubmit's own command list.
+			if !enc.passOpen {
+				panic(b.vm.NewTypeError("dispatchWorkgroups: this pass has already ended"))
+			}
 			return b.gpuDispatchWorkgroups(enc, curPipeline, curBindGroups, call)
 		})
 	})
 	o.Set("end", func(call goja.FunctionCall) goja.Value {
+		// engine#447 review bug #7: without this, end() called twice on
+		// the same pass is silently accepted both times (passOpen/
+		// passEnded already both idempotent-looking booleans), matching
+		// exactly the named "end() twice re-runs the pass" defect for
+		// the render-pass encoder just below.
+		if !enc.passOpen {
+			panic(b.vm.NewTypeError("end: this pass has already ended"))
+		}
 		enc.passOpen = false
 		enc.passEnded = true
 		return goja.Undefined()
@@ -1612,23 +1671,48 @@ type gpuTextureState struct {
 // the two argument shapes are resolved in exactly one place.
 type gpuExtent struct{ w, h, d int }
 
+// gpuGetInt reads an integer property that may be legitimately absent —
+// an optional dictionary member (GPUExtent3DDict.height/depthOrArrayLayers
+// both default to 1 per spec) or a short GPUExtent3D/GPUOrigin3D sequence
+// form. goja's own Object.Get returns a genuine Go nil for a missing
+// property (as opposed to goja.Undefined(), a non-nil Value, for one
+// explicitly set to undefined) — calling ToInteger() on that nil
+// interface panics, so every spec-optional numeric read goes through
+// this instead of a raw obj.Get(key).ToInteger().
+func gpuGetInt(obj *goja.Object, key string, def int) int {
+	v := obj.Get(key)
+	if v == nil || goja.IsUndefined(v) {
+		return def
+	}
+	return int(v.ToInteger())
+}
+
+// gpuGetFloat is gpuGetInt's float counterpart, for GPUColor's own r/g/b/a.
+func gpuGetFloat(obj *goja.Object, key string, def float64) float64 {
+	v := obj.Get(key)
+	if v == nil || goja.IsUndefined(v) {
+		return def
+	}
+	return v.ToFloat()
+}
+
 func gpuReadExtent(v goja.Value) gpuExtent {
 	obj, ok := v.(*goja.Object)
 	if !ok {
 		return gpuExtent{}
 	}
 	if w := obj.Get("width"); w != nil && !goja.IsUndefined(w) {
-		d := 1
-		if dd := obj.Get("depthOrArrayLayers"); dd != nil && !goja.IsUndefined(dd) {
-			d = int(dd.ToInteger())
+		return gpuExtent{
+			w: int(w.ToInteger()),
+			h: gpuGetInt(obj, "height", 1),
+			d: gpuGetInt(obj, "depthOrArrayLayers", 1),
 		}
-		return gpuExtent{w: int(w.ToInteger()), h: int(obj.Get("height").ToInteger()), d: d}
 	}
-	d := 1
-	if dd := obj.Get("2"); dd != nil && !goja.IsUndefined(dd) {
-		d = int(dd.ToInteger())
+	return gpuExtent{
+		w: gpuGetInt(obj, "0", 0),
+		h: gpuGetInt(obj, "1", 1),
+		d: gpuGetInt(obj, "2", 1),
 	}
-	return gpuExtent{w: int(obj.Get("0").ToInteger()), h: int(obj.Get("1").ToInteger()), d: d}
 }
 
 // gpuIsZeroOrigin reports whether v (a GPUOrigin3D: `{x, y, z}` or
@@ -1681,9 +1765,9 @@ func gpuReadColor(v goja.Value) [4]float64 {
 		return [4]float64{}
 	}
 	if r := obj.Get("r"); r != nil && !goja.IsUndefined(r) {
-		return [4]float64{r.ToFloat(), obj.Get("g").ToFloat(), obj.Get("b").ToFloat(), obj.Get("a").ToFloat()}
+		return [4]float64{r.ToFloat(), gpuGetFloat(obj, "g", 0), gpuGetFloat(obj, "b", 0), gpuGetFloat(obj, "a", 0)}
 	}
-	return [4]float64{obj.Get("0").ToFloat(), obj.Get("1").ToFloat(), obj.Get("2").ToFloat(), obj.Get("3").ToFloat()}
+	return [4]float64{gpuGetFloat(obj, "0", 0), gpuGetFloat(obj, "1", 0), gpuGetFloat(obj, "2", 0), gpuGetFloat(obj, "3", 0)}
 }
 
 // gpuCreateTexture implements GPUDevice.createTexture(descriptor) —
@@ -1727,7 +1811,11 @@ func (b *binder) gpuCreateTexture(dev *metal.Device, call goja.FunctionCall) goj
 	if size.d != 1 {
 		panic(unsupportedJS(b, "createTexture: only a single 2D texture (depthOrArrayLayers 1) is supported"))
 	}
-	usage := int(desc.Get("usage").ToInteger())
+	usageVal := desc.Get("usage")
+	if usageVal == nil || goja.IsUndefined(usageVal) {
+		panic(b.vm.NewTypeError("createTexture: usage is required"))
+	}
+	usage := int(usageVal.ToInteger())
 	var musage metal.TextureUsage
 	if usage&gpuTextureUsageTextureBinding != 0 {
 		musage |= metal.TextureUsageShaderRead
@@ -1883,6 +1971,14 @@ func (b *binder) gpuQueueWriteTexture(call goja.FunctionCall) goja.Value {
 type gpuBoundVertexBuffer struct {
 	buf    *metal.Buffer
 	offset int
+	// size is bst.size at bind time (engine#447 review bug #6): copied
+	// alongside buf/offset so gpuValidateVertexBuffers/
+	// gpuValidateIndexedVertexBuffers can bounds-check a draw against the
+	// buffer's own real size without re-resolving b.gpuBuffers[bufObj] —
+	// which setVertexBuffer/setIndexBuffer's own callers no longer have
+	// once a draw is recorded, by the same by-value-copy reasoning this
+	// struct's own doc comment above already gives for buf/offset.
+	size int
 }
 
 // gpuRenderPipelineState is the Go-level state behind one
@@ -1894,6 +1990,23 @@ type gpuBoundVertexBuffer struct {
 // equivalent.
 type gpuRenderPipelineState struct {
 	pipe *metal.RenderPipeline
+	// vertexSlots is every vertex.buffers[] entry's own buffer index and
+	// byte stride (engine#447 review bug #6): draw/drawIndexed need this
+	// at draw time to reject a draw with no buffer bound for a slot the
+	// pipeline declares, or one too small for the vertices/indices about
+	// to be read — go-macos/metal's own RenderEncoder does not validate
+	// either itself, so an unvalidated draw reads past a real buffer's
+	// end (undefined content, not a crash this binding can rely on
+	// Metal to catch).
+	vertexSlots []gpuVertexSlot
+}
+
+// gpuVertexSlot is one vertex.buffers[] entry's own buffer index/stride,
+// recorded at createRenderPipeline time (gpuRenderPipelineState's own doc
+// comment).
+type gpuVertexSlot struct {
+	index  int
+	stride int
 }
 
 // gpuCreateRenderPipeline implements
@@ -1934,6 +2047,36 @@ func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCa
 		if t := prim.Get("topology"); t != nil && !goja.IsUndefined(t) && t.String() != "triangle-list" {
 			panic(unsupportedJS(b, "createRenderPipeline: only \"triangle-list\" topology is supported"))
 		}
+		// engine#447 review bug #8: cullMode/frontFace/unclippedDepth were
+		// read nowhere in this function — go-macos/metal's own
+		// RenderPipelineDescriptor has no counterpart field for any of
+		// them, so a caller asking for back-face culling (say) would have
+		// gotten a pipeline that silently never culls anything, with no
+		// error at all. Named rejections instead, exactly like topology
+		// above, for any value other than the spec's own default.
+		if cm := prim.Get("cullMode"); cm != nil && !goja.IsUndefined(cm) && cm.String() != "none" {
+			panic(unsupportedJS(b, "createRenderPipeline: only \"none\" primitive.cullMode is supported"))
+		}
+		if ff := prim.Get("frontFace"); ff != nil && !goja.IsUndefined(ff) && ff.String() != "ccw" {
+			panic(unsupportedJS(b, "createRenderPipeline: only \"ccw\" primitive.frontFace is supported"))
+		}
+		if ud := prim.Get("unclippedDepth"); ud != nil && !goja.IsUndefined(ud) && ud.ToBoolean() {
+			panic(unsupportedJS(b, "createRenderPipeline: primitive.unclippedDepth is not supported"))
+		}
+	}
+	// engine#447 review bug #8: multisample was read nowhere in this
+	// function either — a caller requesting a 4x MSAA pipeline (say) got a
+	// single-sample one with no error, which then mismatches a multisample
+	// render target's own sample count at draw time deep inside
+	// go-macos/metal instead of being refused up front, at the one place
+	// that actually knows the request was made.
+	if ms, ok := desc.Get("multisample").(*goja.Object); ok {
+		if c := ms.Get("count"); c != nil && !goja.IsUndefined(c) && c.ToInteger() != 1 {
+			panic(unsupportedJS(b, "createRenderPipeline: only multisample.count of 1 is supported"))
+		}
+		if a := ms.Get("alphaToCoverageEnabled"); a != nil && !goja.IsUndefined(a) && a.ToBoolean() {
+			panic(unsupportedJS(b, "createRenderPipeline: multisample.alphaToCoverageEnabled is not supported"))
+		}
 	}
 
 	vertexObj, _ := desc.Get("vertex").(*goja.Object)
@@ -1949,6 +2092,14 @@ func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCa
 	if ep := vertexObj.Get("entryPoint"); ep != nil && !goja.IsUndefined(ep) {
 		vEntryPoint = ep.String()
 	}
+	// engine#447 review bug #8: vertex.constants (pipeline-overridable
+	// constants) was read nowhere in this function — a caller overriding a
+	// WGSL `override` value would have had that override silently dropped,
+	// with the shader always compiled using its own declared default
+	// instead, no error at all.
+	if c, ok := vertexObj.Get("constants").(*goja.Object); ok && c != nil {
+		panic(unsupportedJS(b, "createRenderPipeline: vertex.constants is not supported"))
+	}
 
 	fragmentObj, _ := desc.Get("fragment").(*goja.Object)
 	if fragmentObj == nil {
@@ -1963,6 +2114,9 @@ func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCa
 	if ep := fragmentObj.Get("entryPoint"); ep != nil && !goja.IsUndefined(ep) {
 		fEntryPoint = ep.String()
 	}
+	if c, ok := fragmentObj.Get("constants").(*goja.Object); ok && c != nil {
+		panic(unsupportedJS(b, "createRenderPipeline: fragment.constants is not supported"))
+	}
 	if vModState.src != fModState.src {
 		panic(unsupportedJS(b, "createRenderPipeline: vertex.module and fragment.module must be the same GPUShaderModule"))
 	}
@@ -1972,8 +2126,27 @@ func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCa
 		panic(unsupportedJS(b, "createRenderPipeline: exactly one fragment.targets entry is supported"))
 	}
 	target0, _ := targetsArr.Get("0").(*goja.Object)
-	if target0 == nil || target0.Get("format").String() != "r8uint" {
+	if target0 == nil {
 		panic(unsupportedJS(b, "createRenderPipeline: fragment.targets[0].format must be \"r8uint\""))
+	}
+	target0FormatVal := target0.Get("format")
+	if target0FormatVal == nil || goja.IsUndefined(target0FormatVal) {
+		panic(b.vm.NewTypeError("createRenderPipeline: fragment.targets[0].format is required"))
+	}
+	if target0FormatVal.String() != "r8uint" {
+		panic(unsupportedJS(b, "createRenderPipeline: fragment.targets[0].format must be \"r8uint\""))
+	}
+	// engine#447 review bug #8: blend/writeMask were read nowhere in this
+	// function — go-macos/metal's own RenderPipelineDescriptor has no
+	// per-target blend or write-mask field at all, so a caller asking for
+	// alpha blending (say) got a pipeline that silently always overwrites
+	// (no blending, full write mask), with no error. writeMask's own
+	// spec default is GPUColorWrite.ALL (0xF); blend's is "no blend state".
+	if bl := target0.Get("blend"); bl != nil && !goja.IsUndefined(bl) {
+		panic(unsupportedJS(b, "createRenderPipeline: fragment.targets[0].blend is not supported"))
+	}
+	if wm := target0.Get("writeMask"); wm != nil && !goja.IsUndefined(wm) && wm.ToInteger() != 0xF {
+		panic(unsupportedJS(b, "createRenderPipeline: fragment.targets[0].writeMask must be GPUColorWrite.ALL"))
 	}
 
 	res, err := wgslmsl.TranslateRender(vModState.src, wgslmsl.RenderOptions{VertexEntryPoint: vEntryPoint, FragmentEntryPoint: fEntryPoint})
@@ -1999,7 +2172,20 @@ func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCa
 			if bufLayout == nil {
 				continue
 			}
-			stride := int(bufLayout.Get("arrayStride").ToInteger())
+			strideVal := bufLayout.Get("arrayStride")
+			if strideVal == nil || goja.IsUndefined(strideVal) {
+				panic(b.vm.NewTypeError("createRenderPipeline: vertex.buffers[].arrayStride is required"))
+			}
+			// engine#447 review bug #8: stepMode was read nowhere in this
+			// function — metal.VertexLayout has no per-buffer step-rate
+			// field at all here, so a caller asking for "instance" step
+			// mode (per-instance, not per-vertex, attribute advance) got
+			// an ordinary per-vertex layout silently, no error, which only
+			// shows up as visibly wrong instanced geometry at draw time.
+			if sm := bufLayout.Get("stepMode"); sm != nil && !goja.IsUndefined(sm) && sm.String() != "vertex" {
+				panic(unsupportedJS(b, "createRenderPipeline: only \"vertex\" vertex.buffers[].stepMode is supported"))
+			}
+			stride := int(strideVal.ToInteger())
 			layouts = append(layouts, metal.VertexLayout{BufferIndex: bi, Stride: stride})
 			attrsArr, _ := bufLayout.Get("attributes").(*goja.Object)
 			if attrsArr == nil {
@@ -2011,12 +2197,20 @@ func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCa
 				if attr == nil {
 					continue
 				}
-				formatStr := attr.Get("format").String()
+				formatVal := attr.Get("format")
+				if formatVal == nil || goja.IsUndefined(formatVal) {
+					panic(b.vm.NewTypeError("createRenderPipeline: vertex attribute format is required"))
+				}
+				formatStr := formatVal.String()
 				mf, nc, kind, ok := gpuVertexFormat(formatStr)
 				if !ok {
 					panic(unsupportedJS(b, "createRenderPipeline: unsupported vertex format "+formatStr))
 				}
-				loc := int(attr.Get("shaderLocation").ToInteger())
+				locVal := attr.Get("shaderLocation")
+				if locVal == nil || goja.IsUndefined(locVal) {
+					panic(b.vm.NewTypeError("createRenderPipeline: vertex attribute shaderLocation is required"))
+				}
+				loc := int(locVal.ToInteger())
 				in, found := byLocation[loc]
 				if !found {
 					b.panicValidation(fmt.Sprintf("createRenderPipeline: shader has no @location(%d) vertex input to match this attribute", loc))
@@ -2024,11 +2218,15 @@ func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCa
 				if in.NComponents != nc || in.ScalarKind != kind {
 					b.panicValidation(fmt.Sprintf("createRenderPipeline: attribute at @location(%d) does not match the shader's own input type", loc))
 				}
+				offsetVal := attr.Get("offset")
+				if offsetVal == nil || goja.IsUndefined(offsetVal) {
+					panic(b.vm.NewTypeError("createRenderPipeline: vertex attribute offset is required"))
+				}
 				seen[loc] = true
 				attrs = append(attrs, metal.VertexAttribute{
 					Index:       loc,
 					Format:      mf,
-					Offset:      int(attr.Get("offset").ToInteger()),
+					Offset:      int(offsetVal.ToInteger()),
 					BufferIndex: bi,
 				})
 			}
@@ -2055,7 +2253,11 @@ func (b *binder) gpuCreateRenderPipeline(dev *metal.Device, call goja.FunctionCa
 	if err != nil {
 		b.panicValidation(err.Error())
 	}
-	return b.wrapGPURenderPipeline(&gpuRenderPipelineState{pipe: pipe})
+	var vertexSlots []gpuVertexSlot
+	for _, l := range layouts {
+		vertexSlots = append(vertexSlots, gpuVertexSlot{index: l.BufferIndex, stride: l.Stride})
+	}
+	return b.wrapGPURenderPipeline(&gpuRenderPipelineState{pipe: pipe, vertexSlots: vertexSlots})
 }
 
 func (b *binder) wrapGPURenderPipeline(st *gpuRenderPipelineState) *goja.Object {
@@ -2233,7 +2435,7 @@ func (b *binder) wrapGPURenderPassEncoder(enc *gpuCommandEncoderState, state *gp
 		if offset < 0 || offset > bst.size {
 			panic(b.vm.NewTypeError("setVertexBuffer: offset out of range for this buffer"))
 		}
-		vertexBuffers[slot] = gpuBoundVertexBuffer{buf: bst.buf, offset: offset}
+		vertexBuffers[slot] = gpuBoundVertexBuffer{buf: bst.buf, offset: offset, size: bst.size}
 		return goja.Undefined()
 	})
 	o.Set("setIndexBuffer", func(call goja.FunctionCall) goja.Value {
@@ -2253,21 +2455,42 @@ func (b *binder) wrapGPURenderPassEncoder(enc *gpuCommandEncoderState, state *gp
 		if offset < 0 || offset > bst.size {
 			panic(b.vm.NewTypeError("setIndexBuffer: offset out of range for this buffer"))
 		}
-		ib := gpuBoundVertexBuffer{buf: bst.buf, offset: offset}
+		ib := gpuBoundVertexBuffer{buf: bst.buf, offset: offset, size: bst.size}
 		curIndexBuffer = &ib
 		return goja.Undefined()
 	})
 	o.Set("draw", func(call goja.FunctionCall) goja.Value {
 		return b.gpuGuard(enc.dev, goja.Undefined(), func() goja.Value {
+			// engine#447 review bug #7: draw()/drawIndexed() after end()
+			// must not still execute — state.draws is only flushed into
+			// enc.commands by end() (below), but a call reaching here
+			// after that has already happened would still append to
+			// state.draws, silently growing a render pass gpuQueueSubmit
+			// believes is already fully recorded.
+			if !enc.passOpen {
+				panic(b.vm.NewTypeError("draw: this pass has already ended"))
+			}
 			return b.gpuDraw(state, curPipeline, vertexBuffers, call)
 		})
 	})
 	o.Set("drawIndexed", func(call goja.FunctionCall) goja.Value {
 		return b.gpuGuard(enc.dev, goja.Undefined(), func() goja.Value {
+			if !enc.passOpen {
+				panic(b.vm.NewTypeError("drawIndexed: this pass has already ended"))
+			}
 			return b.gpuDrawIndexed(state, curPipeline, vertexBuffers, curIndexBuffer, call)
 		})
 	})
 	o.Set("end", func(call goja.FunctionCall) goja.Value {
+		// engine#447 review bug #7: end() called twice must not re-run
+		// the pass — without this guard, a second end() re-appends the
+		// SAME state (and its by-now-possibly-grown state.draws, if a
+		// draw after the first end() was also left unguarded) as a
+		// second gpuRecordedCommand, executing every one of its draws
+		// all over again at gpuQueueSubmit time.
+		if !enc.passOpen {
+			panic(b.vm.NewTypeError("end: this pass has already ended"))
+		}
 		enc.passOpen = false
 		enc.passEnded = true
 		enc.commands = append(enc.commands, gpuRecordedCommand{render: state})
@@ -2295,12 +2518,85 @@ func (b *binder) gpuDraw(state *gpuRecordedRenderPass, pipeline *gpuRenderPipeli
 	if a := call.Argument(3); a != nil && !goja.IsUndefined(a) {
 		firstInstance = int(a.ToInteger())
 	}
+	if vertexCount < 0 || instanceCount < 0 || firstVertex < 0 || firstInstance < 0 {
+		b.panicValidation("draw: vertexCount, instanceCount, firstVertex and firstInstance must not be negative")
+	}
+	b.gpuValidateVertexBuffers("draw", pipeline, vbs, firstVertex, vertexCount)
 	state.draws = append(state.draws, gpuRecordedDraw{
 		pipeline: pipeline.pipe, vertexBuffers: copyVertexBuffers(vbs),
 		vertexCount: vertexCount, instanceCount: instanceCount,
 		firstVertex: firstVertex, firstInstance: firstInstance,
 	})
 	return goja.Undefined()
+}
+
+// gpuValidateVertexBuffers is draw's own bounds check (engine#447 review
+// bug #6): every slot the pipeline declares (gpuRenderPipelineState's own
+// vertexSlots) must have a vertex buffer bound, regardless of
+// vertexCount, and — when vertexCount > 0 — that buffer must be large
+// enough to supply every vertex in [firstVertex, firstVertex+vertexCount)
+// at its own declared stride. Content validation (panicValidation, per
+// spec's own error model — never a thrown TypeError), called from BOTH
+// draw (firstVertex-based range) and drawIndexed (gpuValidateIndexedVertexBuffers's
+// own per-index range, after resolving each actual vertex index through
+// baseVertex).
+func (b *binder) gpuValidateVertexBuffers(who string, pipeline *gpuRenderPipelineState, vbs map[int]gpuBoundVertexBuffer, firstVertex, vertexCount int) {
+	for _, slot := range pipeline.vertexSlots {
+		vb, ok := vbs[slot.index]
+		if !ok {
+			b.panicValidation(fmt.Sprintf("%s: no vertex buffer bound for slot %d", who, slot.index))
+		}
+		if vertexCount <= 0 || slot.stride <= 0 {
+			continue
+		}
+		maxIndex := firstVertex + vertexCount - 1
+		needed := vb.offset + (maxIndex+1)*slot.stride
+		if needed > vb.size {
+			b.panicValidation(fmt.Sprintf("%s: vertex buffer at slot %d is too small for this draw (need %d bytes, have %d)", who, slot.index, needed, vb.size))
+		}
+	}
+}
+
+// gpuValidateIndexedVertexBuffers is drawIndexed's own bounds check
+// (engine#447 review bug #6): first confirms every pipeline-declared slot
+// has a vertex buffer bound (exactly like gpuValidateVertexBuffers),
+// then — when indexCount > 0 — reads every uint32 index the draw is about
+// to use directly from the index buffer's own CPU-visible bytes
+// (go-macos/metal buffers are unified memory; gpuDispatchWorkgroups
+// already reads/writes one the same way for its own _Sizes buffer) and
+// checks, for every slot, that baseVertex+index is never negative and
+// never reads past that slot's bound buffer. Content validation
+// (panicValidation): the buffers, the pipeline and every individual index
+// value are each independently legitimate; only the COMBINATION — THIS
+// index against THIS buffer — can be out of range, which is exactly what
+// go-macos/metal's own RenderEncoder does not check.
+func (b *binder) gpuValidateIndexedVertexBuffers(pipeline *gpuRenderPipelineState, vbs map[int]gpuBoundVertexBuffer, ib *gpuBoundVertexBuffer, byteOffset, indexCount, baseVertex int) {
+	for _, slot := range pipeline.vertexSlots {
+		if _, ok := vbs[slot.index]; !ok {
+			b.panicValidation(fmt.Sprintf("drawIndexed: no vertex buffer bound for slot %d", slot.index))
+		}
+	}
+	if indexCount <= 0 {
+		return
+	}
+	raw := ib.buf.Bytes()
+	for i := 0; i < indexCount; i++ {
+		off := byteOffset + i*4
+		idx := int(int64(baseVertex) + int64(binary.LittleEndian.Uint32(raw[off:off+4])))
+		if idx < 0 {
+			b.panicValidation("drawIndexed: an index plus baseVertex is negative")
+		}
+		for _, slot := range pipeline.vertexSlots {
+			if slot.stride <= 0 {
+				continue
+			}
+			vb := vbs[slot.index]
+			needed := vb.offset + (idx+1)*slot.stride
+			if needed > vb.size {
+				b.panicValidation(fmt.Sprintf("drawIndexed: vertex buffer at slot %d is too small for this draw (need %d bytes, have %d)", slot.index, needed, vb.size))
+			}
+		}
+	}
 }
 
 // gpuDrawIndexed implements GPURenderPassEncoder.drawIndexed(indexCount,
@@ -2333,9 +2629,19 @@ func (b *binder) gpuDrawIndexed(state *gpuRecordedRenderPass, pipeline *gpuRende
 	if a := call.Argument(4); a != nil && !goja.IsUndefined(a) {
 		firstInstance = int(a.ToInteger())
 	}
+	if indexCount < 0 || instanceCount < 0 || firstIndex < 0 || firstInstance < 0 {
+		b.panicValidation("drawIndexed: indexCount, instanceCount, firstIndex and firstInstance must not be negative")
+	}
+	indexByteOffset := ib.offset + firstIndex*4
+	if indexCount > 0 {
+		if need := indexByteOffset + indexCount*4; need > ib.size {
+			b.panicValidation(fmt.Sprintf("drawIndexed: index buffer is too small for this draw (need %d bytes, have %d)", need, ib.size))
+		}
+	}
+	b.gpuValidateIndexedVertexBuffers(pipeline, vbs, ib, indexByteOffset, indexCount, baseVertex)
 	state.draws = append(state.draws, gpuRecordedDraw{
 		pipeline: pipeline.pipe, vertexBuffers: copyVertexBuffers(vbs), indexed: true,
-		indexBuffer: ib.buf, indexBufferOffset: ib.offset + firstIndex*4,
+		indexBuffer: ib.buf, indexBufferOffset: indexByteOffset,
 		indexCount: indexCount, instanceCount: instanceCount,
 		baseVertex: baseVertex, firstInstance: firstInstance,
 	})

@@ -805,3 +805,129 @@ func TestTranslateRenderRejectsSamplerResource(t *testing.T) {
 		t.Fatal("TranslateRender succeeded, want a rejection: sampler resource")
 	}
 }
+
+// builtinStructMemberWGSL is engine#447 review bug #3's exact
+// reproduction: the vertex entry's own instance_index builtin is a FIELD
+// of a struct parameter (VertexIn), accessed in the body via `in.iid` —
+// never a bare top-level parameter the way every other render test in
+// this file writes it. Before the fix, stageEntryParams registered no
+// accessor for a struct-typed builtin field (only for a @location one),
+// so memberExpr fell through to the generic struct-member case and
+// emitted `in.iid` using the struct parameter's own WGSL identifier
+// `in` — never declared as an MSL parameter, since instance_index is
+// flattened into its own bare [[instance_id]] parameter instead. Real
+// Metal rejected the result outright ("use of undeclared identifier
+// 'in'"), which is exactly what TestTranslateRenderBuiltinStructMemberCompiles
+// below proves no longer happens.
+const builtinStructMemberWGSL = `
+struct VertexIn {
+    @builtin(instance_index) iid: u32,
+    @location(0) pos: vec2<f32>,
+}
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) value: u32,
+}
+
+@vertex
+fn vmain(in: VertexIn) -> VertexOut {
+    var out: VertexOut;
+    out.position = vec4<f32>(in.pos, 0.0, 1.0);
+    out.value = in.iid;
+    return out;
+}
+
+@fragment
+fn fmain(in: VertexOut) -> @location(0) u32 {
+    return in.value;
+}
+`
+
+// TestTranslateRenderBuiltinStructMemberCompiles is the direct
+// regression test for engine#447 review bug #3: builtinStructMemberWGSL
+// must both translate AND compile against a real Metal device — before
+// the fix, translation itself succeeded (no WGSL-level error), and only
+// the real Metal compiler rejected the generated MSL, so this test must
+// run the fixture all the way through TranslateRender -> device.Compile
+// to actually exercise the bug, a pure-Go assertion on TranslateRender's
+// error return would not have caught it.
+func TestTranslateRenderBuiltinStructMemberCompiles(t *testing.T) {
+	res, err := TranslateRender(builtinStructMemberWGSL, RenderOptions{})
+	if err != nil {
+		t.Fatalf("TranslateRender: %v", err)
+	}
+
+	d := renderDevice(t)
+	defer d.Close()
+
+	combinedMSL := res.VertexMSL + "\n" + res.FragmentMSL
+	lib, err := d.Compile(combinedMSL)
+	if err != nil {
+		t.Fatalf("Metal rejected the generated MSL: %v\n--- vertex ---\n%s\n--- fragment ---\n%s", err, res.VertexMSL, res.FragmentMSL)
+	}
+	defer lib.Close()
+}
+
+// sharedHelperWGSL is engine#447 review bug #4's exact reproduction: a
+// plain helper function (scaleUp) called from BOTH the vertex and the
+// fragment entry point. Before the fix, TranslateRender built vtr/ftr as
+// two fully independent *translator instances with no shared
+// "already emitted" state at all (TranslateRender's own doc comment
+// now explains why sharedHelpers exists) — each one's own
+// emitHelperFuncs emitted scaleUp's full MSL text unconditionally, so
+// the combined MSL (every real caller's own compile unit — see
+// gpuCreateRenderPipeline, TestTranslateRenderVertexFragmentEndToEnd)
+// contained TWO textually identical "float scaleUp(float v) { ... }"
+// definitions, which real Metal rejects outright as a redefinition.
+const sharedHelperWGSL = `
+fn scaleUp(v: f32) -> f32 {
+    return v * 2.0;
+}
+
+struct VertexOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) @interpolate(flat) value: u32,
+}
+
+@vertex
+fn vmain(@location(0) pos: vec2<f32>) -> VertexOut {
+    var out: VertexOut;
+    out.position = vec4<f32>(scaleUp(pos.x), scaleUp(pos.y), 0.0, 1.0);
+    out.value = 0u;
+    return out;
+}
+
+@fragment
+fn fmain(in: VertexOut) -> @location(0) u32 {
+    return u32(scaleUp(1.0));
+}
+`
+
+// TestTranslateRenderSharedHelperEmittedOnce is the direct regression
+// test for engine#447 review bug #4: sharedHelperWGSL's own scaleUp
+// helper, called from both stages, must appear in the combined MSL
+// exactly once (a textual count, proving the dedup itself happened, not
+// merely that Metal tolerated something else) AND the combined MSL must
+// still compile against a real Metal device (the actual failure mode
+// before the fix: a function redefinition error).
+func TestTranslateRenderSharedHelperEmittedOnce(t *testing.T) {
+	res, err := TranslateRender(sharedHelperWGSL, RenderOptions{})
+	if err != nil {
+		t.Fatalf("TranslateRender: %v", err)
+	}
+
+	combinedMSL := res.VertexMSL + "\n" + res.FragmentMSL
+	if n := strings.Count(combinedMSL, "float scaleUp("); n != 1 {
+		t.Fatalf("combined MSL defines scaleUp %d times, want exactly 1:\n%s", n, combinedMSL)
+	}
+
+	d := renderDevice(t)
+	defer d.Close()
+
+	lib, err := d.Compile(combinedMSL)
+	if err != nil {
+		t.Fatalf("Metal rejected the generated MSL: %v\n--- combined ---\n%s", err, combinedMSL)
+	}
+	defer lib.Close()
+}

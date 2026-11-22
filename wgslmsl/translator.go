@@ -137,6 +137,21 @@ type translator struct {
 	// inputFlatten's memberExpr lookup, for when the WGSL body refers to
 	// the input by its own bare name rather than through a struct field.
 	paramRename map[*wgsl.ParamObj]string
+	// sharedHelpers is nil for a @compute translator (emitHelperFuncs runs
+	// against a single translator there, so nothing to share) and, for a
+	// render pipeline's own vtr/ftr pair, ONE map instance both share
+	// (TranslateRender's own doc comment) — set true the first time EITHER
+	// translator emits a given helper's MSL text, so the second translator
+	// to reach the SAME helper (a vertex and fragment entry calling the
+	// same WGSL function) skips re-emitting it. Safe unconditionally, not
+	// just for a resource-free helper: resourceParamDecl/mslType never
+	// depend on which stage is asking, so the two emissions would be
+	// byte-for-byte identical text, and Metal rejects an exact duplicate
+	// function definition in the same translation unit (engine#447 review
+	// bug #4) — vertex and fragment MSL are concatenated into one
+	// compilation unit by every caller (gpuCreateRenderPipeline,
+	// TestTranslateRenderVertexFragmentEndToEnd), never compiled apart.
+	sharedHelpers map[*wgsl.FuncObj]bool
 }
 
 // mslTypeTR is t's own Metal Shading Language spelling, exactly like the
@@ -272,6 +287,18 @@ func (tr *translator) emitHelperFuncs(ep *wgsl.EntryPoint) error {
 			return err
 		}
 		tr.helperExtra[f] = extra
+		tr.userFuncs[f] = true
+
+		if tr.sharedHelpers != nil {
+			if tr.sharedHelpers[f] {
+				// Already emitted verbatim by the other stage's
+				// translator earlier in this TranslateRender call — see
+				// sharedHelpers' own doc comment for why that is always
+				// safe to skip, not just for a resource-free helper.
+				continue
+			}
+			tr.sharedHelpers[f] = true
+		}
 
 		retMSL := "void"
 		if f.Ret != wgsl.Void {
@@ -307,7 +334,6 @@ func (tr *translator) emitHelperFuncs(ep *wgsl.EntryPoint) error {
 		tr.indent--
 		tr.line("}")
 		tr.buf.WriteByte('\n')
-		tr.userFuncs[f] = true
 	}
 	return nil
 }

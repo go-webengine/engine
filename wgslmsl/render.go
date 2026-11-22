@@ -131,13 +131,21 @@ func TranslateRender(src string, opts RenderOptions) (*RenderResult, error) {
 		return nil, err
 	}
 
-	vtr := &translator{info: info}
+	// sharedHelpers is ONE map instance both translators below write into
+	// and read from, so a helper function called from both the vertex and
+	// fragment entry is emitted into the combined MSL exactly once — see
+	// translator.sharedHelpers' own doc comment for why a second,
+	// unconditional emission is never safe to leave in (engine#447 review
+	// bug #4).
+	sharedHelpers := map[*wgsl.FuncObj]bool{}
+
+	vtr := &translator{info: info, sharedHelpers: sharedHelpers}
 	vMSL, vInputs, err := vtr.translateStageEntry(vep)
 	if err != nil {
 		return nil, fmt.Errorf("wgslmsl: vertex entry %q: %w", vep.Name, err)
 	}
 
-	ftr := &translator{info: info}
+	ftr := &translator{info: info, sharedHelpers: sharedHelpers}
 	fMSL, _, err := ftr.translateStageEntry(fep)
 	if err != nil {
 		return nil, fmt.Errorf("wgslmsl: fragment entry %q: %w", fep.Name, err)
@@ -301,6 +309,32 @@ func (tr *translator) emitIOStruct(name string, vars []wgsl.IOVar, stage wgsl.St
 // top-level parameter instead (no enclosing struct to access through
 // `in.field`) is recorded in tr.paramRename instead, keyed directly by its
 // own ParamObj, since the WGSL body refers to it by a bare identifier.
+// registerStageInputAccessor records how a struct-typed entry input's
+// FIELD (in.Member != "") must be rewritten inside the function body —
+// to accessor, the bare top-level MSL parameter name a builtin
+// (vertex_index/instance_index/position) is always emitted as, exactly
+// matching the @location branch's own tr.inputFlatten mechanism below.
+// Without this, a builtin struct member (e.g. a struct parameter's own
+// `@builtin(position) position: vec4<f32>` field) left memberExpr no
+// registered accessor to translate `in.position` to, so it fell through
+// to the generic struct-member case and emitted `in.position` using the
+// struct parameter's OWN WGSL identifier — which this function never
+// declares as an MSL parameter (it is flattened into bare parameters
+// instead), so Metal rejected the generated source outright
+// (engine#447 review bug #3). in.Member == "" (a bare top-level builtin
+// parameter, not accessed through a struct) needs no rewrite at all, so
+// this is a no-op for that case.
+func (tr *translator) registerStageInputAccessor(ep *wgsl.EntryPoint, in wgsl.IOVar, accessor string) {
+	if in.Member == "" {
+		return
+	}
+	po := ep.Func.Params[in.Param]
+	if tr.inputFlatten[po] == nil {
+		tr.inputFlatten[po] = map[string]string{}
+	}
+	tr.inputFlatten[po][in.Member] = accessor
+}
+
 func (tr *translator) stageEntryParams(ep *wgsl.EntryPoint) ([]string, []VertexInputVar, error) {
 	params, err := tr.resourceEntryParams(ep.Resources)
 	if err != nil {
@@ -322,11 +356,17 @@ func (tr *translator) stageEntryParams(ep *wgsl.EntryPoint) ([]string, []VertexI
 
 		switch {
 		case in.Builtin == "vertex_index":
-			params = append(params, fmt.Sprintf("%s %s [[vertex_id]]", paramMSL, identMSL(in.Name)))
+			paramName := identMSL(in.Name)
+			params = append(params, fmt.Sprintf("%s %s [[vertex_id]]", paramMSL, paramName))
+			tr.registerStageInputAccessor(ep, in, paramName)
 		case in.Builtin == "instance_index":
-			params = append(params, fmt.Sprintf("%s %s [[instance_id]]", paramMSL, identMSL(in.Name)))
+			paramName := identMSL(in.Name)
+			params = append(params, fmt.Sprintf("%s %s [[instance_id]]", paramMSL, paramName))
+			tr.registerStageInputAccessor(ep, in, paramName)
 		case in.Builtin == "position":
-			params = append(params, fmt.Sprintf("%s %s [[position]]", paramMSL, identMSL(in.Name)))
+			paramName := identMSL(in.Name)
+			params = append(params, fmt.Sprintf("%s %s [[position]]", paramMSL, paramName))
+			tr.registerStageInputAccessor(ep, in, paramName)
 		case in.Builtin != "":
 			return nil, nil, unsupported("entry point input builtin %q", in.Builtin)
 		case in.Location != nil:
