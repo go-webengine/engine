@@ -448,18 +448,23 @@ func (tr *translator) textureLoadExpr(c *wgsl.Call) (string, error) {
 	if len(c.Args) != 3 {
 		return "", unsupported("textureLoad: only texture_2d<u32>(t, coords, level) (3 arguments) is supported")
 	}
-	vo, tracked := tr.resourceOf(c.Args[0])
-	if !tracked {
-		return "", unsupported("textureLoad: the first argument must be a tracked texture resource")
-	}
-	b := tr.bindings[tr.resources[vo]]
-	if b.Kind != BindingTexture {
-		return "", unsupported("textureLoad: resource %q is not a texture", vo.Name)
-	}
-	tex, err := tr.expr(c.Args[0])
-	if err != nil {
-		return "", err
-	}
+	// The first argument's own tracked-resource / BindingTexture-kind checks
+	// that used to live here are dead: resolveResources validates every
+	// resource reachable from this entry (directly or through a helper)
+	// before any body statement is translated, so a global reference is
+	// always tracked and, for a handle resource, always BindingTexture (the
+	// one shape resolveResources' own ASHandle case accepts — anything else
+	// makes resolveResources itself fail first). The checker's own textureLoad
+	// signature check already requires c.Args[0]'s static type to be a
+	// texture, so it can never resolve to anything else. The two non-global
+	// shapes a texture value could otherwise reach here through are masked
+	// the same way: a `let` alias needs mslType on its own declared/inferred
+	// type to emit the local declaration at all (mslType rejects every
+	// texture type), and a helper function's texture-typed PARAMETER needs
+	// mslType(p.Type) in emitHelperFuncs before the helper's body — where this
+	// call would be — is ever translated. Hand-verified by mutation (engine#447):
+	// deleting each check left the guard unreachable, never SURVIVED.
+	tex, _ := tr.expr(c.Args[0])
 	coords, err := tr.expr(c.Args[1])
 	if err != nil {
 		return "", err

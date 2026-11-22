@@ -224,9 +224,13 @@ func outputIOAttr(io wgsl.IOVar, stage wgsl.Stage) (string, error) {
 	if io.Builtin != "" {
 		return "", unsupported("entry point output builtin %q", io.Builtin)
 	}
-	if io.Location == nil {
-		return "", unsupported("entry point output %q has neither a builtin nor a @location", io.Name)
-	}
+	// io.Location == nil is unreachable here: go-gfx/wgsl's entryIO (the
+	// "io-missing" check) already rejects, with a checker ERROR, any entry
+	// point IO that has neither a @builtin nor a @location — and
+	// TranslateRender returns before any translation when wgsl.Check reports
+	// an error. By the time an IOVar with io.Builtin == "" reaches here,
+	// io.Location is guaranteed non-nil. Hand-verified by mutation
+	// (engine#447): deleting this check left it unreachable, never SURVIVED.
 	loc := int(*io.Location)
 	if stage == wgsl.StageFragment {
 		return fmt.Sprintf("color(%d)", loc), nil
@@ -330,10 +334,15 @@ func (tr *translator) stageEntryParams(ep *wgsl.EntryPoint) ([]string, []VertexI
 			var attr string
 			if ep.Stage == wgsl.StageVertex {
 				attr = fmt.Sprintf("attribute(%d)", loc)
-				n, kind, err := vecShape(in.Type)
-				if err != nil {
-					return nil, nil, err
-				}
+				// vecShape's own error case (anything but a *wgsl.ScalarType or
+				// *wgsl.VecType) is unreachable here: go-gfx/wgsl's entryIO
+				// already requires scalarOf(in.Type) != nil for a @location
+				// input (the "location-type" checker error otherwise), and
+				// scalarOf itself only ever returns non-nil for exactly those
+				// two shapes — the same two vecShape switches on. Hand-verified
+				// by mutation (engine#447): deleting this check left it
+				// unreachable, never SURVIVED.
+				n, kind, _ := vecShape(in.Type)
 				vInputs = append(vInputs, VertexInputVar{Location: loc, NComponents: n, ScalarKind: kind})
 			} else {
 				attr = fmt.Sprintf("user(locn%d)", loc)
@@ -426,9 +435,17 @@ func (tr *translator) translateStageEntry(ep *wgsl.EntryPoint) (string, []Vertex
 			return "", nil, err
 		}
 		retMSL = m
-		if len(ep.Outputs) != 1 {
-			return "", nil, unsupported("entry point %q: expected exactly one bare output, got %d", ep.Name, len(ep.Outputs))
-		}
+		// len(ep.Outputs) != 1 is unreachable here: this branch is reached
+		// only when ep.Func.Ret is NOT a *wgsl.StructType (the struct branch,
+		// above, already returned). go-gfx/wgsl's entryIO calls addIO exactly
+		// once for a non-struct return value (handle's own struct/non-struct
+		// dispatch mirrors this branch's — a Predeclared struct, the one case
+		// addIO itself would still treat as non-struct, can never be
+		// ep.Func.Ret because its name "cannot be spelled in source"), and
+		// addIO unconditionally appends to ep.Outputs — so a non-struct,
+		// non-void return always leaves exactly one entry there. Hand-verified
+		// by mutation (engine#447): deleting this check left it unreachable,
+		// never SURVIVED.
 		// A non-struct MSL return type has NO attribute syntax at all —
 		// measured directly against the real Metal compiler (every
 		// spelling tried was rejected with "attribute cannot be applied to
