@@ -4,6 +4,7 @@
 package wgslmsl
 
 import (
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -310,5 +311,425 @@ func TestTranslateRenderRejectsNonZeroBareFragmentLocation(t *testing.T) {
 	`
 	if _, err := TranslateRender(src, RenderOptions{}); err == nil {
 		t.Fatal("TranslateRender succeeded, want a rejection: bare fragment output must be @location(0)")
+	}
+}
+
+// fragmentStub is the simplest valid @fragment entry point, for a test
+// whose own focus is entirely on the @vertex side — TranslateRender always
+// needs both.
+const fragmentStub = `
+@fragment
+fn fmain() -> @location(0) u32 { return 0u; }
+`
+
+// vertexStub is the simplest valid @vertex entry point, the counterpart to
+// fragmentStub for a test focused entirely on the @fragment side.
+const vertexStub = `
+@vertex
+fn vmain() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+`
+
+// TestTranslateRenderRejectsParseError confirms TranslateRender's own parse
+// step (wgsl.Parse) surfaces a syntactically malformed source as a
+// rejection, not a panic.
+func TestTranslateRenderRejectsParseError(t *testing.T) {
+	if _, err := TranslateRender("not valid wgsl {{{", RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a parse error")
+	}
+}
+
+// TestTranslateRenderRejectsCheckError confirms a syntactically valid but
+// semantically invalid source (an undefined identifier) is rejected by
+// TranslateRender's own wgsl.Check step, distinct from the parse step above.
+func TestTranslateRenderRejectsCheckError(t *testing.T) {
+	src := `
+		@vertex
+		fn vmain() -> @builtin(position) vec4<f32> { return undefinedThing; }
+	` + fragmentStub
+	if _, err := TranslateRender(src, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a check error (undefined identifier)")
+	}
+}
+
+// TestTranslateRenderRejectsMissingVertexEntryPoint and
+// TestTranslateRenderRejectsMissingFragmentEntryPoint cover findEntryPoint's
+// own "module has no @<stage> entry point" case for each stage
+// independently — TranslateRender needs both, so a module missing either
+// one is its own distinct rejection.
+func TestTranslateRenderRejectsMissingVertexEntryPoint(t *testing.T) {
+	if _, err := TranslateRender(fragmentStub, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: no @vertex entry point")
+	}
+}
+
+func TestTranslateRenderRejectsMissingFragmentEntryPoint(t *testing.T) {
+	if _, err := TranslateRender(vertexStub, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: no @fragment entry point")
+	}
+}
+
+// twoVertexEntriesWGSL declares two @vertex entry points and one @fragment
+// entry point — the shape findEntryPoint's own explicit-name selection
+// needs: RenderOptions.VertexEntryPoint picks one by name, and the wrong
+// name (one that exists but as the OTHER stage) is its own distinct
+// rejection.
+const twoVertexEntriesWGSL = `
+@vertex
+fn vmainA() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0, 0.0, 0.0, 1.0); }
+@vertex
+fn vmainB() -> @builtin(position) vec4<f32> { return vec4<f32>(1.0, 0.0, 0.0, 1.0); }
+@fragment
+fn fmain() -> @location(0) u32 { return 0u; }
+`
+
+// TestTranslateRenderSelectsVertexEntryPointByName confirms
+// RenderOptions.VertexEntryPoint picks the NAMED entry point specifically
+// (not just "some" entry point of the right stage): vmainB, never vmainA,
+// which only an exact-name match (not a negated/forced boolean) can tell
+// apart.
+func TestTranslateRenderSelectsVertexEntryPointByName(t *testing.T) {
+	res, err := TranslateRender(twoVertexEntriesWGSL, RenderOptions{VertexEntryPoint: "vmainB"})
+	if err != nil {
+		t.Fatalf("TranslateRender: %v", err)
+	}
+	if res.VertexEntryPointName != "vmainB" {
+		t.Fatalf("VertexEntryPointName = %q, want %q", res.VertexEntryPointName, "vmainB")
+	}
+}
+
+// TestTranslateRenderRejectsWrongStageEntryPointName confirms naming an
+// entry point of the WRONG stage in RenderOptions.VertexEntryPoint is its
+// own rejection ("is a @fragment shader, not @vertex"), distinct from the
+// name not existing at all.
+func TestTranslateRenderRejectsWrongStageEntryPointName(t *testing.T) {
+	_, err := TranslateRender(twoVertexEntriesWGSL, RenderOptions{VertexEntryPoint: "fmain"})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: fmain is a @fragment shader, not @vertex")
+	}
+	if !strings.Contains(err.Error(), "is a @fragment shader") {
+		t.Fatalf("error = %v, want it to mention the wrong-stage shape", err)
+	}
+}
+
+// TestTranslateRenderRejectsFragmentOutputBuiltin confirms outputIOAttr
+// rejects a struct-output builtin other than position (here
+// @builtin(frag_depth), a genuinely valid WGSL fragment-output builtin) —
+// this package's own bounded scope only ever recognizes position.
+func TestTranslateRenderRejectsFragmentOutputBuiltin(t *testing.T) {
+	src := vertexStub + `
+		struct FOut {
+			@location(0) color: u32,
+			@builtin(frag_depth) depth: f32,
+		}
+		@fragment
+		fn fmain() -> FOut {
+			var out: FOut;
+			out.color = 1u;
+			out.depth = 0.5;
+			return out;
+		}
+	`
+	_, err := TranslateRender(src, RenderOptions{})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: unsupported output builtin frag_depth")
+	}
+	if !strings.Contains(err.Error(), "output builtin") {
+		t.Fatalf("error = %v, want it to mention the output builtin", err)
+	}
+}
+
+// TestTranslateRenderStructFragmentOutputUsesColorAttribute confirms
+// outputIOAttr's fragment branch: a struct-typed fragment output's own
+// @location(N) field is emitted as Metal's [[color(N)]] attribute — a shape
+// no other existing test exercises (vertexFragmentWGSL's own fragment
+// output is a bare, non-struct value).
+func TestTranslateRenderStructFragmentOutputUsesColorAttribute(t *testing.T) {
+	src := vertexStub + `
+		struct FOut {
+			@location(0) color: vec4<f32>,
+		}
+		@fragment
+		fn fmain() -> FOut {
+			var out: FOut;
+			out.color = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+			return out;
+		}
+	`
+	res, err := TranslateRender(src, RenderOptions{})
+	if err != nil {
+		t.Fatalf("TranslateRender: %v", err)
+	}
+	if !strings.Contains(res.FragmentMSL, "color(0)") {
+		t.Fatalf("FragmentMSL = %s, want it to contain color(0)", res.FragmentMSL)
+	}
+}
+
+// TestTranslateRenderRejectsF16UniformResource confirms the asymmetry this
+// round measured directly: go-gfx/wgsl's own Check ACCEPTS f16 as a
+// var<uniform> resource type, but this package's own mslType (shared by
+// resourceParamDecl, through resourceEntryParams) only ever accepts
+// bool/i32/u32/f32 — so an f16 uniform resource used by a @fragment entry
+// is rejected downstream of resolveResources, not by it.
+func TestTranslateRenderRejectsF16UniformResource(t *testing.T) {
+	src := `
+		enable f16;
+	` + vertexStub + `
+		@group(0) @binding(0) var<uniform> x: f16;
+		@fragment
+		fn fmain() -> @location(0) u32 { return u32(x); }
+	`
+	_, err := TranslateRender(src, RenderOptions{})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: f16 uniform resource")
+	}
+	if strings.Contains(err.Error(), "parse:") {
+		t.Fatalf("error = %v, want a resource-type rejection, not a parse error", err)
+	}
+}
+
+// TestTranslateRenderRejectsF16VertexInput confirms the same f16 asymmetry
+// on the vertex-input side: Check accepts f16 as a @location vertex input's
+// scalar type, but stageEntryParams's own mslTypeTR (mslType underneath)
+// rejects it.
+func TestTranslateRenderRejectsF16VertexInput(t *testing.T) {
+	src := `
+		enable f16;
+		@vertex
+		fn vmain(@location(0) v: f16) -> @builtin(position) vec4<f32> {
+			return vec4<f32>(f32(v), 0.0, 0.0, 1.0);
+		}
+	` + fragmentStub
+	if _, err := TranslateRender(src, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: f16 vertex input")
+	}
+}
+
+// TestTranslateRenderRejectsF16FragmentBareOutput confirms the same f16
+// asymmetry once more on a bare (non-struct) fragment return type: Check
+// accepts f16 as a @location(0) bare output's type. It does NOT isolate
+// translateStageEntry's own "m, err := mslType(ep.Func.Ret); if err !=
+// nil" check on that return type (hand-mutation-confirmed: neutralizing
+// it still fails the same input, now with "fragment entry \"fmain\":
+// ... literal of scalar kind 6" instead): any f16-typed VALUE the body
+// returns needs mslType too, for its own expression translation — a
+// literal (as here), a resource (TestTranslateRenderRejectsF16UniformResource's
+// own line) or a parameter (TestTranslateRenderRejectsF16VertexInput's own
+// line) — so the return type's own mslType call can never be reached
+// first with f16 still in play. Left untested as a structural invariant.
+func TestTranslateRenderRejectsF16FragmentBareOutput(t *testing.T) {
+	src := `
+		enable f16;
+	` + vertexStub + `
+		@fragment
+		fn fmain() -> @location(0) f16 { return 1.0h; }
+	`
+	_, err := TranslateRender(src, RenderOptions{})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: f16 bare fragment output")
+	}
+	if strings.Contains(err.Error(), "parse:") {
+		t.Fatalf("error = %v, want a type rejection, not a parse error", err)
+	}
+}
+
+// TestTranslateRenderRejectsMatrixHelperFunctionParam confirms a helper
+// function called from a @vertex entry is translated through the SAME
+// emitHelperFuncs this package's @compute path uses — and a helper
+// parameter type outside this package's scalar/vector scope (a matrix,
+// valid as an ordinary WGSL function parameter, just not as entry IO) is
+// rejected there. It does NOT isolate render.go's own
+// "if err := tr.emitHelperFuncs(ep); err != nil" propagation
+// (hand-mutation-confirmed: neutralizing that check still fails the same
+// input, with the SAME "type mat2x2<f32> (only scalars and vectors)"
+// message, now wrapped as "vertex entry \"vmain\": ..." instead): any
+// matrix value a helper call needs is itself an expression this
+// package's shared mslType gate rejects when translating the entry's own
+// body, including when the matrix is an inline constructor passed
+// directly as the call argument (no local `let` binding required) — so
+// a matrix-typed helper parameter can never reach emitHelperFuncs without
+// the entry body independently tripping the same rejection first. This
+// propagation line is left untested as a structural invariant, not a gap.
+func TestTranslateRenderRejectsMatrixHelperFunctionParam(t *testing.T) {
+	src := `
+		fn helper(m: mat2x2<f32>) -> f32 { return m[0][0]; }
+		@vertex
+		fn vmain() -> @builtin(position) vec4<f32> {
+			let m = mat2x2<f32>(1.0, 0.0, 0.0, 1.0);
+			let y = helper(m);
+			return vec4<f32>(y, 0.0, 0.0, 1.0);
+		}
+	` + fragmentStub
+	if _, err := TranslateRender(src, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: matrix helper function parameter")
+	}
+}
+
+// TestTranslateRenderRejectsFixedSizeStorageArray confirms resolveResources'
+// own "fixed-size storage array" rejection (it only ever supports a
+// runtime-sized one) is reachable from a render-stage entry point too —
+// distinct from TestTranslateRenderRejectsRuntimeStorageArray below, which
+// is this package's OWN render-specific rejection of a resource
+// resolveResources itself accepts just fine.
+func TestTranslateRenderRejectsFixedSizeStorageArray(t *testing.T) {
+	src := vertexStub + `
+		@group(0) @binding(0) var<storage, read> buf: array<f32, 4>;
+		@fragment
+		fn fmain() -> @location(0) u32 { return u32(buf[0]); }
+	`
+	if _, err := TranslateRender(src, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: fixed-size storage array")
+	}
+}
+
+// TestTranslateRenderRejectsRuntimeStorageArray confirms
+// translateStageEntry's own render-specific rejection: a runtime-sized
+// storage array resource resolves fine (resolveResources accepts it, the
+// same as the @compute path), but this package's bounds-check machinery
+// (Result.SizeMetalIndex) is a @compute-only concept, so render.go rejects
+// it outright instead.
+func TestTranslateRenderRejectsRuntimeStorageArray(t *testing.T) {
+	src := vertexStub + `
+		@group(0) @binding(0) var<storage, read> buf: array<f32>;
+		@fragment
+		fn fmain() -> @location(0) u32 { return u32(buf[0]); }
+	`
+	_, err := TranslateRender(src, RenderOptions{})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: runtime-sized storage array in a render stage")
+	}
+	if !strings.Contains(err.Error(), "runtime-sized storage array") {
+		t.Fatalf("error = %v, want it to mention the runtime-sized storage array", err)
+	}
+}
+
+// TestTranslateRenderRejectsConstructingAnUnrecognizedStruct confirms
+// memberExpr/callExpr's own struct-recognition scope: the ONE struct type
+// this package ever recognizes is an entry point's own output struct
+// (tr.outputStructType) — a second, unrelated struct declared in the same
+// module is still rejected, whether constructed directly or (as here)
+// through a field access on that construction, inside the @vertex entry's
+// own body (reached through stmtBlock, not through any resource or
+// parameter-list path).
+func TestTranslateRenderRejectsConstructingAnUnrecognizedStruct(t *testing.T) {
+	src := `
+		struct Aux { v: f32, w: f32 }
+		@vertex
+		fn vmain() -> @builtin(position) vec4<f32> {
+			let a = Aux(1.0, 2.0).v;
+			return vec4<f32>(a, 0.0, 0.0, 1.0);
+		}
+	` + fragmentStub
+	_, err := TranslateRender(src, RenderOptions{})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: constructing an unrecognized struct type")
+	}
+	if !strings.Contains(err.Error(), "constructing struct type") {
+		t.Fatalf("error = %v, want it to mention constructing the struct type", err)
+	}
+}
+
+// textureLoadFragmentStub is the shared @group(0)@binding(0) texture_2d<u32>
+// resource and FOut output struct every textureLoad-focused test below
+// reuses, paired with a plain vertexStub (none of these need the vertex
+// side at all).
+const textureLoadFragmentFOut = `struct FOut { @location(0) c: u32 }`
+
+// TestTranslateRenderRejectsTextureLoadPoisonedCoords and
+// TestTranslateRenderRejectsTextureLoadPoisonedLevel each poison exactly
+// ONE of textureLoad's own coords/level sub-expressions at a time (the
+// SAME unrecognized-Aux-struct rejection as the test above, nested inside a
+// cast) — never both in the same test, since a single test poisoning both
+// could not tell which specific line's error check actually fired: an
+// earlier check deleted by a mutant would still be masked by the later one
+// independently failing for its own reason.
+func TestTranslateRenderRejectsTextureLoadPoisonedCoords(t *testing.T) {
+	src := vertexStub + `
+		struct Aux { v: f32, w: f32 }
+		@group(0) @binding(0) var tex: texture_2d<u32>;
+		` + textureLoadFragmentFOut + `
+		@fragment
+		fn fmain() -> FOut {
+			var out: FOut;
+			out.c = textureLoad(tex, vec2<i32>(i32(Aux(1.0, 2.0).v), 0), 0).x;
+			return out;
+		}
+	`
+	if _, err := TranslateRender(src, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: poisoned textureLoad coords")
+	}
+}
+
+func TestTranslateRenderRejectsTextureLoadPoisonedLevel(t *testing.T) {
+	src := vertexStub + `
+		struct Aux { v: f32, w: f32 }
+		@group(0) @binding(0) var tex: texture_2d<u32>;
+		` + textureLoadFragmentFOut + `
+		@fragment
+		fn fmain() -> FOut {
+			var out: FOut;
+			out.c = textureLoad(tex, vec2<i32>(0, 0), i32(Aux(1.0, 2.0).v)).x;
+			return out;
+		}
+	`
+	if _, err := TranslateRender(src, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: poisoned textureLoad level")
+	}
+}
+
+// TestTranslateRenderRejectsTextureLoadOnLocalAlias confirms a WGSL
+// `let t = tex;` local alias of a texture resource is rejected — but NOT,
+// as the resourceOf/textureLoadExpr code might suggest, by their own
+// "tracked texture resource" check (expr.go:452): emitting the `let`
+// statement itself needs t's own MSL type first, and mslType (shared with
+// every other scalar/vector-only site in this package) has no texture
+// case, so the rejection fires there, before textureLoadExpr is ever
+// reached. Confirmed by reading the actual error text this produces
+// ("type texture_2d<u32> (only scalars and vectors)"), not by assuming it
+// from go-gfx/wgsl's own Check accepting the shape. expr.go:452 itself
+// stays unreached by any WGSL this package's Check-gated scope admits: any
+// identifier that type-checks as textureLoad's first argument is either
+// the module-scope resource var itself (always tracked, via ep.Resources)
+// or a local/parameter binding of texture type, which mslType rejects
+// earlier, exactly as this test demonstrates.
+func TestTranslateRenderRejectsTextureLoadOnLocalAlias(t *testing.T) {
+	src := vertexStub + `
+		@group(0) @binding(0) var tex: texture_2d<u32>;
+		` + textureLoadFragmentFOut + `
+		@fragment
+		fn fmain() -> FOut {
+			let t = tex;
+			var out: FOut;
+			out.c = textureLoad(t, vec2<i32>(0, 0), 0).x;
+			return out;
+		}
+	`
+	_, err := TranslateRender(src, RenderOptions{})
+	if err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: textureLoad on a local texture alias")
+	}
+	if !strings.Contains(err.Error(), "only scalars and vectors") {
+		t.Fatalf("error = %v, want the let-statement's own texture-type rejection", err)
+	}
+}
+
+// TestTranslateRenderRejectsSamplerResource confirms resolveResources'
+// ASHandle case rejects a `sampler` resource outright (declared BEFORE the
+// texture it samples, so it is the first ep.Resources entry resolveResources
+// reaches): this package's bounded scope never recognizes textureSample or
+// any sampler at all, only textureLoad against a texture_2d<u32>.
+func TestTranslateRenderRejectsSamplerResource(t *testing.T) {
+	src := vertexStub + `
+		@group(0) @binding(0) var samp: sampler;
+		@group(0) @binding(1) var tex: texture_2d<f32>;
+		struct FOut { @location(0) c: vec4<f32> }
+		@fragment
+		fn fmain() -> FOut {
+			var out: FOut;
+			out.c = textureSample(tex, samp, vec2<f32>(0.0, 0.0));
+			return out;
+		}
+	`
+	if _, err := TranslateRender(src, RenderOptions{}); err == nil {
+		t.Fatal("TranslateRender succeeded, want a rejection: sampler resource")
 	}
 }

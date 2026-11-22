@@ -718,6 +718,49 @@ func TestUnsupportedConstructsAreRejected(t *testing.T) {
 				}
 			}
 		`,
+		// resolveResources's own ASHandle case only ever accepts a
+		// non-arrayed texture_2d<u32>: a texture of another dimension is
+		// otherwise a legal WGSL handle resource (go-gfx/wgsl's own Check
+		// accepts it), so this package rejects it itself. texture_3d<u32>
+		// is used here rather than an arrayed texture_2d_array<u32>,
+		// because the arrayed form's 4-arg textureLoad call is rejected
+		// earlier, by the arity check on the supported 3-arg overload,
+		// which masks this line's own Dim/Arrayed check and left it an
+		// unconfirmed mutation target; texture_3d<u32> keeps the 3-arg
+		// form and was hand-mutation-verified to isolate this check
+		// (translator.go, the ASHandle Dim/Arrayed/Kind guard).
+		"non-2D texture handle resource": `
+			@group(0) @binding(0) var tex: texture_3d<u32>;
+			@group(0) @binding(1) var<storage, read_write> out: array<u32>;
+			@compute @workgroup_size(1)
+			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+				out[id.x] = textureLoad(tex, vec3<i32>(0, 0, 0), 0).x;
+			}
+		`,
+		// Same resolveResources case, its sampled-type check: Check accepts
+		// a texture_2d<f32>, this package only ever supports
+		// texture_2d<u32>.
+		"non-u32 sampled texture handle resource": `
+			@group(0) @binding(0) var tex: texture_2d<f32>;
+			@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+			@compute @workgroup_size(1)
+			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+				out[id.x] = textureLoad(tex, vec2<i32>(0, 0), 0).x;
+			}
+		`,
+		// entryParams's own resourceEntryParams call rejects an f16
+		// uniform resource: Check accepts f16 as a host-shareable
+		// var<uniform> type, but this package's own mslType (through
+		// resourceParamDecl) only ever accepts bool/i32/u32/f32.
+		"f16 uniform resource": `
+			enable f16;
+			@group(0) @binding(0) var<uniform> x: f16;
+			@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+			@compute @workgroup_size(1)
+			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+				out[id.x] = f32(x);
+			}
+		`,
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
