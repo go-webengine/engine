@@ -10,7 +10,7 @@ require (
 	github.com/go-gfx/oksvg v0.4.0
 	github.com/go-gfx/wgsl v0.4.0
 	github.com/go-images/images v0.1.1-0.20261026203936-4ac989d310a1
-	github.com/go-macos/metal v0.7.0
+	github.com/go-macos/metal v0.8.0
 	github.com/go-opentype/fonts v0.14.0
 	github.com/go-opentype/opentype v0.21.1
 	github.com/go-pdfkit/pdfkit v0.21.0
