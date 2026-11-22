@@ -445,9 +445,6 @@ func (tr *translator) arrayLengthExpr(c *wgsl.Call) (string, error) {
 // cast, exactly value-preserving for the non-negative coordinates a real
 // sampled-2D read ever uses.
 func (tr *translator) textureLoadExpr(c *wgsl.Call) (string, error) {
-	if len(c.Args) != 3 {
-		return "", unsupported("textureLoad: only texture_2d<u32>(t, coords, level) (3 arguments) is supported")
-	}
 	// The first argument's own tracked-resource / BindingTexture-kind checks
 	// that used to live here are dead: resolveResources validates every
 	// resource reachable from this entry (directly or through a helper)
@@ -464,6 +461,23 @@ func (tr *translator) textureLoadExpr(c *wgsl.Call) (string, error) {
 	// mslType(p.Type) in emitHelperFuncs before the helper's body — where this
 	// call would be — is ever translated. Hand-verified by mutation (engine#447):
 	// deleting each check left the guard unreachable, never SURVIVED.
+	//
+	// An "if len(c.Args) != 3" arity check used to live here too, also
+	// dead: go-gfx/wgsl's own overload table (builtins_custom.go, the
+	// "textureLoad" case) ties exactly one arity to each texture Kind —
+	// 3 for TexSampled/TexDepth/TexMultisampled (non-arrayed), 2 for
+	// TexStorage, 4 only for an arrayed TexSampled — and
+	// resolveResources' own ASHandle case accepts exactly one Kind/Dim/
+	// Arrayed combination, the one whose own arity is 3 (Kind==TexSampled,
+	// Dim==Dim2D, !Arrayed). Every other combination that could reach
+	// this call with a different arity is already rejected before the
+	// body is ever translated: either by resolveResources itself (a
+	// checker-valid 4-argument call on an arrayed texture_2d_array<u32>
+	// resource fails resolveResources' Dim/Arrayed guard on sight, before
+	// this call is reached) or by the checker (a wrong-arity call on the
+	// one resource type resolveResources accepts, texture_2d<u32>, has no
+	// matching overload at all). Hand-verified both ways (engine#447):
+	// neither reaches this line.
 	tex, _ := tr.expr(c.Args[0])
 	coords, err := tr.expr(c.Args[1])
 	if err != nil {
