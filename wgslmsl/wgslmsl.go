@@ -26,6 +26,13 @@
 // separate document. Expand only on a confirmed real need (this package's
 // own history should read like the rest of this engine's: every capability
 // here was asked for).
+//
+// TranslateRender (render.go) is a second, separate entry point added for
+// engine#415 (WebGPU roadmap M7): a @vertex or @fragment entry point,
+// translated under the SAME bounded-scope discipline as Translate's own
+// @compute path (an unsupported WGSL shape is a named rejection, never a
+// silent wrong translation) — see render.go's own doc comment for exactly
+// what subset of vertex/fragment/texture WGSL it accepts.
 package wgslmsl
 
 import (
@@ -67,6 +74,19 @@ const (
 	// spec, not assumed), so a uniform resource never needs bounds
 	// accounting either.
 	BindingUniform
+	// BindingTexture is `var name: texture_2d<u32>` (engine#415, M7: the
+	// one texture shape TranslateRender's @fragment path reads, via
+	// textureLoad — see its own doc comment) — emitted as a Metal
+	// `texture2d<uint>` parameter, bound at its own [[texture(N)]] index,
+	// a SEPARATE Metal index namespace from every other BindingKind's own
+	// [[buffer(N)]] (MetalIndex is never comparable across kinds; the host
+	// must bind a BindingTexture at Encoder.Texture/RenderEncoder's own
+	// texture slot, never a buffer slot). Never produced for a @compute
+	// entry point's own Translate path (resolveResources's ASHandle case
+	// is reachable from TranslateRender only) and never for a @vertex
+	// stage either (translateStageEntry rejects it: go-macos/metal's
+	// RenderEncoder has no vertex-stage texture binding at all).
+	BindingTexture
 )
 
 func (k BindingKind) String() string {
@@ -77,6 +97,8 @@ func (k BindingKind) String() string {
 		return "atomic"
 	case BindingUniform:
 		return "uniform"
+	case BindingTexture:
+		return "texture"
 	default:
 		return "unknown"
 	}
