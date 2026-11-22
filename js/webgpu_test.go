@@ -1959,3 +1959,299 @@ func TestCopyTextureToBufferOutOfBoundsRejected(t *testing.T) {
 		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
 	}
 }
+
+// TestGPUCreateTextureMissingSizeRejected proves a descriptor with no
+// "size" key at all — gpuReadExtent's own non-object input (v is
+// undefined, not a *goja.Object) — resolves to the zero extent rather
+// than panicking on a nil object, and that zero extent is then rejected
+// by createTexture's own size.width/height>0 check, exactly like an
+// explicit zero size would be.
+func TestGPUCreateTextureMissingSizeRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			try {
+				dev.createTexture({ format: 'r8uint', usage: GPUTextureUsage.COPY_SRC });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPUQueueWriteTextureNumericOriginTreatedAsZero proves
+// gpuIsZeroOrigin's own non-object branch: an origin that is not an
+// object at all (here the plain number 0, never a dict or sequence) is
+// not a *goja.Object, so the type assertion fails and gpuIsZeroOrigin
+// reports it as the zero origin by default, letting the write through —
+// the write must still land for real, not be silently skipped.
+func TestGPUQueueWriteTextureNumericOriginTreatedAsZero(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+			});
+			var pixels = new Uint8Array([1,2,3,4, 5,6,7,8, 9,10,11,12, 13,14,15,16]);
+			dev.queue.writeTexture({ texture: tex, origin: 0 }, pixels, {}, { width: 4, height: 4 });
+
+			var encoder = dev.createCommandEncoder();
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (a numeric origin of 0 must be accepted as the zero origin)", got)
+	}
+	want := "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
+	if got, _ := body.Attribute("data-out"); got != want {
+		t.Fatalf("data-out = %q, want %q", got, want)
+	}
+}
+
+// TestGPUQueueWriteTextureNonZeroPartialOriginRejected proves
+// gpuIsZeroOrigin's own per-field default (a missing x/y/z/0/1/2 key
+// defaults to 0) does not also zero out a field that IS present: an
+// origin object giving only "x": 5 (y and z both absent, so both must
+// default to 0 on their own) must still read back as non-zero overall
+// and be rejected — a defaulting bug that zeroed every field
+// unconditionally would wrongly let this through as the zero origin.
+func TestGPUQueueWriteTextureNonZeroPartialOriginRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.COPY_DST,
+			});
+			try {
+				dev.queue.writeTexture({ texture: tex, origin: { x: 5 } }, new Uint8Array(16), {}, { width: 4, height: 4 });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPUQueueWriteTextureOriginMissingFieldsDefaultToZero proves
+// gpuIsZeroOrigin's own missing-key default (obj.Get(k) genuinely
+// returns Go nil, not a JS "undefined" Value, once a key is absent from
+// both the object and its whole prototype chain) for every key besides
+// the one given explicitly: an origin of only `{x: 0}` must still walk
+// y, z, "0", "1" and "2" — each one genuinely missing — through that
+// same default, never short-circuiting before reaching them the way
+// `{x: 5}` above does. A guard that stopped defaulting those missing
+// keys would call ToInteger() on a nil Value and crash; this must
+// instead succeed exactly like the explicit numeric-0 origin case.
+func TestGPUQueueWriteTextureOriginMissingFieldsDefaultToZero(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+			});
+			var pixels = new Uint8Array([1,2,3,4, 5,6,7,8, 9,10,11,12, 13,14,15,16]);
+			dev.queue.writeTexture({ texture: tex, origin: { x: 0 } }, pixels, {}, { width: 4, height: 4 });
+
+			var encoder = dev.createCommandEncoder();
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (an origin of {x: 0}, with y/z/sequence keys entirely absent, must default every missing key to 0 and be accepted as the zero origin)", got)
+	}
+	want := "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
+	if got, _ := body.Attribute("data-out"); got != want {
+		t.Fatalf("data-out = %q, want %q", got, want)
+	}
+}
+
+// TestGPUBeginRenderPassClearValueDictFormVisibleWithoutDraw proves
+// gpuReadColor's own dict-keyed branch ("r" present selects {r,g,b,a}
+// over the [0,1,2,3] sequence form) by never covering the target with
+// any draw at all — the clear colour is the ONLY thing that reaches the
+// pixels, unlike every other render-pass test above where draws paint
+// over it. Choosing the wrong branch here would read undefined
+// "0"/"1"/"2"/"3" properties instead and land a different value (or
+// none) in the target.
+func TestGPUBeginRenderPassClearValueDictFormVisibleWithoutDraw(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+			});
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 9, g: 9, b: 9, a: 9 } }],
+			});
+			pass.end();
+
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := make([]string, 16)
+	for i := range want {
+		want[i] = "9"
+	}
+	got, _ := body.Attribute("data-out")
+	if got != strings.Join(want, ",") {
+		t.Fatalf("data-out = %q, want %q (the dict-form clearValue must be read as {r,g,b,a}, not the sequence form)", got, strings.Join(want, ","))
+	}
+}
+
+// TestGPUBeginRenderPassClearValueNonObjectDefaultsToZero proves
+// gpuReadColor's own non-object branch: a clearValue that is not an
+// object at all (here the plain number 5, never a dict or sequence) is
+// not a *goja.Object, so the type assertion fails and gpuReadColor
+// returns the zero colour by default, rather than panicking on a nil
+// object or silently using 5. Same no-draw trick as the dict-form test
+// above makes the actual clear colour observable.
+func TestGPUBeginRenderPassClearValueNonObjectDefaultsToZero(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+			});
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: 5 }],
+			});
+			pass.end();
+
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := make([]string, 16)
+	for i := range want {
+		want[i] = "0"
+	}
+	got, _ := body.Attribute("data-out")
+	if got != strings.Join(want, ",") {
+		t.Fatalf("data-out = %q, want %q (a non-object clearValue must fall back to the zero colour, not 5)", got, strings.Join(want, ","))
+	}
+}
