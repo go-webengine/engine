@@ -1125,6 +1125,25 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   exact `@workgroup_size`-matching dispatch (needed by their LLM kernels)
   — `go-macos/metal` v0.6.0 still has no way to pin an explicit
   threadgroup shape for `Dispatch`.
+- **`GPUTexture`/`GPUTextureView`/`GPURenderPipeline`/`GPURenderPassEncoder`,
+  `queue.writeTexture`, `copyTextureToBuffer`** (2026-11-23, engine#415, PR
+  #447): WebGPU textures and render pipelines (M7), the render-pipeline
+  counterpart to M5's compute-only path. `wgslmsl.TranslateRender`
+  (`wgslmsl/render.go`) translates `@vertex`/`@fragment` WGSL entry points to
+  MSL, with every `@location` input or varying grouped into its own
+  synthesized `[[stage_in]]` struct per stage — a bare `[[attribute(N)]]`/
+  `[[user(locnN)]]` parameter compiles under Metal but is either rejected
+  outright or silently never populated, confirmed against a real render +
+  pixel-readback test, not just a compile check. `go-macos/metal` bumped to
+  v0.8.0 for the render-pass/texture primitives this needs (`Device.NewTexture`,
+  `Library.RenderPipeline`, `Device.RunRender`, `RenderEncoder`). 14 new
+  end-to-end tests against real Metal hardware, plus a follow-up round fixing
+  8 reviewer-found bugs (an unguarded panic on bad input, render-pass
+  lifecycle not enforced, unsupported render options silently ignored, among
+  others), each with its own regression test, no skips. **M7 is now
+  complete**: still off by default (`Engine.EnableWebGPU`), no Rust toolchain
+  or vendored binary blob anywhere in the path. See
+  [`FIDELITY.md`](FIDELITY.md) for the full account.
 
 **Honest limits (not overclaimed)**
 
