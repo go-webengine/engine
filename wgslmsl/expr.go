@@ -56,6 +56,11 @@ func (tr *translator) expr(e wgsl.Expr) (string, error) {
 		}
 		return "false", nil
 	case *wgsl.Ident:
+		if po, ok := tr.info.Objects[x].(*wgsl.ParamObj); ok {
+			if rename, ok := tr.paramRename[po]; ok {
+				return rename, nil
+			}
+		}
 		return identMSL(x.Name), nil
 	case *wgsl.Paren:
 		inner, err := tr.expr(x.X)
@@ -257,11 +262,36 @@ func (tr *translator) resourceOf(e wgsl.Expr) (*wgsl.VarObj, bool) {
 	return vo, tracked
 }
 
-// memberExpr emits x.name: a vector swizzle (the only member-access shape
-// this package's bounded scope supports — no user structs).
+// memberExpr emits x.name: a vector swizzle, or (engine#415, M7) a WGSL
+// struct field access on the ONE user struct type this package ever
+// recognizes — an entry point's own vertex/fragment output struct
+// (render.go, tr.outputStructType) — rejected for any other struct, since
+// every other place in this package still has no story for a user struct
+// at all. A fragment entry point's struct-typed INPUT parameter is a
+// separate case, checked first: it is never emitted as a real MSL struct
+// (translator.go's own inputFlatten doc comment says why), so `in.field`
+// is resolved straight to the flattened bare parameter identifier
+// stageEntryParams already emitted for it, before either the struct-field
+// or swizzle cases below are even considered.
 func (tr *translator) memberExpr(m *wgsl.Member) (string, error) {
+	if id, ok := m.X.(*wgsl.Ident); ok {
+		if po, ok := tr.info.Objects[id].(*wgsl.ParamObj); ok {
+			if flat, ok := tr.inputFlatten[po]; ok {
+				if name, ok := flat[m.Name]; ok {
+					return name, nil
+				}
+			}
+		}
+	}
+	if _, ok := tr.exprType(m.X).(*wgsl.StructType); ok {
+		x, err := tr.expr(m.X)
+		if err != nil {
+			return "", err
+		}
+		return x + "." + identMSL(m.Name), nil
+	}
 	if !isSwizzle(m.Name) {
-		return "", unsupported("member access %q (only vector swizzles are supported; no user structs)", m.Name)
+		return "", unsupported("member access %q (only vector swizzles and a recognized entry-point struct field are supported)", m.Name)
 	}
 	x, err := tr.expr(m.X)
 	if err != nil {
@@ -404,6 +434,62 @@ func (tr *translator) arrayLengthExpr(c *wgsl.Call) (string, error) {
 	return fmt.Sprintf("_sizes.s%d", b.SizesIndex), nil
 }
 
+// textureLoadExpr implements WGSL's textureLoad(t, coords, level) for the
+// one texture shape this package resolves at all — a non-arrayed
+// texture_2d<u32> resource (resolveResources's own ASHandle case, engine
+// #415 M7). Metal's own equivalent is the texture's .read(coords, level)
+// method, which always takes a uint2 coordinate and a uint level
+// regardless of which overload the WGSL call used — go-gfx/wgsl's own
+// texSigs offers both an i32 and a u32 coordinate/level overload for
+// textureLoad (builtins_custom.go:351-369) — so this always emits a uint
+// cast, exactly value-preserving for the non-negative coordinates a real
+// sampled-2D read ever uses.
+func (tr *translator) textureLoadExpr(c *wgsl.Call) (string, error) {
+	// The first argument's own tracked-resource / BindingTexture-kind checks
+	// that used to live here are dead: resolveResources validates every
+	// resource reachable from this entry (directly or through a helper)
+	// before any body statement is translated, so a global reference is
+	// always tracked and, for a handle resource, always BindingTexture (the
+	// one shape resolveResources' own ASHandle case accepts — anything else
+	// makes resolveResources itself fail first). The checker's own textureLoad
+	// signature check already requires c.Args[0]'s static type to be a
+	// texture, so it can never resolve to anything else. The two non-global
+	// shapes a texture value could otherwise reach here through are masked
+	// the same way: a `let` alias needs mslType on its own declared/inferred
+	// type to emit the local declaration at all (mslType rejects every
+	// texture type), and a helper function's texture-typed PARAMETER needs
+	// mslType(p.Type) in emitHelperFuncs before the helper's body — where this
+	// call would be — is ever translated. Hand-verified by mutation (engine#447):
+	// deleting each check left the guard unreachable, never SURVIVED.
+	//
+	// An "if len(c.Args) != 3" arity check used to live here too, also
+	// dead: go-gfx/wgsl's own overload table (builtins_custom.go, the
+	// "textureLoad" case) ties exactly one arity to each texture Kind —
+	// 3 for TexSampled/TexDepth/TexMultisampled (non-arrayed), 2 for
+	// TexStorage, 4 only for an arrayed TexSampled — and
+	// resolveResources' own ASHandle case accepts exactly one Kind/Dim/
+	// Arrayed combination, the one whose own arity is 3 (Kind==TexSampled,
+	// Dim==Dim2D, !Arrayed). Every other combination that could reach
+	// this call with a different arity is already rejected before the
+	// body is ever translated: either by resolveResources itself (a
+	// checker-valid 4-argument call on an arrayed texture_2d_array<u32>
+	// resource fails resolveResources' Dim/Arrayed guard on sight, before
+	// this call is reached) or by the checker (a wrong-arity call on the
+	// one resource type resolveResources accepts, texture_2d<u32>, has no
+	// matching overload at all). Hand-verified both ways (engine#447):
+	// neither reaches this line.
+	tex, _ := tr.expr(c.Args[0])
+	coords, err := tr.expr(c.Args[1])
+	if err != nil {
+		return "", err
+	}
+	level, err := tr.expr(c.Args[2])
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s.read(uint2(%s), uint(%s))", tex, coords, level), nil
+}
+
 func (tr *translator) callExpr(c *wgsl.Call) (string, error) {
 	if mslName, ok := atomicBuiltinFn[c.Fn.Name]; ok {
 		return tr.atomicCallExpr(mslName, c)
@@ -413,6 +499,9 @@ func (tr *translator) callExpr(c *wgsl.Call) (string, error) {
 	}
 	if c.Fn.Name == "bitcast" {
 		return tr.bitcastExpr(c)
+	}
+	if c.Fn.Name == "textureLoad" {
+		return tr.textureLoadExpr(c)
 	}
 	args := make([]string, len(c.Args))
 	for i, a := range c.Args {
@@ -424,7 +513,22 @@ func (tr *translator) callExpr(c *wgsl.Call) (string, error) {
 	}
 	joined := strings.Join(args, ", ")
 
-	if _, isType := tr.info.TypeSpecs[c.Fn]; isType {
+	if t, isType := tr.info.TypeSpecs[c.Fn]; isType {
+		// A call to the recognized output struct's own constructor
+		// (`VertexOutput(args...)`, engine#415 M7) — the one user struct
+		// this package ever recognizes (render.go, tr.outputStructType) —
+		// is a brace-init of the synthesized MSL struct, positional args
+		// in the struct's own declared field order (the same order
+		// emitIOStruct emits its fields in, both derived from the same
+		// underlying *wgsl.StructType). Every other struct constructor
+		// call is still rejected, matching mslType's own "no user
+		// structs" scope.
+		if st, ok := derefType(t).(*wgsl.StructType); ok {
+			if tr.outputStructType == nil || st != tr.outputStructType {
+				return "", unsupported("constructing struct type %s", st.String())
+			}
+			return fmt.Sprintf("%s{%s}", tr.outputStructName, joined), nil
+		}
 		resultType := tr.exprType(c)
 		typeMSL, err := mslType(resultType)
 		if err != nil {

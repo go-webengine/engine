@@ -115,7 +115,7 @@ func (tr *translator) declStmt(ds *wgsl.DeclStmt) error {
 	switch d := ds.Decl.(type) {
 	case *wgsl.Var:
 		t := tr.info.DeclTypes[d]
-		typeMSL, err := mslType(t)
+		typeMSL, err := tr.mslTypeTR(t)
 		if err != nil {
 			return err
 		}
@@ -134,7 +134,7 @@ func (tr *translator) declStmt(ds *wgsl.DeclStmt) error {
 			return unsupported("local %s declaration", d.Kind)
 		}
 		t := tr.info.DeclTypes[d]
-		typeMSL, err := mslType(t)
+		typeMSL, err := tr.mslTypeTR(t)
 		if err != nil {
 			return err
 		}

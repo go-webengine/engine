@@ -187,6 +187,7 @@ func (w *jsWorker) installWorkerGlobals() {
 		g.Set("GPUShaderStage", wb.newGPUShaderStage())
 		g.Set("GPUBufferUsage", wb.newGPUBufferUsage())
 		g.Set("GPUMapMode", wb.newGPUMapMode())
+		g.Set("GPUTextureUsage", wb.newGPUTextureUsage())
 	}
 	// Nested Worker (HTML Standard §10.2.6 permits it; confirmed needed
 	// directly by go-wasmcontainers: their own engine spawns workers from

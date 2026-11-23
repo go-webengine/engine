@@ -432,6 +432,15 @@ type binder struct {
 	// its own ordered bindGroupLayouts — see gpuCreatePipelineLayout's own
 	// doc comment (webgpu.go).
 	gpuPipelineLayouts map[*goja.Object][]*goja.Object
+	// gpuTextures/gpuTextureViews/gpuRenderPipelines are the same
+	// by-object-identity registry shape as gpuBuffers, for engine#415's
+	// render-pipeline surface (webgpu.go): a GPUTextureView shares its
+	// GPUTexture's own gpuTextureState (a view never has independent
+	// state of its own in this binding's restricted, single-mip/
+	// single-layer scope — see gpuTextureCreateView's own doc comment).
+	gpuTextures        map[*goja.Object]*gpuTextureState
+	gpuTextureViews    map[*goja.Object]*gpuTextureState
+	gpuRenderPipelines map[*goja.Object]*gpuRenderPipelineState
 	// gpuErrorScopes is one GPUDevice's own error-scope stack and
 	// "uncapturederror" listener, keyed by the *metal.Device it wraps —
 	// see gpuErrorScopeState/gpuGuard's own doc comments (webgpu.go) for

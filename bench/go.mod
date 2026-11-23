@@ -32,7 +32,7 @@ require (
 	github.com/go-images/jpeg2000 v0.14.0 // indirect
 	github.com/go-images/png v0.2.0 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
-	github.com/go-macos/metal v0.7.0 // indirect
+	github.com/go-macos/metal v0.8.0 // indirect
 	github.com/go-macos/objc v0.12.0 // indirect
 	github.com/go-opentype/fonts v0.14.0 // indirect
 	github.com/go-opentype/opentype v0.21.1 // indirect

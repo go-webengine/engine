@@ -718,6 +718,71 @@ func TestUnsupportedConstructsAreRejected(t *testing.T) {
 				}
 			}
 		`,
+		// resolveResources's own ASHandle case only ever accepts a
+		// non-arrayed texture_2d<u32>: a texture of another dimension is
+		// otherwise a legal WGSL handle resource (go-gfx/wgsl's own Check
+		// accepts it), so this package rejects it itself. texture_3d<u32>
+		// is used here rather than an arrayed texture_2d_array<u32>; a
+		// prior version of this comment claimed the arrayed form's 4-arg
+		// textureLoad call reached expr.go's own arity check first,
+		// masking this one — re-measured (engine#447) and found
+		// backwards: resolveResources runs before any body statement is
+		// translated and rejects texture_2d_array<u32> itself on sight
+		// ("resource %q: %s (only a non-arrayed texture_2d<u32> is
+		// supported)"), regardless of how the call that follows would
+		// have been shaped. texture_3d<u32> is kept here only because it
+		// was already hand-mutation-verified to isolate this check
+		// (translator.go, the ASHandle Dim/Arrayed/Kind guard).
+		"non-2D texture handle resource": `
+			@group(0) @binding(0) var tex: texture_3d<u32>;
+			@group(0) @binding(1) var<storage, read_write> out: array<u32>;
+			@compute @workgroup_size(1)
+			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+				out[id.x] = textureLoad(tex, vec3<i32>(0, 0, 0), 0).x;
+			}
+		`,
+		// Same resolveResources case, its sampled-type check: Check accepts
+		// a texture_2d<f32>, this package only ever supports
+		// texture_2d<u32>.
+		"non-u32 sampled texture handle resource": `
+			@group(0) @binding(0) var tex: texture_2d<f32>;
+			@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+			@compute @workgroup_size(1)
+			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+				out[id.x] = textureLoad(tex, vec2<i32>(0, 0), 0).x;
+			}
+		`,
+		// entryParams's own resourceEntryParams call rejects an f16
+		// uniform resource: Check accepts f16 as a host-shareable
+		// var<uniform> type, but this package's own mslType (through
+		// resourceParamDecl) only ever accepts bool/i32/u32/f32.
+		"f16 uniform resource": `
+			enable f16;
+			@group(0) @binding(0) var<uniform> x: f16;
+			@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+			@compute @workgroup_size(1)
+			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+				out[id.x] = f32(x);
+			}
+		`,
+		// scalarOrVecElemBytes (types.go) does not reject f16 the way
+		// mslType/mslScalar do — it returns 4 unconditionally for any
+		// non-bool scalar, including f16 — but this is not a live gap:
+		// resourceEntryParams always calls resourceParamDecl for every
+		// resource, and resourceParamDecl's own mslType(arr.Elem) call on
+		// the SAME element type rejects f16 before entryParams/
+		// stageEntryParams can ever return successfully. See
+		// TestRejectsF16StorageArrayViaResourceParamDecl for the specific
+		// assertion that it is resourceParamDecl's check, not
+		// resolveResources' silent ElemBytes=4, that is actually surfaced.
+		"f16 runtime storage array": `
+			enable f16;
+			@group(0) @binding(0) var<storage, read_write> data: array<f16>;
+			@compute @workgroup_size(1)
+			fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+				data[id.x] = data[id.x] + 1.0h;
+			}
+		`,
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -726,6 +791,40 @@ func TestUnsupportedConstructsAreRejected(t *testing.T) {
 				t.Fatalf("Translate(%s) succeeded, want an unsupported-construct error", name)
 			}
 		})
+	}
+}
+
+// TestRejectsF16StorageArrayViaResourceParamDecl confirms, with a specific
+// message, which of two checks actually rejects an f16 runtime storage
+// array (also covered less specifically by TestUnsupportedConstructsAreRejected's
+// own "f16 runtime storage array" case above): resolveResources calls
+// scalarOrVecElemBytes(store.Elem) on the array's element type before
+// addBinding, and that function does NOT reject f16 — it returns 4
+// unconditionally for any non-bool scalar — so resolveResources itself
+// accepts an f16 storage array and records a wrong (but never observed)
+// ElemBytes. This is not a live correctness gap: resourceEntryParams is
+// always the first statement of entryParams/stageEntryParams, and it
+// calls resourceParamDecl for every one of ep.Resources; resourceParamDecl's
+// own BindingStorageArray case calls mslType(arr.Elem) on the SAME element
+// type, which does reject f16, before any success path can return a
+// Result. Asserting resourceParamDecl's own message here (not just
+// err != nil) confirms this is the check actually surfaced, not
+// resolveResources' silent wrong ElemBytes.
+func TestRejectsF16StorageArrayViaResourceParamDecl(t *testing.T) {
+	src := `
+		enable f16;
+		@group(0) @binding(0) var<storage, read_write> data: array<f16>;
+		@compute @workgroup_size(1)
+		fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+			data[id.x] = data[id.x] + 1.0h;
+		}
+	`
+	_, err := Translate(src, Options{})
+	if err == nil {
+		t.Fatal("Translate succeeded, want a rejection: f16 runtime storage array")
+	}
+	if !strings.Contains(err.Error(), "only bool/i32/u32/f32") {
+		t.Fatalf("error = %v, want resourceParamDecl's own mslType rejection", err)
 	}
 }
 

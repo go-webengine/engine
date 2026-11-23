@@ -85,6 +85,88 @@ type translator struct {
 	flagCounter int
 	indent      int
 	buf         strings.Builder
+	// bufferCount and textureCount are the next free Metal [[buffer(N)]]
+	// and [[texture(N)]] index — two SEPARATE namespaces (Metal itself has
+	// no shared "resource index" at all; a buffer and a texture bound at
+	// the same number never collide), so addBinding allocates a resource's
+	// own MetalIndex from whichever counter matches its Kind.
+	bufferCount, textureCount int
+	// outputStructType and outputStructName are set only while translating
+	// a @vertex or @fragment entry point whose own WGSL return type is a
+	// user-declared struct (render.go's translateStageEntry) — the ONE
+	// user struct type this package recognizes at all, matched by pointer
+	// identity against go-gfx/wgsl's own canonical *StructType object
+	// (Check resolves one struct declaration to one shared Type value, the
+	// same object translateStageEntry reads straight off ep.Func.Ret and
+	// every local variable of that declared type also carries). Both are
+	// nil/empty for a @compute entry point, which never recognizes any
+	// struct type at all — mslTypeTR's own struct case cannot match
+	// anything then, preserving the compute path's existing "no user
+	// structs" scope exactly.
+	outputStructType *wgsl.StructType
+	outputStructName string
+	// inputFlatten maps a struct-typed entry-point input PARAMETER's own
+	// ParamObj to {WGSL field name -> the MSL expression stageEntryParams
+	// actually emitted for it}. Confirmed directly against the real Metal
+	// compiler (render.go's own doc comment on stageEntryParams): EVERY
+	// @location input, in a @vertex entry or a @fragment entry alike,
+	// whether declared as an individual top-level parameter or as a field
+	// of a struct parameter, is GROUPED into one synthesized [[stage_in]]
+	// struct (stageEntryParams) — never left as an individual bare
+	// parameter. A bare [[attribute(N)]] vertex parameter with no
+	// wrapping [[stage_in]] struct is rejected outright ("invalid type
+	// ... for input declaration in a vertex function"); a bare
+	// [[user(locnN)]] fragment parameter compiles but silently never
+	// receives the rasterizer-interpolated value (confirmed by an actual
+	// render + pixel-readback test, not just a compile check — this is
+	// why the fragment side is never given a real MSL struct SHARED with
+	// the vertex stage either: it gets its OWN synthesized [[stage_in]]
+	// struct, a different C type from the vertex's). The map value here
+	// is "<stageInVar>.<field>".
+	// memberExpr consults this map to translate the WGSL body's ordinary
+	// `in.field` access to the right-hand side recorded here. A
+	// @location input that was a plain top-level parameter (no enclosing
+	// struct, so no `in.field` dot access in the WGSL body at all)
+	// instead goes through paramRename below.
+	inputFlatten map[*wgsl.ParamObj]map[string]string
+	// paramRename maps a @vertex or @fragment entry's own top-level
+	// (non-struct-field) @location input parameter's ParamObj directly to
+	// the MSL expression standing in for every bare reference to it in
+	// the WGSL body (the same "<stageInVar>.<field>" accessor
+	// inputFlatten above describes) — the identCase counterpart of
+	// inputFlatten's memberExpr lookup, for when the WGSL body refers to
+	// the input by its own bare name rather than through a struct field.
+	paramRename map[*wgsl.ParamObj]string
+	// sharedHelpers is nil for a @compute translator (emitHelperFuncs runs
+	// against a single translator there, so nothing to share) and, for a
+	// render pipeline's own vtr/ftr pair, ONE map instance both share
+	// (TranslateRender's own doc comment) — set true the first time EITHER
+	// translator emits a given helper's MSL text, so the second translator
+	// to reach the SAME helper (a vertex and fragment entry calling the
+	// same WGSL function) skips re-emitting it. Safe unconditionally, not
+	// just for a resource-free helper: resourceParamDecl/mslType never
+	// depend on which stage is asking, so the two emissions would be
+	// byte-for-byte identical text, and Metal rejects an exact duplicate
+	// function definition in the same translation unit (engine#447 review
+	// bug #4) — vertex and fragment MSL are concatenated into one
+	// compilation unit by every caller (gpuCreateRenderPipeline,
+	// TestTranslateRenderVertexFragmentEndToEnd), never compiled apart.
+	sharedHelpers map[*wgsl.FuncObj]bool
+}
+
+// mslTypeTR is t's own Metal Shading Language spelling, exactly like the
+// package-level mslType, with one addition: t may be the ONE user struct
+// type this translation recognizes (outputStructType) — every other
+// struct type is still rejected, matching mslType's own "no user structs"
+// scope.
+func (tr *translator) mslTypeTR(t wgsl.Type) (string, error) {
+	if st, ok := derefType(t).(*wgsl.StructType); ok {
+		if tr.outputStructType != nil && st == tr.outputStructType {
+			return tr.outputStructName, nil
+		}
+		return "", unsupported("struct type %s (only an entry point's own recognized output struct is supported)", st.String())
+	}
+	return mslType(t)
 }
 
 func (tr *translator) line(format string, a ...interface{}) {
@@ -109,7 +191,8 @@ func (tr *translator) translateEntryPoint(ep *wgsl.EntryPoint) (*Result, error) 
 
 	sizeIndex := -1
 	if tr.sizesCount > 0 {
-		sizeIndex = len(tr.bindings)
+		sizeIndex = tr.bufferCount
+		tr.bufferCount++
 		tr.line("struct _Sizes {")
 		tr.indent++
 		for i := 0; i < tr.sizesCount; i++ {
@@ -204,6 +287,18 @@ func (tr *translator) emitHelperFuncs(ep *wgsl.EntryPoint) error {
 			return err
 		}
 		tr.helperExtra[f] = extra
+		tr.userFuncs[f] = true
+
+		if tr.sharedHelpers != nil {
+			if tr.sharedHelpers[f] {
+				// Already emitted verbatim by the other stage's
+				// translator earlier in this TranslateRender call — see
+				// sharedHelpers' own doc comment for why that is always
+				// safe to skip, not just for a resource-free helper.
+				continue
+			}
+			tr.sharedHelpers[f] = true
+		}
 
 		retMSL := "void"
 		if f.Ret != wgsl.Void {
@@ -239,7 +334,6 @@ func (tr *translator) emitHelperFuncs(ep *wgsl.EntryPoint) error {
 		tr.indent--
 		tr.line("}")
 		tr.buf.WriteByte('\n')
-		tr.userFuncs[f] = true
 	}
 	return nil
 }
@@ -489,16 +583,31 @@ func (tr *translator) resolveResources(ep *wgsl.EntryPoint) error {
 				return unsupported("resource %q of type %s (only a scalar or vector <uniform>)", r.Name, r.Store.String())
 			}
 			tr.addBinding(r, BindingUniform, elemBytes)
+		case wgsl.ASHandle:
+			tex, ok := derefType(r.Store).(*wgsl.TextureType)
+			if !ok {
+				return unsupported("resource %q of type %s (only texture_2d<u32>)", r.Name, r.Store.String())
+			}
+			if tex.Kind != wgsl.TexSampled || tex.Dim != wgsl.Dim2D || tex.Arrayed {
+				return unsupported("resource %q: %s (only a non-arrayed texture_2d<u32> is supported)", r.Name, tex.String())
+			}
+			if tex.Sampled == nil || tex.Sampled.Kind != wgsl.KU32 {
+				return unsupported("resource %q: %s (only texture_2d<u32> is supported)", r.Name, tex.String())
+			}
+			tr.addBinding(r, BindingTexture, 4)
 		default:
-			return unsupported("resource %q in address space %s (only <storage> and <uniform>)", r.Name, r.AS)
+			return unsupported("resource %q in address space %s (only <storage>, <uniform> and a texture handle)", r.Name, r.AS)
 		}
 	}
 	return nil
 }
 
-// addBinding records r as a resolved Binding of kind at the next Metal
-// buffer index, allocating it a _Sizes struct slot too when kind ==
-// BindingStorageArray.
+// addBinding records r as a resolved Binding of kind, allocating its own
+// Metal resource index from whichever of tr.bufferCount/tr.textureCount
+// matches kind (translator.go's own doc comment on those fields: a buffer
+// and a texture bound at the same number never collide in Metal, so they
+// are two separate counters, never one shared index), and a _Sizes struct
+// slot too when kind == BindingStorageArray.
 func (tr *translator) addBinding(r *wgsl.VarObj, kind BindingKind, elemBytes int) {
 	idx := len(tr.bindings)
 	sizesIndex := -1
@@ -506,12 +615,20 @@ func (tr *translator) addBinding(r *wgsl.VarObj, kind BindingKind, elemBytes int
 		sizesIndex = tr.sizesCount
 		tr.sizesCount++
 	}
+	var metalIdx int
+	if kind == BindingTexture {
+		metalIdx = tr.textureCount
+		tr.textureCount++
+	} else {
+		metalIdx = tr.bufferCount
+		tr.bufferCount++
+	}
 	tr.resources[r] = idx
 	tr.bindings = append(tr.bindings, Binding{
 		Group:        intOr(r.Group, 0),
 		BindingIndex: intOr(r.Binding, 0),
 		Name:         r.Name,
-		MetalIndex:   idx,
+		MetalIndex:   metalIdx,
 		Kind:         kind,
 		ElemBytes:    elemBytes,
 		SizesIndex:   sizesIndex,
@@ -558,8 +675,33 @@ func (tr *translator) resourceParamDecl(r *wgsl.VarObj) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("constant %s&", uMSL), nil
+	case BindingTexture:
+		return "texture2d<uint>", nil
 	}
 	return "", unsupported("resource %q: unknown binding kind", r.Name)
+}
+
+// resourceEntryParams is the `[[buffer(N)]]`/`[[texture(N)]]` parameter
+// list for resources (resourceParamDecl's own MSL shape, decorated with
+// each binding's own resolved Metal index) — shared by entryParams (the
+// @compute kernel's own parameter list) and render.go's stageEntryParams
+// (a @vertex/@fragment entry's own resource parameters), so the
+// buffer-vs-texture attribute choice is made in exactly one place.
+func (tr *translator) resourceEntryParams(resources []*wgsl.VarObj) ([]string, error) {
+	var params []string
+	for _, r := range resources {
+		decl, err := tr.resourceParamDecl(r)
+		if err != nil {
+			return nil, err
+		}
+		b := tr.bindings[tr.resources[r]]
+		attr := fmt.Sprintf("buffer(%d)", b.MetalIndex)
+		if b.Kind == BindingTexture {
+			attr = fmt.Sprintf("texture(%d)", b.MetalIndex)
+		}
+		params = append(params, fmt.Sprintf("%s %s [[%s]]", decl, identMSL(r.Name), attr))
+	}
+	return params, nil
 }
 
 // entryParams builds the kernel function's own parameter list: one
@@ -567,14 +709,9 @@ func (tr *translator) resourceParamDecl(r *wgsl.VarObj) (string, error) {
 // resourceParamDecl), the `_Sizes` struct if sizeIndex >= 0, then one
 // builtin parameter per ep.Inputs entry.
 func (tr *translator) entryParams(ep *wgsl.EntryPoint, sizeIndex int) ([]string, error) {
-	var params []string
-	for _, r := range ep.Resources {
-		decl, err := tr.resourceParamDecl(r)
-		if err != nil {
-			return nil, err
-		}
-		b := tr.bindings[tr.resources[r]]
-		params = append(params, fmt.Sprintf("%s %s [[buffer(%d)]]", decl, identMSL(r.Name), b.MetalIndex))
+	params, err := tr.resourceEntryParams(ep.Resources)
+	if err != nil {
+		return nil, err
 	}
 	if sizeIndex >= 0 {
 		params = append(params, fmt.Sprintf("constant _Sizes& _sizes [[buffer(%d)]]", sizeIndex))

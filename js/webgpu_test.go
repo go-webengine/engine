@@ -4,13 +4,70 @@
 package js
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/dop251/goja"
 	"github.com/go-webengine/engine/dom"
 )
+
+// renderWGSL is engine#415 M7's own minimal vertex+fragment pair: an
+// instance-indexed full-screen quad, writing the instance index back as a
+// flat u32 fragment output — reused by every render-pipeline/render-pass
+// test below so a single known-good shader is translated and compiled
+// each time, matching wgslmsl's own
+// TestTranslateRenderVertexFragmentEndToEnd shape exactly (same shader
+// text, confirmed to translate and compile there).
+const renderWGSL = `
+struct VertexOut {
+	@builtin(position) position: vec4<f32>,
+	@location(0) @interpolate(flat) value: u32,
+}
+
+@vertex
+fn vmain(@location(0) pos: vec2<f32>, @builtin(instance_index) iid: u32) -> VertexOut {
+	var out: VertexOut;
+	out.position = vec4<f32>(pos, 0.0, 1.0);
+	out.value = iid;
+	return out;
+}
+
+@fragment
+fn fmain(in: VertexOut) -> @location(0) u32 {
+	return in.value;
+}
+`
+
+// renderPipelineSetupJS builds the dev.createShaderModule/createTexture/
+// createRenderPipeline JS, shared by every M7 render test below, so a
+// single known-good 4x4 r8uint pipeline setup is never retyped with a
+// chance of drifting between tests.
+func renderPipelineSetupJS() string {
+	return fmt.Sprintf(`
+		var module = dev.createShaderModule({ code: `+"`%s`"+` });
+		var tex = dev.createTexture({
+			size: { width: 4, height: 4 },
+			format: 'r8uint',
+			usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+		});
+		var pipeline = dev.createRenderPipeline({
+			layout: 'auto',
+			vertex: {
+				module: module,
+				entryPoint: 'vmain',
+				buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }],
+			},
+			fragment: {
+				module: module,
+				entryPoint: 'fmain',
+				targets: [{ format: 'r8uint' }],
+			},
+		});
+	`, renderWGSL)
+}
 
 // runWebGPU is runJS with EnableWebGPU set.
 func runWebGPU(t *testing.T, htmlSrc string) (*dom.Node, []string, Result) {
@@ -814,6 +871,52 @@ func TestComputePipelineRejectsExplicitLayout(t *testing.T) {
 	}
 }
 
+// TestComputePipelineRejectsTextureResource is the regression test for
+// engine#447 review bug #5: a @compute entry point declaring a
+// texture_2d<u32> resource (the one shape wgslmsl's own resolveResources
+// legitimately accepts for ANY stage, including compute, directly via
+// go-macos/metal — see wgslmsl's own TestTranslateTextureLoadEndToEnd)
+// must still be rejected by THIS binding's createComputePipeline: its own
+// dispatch path (gpuDispatchWorkgroups) has no texture-binding mechanism
+// and would otherwise collide the texture's Metal index — allocated from
+// wgslmsl's separate tr.textureCount counter — with a real buffer
+// resource's own same-numbered tr.bufferCount index, silently delivering
+// one resource's bytes under the other's binding instead of failing.
+func TestComputePipelineRejectsTextureResource(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var tex: texture_2d<u32>;
+				@group(0) @binding(1) var<storage, read_write> out: array<u32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+					out[id.x] = textureLoad(tex, vec2<i32>(0, 0), 0).x;
+				}
+			`+"`"+` });
+			try {
+				dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
 // TestDispatchWithoutBindGroupRejected proves a dispatch missing a needed
 // bind group fails clearly rather than reading/writing an unbound buffer
 // index.
@@ -1323,5 +1426,1658 @@ func TestCreateBindGroupSubRangeBindsDisjointRegionsOfOneBuffer(t *testing.T) {
 	got, _ := body.Attribute("data-out")
 	if got != strings.Join(want, ",") {
 		t.Fatalf("data-out = %q, want %q logs=%v (each region written only by its own bind group's own offset and constant, everything else untouched)", got, strings.Join(want, ","), logs)
+	}
+}
+
+// TestGPUCreateTextureEndToEnd covers GPUDevice.createTexture's own happy
+// path: every descriptor field this binding's bounded scope reports back
+// through the resulting GPUTexture's own property getters, then destroy().
+func TestGPUCreateTextureEndToEnd(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+			});
+			document.body.setAttribute('data-shape', [
+				tex.width, tex.height, tex.depthOrArrayLayers, tex.format, tex.dimension, tex.mipLevelCount, tex.sampleCount,
+			].join(','));
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	want := "4,4,1,r8uint,2d,1,1"
+	if got, _ := body.Attribute("data-shape"); got != want {
+		t.Fatalf("data-shape = %q, want %q", got, want)
+	}
+}
+
+// TestGPUCreateTextureUnsupportedFormatRejected proves an unsupported
+// GPUTextureFormat is a named, synchronous rejection (unsupportedJS),
+// never a silently wrong go-macos/metal PixelFormat.
+func TestGPUCreateTextureUnsupportedFormatRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			try {
+				dev.createTexture({ size: { width: 4, height: 4 }, format: 'rgba8unorm', usage: GPUTextureUsage.COPY_SRC });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPUTextureCreateViewEndToEnd covers GPUTexture.createView()'s own
+// happy path: a view object is handed back and is itself usable where a
+// GPUTextureView is expected (beginRenderPass's own colorAttachments[0]
+// .view, checked by the render-pass tests below).
+func TestGPUTextureCreateViewEndToEnd(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+			var view = tex.createView();
+			document.body.setAttribute('data-view-type', typeof view);
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-view-type"); got != "object" {
+		t.Fatalf("data-view-type = %q, want %q", got, "object")
+	}
+}
+
+// TestGPUTextureCreateViewUnsupportedDimensionRejected proves
+// createView's own bounded scope (no mip chain, no array layers, no
+// reinterpretation — see its own doc comment) names a rejection rather
+// than silently handing back a view of the whole texture anyway.
+func TestGPUTextureCreateViewUnsupportedDimensionRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+			try {
+				tex.createView({ dimension: '3d' });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPURenderPipelineRejectsResourceBinding proves this binding's own
+// deliberate render-pipeline scope narrowing (go-macos/metal's own
+// RenderEncoder has no fragment-stage buffer binding and no bind-group
+// mechanism at all — see gpuCreateRenderPipeline's own doc comment): a
+// shader declaring a @group/@binding resource fails pipeline creation.
+// Per spec (and exactly like TestCreateComputePipelineBadWGSLCapturedByErrorScope's
+// own bad-WGSL case for compute), a pipeline-creation failure is GPU
+// content validation — captured by an open error scope, never a
+// synchronous throw — so createRenderPipeline rejecting this shader via
+// wgslmsl.TranslateRender's own translation error takes the exact same
+// path a genuinely bad shader would, confirmed empirically (this shader
+// IS valid WGSL; wgslmsl's own render translator just does not support a
+// module-scope resource in a render entry point yet).
+func TestGPURenderPipelineRejectsResourceBinding(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read> tint: array<f32>;
+				struct VertexOut { @builtin(position) position: vec4<f32> }
+				@vertex
+				fn vmain(@location(0) pos: vec2<f32>) -> VertexOut {
+					var out: VertexOut;
+					out.position = vec4<f32>(pos, 0.0, 1.0);
+					return out;
+				}
+				@fragment
+				fn fmain(in: VertexOut) -> @location(0) u32 { return u32(tint[0]); }
+			`+"`"+` });
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				dev.createRenderPipeline({
+					layout: 'auto',
+					vertex: { module: module, entryPoint: 'vmain', buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }] },
+					fragment: { module: module, entryPoint: 'fmain', targets: [{ format: 'r8uint' }] },
+				});
+			} catch (e) { threw = true; }
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (a resource-binding render shader must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestGPURenderPipelineRejectsFixedSizeUniformBinding exercises this
+// binding's own EXPLICIT post-translation rejection in
+// gpuCreateRenderPipeline (checking res.VertexBindings/FragmentBindings),
+// as distinct from TestGPURenderPipelineRejectsResourceBinding's own
+// case (a runtime-sized storage array, which wgslmsl.TranslateRender
+// itself already refuses to translate at all — see TranslateRender's own
+// doc comment). A fixed-size `var<uniform>` struct DOES translate
+// successfully (same doc comment: "may read ONE resource kind beyond
+// uniform/storage"), so reaching createRenderPipeline with a real,
+// resolved binding is what actually exercises this check — go-macos/
+// metal's own RenderEncoder still has no bind-group mechanism to honour
+// it, hence the named, synchronous rejection (unsupportedJS), not a
+// captured validation error.
+func TestGPURenderPipelineRejectsFixedSizeUniformBinding(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<uniform> tint: f32;
+				struct VertexOut { @builtin(position) position: vec4<f32> }
+				@vertex
+				fn vmain(@location(0) pos: vec2<f32>) -> VertexOut {
+					var out: VertexOut;
+					out.position = vec4<f32>(pos, 0.0, 1.0);
+					return out;
+				}
+				@fragment
+				fn fmain(in: VertexOut) -> @location(0) u32 { return u32(tint); }
+			`+"`"+` });
+			try {
+				dev.createRenderPipeline({
+					layout: 'auto',
+					vertex: { module: module, entryPoint: 'vmain', buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }] },
+					fragment: { module: module, entryPoint: 'fmain', targets: [{ format: 'r8uint' }] },
+				});
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPURenderPassEncoderDrawIndexedEndToEnd is the render-pipeline
+// counterpart of TestComputePipelineEndToEnd: a full
+// beginRenderPass/setPipeline/setVertexBuffer/setIndexBuffer/drawIndexed/
+// end/submit round trip, read back bit-for-bit through
+// copyTextureToBuffer + mapAsync — mirroring wgslmsl's own
+// TestTranslateRenderVertexFragmentEndToEnd (same shader, same quad, same
+// firstInstance-as-pixel-value trick) but driven entirely through this
+// package's own JS surface instead of go-macos/metal directly.
+func TestGPURenderPassEncoderDrawIndexedEndToEnd(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var vb = dev.createBuffer({ size: 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+			dev.queue.writeBuffer(vb, 0, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]));
+			var ib = dev.createBuffer({ size: 24, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+			dev.queue.writeBuffer(ib, 0, new Uint32Array([0, 1, 2, 2, 1, 3]));
+
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 5, g: 5, b: 5, a: 5 } }],
+			});
+			pass.setPipeline(pipeline);
+			pass.setVertexBuffer(0, vb);
+			pass.setIndexBuffer(ib, 'uint32');
+			pass.drawIndexed(6, 1, 0, 0, 7);
+			pass.end();
+
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				vb.destroy();
+				ib.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := make([]string, 16)
+	for i := range want {
+		want[i] = "7"
+	}
+	got, _ := body.Attribute("data-out")
+	if got != strings.Join(want, ",") {
+		t.Fatalf("data-out = %q, want %q (the quad covers the whole 4x4 target; every pixel must read back firstInstance=7)", got, strings.Join(want, ","))
+	}
+}
+
+// TestGPURenderPassEncoderDrawEndToEnd is drawIndexed's own non-indexed
+// counterpart: the same quad, as two triangles given directly through
+// draw() with no index buffer at all.
+func TestGPURenderPassEncoderDrawEndToEnd(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var vb = dev.createBuffer({ size: 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+			dev.queue.writeBuffer(vb, 0, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]));
+
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 5, g: 5, b: 5, a: 5 } }],
+			});
+			pass.setPipeline(pipeline);
+			pass.setVertexBuffer(0, vb);
+			pass.draw(6, 1, 0, 3);
+			pass.end();
+
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				vb.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := make([]string, 16)
+	for i := range want {
+		want[i] = "3"
+	}
+	got, _ := body.Attribute("data-out")
+	if got != strings.Join(want, ",") {
+		t.Fatalf("data-out = %q, want %q (the quad covers the whole 4x4 target; every pixel must read back firstInstance=3)", got, strings.Join(want, ","))
+	}
+}
+
+// TestDrawWithoutPipelineCapturedByErrorScope proves draw() with no
+// setPipeline call is GPU content validation per spec, never a
+// synchronous throw — captured by an open error scope exactly like
+// TestQueueWriteBufferOutOfRangeCapturedByErrorScope's own writeBuffer
+// case.
+func TestDrawWithoutPipelineCapturedByErrorScope(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				pass.draw(3, 1, 0, 0);
+			} catch (e) { threw = true; }
+			pass.end();
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				tex.destroy();
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (draw without a pipeline must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestGPUDrawRejectsMissingVertexBuffer is the regression test for
+// engine#447 review bug #6's "no vertex buffer bound per slot" check:
+// renderPipelineSetupJS's own pipeline declares one vertex buffer slot
+// (index 0, stride 8), but this test never calls setVertexBuffer at all
+// before draw() — GPU content validation (captured by an open error
+// scope), exactly like TestDrawWithoutPipelineCapturedByErrorScope's own
+// "no pipeline set" case just above.
+func TestGPUDrawRejectsMissingVertexBuffer(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			pass.setPipeline(pipeline);
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				pass.draw(6, 1, 0, 0);
+			} catch (e) { threw = true; }
+			pass.end();
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				tex.destroy();
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (draw with a slot unbound must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestGPUDrawRejectsVertexBufferTooSmall is engine#447 review bug #6's
+// "count-vs-buffer-size bound" check: a vertex buffer IS bound at slot 0,
+// but it holds only 1 vertex (8 bytes, the pipeline's own stride) while
+// draw(6, ...) needs 6 — without this check, go-macos/metal's own
+// RenderEncoder reads 40 bytes past the buffer's real end.
+func TestGPUDrawRejectsVertexBufferTooSmall(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var vb = dev.createBuffer({ size: 8, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			pass.setPipeline(pipeline);
+			pass.setVertexBuffer(0, vb);
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				pass.draw(6, 1, 0, 0);
+			} catch (e) { threw = true; }
+			pass.end();
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				vb.destroy();
+				tex.destroy();
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (a too-small vertex buffer must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestGPUDrawRejectsNegativeVertexCount is engine#447 review bug #6's
+// "no negative-value check": draw(-1, ...) must be rejected, not passed
+// straight through to go-macos/metal as a huge unsigned count.
+func TestGPUDrawRejectsNegativeVertexCount(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var vb = dev.createBuffer({ size: 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			pass.setPipeline(pipeline);
+			pass.setVertexBuffer(0, vb);
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				pass.draw(-1, 1, 0, 0);
+			} catch (e) { threw = true; }
+			pass.end();
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				vb.destroy();
+				tex.destroy();
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (a negative count must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestGPUDrawIndexedRejectsOutOfRangeIndex is engine#447 review bug #6's
+// "index range/alignment check": the index buffer's own last index (10)
+// points well past the 4-vertex (32-byte) vertex buffer bound at slot 0 —
+// without reading the index buffer's own contents at drawIndexed time (as
+// gpuValidateIndexedVertexBuffers now does), this would silently read
+// vertex attribute data from 48 bytes past the buffer's real end.
+func TestGPUDrawIndexedRejectsOutOfRangeIndex(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var vb = dev.createBuffer({ size: 32, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+			dev.queue.writeBuffer(vb, 0, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]));
+			var ib = dev.createBuffer({ size: 24, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+			dev.queue.writeBuffer(ib, 0, new Uint32Array([0, 1, 2, 2, 1, 10]));
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			pass.setPipeline(pipeline);
+			pass.setVertexBuffer(0, vb);
+			pass.setIndexBuffer(ib, 'uint32');
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				pass.drawIndexed(6, 1, 0, 0, 0);
+			} catch (e) { threw = true; }
+			pass.end();
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				vb.destroy();
+				ib.destroy();
+				tex.destroy();
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (an out-of-range index must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestGPURenderPassEndCalledTwiceRejected is engine#447 review bug #7's
+// "end() called twice re-runs the pass" defect: without the enc.passOpen
+// guard in wrapGPURenderPassEncoder's own "end" handler, a second end()
+// call would re-append the SAME gpuRecordedCommand (and whatever draws it
+// holds) a second time, so gpuQueueSubmit would execute every draw in the
+// pass twice. The second end() must instead throw a synchronous TypeError
+// (this is a usage error, not a GPU validation error, so it is never
+// routed through an error scope the way bug #6's draw() checks are).
+func TestGPURenderPassEndCalledTwiceRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			pass.setPipeline(pipeline);
+			pass.end();
+			try {
+				pass.end();
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q (end() called a second time on an already-ended render pass must throw synchronously, not silently re-run it)", got, "threw:TypeError")
+	}
+}
+
+// TestGPUDrawAfterRenderPassEndRejected is engine#447 review bug #7's
+// "draw after end() still executes" defect: draw() records into
+// state.draws directly, so without the enc.passOpen guard in "draw"'s own
+// handler, a call made after end() has already flushed state into
+// enc.commands would still append to that (by-now-submitted) state,
+// growing a render pass gpuQueueSubmit already believes is fully
+// recorded.
+func TestGPUDrawAfterRenderPassEndRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var vb = dev.createBuffer({ size: 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			pass.setPipeline(pipeline);
+			pass.setVertexBuffer(0, vb);
+			pass.end();
+			try {
+				pass.draw(6, 1, 0, 0);
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+			vb.destroy();
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q (draw() after end() must throw synchronously, not silently record into an already-submitted pass)", got, "threw:TypeError")
+	}
+}
+
+// TestGPUCommandEncoderFinishWithOpenRenderPassRejected is engine#447
+// review bug #7's "a pass begun but never end()ed is silently dropped"
+// defect: finish() must reject when a render (or compute) pass is still
+// open, since every draw recorded against it is sitting unflushed in the
+// render pass's own state.draws and would otherwise be lost the moment
+// finish() hands back a command buffer with no reference to it at all.
+func TestGPUCommandEncoderFinishWithOpenRenderPassRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+	`+renderPipelineSetupJS()+`
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			pass.setPipeline(pipeline);
+			try {
+				encoder.finish();
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q (finish() with a render pass still open — no end() call — must throw synchronously, not silently drop the pass)", got, "threw:TypeError")
+	}
+}
+
+// TestGPUComputePassDispatchAfterEndRejected is
+// TestGPUDrawAfterRenderPassEndRejected's own compute-pass counterpart:
+// dispatchWorkgroups records directly into enc.commands, so a call after
+// end() would still run against an encoder whose pass has already been
+// handed to gpuQueueSubmit's own command list.
+func TestGPUComputePassDispatchAfterEndRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) { data[id.x] = 0.0; }
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginComputePass();
+			pass.setPipeline(pipeline);
+			pass.end();
+			try {
+				pass.dispatchWorkgroups(1);
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q (dispatchWorkgroups() after end() must throw synchronously, not silently record into an already-submitted compute pass)", got, "threw:TypeError")
+	}
+}
+
+// TestGPUComputePassEndCalledTwiceRejected is
+// TestGPURenderPassEndCalledTwiceRejected's own compute-pass counterpart:
+// without the enc.passOpen guard, a second end() would re-append the same
+// dispatch commands a second time (since dispatchWorkgroups already wrote
+// them straight into enc.commands, "ending" a second time has no draws
+// left to re-flush here, but the guard must still fire symmetrically with
+// the render-pass encoder sharing the same gpuCommandEncoderState fields).
+func TestGPUComputePassEndCalledTwiceRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var module = dev.createShaderModule({ code: `+"`"+`
+				@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+				@compute @workgroup_size(1)
+				fn main(@builtin(global_invocation_id) id: vec3<u32>) { data[id.x] = 0.0; }
+			`+"`"+` });
+			var pipeline = dev.createComputePipeline({ layout: 'auto', compute: { module: module } });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginComputePass();
+			pass.setPipeline(pipeline);
+			pass.end();
+			try {
+				pass.end();
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q (end() called a second time on an already-ended compute pass must throw synchronously, not silently re-run it)", got, "threw:TypeError")
+	}
+}
+
+// TestSetIndexBufferUnsupportedFormatRejected proves setIndexBuffer's own
+// bounded scope (uint32 indices only — see its own doc comment, and
+// gpuDrawIndexed's firstIndex folding, which assumes 4-byte indices)
+// names a rejection for "uint16" rather than silently misreading the
+// buffer.
+func TestSetIndexBufferUnsupportedFormatRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+			var ib = dev.createBuffer({ size: 24, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+			});
+			try {
+				pass.setIndexBuffer(ib, 'uint16');
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+			pass.end();
+			ib.destroy();
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPUQueueWriteTextureEndToEnd covers GPUQueue.writeTexture's own
+// happy path: a full-extent, tightly packed write, read back bit-for-bit
+// through copyTextureToBuffer + mapAsync.
+func TestGPUQueueWriteTextureEndToEnd(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+			});
+			var pixels = new Uint8Array([1,2,3,4, 5,6,7,8, 9,10,11,12, 13,14,15,16]);
+			dev.queue.writeTexture({ texture: tex }, pixels, {}, { width: 4, height: 4 });
+
+			var encoder = dev.createCommandEncoder();
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
+	if got, _ := body.Attribute("data-out"); got != want {
+		t.Fatalf("data-out = %q, want %q (bit-for-bit round trip)", got, want)
+	}
+}
+
+// TestGPUQueueWriteTextureBoundsRejectedCapturedByErrorScope proves a
+// data buffer too small for the given copy size is GPU content
+// validation, captured by an open error scope, never a synchronous
+// throw — mirroring writeBuffer's own out-of-range convention exactly
+// (gpuQueueWriteTexture's own doc comment).
+func TestGPUQueueWriteTextureBoundsRejectedCapturedByErrorScope(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint', usage: GPUTextureUsage.COPY_DST });
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				dev.queue.writeTexture({ texture: tex }, new Uint8Array(4), {}, { width: 4, height: 4 }); // 4 bytes for a 16-byte copy
+			} catch (e) { threw = true; }
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				tex.destroy();
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (an out-of-range writeTexture must never throw synchronously when a scope is open)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestCopyTextureToBufferOutOfBoundsRejected proves copyTextureToBuffer's
+// own destination-range check is a WebIDL-level argument problem (a
+// thrown TypeError), mirroring copyBufferToBuffer's own convention for
+// the same kind of bounds mismatch exactly (gpuCopyTextureToBuffer's own
+// doc comment) rather than GPU content validation.
+func TestCopyTextureToBufferOutOfBoundsRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint', usage: GPUTextureUsage.COPY_SRC });
+			var readback = dev.createBuffer({ size: 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }); // too small for a 16-byte copy
+			var encoder = dev.createCommandEncoder();
+			try {
+				encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+			tex.destroy();
+			readback.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPUCreateTextureMissingSizeRejected proves a descriptor with no
+// "size" key at all — gpuReadExtent's own non-object input (v is
+// undefined, not a *goja.Object) — resolves to the zero extent rather
+// than panicking on a nil object, and that zero extent is then rejected
+// by createTexture's own size.width/height>0 check, exactly like an
+// explicit zero size would be.
+func TestGPUCreateTextureMissingSizeRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			try {
+				dev.createTexture({ format: 'r8uint', usage: GPUTextureUsage.COPY_SRC });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPUQueueWriteTextureNumericOriginTreatedAsZero proves
+// gpuIsZeroOrigin's own non-object branch: an origin that is not an
+// object at all (here the plain number 0, never a dict or sequence) is
+// not a *goja.Object, so the type assertion fails and gpuIsZeroOrigin
+// reports it as the zero origin by default, letting the write through —
+// the write must still land for real, not be silently skipped.
+func TestGPUQueueWriteTextureNumericOriginTreatedAsZero(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+			});
+			var pixels = new Uint8Array([1,2,3,4, 5,6,7,8, 9,10,11,12, 13,14,15,16]);
+			dev.queue.writeTexture({ texture: tex, origin: 0 }, pixels, {}, { width: 4, height: 4 });
+
+			var encoder = dev.createCommandEncoder();
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (a numeric origin of 0 must be accepted as the zero origin)", got)
+	}
+	want := "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
+	if got, _ := body.Attribute("data-out"); got != want {
+		t.Fatalf("data-out = %q, want %q", got, want)
+	}
+}
+
+// TestGPUQueueWriteTextureNonZeroPartialOriginRejected proves
+// gpuIsZeroOrigin's own per-field default (a missing x/y/z/0/1/2 key
+// defaults to 0) does not also zero out a field that IS present: an
+// origin object giving only "x": 5 (y and z both absent, so both must
+// default to 0 on their own) must still read back as non-zero overall
+// and be rejected — a defaulting bug that zeroed every field
+// unconditionally would wrongly let this through as the zero origin.
+func TestGPUQueueWriteTextureNonZeroPartialOriginRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.COPY_DST,
+			});
+			try {
+				dev.queue.writeTexture({ texture: tex, origin: { x: 5 } }, new Uint8Array(16), {}, { width: 4, height: 4 });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+			tex.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPUQueueWriteTextureOriginMissingFieldsDefaultToZero proves
+// gpuIsZeroOrigin's own missing-key default (obj.Get(k) genuinely
+// returns Go nil, not a JS "undefined" Value, once a key is absent from
+// both the object and its whole prototype chain) for every key besides
+// the one given explicitly: an origin of only `{x: 0}` must still walk
+// y, z, "0", "1" and "2" — each one genuinely missing — through that
+// same default, never short-circuiting before reaching them the way
+// `{x: 5}` above does. A guard that stopped defaulting those missing
+// keys would call ToInteger() on a nil Value and crash; this must
+// instead succeed exactly like the explicit numeric-0 origin case.
+func TestGPUQueueWriteTextureOriginMissingFieldsDefaultToZero(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+			});
+			var pixels = new Uint8Array([1,2,3,4, 5,6,7,8, 9,10,11,12, 13,14,15,16]);
+			dev.queue.writeTexture({ texture: tex, origin: { x: 0 } }, pixels, {}, { width: 4, height: 4 });
+
+			var encoder = dev.createCommandEncoder();
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (an origin of {x: 0}, with y/z/sequence keys entirely absent, must default every missing key to 0 and be accepted as the zero origin)", got)
+	}
+	want := "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16"
+	if got, _ := body.Attribute("data-out"); got != want {
+		t.Fatalf("data-out = %q, want %q", got, want)
+	}
+}
+
+// TestGPUBeginRenderPassClearValueDictFormVisibleWithoutDraw proves
+// gpuReadColor's own dict-keyed branch ("r" present selects {r,g,b,a}
+// over the [0,1,2,3] sequence form) by never covering the target with
+// any draw at all — the clear colour is the ONLY thing that reaches the
+// pixels, unlike every other render-pass test above where draws paint
+// over it. Choosing the wrong branch here would read undefined
+// "0"/"1"/"2"/"3" properties instead and land a different value (or
+// none) in the target.
+func TestGPUBeginRenderPassClearValueDictFormVisibleWithoutDraw(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+			});
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 9, g: 9, b: 9, a: 9 } }],
+			});
+			pass.end();
+
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := make([]string, 16)
+	for i := range want {
+		want[i] = "9"
+	}
+	got, _ := body.Attribute("data-out")
+	if got != strings.Join(want, ",") {
+		t.Fatalf("data-out = %q, want %q (the dict-form clearValue must be read as {r,g,b,a}, not the sequence form)", got, strings.Join(want, ","))
+	}
+}
+
+// TestGPUBeginRenderPassClearValueNonObjectDefaultsToZero proves
+// gpuReadColor's own non-object branch: a clearValue that is not an
+// object at all (here the plain number 5, never a dict or sequence) is
+// not a *goja.Object, so the type assertion fails and gpuReadColor
+// returns the zero colour by default, rather than panicking on a nil
+// object or silently using 5. Same no-draw trick as the dict-form test
+// above makes the actual clear colour observable.
+func TestGPUBeginRenderPassClearValueNonObjectDefaultsToZero(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({
+				size: { width: 4, height: 4 },
+				format: 'r8uint',
+				usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+			});
+			var encoder = dev.createCommandEncoder();
+			var pass = encoder.beginRenderPass({
+				colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: 5 }],
+			});
+			pass.end();
+
+			var readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			dev.queue.submit([encoder.finish()]);
+
+			return readback.mapAsync(GPUMapMode.READ).then(function() {
+				var out = Array.from(new Uint8Array(readback.getMappedRange()));
+				document.body.setAttribute('data-out', out.join(','));
+				readback.destroy();
+				tex.destroy();
+			});
+		}, function(e) {
+			document.body.setAttribute('data-result', 'REJECTED:' + e);
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if got, _ := body.Attribute("data-result"); got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	} else if got != "" {
+		t.Fatalf("data-result = %q, want empty (no rejection)", got)
+	}
+	want := make([]string, 16)
+	for i := range want {
+		want[i] = "0"
+	}
+	got, _ := body.Attribute("data-out")
+	if got != strings.Join(want, ",") {
+		t.Fatalf("data-out = %q, want %q (a non-object clearValue must fall back to the zero colour, not 5)", got, strings.Join(want, ","))
+	}
+}
+
+// TestGPUBeginRenderPassMissingRenderAttachmentUsageCapturedByErrorScope
+// proves beginRenderPass's own panicValidation (a texture not created
+// with RENDER_ATTACHMENT usage) is real GPU content validation, captured
+// by an open error scope exactly like TestDrawWithoutPipelineCapturedByErrorScope's
+// own draw() case — never a raw, unrecovered panic. Before this fix,
+// beginRenderPass's registration never wrapped the call in gpuGuard (the
+// one mechanism that recovers a panicValidation panic at all), so this
+// exact script crashed the whole process instead of rejecting cleanly.
+func TestGPUBeginRenderPassMissingRenderAttachmentUsageCapturedByErrorScope(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint', usage: GPUTextureUsage.TEXTURE_BINDING });
+			var encoder = dev.createCommandEncoder();
+			dev.pushErrorScope('validation');
+			var threw = false;
+			try {
+				encoder.beginRenderPass({
+					colorAttachments: [{ view: tex.createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+				});
+			} catch (e) { threw = true; }
+			document.body.setAttribute('data-threw', String(threw));
+			return dev.popErrorScope().then(function(err) {
+				document.body.setAttribute('data-captured-name', err ? err.constructor.name : 'null');
+				tex.destroy();
+			});
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw"); got != "false" {
+		t.Fatalf("data-threw = %q, want %q (a texture missing RENDER_ATTACHMENT usage is GPU content validation, never a synchronous throw)", got, "false")
+	}
+	if got, _ := body.Attribute("data-captured-name"); got != "GPUValidationError" {
+		t.Fatalf("data-captured-name = %q, want %q", got, "GPUValidationError")
+	}
+}
+
+// TestGPUCopyTextureToBufferRegistrationGuarded proves
+// copyTextureToBuffer's own registration is wrapped the same way as
+// beginRenderPass's — a defensive, consistency fix (engine#447 review)
+// so any future panicValidation added inside gpuCopyTextureToBuffer is
+// caught exactly like every other recording call, instead of silently
+// depending on nobody ever adding one. The out-of-bounds case already
+// throws a TypeError (see TestCopyTextureToBufferOutOfBoundsRejected) and
+// must keep doing so — gpuGuard only ever recovers a panicValidation
+// panic, never an ordinary TypeError, so wrapping it must not change that
+// behaviour.
+func TestGPUCopyTextureToBufferRegistrationGuarded(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			var tex = dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint', usage: GPUTextureUsage.COPY_SRC });
+			var readback = dev.createBuffer({ size: 2, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+			var encoder = dev.createCommandEncoder();
+			var threw = false;
+			try {
+				encoder.copyTextureToBuffer({ texture: tex }, { buffer: readback }, { width: 4, height: 4 });
+			} catch (e) { threw = (e instanceof TypeError); }
+			document.body.setAttribute('data-threw-typeerror', String(threw));
+			tex.destroy();
+			readback.destroy();
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	body := dom.Find(root, "body")
+	if skip, _ := body.Attribute("data-result"); skip == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got, _ := body.Attribute("data-threw-typeerror"); got != "true" {
+		t.Fatalf("data-threw-typeerror = %q, want %q (an out-of-bounds copy must still throw a TypeError synchronously after wrapping the registration in gpuGuard)", got, "true")
+	}
+}
+
+// TestGPUReadExtentMissingHeightDefaultsToOne proves gpuReadExtent's dict
+// form (engine#447 review bug #2): height is spec-optional
+// (GPUExtent3DDict.height defaults to 1) and, before this fix,
+// obj.Get("height") returned a genuine Go nil for the missing property —
+// calling ToInteger() on it panicked instead of defaulting. This is a
+// plain Go-level unit test (no GPU/JS harness needed): before the fix it
+// crashed this whole test binary with an unrecovered nil-pointer panic,
+// not merely fail an assertion.
+func TestGPUReadExtentMissingHeightDefaultsToOne(t *testing.T) {
+	vm := goja.New()
+	obj := vm.NewObject()
+	obj.Set("width", 4)
+	got := gpuReadExtent(obj)
+	want := gpuExtent{w: 4, h: 1, d: 1}
+	if got != want {
+		t.Fatalf("gpuReadExtent({width:4}) = %+v, want %+v", got, want)
+	}
+}
+
+// TestGPUReadExtentSequenceFormMissingTrailingDefaultsToOne is
+// gpuReadExtent's sequence-form counterpart: obj.Get("1")/obj.Get("2")
+// absent (a short array) must default to 1, not nil-deref.
+func TestGPUReadExtentSequenceFormMissingTrailingDefaultsToOne(t *testing.T) {
+	vm := goja.New()
+	obj := vm.NewObject()
+	obj.Set("0", 4)
+	got := gpuReadExtent(obj)
+	want := gpuExtent{w: 4, h: 1, d: 1}
+	if got != want {
+		t.Fatalf("gpuReadExtent([4]) = %+v, want %+v", got, want)
+	}
+}
+
+// TestGPUReadColorMissingGBADefaultToZero proves gpuReadColor's dict
+// form: g/b/a are spec-optional in this codebase's own "non-crashing
+// default over strict WebIDL enforcement" convention (gpuReadColor's own
+// doc comment) — obj.Get("g") absent must default to 0, not nil-deref.
+func TestGPUReadColorMissingGBADefaultToZero(t *testing.T) {
+	// A deleted guard at webgpu.go:1693 turns this missing-property read
+	// into a nil-pointer panic that would crash the whole test binary
+	// before the assertion below ever ran, masking the result (mutsweep
+	// would read it as "caught by panic", luck rather than a test). This
+	// local recover converts that crash into an ordinary failed
+	// assertion, same as any other wrong value.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("gpuReadColor({r:5}) panicked: %v", r)
+		}
+	}()
+	vm := goja.New()
+	obj := vm.NewObject()
+	obj.Set("r", 5.0)
+	got := gpuReadColor(obj)
+	want := [4]float64{5, 0, 0, 0}
+	if got != want {
+		t.Fatalf("gpuReadColor({r:5}) = %v, want %v", got, want)
+	}
+}
+
+// TestGPUReadColorSequenceFormMissingTrailingDefaultsToZero is
+// gpuReadColor's sequence-form counterpart.
+func TestGPUReadColorSequenceFormMissingTrailingDefaultsToZero(t *testing.T) {
+	// Same reasoning as TestGPUReadColorMissingGBADefaultToZero's own
+	// recover: this exercises the same gpuGetFloat guard (webgpu.go:1693),
+	// just through the sequence-form branch's "1"/"2"/"3" keys.
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("gpuReadColor([5]) panicked: %v", r)
+		}
+	}()
+	vm := goja.New()
+	obj := vm.NewObject()
+	obj.Set("0", 5.0)
+	got := gpuReadColor(obj)
+	want := [4]float64{5, 0, 0, 0}
+	if got != want {
+		t.Fatalf("gpuReadColor([5]) = %v, want %v", got, want)
+	}
+}
+
+// TestGPUReadColorExplicitUndefinedGDefaultsToZero is
+// TestGPUReadColorMissingGBADefaultToZero's explicit-undefined
+// counterpart (engine#447 review, mutsweep gap on gpuGetFloat's
+// `v == nil || goja.IsUndefined(v)` guard at webgpu.go:1693): a property
+// set to the literal value `undefined` is NOT the Go nil that a merely
+// absent property produces — obj.Get("g") instead returns a non-nil
+// goja.Value for which goja.IsUndefined(v) is true. Without the
+// IsUndefined half of the guard, gpuGetFloat would call ToFloat() on
+// that value instead of defaulting to 0. vm.NewObject()+Set never
+// produces this shape (Set always assigns a concrete value), so this
+// needs a real script evaluation to get a property whose value is
+// `undefined` rather than one that was never set.
+func TestGPUReadColorExplicitUndefinedGDefaultsToZero(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("gpuReadColor({r:5, g:undefined, a:2.5}) panicked: %v", r)
+		}
+	}()
+	vm := goja.New()
+	v, err := vm.RunString(`({r: 5, g: undefined, a: 2.5})`)
+	if err != nil {
+		t.Fatalf("RunString: %v", err)
+	}
+	got := gpuReadColor(v)
+	want := [4]float64{5, 0, 0, 2.5}
+	if got != want {
+		t.Fatalf("gpuReadColor({r:5, g:undefined, a:2.5}) = %v, want %v", got, want)
+	}
+}
+
+// TestGPUCreateTextureMissingUsageRejected proves createTexture's own
+// usage read (required, no spec default) now throws a clean TypeError
+// instead of nil-deref-panicking the whole process when usage is
+// omitted.
+func TestGPUCreateTextureMissingUsageRejected(t *testing.T) {
+	root, logs, res := runWebGPU(t, page(`
+		navigator.gpu.requestAdapter().then(function(a) {
+			if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+			return a.requestDevice();
+		}).then(function(dev) {
+			if (!dev) return;
+			try {
+				dev.createTexture({ size: { width: 4, height: 4 }, format: 'r8uint' });
+				document.body.setAttribute('data-result', 'should-have-thrown');
+			} catch (e) {
+				document.body.setAttribute('data-result', 'threw:' + e.name);
+			}
+		});
+	`))
+	if res.ScriptsFailed != 0 {
+		t.Fatalf("script failed: %+v logs=%v", res, logs)
+	}
+	got, _ := dom.Find(root, "body").Attribute("data-result")
+	if got == "skip-no-gpu" {
+		t.Skip("no usable GPU on this machine/platform")
+	}
+	if got != "threw:TypeError" {
+		t.Fatalf("data-result = %q, want %q", got, "threw:TypeError")
+	}
+}
+
+// TestGPUCreateRenderPipelineMissingVertexFieldsRejected proves
+// createRenderPipeline's own vertex.buffers[] reads (arrayStride,
+// attributes[].format, attributes[].shaderLocation, attributes[].offset
+// — all required, no spec default) now throw a clean TypeError instead
+// of nil-deref-panicking when any one of them is omitted.
+func TestGPUCreateRenderPipelineMissingVertexFieldsRejected(t *testing.T) {
+	cases := []string{
+		// missing arrayStride
+		`{ buffers: [{ attributes: [{ format: 'float32x2', shaderLocation: 0, offset: 0 }] }] }`,
+		// missing attribute format
+		`{ buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0 }] }] }`,
+		// missing shaderLocation
+		`{ buffers: [{ arrayStride: 8, attributes: [{ format: 'float32x2', offset: 0 }] }] }`,
+		// missing offset
+		`{ buffers: [{ arrayStride: 8, attributes: [{ format: 'float32x2', shaderLocation: 0 }] }] }`,
+	}
+	for _, vertexJS := range cases {
+		root, logs, res := runWebGPU(t, page(`
+			navigator.gpu.requestAdapter().then(function(a) {
+				if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+				return a.requestDevice();
+			}).then(function(dev) {
+				if (!dev) return;
+				var mod = dev.createShaderModule({ code: `+"`"+renderWGSL+"`"+` });
+				try {
+					dev.createRenderPipeline({
+						vertex: Object.assign({ module: mod }, `+vertexJS+`),
+						fragment: { module: mod, targets: [{ format: 'r8uint' }] },
+					});
+					document.body.setAttribute('data-result', 'should-have-thrown');
+				} catch (e) {
+					document.body.setAttribute('data-result', 'threw:' + e.name);
+				}
+			});
+		`))
+		if res.ScriptsFailed != 0 {
+			t.Fatalf("script failed: %+v logs=%v", res, logs)
+		}
+		got, _ := dom.Find(root, "body").Attribute("data-result")
+		if got == "skip-no-gpu" {
+			t.Skip("no usable GPU on this machine/platform")
+		}
+		if got != "threw:TypeError" {
+			t.Fatalf("case %q: data-result = %q, want %q", vertexJS, got, "threw:TypeError")
+		}
+	}
+}
+
+// TestGPUCreateRenderPipelineUnsupportedRenderOptionsRejected is
+// engine#447 review bug #8: a whole set of GPURenderPipelineDescriptor
+// fields (primitive.cullMode/frontFace/unclippedDepth, multisample.count/
+// alphaToCoverageEnabled, vertex.constants, fragment.constants,
+// fragment.targets[0].blend/writeMask, vertex.buffers[].stepMode) were
+// read NOWHERE in gpuCreateRenderPipeline before this fix — go-macos/
+// metal's own RenderPipelineDescriptor simply has no field for most of
+// them, so a caller asking for back-face culling, 4x MSAA, an instance-
+// stepped vertex buffer, alpha blending or a partial colour write mask
+// got a pipeline that silently behaved as if none of that had been
+// asked for, with no error anywhere — exactly the kind of "unsupported
+// option accepted and ignored" shape bug #6/#7 already fixed for draw
+// validation and pass lifecycle. Each case here sets exactly one such
+// option to a non-default value and must now be a named, synchronous
+// TypeError instead.
+func TestGPUCreateRenderPipelineUnsupportedRenderOptionsRejected(t *testing.T) {
+	base := `{
+			layout: 'auto',
+			vertex: Object.assign({ module: mod, entryPoint: 'vmain', buffers: [{ arrayStride: 8, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }] }, VEXTRA),
+			fragment: Object.assign({ module: mod, entryPoint: 'fmain', targets: [Object.assign({ format: 'r8uint' }, TEXTRA)] }, FEXTRA),
+		}`
+	cases := []struct {
+		name   string
+		prim   string // primitive object literal, or "" to omit
+		ms     string // multisample object literal, or "" to omit
+		vextra string // extra vertex.* fields, or "{}"
+		fextra string // extra fragment.* fields, or "{}"
+		textra string // extra fragment.targets[0].* fields, or "{}"
+	}{
+		{name: "cullMode", prim: `{ cullMode: 'back' }`},
+		{name: "frontFace", prim: `{ frontFace: 'cw' }`},
+		{name: "unclippedDepth", prim: `{ unclippedDepth: true }`},
+		{name: "multisample.count", ms: `{ count: 4 }`},
+		{name: "multisample.alphaToCoverageEnabled", ms: `{ alphaToCoverageEnabled: true }`},
+		{name: "vertex.constants", vextra: `{ constants: { x: 1 } }`},
+		{name: "fragment.constants", fextra: `{ constants: { x: 1 } }`},
+		{name: "fragment.targets[0].blend", textra: `{ blend: { color: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' }, alpha: { srcFactor: 'one', dstFactor: 'zero', operation: 'add' } } }`},
+		{name: "fragment.targets[0].writeMask", textra: `{ writeMask: 0x1 }`},
+		{name: "vertex.buffers[].stepMode", vextra: `{ buffers: [{ arrayStride: 8, stepMode: 'instance', attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x2' }] }] }`},
+	}
+	for _, c := range cases {
+		prim, ms, vextra, fextra, textra := c.prim, c.ms, c.vextra, c.fextra, c.textra
+		if vextra == "" {
+			vextra = "{}"
+		}
+		if fextra == "" {
+			fextra = "{}"
+		}
+		if textra == "" {
+			textra = "{}"
+		}
+		descJS := strings.NewReplacer(
+			"VEXTRA", vextra,
+			"FEXTRA", fextra,
+			"TEXTRA", textra,
+		).Replace(base)
+		if prim != "" {
+			descJS = strings.Replace(descJS, "layout: 'auto',", "layout: 'auto', primitive: "+prim+",", 1)
+		}
+		if ms != "" {
+			descJS = strings.Replace(descJS, "layout: 'auto',", "layout: 'auto', multisample: "+ms+",", 1)
+		}
+		root, logs, res := runWebGPU(t, page(`
+			navigator.gpu.requestAdapter().then(function(a) {
+				if (a === null) { document.body.setAttribute('data-result', 'skip-no-gpu'); return; }
+				return a.requestDevice();
+			}).then(function(dev) {
+				if (!dev) return;
+				var mod = dev.createShaderModule({ code: `+"`"+renderWGSL+"`"+` });
+				try {
+					dev.createRenderPipeline(`+descJS+`);
+					document.body.setAttribute('data-result', 'should-have-thrown');
+				} catch (e) {
+					document.body.setAttribute('data-result', 'threw:' + e.name);
+				}
+			});
+		`))
+		if res.ScriptsFailed != 0 {
+			t.Fatalf("case %q: script failed: %+v logs=%v", c.name, res, logs)
+		}
+		got, _ := dom.Find(root, "body").Attribute("data-result")
+		if got == "skip-no-gpu" {
+			t.Skip("no usable GPU on this machine/platform")
+		}
+		if got != "threw:TypeError" {
+			t.Fatalf("case %q: data-result = %q, want %q (this render option must be a named rejection, not silently ignored)", c.name, got, "threw:TypeError")
+		}
 	}
 }
