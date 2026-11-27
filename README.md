@@ -1147,9 +1147,18 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
 
 **Honest limits (not overclaimed)**
 
-- `<canvas>.getContext(...)` is not implemented — a call throws (`Object
-  has no member 'getContext'`, confirmed live on stripe.com's own bundle).
-  No `CanvasRenderingContext2D`/WebGL surface at all, even an inert one.
+- `<canvas>.getContext("2d")` (engine#427, PR #428) returns a real,
+  scoped `CanvasRenderingContext2D`: `beginPath`/`closePath`/`moveTo`/
+  `lineTo`/`rect`/`arc`/`fill`/`fillRect`/`clearRect`/`fillStyle`, backed by
+  `go-widgets/painter`'s own `Path`/`PixelPainter` — confirmed live on
+  stripe.com, where Three.js generates offscreen 2D canvases as WebGL
+  textures via exactly those calls. `getContext("webgl")` (and every other
+  context type) correctly returns `null`, not a thrown error, per the HTML
+  Standard's own algorithm — confirmed needed by real WebGL
+  feature-detection code on the same page. Deliberately NOT implemented,
+  no confirmed trigger yet: `stroke()`/`strokeStyle`, gradients/patterns,
+  `drawImage`, `getImageData`/`putImageData`/`toDataURL`, `save`/`restore`,
+  transforms (`translate`/`scale`/`rotate`), and text.
 - `<picture>`/`srcset`: a `<source>`'s `type` attribute (skip one whose
   declared MIME type can't be decoded) and width/density descriptors
   (picking the best of several `srcset` candidates) are not evaluated —
