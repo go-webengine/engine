@@ -220,6 +220,21 @@ func TestGetRequestError(t *testing.T) {
 	}
 }
 
+// TestFetchBytesRequestError covers httpBytes' own transport-error path
+// (an unroutable URL): doWithRateLimitRetry returns a non-nil err, and
+// httpBytes must hand that back as (nil, false) rather than going on to
+// dereference a nil resp.
+func TestFetchBytesRequestError(t *testing.T) {
+	e := New()
+	data, ok := e.fetchBytes(context.Background(), "http://127.0.0.1:0", 1<<20)
+	if ok {
+		t.Error("expected ok = false for an unroutable URL")
+	}
+	if data != nil {
+		t.Errorf("data = %v, want nil", data)
+	}
+}
+
 // TestGetRetriesOn429 covers the top-level page GET's own 429 handling
 // (net_http.go's doGet, reached through Engine.get → httpGet): before this,
 // doGet had no retry logic at all, unlike httpBytes' sub-resource fetch —
