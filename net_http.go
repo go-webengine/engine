@@ -90,7 +90,14 @@ func crossOriginIsolatedFromHeaders(hdr http.Header) bool {
 }
 
 // doGet issues one GET through client, returning the (size-limited) body, the
-// post-redirect URL, the content-type, the status code and the response headers.
+// post-redirect URL, the content-type, the status code and the response
+// headers. Like httpBytes' sub-resource fetch, it retries a 429 response
+// through doWithRateLimitRetry (honouring Retry-After, both delay-seconds and
+// HTTP-date forms) rather than treating the rate-limit response body as the
+// real page — see doWithRateLimitRetry's doc comment for why a top-level page
+// GET needs exactly the same treatment a sub-resource GET already gets
+// (go-webengine/engine#450's own FIDELITY.md/README entries flagged this
+// path as the one gap that PR deliberately left unfixed).
 func doGet(ctx context.Context, client *http.Client, rawurl, userAgent string) (body []byte, final, ctype string, status int, hdr http.Header, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawurl, nil)
 	if err != nil {
@@ -98,7 +105,7 @@ func doGet(ctx context.Context, client *http.Client, rawurl, userAgent string) (
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-	resp, err := clientDo(client, req)
+	resp, err := doWithRateLimitRetry(ctx, client, req)
 	if err != nil {
 		return nil, "", "", 0, nil, err
 	}
@@ -155,8 +162,8 @@ func (e *Engine) httpBytes(ctx context.Context, abs string, limit int64) ([]byte
 		return nil, false
 	}
 	req.Header.Set("User-Agent", e.UserAgent)
-	resp, ok := e.doWithRateLimitRetry(ctx, req)
-	if !ok {
+	resp, err := doWithRateLimitRetry(ctx, e.Client, req)
+	if err != nil {
 		return nil, false
 	}
 	defer resp.Body.Close()
@@ -170,31 +177,37 @@ func (e *Engine) httpBytes(ctx context.Context, abs string, limit int64) ([]byte
 	return data, true
 }
 
-// doWithRateLimitRetry runs req via e.Client, retrying up to
+// doWithRateLimitRetry runs req via client, retrying up to
 // maxRateLimitRetries times when the response is 429 Too Many Requests —
-// honouring the server's own Retry-After (delay-seconds form) when present,
-// falling back to defaultRateLimitBackoff otherwise. Any other status (or
-// response, including a real success) is returned immediately on the first
-// attempt: only a 429 triggers a wait-and-retry. req's body is nil (every
-// caller here is a bodyless GET), so the same *http.Request is safe to reuse
-// across attempts. ok is false only for a request-level error (network
-// failure, context cancelled) or exhausting all retries still 429 — never
-// for an ordinary non-2xx status, which the caller already handles.
-func (e *Engine) doWithRateLimitRetry(ctx context.Context, req *http.Request) (resp *http.Response, ok bool) {
+// honouring the server's own Retry-After (both the delay-seconds and
+// HTTP-date forms retryAfterDelay parses) when present, falling back to
+// defaultRateLimitBackoff otherwise. Any other status (or response,
+// including a real success) is returned immediately on the first attempt:
+// only a 429 triggers a wait-and-retry. req's body is nil (every caller here
+// is a bodyless GET), so the same *http.Request is safe to reuse across
+// attempts. Shared by both the sub-resource path (httpBytes) and the
+// top-level page GET (doGet) — a page that is itself 429'd must not be
+// handed to the caller as if the rate-limit response WERE the page, any more
+// than a 429'd image or font should be. err is non-nil only for a
+// request-level error (network failure) or the context being cancelled
+// while waiting out a Retry-After — never for an ordinary non-2xx status
+// (including a 429 that is still 429 after exhausting every retry), which
+// the caller already handles via resp.StatusCode.
+func doWithRateLimitRetry(ctx context.Context, client *http.Client, req *http.Request) (resp *http.Response, err error) {
 	for attempt := 0; ; attempt++ {
-		resp, err := clientDo(e.Client, req)
+		resp, err = clientDo(client, req)
 		if err != nil {
-			return nil, false
+			return nil, err
 		}
 		if resp.StatusCode != http.StatusTooManyRequests || attempt >= maxRateLimitRetries {
-			return resp, true
+			return resp, nil
 		}
 		wait := retryAfterDelay(resp.Header.Get("Retry-After"))
 		resp.Body.Close()
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
-			return nil, false
+			return nil, ctx.Err()
 		}
 	}
 }
