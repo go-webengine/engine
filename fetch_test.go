@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/go-webengine/engine/dom"
 )
@@ -216,4 +218,100 @@ func TestGetRequestError(t *testing.T) {
 	if _, _, _, _, err := e.get(context.Background(), "http://127.0.0.1:0"); err == nil {
 		t.Error("expected a transport error for an unroutable URL")
 	}
+}
+
+// TestFetchBytesRequestError covers httpBytes' own transport-error path
+// (an unroutable URL): doWithRateLimitRetry returns a non-nil err, and
+// httpBytes must hand that back as (nil, false) rather than going on to
+// dereference a nil resp.
+func TestFetchBytesRequestError(t *testing.T) {
+	e := New()
+	data, ok := e.fetchBytes(context.Background(), "http://127.0.0.1:0", 1<<20)
+	if ok {
+		t.Error("expected ok = false for an unroutable URL")
+	}
+	if data != nil {
+		t.Errorf("data = %v, want nil", data)
+	}
+}
+
+// TestGetRetriesOn429 covers the top-level page GET's own 429 handling
+// (net_http.go's doGet, reached through Engine.get → httpGet): before this,
+// doGet had no retry logic at all, unlike httpBytes' sub-resource fetch —
+// the exact gap go-webengine/engine#450's own FIDELITY.md/README entries
+// flagged but deliberately left unfixed. A page fetch that lands on a
+// 429-rate-limited window must not hand the rate-limit response body back as
+// if it were the real page; it must wait out Retry-After (via the shared
+// doWithRateLimitRetry, same as httpBytes) and retry.
+func TestGetRetriesOn429(t *testing.T) {
+	const real = `<html><head><title>Real</title></head><body>real page content</body></html>`
+	var mu sync.Mutex
+	var first time.Time
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if first.IsZero() {
+			first = time.Now()
+		}
+		if time.Since(first) < time.Second {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		_, _ = w.Write([]byte(real))
+	}))
+	defer srv.Close()
+
+	e := &Engine{Client: &http.Client{}, UserAgent: "BrowserUA"}
+	start := time.Now()
+	body, _, _, _, err := e.get(context.Background(), srv.URL)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "real page content") {
+		t.Errorf("get returned %q, want the real page after riding out the 429", body)
+	}
+	if elapsed < 900*time.Millisecond {
+		t.Errorf("retried after %v, want to wait for Retry-After (about 1s)", elapsed)
+	}
+}
+
+// TestGetGivesUpAfterMaxRetriesStill429 covers the terminal case: a server
+// that never stops answering 429 must not retry forever — the caller gets
+// back the last (still-429) response rather than hanging or erroring, the
+// same contract httpBytes already relies on.
+func TestGetGivesUpAfterMaxRetriesStill429(t *testing.T) {
+	var hits int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		mu.Unlock()
+		w.Header().Set("Retry-After", "0")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	e := &Engine{Client: &http.Client{}, UserAgent: "BrowserUA"}
+	_, _, _, status, err := doGetStatus(e, srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusTooManyRequests {
+		t.Errorf("status = %d, want %d (still rate-limited after exhausting retries)", status, http.StatusTooManyRequests)
+	}
+	mu.Lock()
+	got := hits
+	mu.Unlock()
+	if want := maxRateLimitRetries + 1; got != want {
+		t.Errorf("server hit %d times, want %d (1 initial + %d retries)", got, want, maxRateLimitRetries)
+	}
+}
+
+// doGetStatus is a small shim so TestGetGivesUpAfterMaxRetriesStill429 can
+// see the response's status code, which Engine.get does not expose.
+func doGetStatus(e *Engine, rawurl string) (body []byte, final, ctype string, status int, err error) {
+	body, final, ctype, status, _, err = doGet(context.Background(), e.Client, rawurl, e.UserAgent)
+	return
 }

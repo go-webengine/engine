@@ -1270,6 +1270,18 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   raised 2→8, round 50) — not rate-limited responses: zero 429s were observed
   on these pages at either cap value. Raising the cap closed most, but not
   all, of the gap; pkg.go.dev/net/http is now faster than Chrome.
+- The top-level page GET now retries a 429 the same way a sub-resource fetch
+  already did (fix, 2026-11-28, round 51). Round 50 flagged this as a real
+  gap on `en.wikipedia.org/wiki/Go_(programming_language)` under the raised
+  concurrency cap but deliberately left it unfixed; confirmed live (two
+  genuine 429s logged on the page's own top-level GET across 24 concurrent
+  fetches, `Retry-After: 10`) before shipping the fix, and confirmed fixed
+  the same way (both retried and came back with the real page instead of
+  the rate-limit body). Not re-measured against Chrome this round — the
+  Chrome driver is unavailable in that environment — and round 50's own
+  ssim=0.104 collapse was not itself reproduced as a dimension collapse
+  there, before or after the fix; see FIDELITY.md round 51 for exactly what
+  was and wasn't confirmed.
 - This is **not** a standards-complete browser and **not** "as good as Chromium".
   Measured mean windowed-SSIM across the ten bench pages is **≈ 0.66**, with
   clear diminishing returns; the Wikipedia number (≈ 0.42) is JS-confounded and
@@ -1285,7 +1297,7 @@ so the content of several pages moves between runs (see the notes in FIDELITY.md
 | URL | SSIM | pixdiff % | speed× | note |
 |-----|-----:|----------:|-------:|:-----|
 | example.com/ | **0.831** | 5.6 | 18.3 | near-parity; its JS cross-fade is not modelled |
-| en.wikipedia.org/wiki/Go | 0.417 | 30.3 | 1.6 | live article; JS and rate-limited thumbnails |
+| en.wikipedia.org/wiki/Go | 0.417 | 30.3 | 1.6 | live article; JS and rate-limited thumbnails; top-level-GET 429 retry fixed round 51 (not re-measured here, see FIDELITY.md) |
 | pkg.go.dev/net/http | 0.653 | 15.6 | **1.23** | large computed page; now faster than Chrome (round 50) |
 | go.dev/blog/ | 0.694 | 11.6 | 0.58 | still slower than Chrome, improved from 0.44 (round 50) |
 | react.dev/ | 0.725 | 33.0 | 1.3 | SPA; hydration fails, so the static fallback renders |
