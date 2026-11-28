@@ -15,6 +15,55 @@ import (
 	"time"
 )
 
+// TestEngineMaxPerHostConcurrencyResolvesDefault guards e.maxPerHostConcurrency's
+// zero-selects-default resolution as a pure function — no semaphore, no
+// network — so a mutated guard fails fast instead of only surfacing as a
+// hang the first time a zero/negative value reaches semFor's channel
+// creation (make(chan struct{}, n) with n<=0 blocks forever on first use).
+func TestEngineMaxPerHostConcurrencyResolvesDefault(t *testing.T) {
+	cases := []struct {
+		name string
+		set  int
+		want int
+	}{
+		{"zero selects default", 0, defaultMaxPerHostConcurrency},
+		{"negative selects default", -1, defaultMaxPerHostConcurrency},
+		{"one is honoured", 1, 1},
+		{"above default is honoured", 100, 100},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			e := &Engine{MaxPerHostConcurrency: c.set}
+			if got := e.maxPerHostConcurrency(); got != c.want {
+				t.Errorf("maxPerHostConcurrency() with MaxPerHostConcurrency=%d = %d, want %d", c.set, got, c.want)
+			}
+		})
+	}
+}
+
+// TestSemForClampsNonPositiveLimit guards semFor's own defense-in-depth clamp
+// directly — no network, no real request — so a mutated clamp fails fast
+// instead of only surfacing as a hang the first time some OTHER test's real
+// request reaches an unbuffered (or negative-capacity) channel.
+func TestSemForClampsNonPositiveLimit(t *testing.T) {
+	cases := []struct {
+		name  string
+		limit int
+	}{
+		{"zero", 0},
+		{"negative", -5},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tr := newPerHostLimitedTransport(http.DefaultTransport, func() int { return c.limit })
+			sem := tr.semFor("example.com")
+			if cap(sem) < 1 {
+				t.Errorf("semFor with limit()=%d produced a channel of capacity %d, want >= 1", c.limit, cap(sem))
+			}
+		})
+	}
+}
+
 // TestPerHostLimitedTransportBoundsConcurrency guards the actual mechanism:
 // no more than the configured limit of requests to one host are ever
 // in-flight at the same time, however many are fired at once.

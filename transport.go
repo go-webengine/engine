@@ -115,7 +115,16 @@ func (t *perHostLimitedTransport) semFor(host string) chan struct{} {
 	defer t.mu.Unlock()
 	sem, ok := t.sems[host]
 	if !ok {
-		sem = make(chan struct{}, t.limit())
+		n := t.limit()
+		if n <= 0 {
+			// Defense in depth, independent of maxPerHostConcurrency's own
+			// zero-selects-default resolution: make(chan struct{}, 0) is
+			// unbuffered, so every RoundTrip would block forever acquiring
+			// its own slot (nothing ever receives at the right moment), and
+			// a negative n panics outright. Never let either reach here.
+			n = 1
+		}
+		sem = make(chan struct{}, n)
 		t.sems[host] = sem
 	}
 	return sem

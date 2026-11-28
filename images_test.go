@@ -165,6 +165,46 @@ func TestRetryAfterDelay(t *testing.T) {
 	}
 }
 
+// TestRetryAfterDelayHTTPDate covers retryAfterDelay's RFC 9110 §10.2.3
+// HTTP-date form (httpDateLayouts' three layouts), independent of any
+// network I/O. Durations are checked with a tolerance, not exact equality,
+// since the function measures time.Until(parsedTime) against whatever
+// "now" is at the moment the test runs.
+func TestRetryAfterDelayHTTPDate(t *testing.T) {
+	const (
+		future  = 3 * time.Second // well under maxRateLimitBackoff, so not clamped
+		minWant = 1 * time.Second // tolerance for second-truncation + test runtime
+		maxWant = future
+	)
+	for _, layout := range httpDateLayouts {
+		t.Run("future "+layout, func(t *testing.T) {
+			v := time.Now().UTC().Add(future).Format(layout)
+			got := retryAfterDelay(v)
+			if got < minWant || got > maxWant {
+				t.Errorf("retryAfterDelay(%q) = %v, want between %v and %v", v, got, minWant, maxWant)
+			}
+		})
+		t.Run("past "+layout, func(t *testing.T) {
+			v := time.Now().UTC().Add(-10 * time.Second).Format(layout)
+			if got := retryAfterDelay(v); got != 0 {
+				t.Errorf("retryAfterDelay(%q) = %v, want 0 (retry now)", v, got)
+			}
+		})
+	}
+	t.Run("absurdly far future clamped to ceiling", func(t *testing.T) {
+		v := time.Now().UTC().Add(time.Hour).Format(httpDateLayouts[0])
+		if got := retryAfterDelay(v); got != maxRateLimitBackoff {
+			t.Errorf("retryAfterDelay(%q) = %v, want %v", v, got, maxRateLimitBackoff)
+		}
+	})
+	t.Run("unparseable in either form falls back to default", func(t *testing.T) {
+		v := "not a date and not a number"
+		if got := retryAfterDelay(v); got != defaultRateLimitBackoff {
+			t.Errorf("retryAfterDelay(%q) = %v, want %v", v, got, defaultRateLimitBackoff)
+		}
+	})
+}
+
 // TestFetchImageBytesRetriesOn429 guards the actual bug: en.wikipedia.org's
 // upload.wikimedia.org CDN replies 429 Too Many Requests (with a real
 // Retry-After header) to some fraction of this engine's own concurrent
