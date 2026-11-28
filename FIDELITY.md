@@ -33,6 +33,27 @@ Closes out M7 (WebGPU textures and render pipelines) in the go-wasmcontainers We
 - Tests: 14 new end-to-end tests exercising real Metal hardware (`js/webgpu_test.go`), each covering a happy path plus at least one validation/error path, plus the targeted tests above from the 8 bug fixes and the mutsweep-hardening rounds. `go build`/`go vet`/`gofmt -l`/`go test ./...`/`govulncheck` clean (real Metal GPU, no skips), `buildscan --dir . --vet` clean under all 13 CI configurations, `go mod tidy` clean in both the root and `bench/` modules.
 - **M7 is now complete**: `GPUTexture`/`GPUTextureView`/`GPURenderPipeline`/`GPURenderPassEncoder` alongside M5's `GPUBuffer`/`GPUComputePipeline`/`GPUBindGroup`/`GPUCommandEncoder`, still off by default (`Engine.EnableWebGPU`), backed by the same pure-Go WGSL→MSL translator and pure-Go, no-cgo Metal binding — a full, if deliberately scoped, WebGPU compute-and-render path with no Rust toolchain or vendored binary blob anywhere in it.
 
+## 2026-11-28 (round 50) — per-host HTTP concurrency cap raised 2→8 and made configurable (`Engine.MaxPerHostConcurrency`); `Retry-After` now parses the HTTP-date form too (performance + fix, engine#140 follow-up)
+
+The task that reopened this cited "429-rate-limited responses from a host-unaware fetch pool" as the cause of go.dev/blog/, tailwindcss.com/ and pkg.go.dev/net/http rendering slower than Chrome. That premise was stale: the per-host cap already shipped (round 57, `transport.go`, engine#140) specifically to stop upload.wikimedia.org 429s. This round is not a new discovery — it finishes what round 152 already found and round 153 only half-cleared: round 152 measured raising the cap 2→4 saving ~30% of tailwindcss.com's wall time, but didn't ship it, pending round 153's separate confirmation that upload.wikimedia.org's own 429 rate does **not** depend on this cap (otherwise a global raise could regress the one host it was tuned for).
+
+Measured against the official bench corpus (`bench/cmd/compare`, full 10-page run), before (cap=2, the shipped value) vs after (cap=8, the new default):
+
+| page | before | after |
+|---|---|---|
+| go.dev/blog/ | 5523.8ms, speed× 0.44 | 3585.1ms, speed× 0.58 |
+| tailwindcss.com/ | 4112.7ms, speed× 0.46 | 2909.0ms, speed× 0.64 |
+| pkg.go.dev/net/http | 5501.8ms, speed× 0.72 | 3172.9ms, speed× **1.23** (now faster than Chrome) |
+
+**Zero 429 responses observed at either cap on any of the three pages** — confirming, as round 153 already found for Wikimedia, that this was never a 429-avoidance budget for these pages either; it was simply same-origin requests queuing behind a cap set for a different host's rate limit. 8 is now the shipped default (raised, not replaced — `upload.wikimedia.org`'s own round-57/152/153-measured optimum is untouched); `Engine.MaxPerHostConcurrency` (`engine.go`) lets either page shape be tuned independently, resolved lazily per host rather than captured once at construction, so a caller can still set it after `New()` returns.
+
+Two pages flagged, not fixed, while measuring this:
+
+- **`en.wikipedia.org/wiki/Go_(programming_language)`**: one official before/after sample showed a collapsed, near-viewport-only render at cap=2 (ssim 0.104) against a full one at cap=8 (ssim 0.421). Re-checked live, directly (not assumed): it reproduces IDENTICALLY at cap=2 **and** cap=8, three samples each, six total — every sample hit a 429 on en.wikipedia.org's own top-level page GET, which (unlike sub-resource fetches in `images.go`) has no retry at all. Real, reproducible gap; independent of this cap's value, tracked separately (`net_http.go`'s `doGet`/`httpGet`), not fixed this round.
+- **`caniuse.com/`**: flat before/after (4146.5ms→4063.0ms, speed× 0.77→0.78) — it was never a same-origin-concurrency-bound page, so not a target of this change; its own slower-than-Chrome status is real but un-investigated.
+
+Also fixed in passing: `retryAfterDelay` (`images.go`) only parsed `Retry-After`'s delay-seconds form; the RFC 9110 §10.2.3 HTTP-date alternative silently fell through to the default backoff instead of being honoured. Now parses both (three HTTP-date layouts: IMF-fixdate, obsolete RFC 850, obsolete ANSI C asctime) without importing `net/http`, preserving the `webengine_nonet`/`webengine_nojs` build's "no net/http at all" guarantee.
+
 ## 2026-11-21 (round 49) — engine#418 CLOSED for real: the goja compiler bug round 48 characterized was already fixed upstream a month before this repo's pinned commit; bumping the dependency fixes the real page end to end (fix, engine#418)
 
 Round 48 (just below) stopped at "no safe engine-level mitigation exists" without checking whether goja itself had already addressed the bug it had just characterized — a `priorart --repo dop251/goja` search against the exact mechanism, run before concluding anything further, should have been (and now was) the very next step per this fleet's own bibliography-first rule, not an afterthought.

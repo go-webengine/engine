@@ -758,9 +758,12 @@ func (e *Engine) fetchImageBytes(ctx context.Context, base, src string) ([]byte,
 const maxRateLimitRetries = 3
 
 // defaultRateLimitBackoff is used when a 429 response carries no Retry-After
-// header, or one this engine cannot parse (an HTTP-date is accepted by the
-// spec but not handled here — no confirmed caller has sent one; delay-seconds
-// is the form actually observed live).
+// header, or one in neither of the two forms retryAfterDelay parses
+// (delay-seconds, confirmed observed live; HTTP-date, RFC 9110 §10.2.3's
+// alternative form, round 50 — no confirmed caller has sent one, added on
+// the spec alone since a real server choosing it is easy to picture and the
+// prior gap would have silently fallen back to this default instead of
+// honouring it).
 const defaultRateLimitBackoff = 500 * time.Millisecond
 
 // maxRateLimitBackoff caps how long a single retry will wait, regardless of
@@ -768,21 +771,56 @@ const defaultRateLimitBackoff = 500 * time.Millisecond
 // or hostile server cannot stall a render by naming an absurd delay.
 const maxRateLimitBackoff = 5 * time.Second
 
-// retryAfterDelay parses a Retry-After header's delay-seconds form (RFC 9110
-// §10.2.3 — a non-negative integer count of seconds; the alternative
-// HTTP-date form is not handled, see maxRateLimitRetries's doc comment) into
-// a duration, clamped to [0, maxRateLimitBackoff]. An empty, negative, or
-// unparseable value falls back to defaultRateLimitBackoff.
+// httpDateLayouts are the three Retry-After HTTP-date forms RFC 9110 §10.2.3
+// permits (by reference to RFC 9110 §5.6.7's IMF-fixdate, plus two obsolete
+// forms a real server still sends): the preferred IMF-fixdate, the obsolete
+// RFC 850 form, and ANSI C's asctime() form. Spelled out here (rather than
+// importing net/http for http.TimeFormat/http.ParseTime) so this file keeps
+// importing no net/http at all — it compiles unconditionally, including the
+// webengine_nonet && webengine_nojs build, whose whole point (see
+// client_none.go) is linking no net/http.
+var httpDateLayouts = []string{
+	"Mon, 02 Jan 2006 15:04:05 GMT",  // RFC 9110 §5.6.7 IMF-fixdate (preferred)
+	"Monday, 02-Jan-06 15:04:05 GMT", // RFC 850 (obsolete, still seen live)
+	"Mon Jan _2 15:04:05 2006",       // ANSI C asctime() (obsolete, still seen live)
+}
+
+// retryAfterDelay parses a Retry-After header value into a wait duration,
+// clamped to [0, maxRateLimitBackoff]. RFC 9110 §10.2.3 permits EITHER form:
+// delay-seconds (a non-negative integer count of seconds) or HTTP-date (an
+// absolute time the client should retry at, one of httpDateLayouts' three
+// forms) — both are parsed here, delay-seconds first since it's the form
+// confirmed live (Wikimedia's own upload.wikimedia.org CDN, see
+// maxRateLimitRetries' doc comment) and cheaper to try. An empty, negative,
+// past, or unparseable-in-either-form value falls back to
+// defaultRateLimitBackoff.
 func retryAfterDelay(v string) time.Duration {
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return defaultRateLimitBackoff
 	}
-	secs, err := strconv.Atoi(v)
-	if err != nil || secs < 0 {
-		return defaultRateLimitBackoff
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return defaultRateLimitBackoff
+		}
+		return clampBackoff(time.Duration(secs) * time.Second)
 	}
-	d := time.Duration(secs) * time.Second
+	for _, layout := range httpDateLayouts {
+		if t, err := time.Parse(layout, v); err == nil {
+			d := time.Until(t)
+			if d < 0 {
+				return 0 // the named time has already passed: retry now
+			}
+			return clampBackoff(d)
+		}
+	}
+	return defaultRateLimitBackoff
+}
+
+// clampBackoff caps d to maxRateLimitBackoff, never letting a server-named
+// delay (either form) stall a render past this engine's own defensive
+// ceiling.
+func clampBackoff(d time.Duration) time.Duration {
 	if d > maxRateLimitBackoff {
 		return maxRateLimitBackoff
 	}

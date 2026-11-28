@@ -35,7 +35,7 @@ func TestPerHostLimitedTransportBoundsConcurrency(t *testing.T) {
 	defer srv.Close()
 
 	client := srv.Client()
-	client.Transport = newPerHostLimitedTransport(client.Transport, 2)
+	client.Transport = newPerHostLimitedTransport(client.Transport, func() int { return 2 })
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -72,7 +72,7 @@ func TestPerHostLimitedTransportHostsAreIndependent(t *testing.T) {
 	defer srvB.Close()
 
 	client := srvA.Client() // both test servers share the same default transport/cert pool shape
-	client.Transport = newPerHostLimitedTransport(client.Transport, 1)
+	client.Transport = newPerHostLimitedTransport(client.Transport, func() int { return 1 })
 
 	started := make(chan struct{}, 2)
 	var wg sync.WaitGroup
@@ -121,7 +121,7 @@ func TestPerHostLimitedTransportRespectsContextCancellation(t *testing.T) {
 	defer close(block)
 
 	client := srv.Client()
-	client.Transport = newPerHostLimitedTransport(client.Transport, 1)
+	client.Transport = newPerHostLimitedTransport(client.Transport, func() int { return 1 })
 
 	// Occupy the one slot with a request that will hang until block closes.
 	holderStarted := make(chan struct{})

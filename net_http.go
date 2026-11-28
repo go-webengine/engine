@@ -21,10 +21,12 @@ const defaultUserAgent = browserhttp.DefaultUserAgent
 
 // newHTTPClient is the client New gives an Engine: browser-like (Chrome TLS
 // fingerprint, cookie jar, redirect following), at most
-// maxPerHostConcurrency requests in flight per host.
-func newHTTPClient() *http.Client {
+// e.maxPerHostConcurrency() requests in flight per host — resolved afresh
+// per host rather than once here, so a caller's later
+// Engine.MaxPerHostConcurrency still takes effect (transport.go).
+func newHTTPClient(e *Engine) *http.Client {
 	client := browserhttp.NewClient(30 * time.Second)
-	client.Transport = newPerHostLimitedTransport(client.Transport, maxPerHostConcurrency)
+	client.Transport = newPerHostLimitedTransport(client.Transport, e.maxPerHostConcurrency)
 	return client
 }
 

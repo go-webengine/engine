@@ -165,6 +165,33 @@ type Engine struct {
 	// silently wrong" convention (MaxWasmModuleBytes/MaxWasmMemoryBytes/
 	// MaxJSHeapBytes above).
 	MaxResponseBytes int64
+	// MaxPerHostConcurrency bounds how many requests to any single host this
+	// engine lets run at once (transport.go's perHostLimitedTransport). Zero
+	// selects the 8 default (raised from round 57's 2, which this field did
+	// not exist to let a caller override). Round 152 measured raising it to
+	// 4 saving ~30% of tailwindcss.com's wall time, but did not ship it,
+	// pending round 153's separate check that upload.wikimedia.org's own
+	// 429 rate is NOT a function of this cap (so raising the GLOBAL default
+	// cannot regress the one host round 57 tuned it for). Round 50 finishes
+	// that: measured against the official bench corpus
+	// (bench/cmd/compare, full 10-page run), raising the shipped cap=2 to 8
+	// cut go.dev/blog/'s wall time from 5.52s to 3.59s (speed× vs Chrome:
+	// 0.44→0.58), tailwindcss.com/'s from 4.11s to 2.91s (0.46→0.64), and
+	// pkg.go.dev/net/http's from 5.50s to 3.17s (0.72→1.23, now faster than
+	// Chrome) — zero 429 responses observed at either cap on any of the
+	// three, confirming this was never the 429-avoidance budget round 57
+	// tuned. (A same-session live re-check of en.wikipedia.org found an
+	// unrelated, separately-known gap — the top-level page GET has no
+	// 429-retry at all, unlike sub-resource fetches — reproducing
+	// IDENTICALLY at cap=2 and cap=8 (three samples each, six total); this
+	// confirms that gap, not this cap, and is tracked separately, not by
+	// this field.)
+	// Raise this further for a same-origin-heavy workload against a host
+	// known to tolerate more; lower it back toward 1 for a host (like
+	// upload.wikimedia.org) known to rate-limit on request rate rather than
+	// pure simultaneity, where round 57's own measurement showed no benefit
+	// past 2 anyway.
+	MaxPerHostConcurrency int
 	// MaxScriptBytes bounds a single external <script src> body. Zero
 	// selects the 4 MiB default. Found genuinely too small for a real
 	// workload, not hypothetical: react.dev's own unminified dev-mode
@@ -349,8 +376,7 @@ type Engine struct {
 // New returns an Engine with a browser-like HTTP client (Chrome TLS
 // fingerprint, cookie jar, redirect following).
 func New() *Engine {
-	return &Engine{
-		Client:    newHTTPClient(),
+	e := &Engine{
 		UserAgent: defaultUserAgent,
 		MaxImages: 40,
 		// 400 comfortably covers icon-dense design systems (Material, Primer,
@@ -368,6 +394,13 @@ func New() *Engine {
 		// off there and keep the good pre-script layout.
 		MaxJSHeapBytes: 768 << 20,
 	}
+	// Built after e so the client can resolve Engine.MaxPerHostConcurrency
+	// (and any other Engine-held HTTP setting) at request time rather than
+	// capturing a value from before the caller ever gets to set one — New()
+	// returns e with its zero-selects-default fields still unset, and a
+	// caller sets them on the returned *Engine afterward.
+	e.Client = newHTTPClient(e)
+	return e
 }
 
 // Fetch retrieves and parses url into a Document.
