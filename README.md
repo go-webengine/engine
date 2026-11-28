@@ -830,6 +830,17 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   to raise it. Now configurable, zero selects the unchanged default, the
   SAME convention `MaxResponseBytes`/`MaxWasmModuleBytes`/
   `MaxWasmMemoryBytes` already follow.
+- **`Engine.MaxPerHostConcurrency`** (performance + feature, 2026-11-28,
+  round 50): the per-host HTTP concurrency cap (round 57) is now
+  configurable, zero selects a new default of 8 (raised from 2) — the same
+  value round 152 had already measured saving ~30% on tailwindcss.com, but
+  never shipped pending round 153's confirmation that upload.wikimedia.org's
+  own 429 rate does not depend on this cap. Measured against the full
+  10-page bench corpus: go.dev/blog/ 5.52s→3.59s, tailwindcss.com/
+  4.11s→2.91s, pkg.go.dev/net/http 5.50s→3.17s (now faster than Chrome),
+  zero 429s observed on any of them at either cap value. `Retry-After`
+  parsing (`images.go`) also now honours the RFC 9110 §10.2.3 HTTP-date
+  form, not just delay-seconds.
 - **WebGPU error scopes now actually CAPTURE errors** (fix, 2026-11-08,
   round 10): round 9's `pushErrorScope`/`popErrorScope` only got the
   push/pop balance right — every GPU error still threw synchronously,
@@ -1253,9 +1264,12 @@ PNGs, measured vs headless Chrome) is in [`FIDELITY.md`](FIDELITY.md) and
   requests with HTTP 429. The engine retries them, and the renders are
   pixel-identical, but each retry costs about 2 seconds of wall time on that page
   (measured round 155).
-- Several pages render **slower** than Chrome (go.dev/blog, tailwindcss.com,
-  pkg.go.dev): an open performance gap, not a fidelity one. The measured causes so
-  far are the per-host request cap and the time spent on rate-limited responses.
+- Some pages still render slower than Chrome (tailwindcss.com, go.dev/blog):
+  an open performance gap, not a fidelity one. The measured cause was the
+  per-host request concurrency cap (`Engine.MaxPerHostConcurrency`, default
+  raised 2→8, round 50) — not rate-limited responses: zero 429s were observed
+  on these pages at either cap value. Raising the cap closed most, but not
+  all, of the gap; pkg.go.dev/net/http is now faster than Chrome.
 - This is **not** a standards-complete browser and **not** "as good as Chromium".
   Measured mean windowed-SSIM across the ten bench pages is **≈ 0.66**, with
   clear diminishing returns; the Wikipedia number (≈ 0.42) is JS-confounded and
@@ -1272,13 +1286,13 @@ so the content of several pages moves between runs (see the notes in FIDELITY.md
 |-----|-----:|----------:|-------:|:-----|
 | example.com/ | **0.831** | 5.6 | 18.3 | near-parity; its JS cross-fade is not modelled |
 | en.wikipedia.org/wiki/Go | 0.417 | 30.3 | 1.6 | live article; JS and rate-limited thumbnails |
-| pkg.go.dev/net/http | 0.716 | 11.3 | 0.8 | large computed page |
-| go.dev/blog/ | 0.700 | 16.6 | 0.45 | slower than Chrome |
+| pkg.go.dev/net/http | 0.653 | 15.6 | **1.23** | large computed page; now faster than Chrome (round 50) |
+| go.dev/blog/ | 0.694 | 11.6 | 0.58 | still slower than Chrome, improved from 0.44 (round 50) |
 | react.dev/ | 0.725 | 33.0 | 1.3 | SPA; hydration fails, so the static fallback renders |
 | news.ycombinator.com/ | 0.615 | 13.7 | 1.75 | table layout; rotating front page |
 | developer.mozilla.org/…/CSS | 0.606 | 18.1 | 3.3 | docs layout |
 | github.com/golang/go | 0.637 | 14.2 | 2.0 | live repository counters |
-| tailwindcss.com/ | 0.724 | 12.2 | 0.5 | sponsor carousel rotates; slower |
+| tailwindcss.com/ | 0.724 | 12.2 | 0.64 | sponsor carousel rotates; still slower, improved from 0.46 (round 50) |
 | caniuse.com/ | 0.660 | 18.0 | 0.8 | data grid |
 
 Mean SSIM over the ten pages is **≈ 0.66**. Summed over the run, webengine took
